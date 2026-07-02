@@ -1,0 +1,12 @@
+# Forge workspace configuration.
+# The supported M0 schema is intentionally small and strict.
+
+[project]
+name = "forge"
+
+[editor]
+tab_width = 4
+
+[ai]
+# AI edits must remain review-only. Direct apply is not a supported mode.
+apply_mode = "review"
