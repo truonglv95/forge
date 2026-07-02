@@ -1,0 +1,181 @@
+# Forge
+
+> AI-first native IDE, built in Zig.
+
+Forge is a native development environment where AI is not a chatbot bolted onto
+an editor. AI participates in understanding the codebase, proposing changes,
+reviewing diffs, and running validation—but the developer always makes the final
+decision.
+
+> [!IMPORTANT]
+> Forge is currently in the foundation stage (pre-alpha). The repository has a
+> working monorepo build, tested package boundaries, and an initial CLI; there is
+> no usable IDE or AI workflow yet.
+
+## North star
+
+Forge aims to deliver one complete vertical slice:
+
+```text
+Open project -> Edit -> Ask AI -> Review diff -> Apply
+             -> Format/build/test -> Undo when needed
+```
+
+Every AI-proposed change must have a clear scope, be reviewable and verifiable,
+apply atomically, and support undo. The model must never write directly to the
+editor buffer or filesystem.
+
+## Project status
+
+| Milestone | Goal | Status |
+|---|---|---|
+| M0 | Foundation and decisions | In progress |
+| M1 | Kernel and headless workspace | Not started |
+| M2 | Native editor vertical slice | Not started |
+| M3 | Language intelligence and tasks | Not started |
+| M4 | Safe AI editing MVP | Not started |
+| M5 | Daily-use alpha | Not started |
+| M6 | Beta and extensibility decision | Not started |
+
+See the [Project Roadmap](docs/roadmap/ROADMAP.md) for detailed checklists and
+exit criteria. See the [Project Vision](docs/PROJECT_VISION.md) for the product
+vision and architectural principles.
+
+## Repository layout
+
+```text
+forge/
+├── apps/
+│   ├── forge-cli/       # CLI and headless workflows
+│   ├── forge-ide/       # Native desktop application
+│   └── forge-agent/     # Reserved for post-MVP agent workflows
+├── packages/
+│   ├── core/            # Shared domain types
+│   ├── kernel/          # Lifecycle, commands, events, tasks, config
+│   ├── workspace/       # Files, watcher, search, transactions
+│   ├── editor/          # Buffer, cursor, selection, history
+│   ├── renderer/        # Window, GPU, text, and input
+│   ├── lsp/             # Language Server Protocol client
+│   ├── ai/              # Context, providers, and edit proposals
+│   ├── plugin/          # Post-MVP extension boundary
+│   └── util/            # Domain-independent helpers
+├── docs/
+│   ├── architecture/
+│   ├── roadmap/
+│   └── rfc/
+└── build.zig
+```
+
+This layout is enforced by the Zig build graph. Package responsibilities and
+dependency rules are documented in
+[RFC-0001](docs/rfc/RFC-0001-project-structure.md).
+
+## Getting started
+
+Current requirements:
+
+- Zig `0.16.0`;
+- macOS is the proposed MVP platform, pending confirmation through a renderer
+  spike and RFC.
+
+```bash
+zig build
+zig build test
+zig build run
+```
+
+The CLI currently provides the foundation commands:
+
+```bash
+zig build run -- version
+zig build run -- doctor
+zig build run -- help
+```
+
+To verify the complete local foundation in one command, run:
+
+```bash
+./scripts/bootstrap.sh
+```
+
+## Engineering rules
+
+- Use commands for mutations and events to announce facts that have occurred.
+- Synchronous queries may use interfaces directly; not everything must go
+  through the event bus.
+- Feature packages depend on `kernel/core`, which depend on `util`; dependency
+  cycles are forbidden.
+- Never block the render thread with filesystem, LSP, or model calls.
+- Data safety and correctness take priority over feature breadth.
+- Decisions that are difficult to reverse require an RFC.
+
+## Documentation
+
+- [Commit convention](docs/COMMIT_CONVENTION.md)
+- [Project vision](docs/PROJECT_VISION.md)
+- [Delivery roadmap](docs/roadmap/ROADMAP.md)
+- [RFC-0001: project structure](docs/rfc/RFC-0001-project-structure.md)
+- [RFC-0002: runtime ownership](docs/rfc/RFC-0002-runtime-ownership.md)
+- [RFC-0003: commands, events, and workspace edits](docs/rfc/RFC-0003-commands-events-workspace-edits.md)
+
+## Contributing
+
+The project does not yet have a stable contribution workflow. Before
+implementing a feature, check the active milestone and avoid introducing
+post-MVP work into the critical path.
+
+### Local checks
+
+Run the same checks CI uses:
+
+```bash
+./scripts/check.sh          # format, build, and test
+./scripts/check.sh --fast     # format and AST check only
+```
+
+Format sources in place before committing:
+
+```bash
+zig fmt build.zig apps packages
+```
+
+### Commit messages
+
+Forge uses [Conventional Commits](https://www.conventionalcommits.org/) with a
+monorepo **scope**:
+
+```text
+type(scope): imperative subject
+```
+
+Examples:
+
+```text
+feat(forge-cli): add inspect subcommand
+fix(workspace): reject overlapping text edits
+docs(docs): update M1 checklist
+ci(scripts): add validate-commit-msg hook
+```
+
+See [Commit Convention](docs/COMMIT_CONVENTION.md) for types, scopes, and
+examples.
+
+### Git hooks
+
+Enable project hooks once per clone:
+
+```bash
+chmod +x scripts/check.sh scripts/validate-commit-msg.sh .githooks/*
+git config core.hooksPath .githooks
+```
+
+- `pre-commit` runs `./scripts/check.sh --fast` (format + AST check).
+- `commit-msg` validates the commit header against the convention.
+- `pre-push` runs `./scripts/check.sh --full` (format, build, and test).
+
+CI remains the final gate on every push and pull request.
+
+## License
+
+Not yet decided. Do not assume the repository has an open-source license until
+a `LICENSE` file is officially added.
