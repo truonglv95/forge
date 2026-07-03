@@ -60,6 +60,16 @@ pub const WorkspaceEdit = struct {
             }
         }
     }
+
+    pub fn inverse(self: WorkspaceEdit, allocator: std.mem.Allocator) !WorkspaceEdit {
+        _ = self;
+        _ = allocator;
+        // Invert create -> delete
+        // Invert delete -> create
+        // Invert modify -> modify (with inverted TextEdits)
+        // For M1 MVP scaffolding, we just return NotImplemented error
+        return error.NotImplemented;
+    }
 };
 
 pub fn contentHash(content: []const u8) u64 {

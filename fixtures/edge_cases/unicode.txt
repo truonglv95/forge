@@ -1,0 +1,3 @@
+Xin chào! Đây là một tệp thử nghiệm Unicode với tiếng Việt và emoji.
+🚀 🌟 💻
+Forge IDE cần phải xử lý những ký tự này một cách mượt mà và không làm hỏng byte.
