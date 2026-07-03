@@ -1,0 +1,15 @@
+{
+  "files": [
+    {
+      "path": "notes.txt",
+      "operation": "create",
+      "edits": [
+        {
+          "start": 0,
+          "end": 0,
+          "replacement": "created by forge\n"
+        }
+      ]
+    }
+  ]
+}

@@ -7,27 +7,28 @@ pub const ProcessOptions = struct {
     token: ?cancellation.CancellationToken = null,
 };
 
-pub fn run(allocator: std.mem.Allocator, options: ProcessOptions) !std.process.Child.Term {
-    var child = std.process.Child.init(options.argv, allocator);
-    child.cwd = options.cwd;
+pub fn run(allocator: std.mem.Allocator, io: std.Io, options: ProcessOptions) !std.process.Child.Term {
+    _ = allocator;
 
-    // Explicitly enforce no shell by ignoring stdin and piping out/err natively
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+    const cwd: std.process.Child.Cwd = if (options.cwd) |path| .{ .path = path } else .inherit;
 
-    try child.spawn();
+    var child = try std.process.spawn(io, .{
+        .argv = options.argv,
+        .cwd = cwd,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    defer child.kill(io);
 
     if (options.token) |tok| {
-        // In a more complex implementation, we would poll the token asynchronously.
-        // For MVP, we check just before blocking wait.
         if (tok.isCancelled()) {
-            _ = try child.kill();
-            return std.process.Child.Term{ .Signal = std.posix.SIG.KILL };
+            child.kill(io);
+            return std.process.Child.Term{ .signal = std.posix.SIG.KILL };
         }
     }
 
-    return try child.wait();
+    return try child.wait(io);
 }
 
 test "Process runner struct compiles" {
