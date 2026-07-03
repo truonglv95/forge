@@ -51,7 +51,7 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, write
             return 0;
         },
         .inspect => {
-            return inspect_cmd.run(allocator, parsed, writer) catch 2;
+            return inspect_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .search => {
             return search_cmd.run(allocator, parsed, writer) catch 2;

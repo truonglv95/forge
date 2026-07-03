@@ -18,7 +18,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
     try ctx_builder.addBlock(.intent, "user_intent", intent);
 
     try writer.writeAll("Invoking AI Provider...\n");
-    
+
     // Fallback to fake provider if no key
     var fake_prov = ai.fake_provider.FakeProvider.init(
         \\{
@@ -30,7 +30,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
     const p = fake_prov.providerInterface();
 
     var planner = ai.planner.Planner.init(allocator, p, &ctx_builder);
-    
+
     var w_alloc = std.Io.Writer.Allocating.init(allocator);
     defer w_alloc.deinit();
 
@@ -45,10 +45,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
 
     // Save proposal to a local file
     const out_path = ".forge-proposal.json";
-    
+
     var file = try std.Io.Dir.createFile(.cwd(), io, out_path, .{});
     defer file.close(io);
-    
+
     const proposal_items = w_alloc.writer.buffer[0..w_alloc.writer.end];
     try file.writeStreamingAll(io, proposal_items);
 
