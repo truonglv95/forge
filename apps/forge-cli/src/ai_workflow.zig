@@ -3,6 +3,7 @@ const ai = @import("forge-ai");
 const workspace = @import("forge-workspace");
 const kernel = @import("forge-kernel");
 const workspace_cmd = @import("workspace_cmd.zig");
+const args_mod = @import("args.zig");
 
 pub const Mode = enum {
     ask,
@@ -14,23 +15,47 @@ pub const Result = struct {
     proposal_rel: []const u8,
 };
 
+pub const WorkflowError = error{
+    MissingProviderCredentials,
+    ProviderFailed,
+};
+
+pub fn providerOptionsFromFlags(mode: Mode, flags: args_mod.GlobalFlags) ai.provider_factory.Options {
+    const fake_response = switch (mode) {
+        .ask => default_ask_response,
+        .plan => default_plan_response,
+    };
+
+    return .{
+        .kind = ai.provider_factory.Kind.parse(flags.provider),
+        .model = flags.model,
+        .fake_response = fake_response,
+    };
+}
+
 pub fn generateAndPersist(
     allocator: std.mem.Allocator,
     io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
     opened: workspace_cmd.OpenedWorkspace,
     mode: Mode,
     intent: []const u8,
     files: []const []const u8,
-    provider_response: []const u8,
-) !Result {
-    var ctx_builder = try ai.context_loader.build(allocator, io, opened.root, .{
+    provider_options: ai.provider_factory.Options,
+) WorkflowError!Result {
+    var provider_handle = ai.provider_factory.create(allocator, io, environ_map, provider_options) catch |err| switch (err) {
+        ai.provider_factory.FactoryError.MissingCredentials => return error.MissingProviderCredentials,
+        else => return error.ProviderFailed,
+    };
+    defer provider_handle.deinit();
+
+    var ctx_builder = ai.context_loader.build(allocator, io, opened.root, .{
         .intent = intent,
         .explicit_files = files,
-    });
+    }) catch return error.ProviderFailed;
     defer ctx_builder.deinit();
 
-    var fake = ai.fake_provider.FakeProvider.init(provider_response);
-    const provider = fake.providerInterface();
+    const provider = provider_handle.interface();
     const meta = provider.metadata();
 
     var planner = ai.planner.Planner.init(allocator, provider, &ctx_builder);
@@ -38,22 +63,22 @@ pub fn generateAndPersist(
     var response = std.Io.Writer.Allocating.init(allocator);
     defer response.deinit();
 
-    var cancel_src = try kernel.cancellation.CancellationTokenSource.init(allocator);
+    var cancel_src = kernel.cancellation.CancellationTokenSource.init(allocator) catch return error.ProviderFailed;
     defer cancel_src.deinit();
     const token = cancel_src.getToken();
 
-    try planner.plan(&response.writer, &token);
+    planner.plan(&response.writer, &token) catch return error.ProviderFailed;
 
     const proposal_body = response.writer.buffer[0..response.writer.end];
     const timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
-    const run_id = try ai.run_record.makeRunId(allocator, timestamp_ms);
+    const run_id = ai.run_record.makeRunId(allocator, timestamp_ms) catch return error.ProviderFailed;
     errdefer allocator.free(run_id);
 
-    try workspace.history.ensureLayout(io, opened.root);
+    workspace.history.ensureLayout(io, opened.root) catch return error.ProviderFailed;
 
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const proposal_rel = try std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id});
-    try workspace.atomic.replaceFile(io, opened.root, try workspace.WorkspacePath.parse(proposal_rel), proposal_body);
+    const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.ProviderFailed;
+    workspace.atomic.replaceFile(io, opened.root, workspace.WorkspacePath.parse(proposal_rel) catch return error.ProviderFailed, proposal_body) catch return error.ProviderFailed;
 
     const initial_state: ai.run_record.State = switch (mode) {
         .ask => .proposed,
@@ -71,15 +96,15 @@ pub fn generateAndPersist(
         .timestamp_ms = timestamp_ms,
     };
 
-    const json_body = try ai.run_record.formatJson(allocator, record);
+    const json_body = ai.run_record.formatJson(allocator, record) catch return error.ProviderFailed;
     defer allocator.free(json_body);
-    try workspace.runs.persistRun(io, opened.root, run_id, json_body);
+    workspace.runs.persistRun(io, opened.root, run_id, json_body) catch return error.ProviderFailed;
 
-    const index_line = try ai.run_record.formatIndexLine(allocator, record);
+    const index_line = ai.run_record.formatIndexLine(allocator, record) catch return error.ProviderFailed;
     defer allocator.free(index_line);
-    try workspace.runs.appendIndex(allocator, io, opened.root, index_line);
+    workspace.runs.appendIndex(allocator, io, opened.root, index_line) catch return error.ProviderFailed;
 
-    const owned_proposal_rel = try allocator.dupe(u8, proposal_rel);
+    const owned_proposal_rel = allocator.dupe(u8, proposal_rel) catch return error.ProviderFailed;
 
     return .{ .run_id = run_id, .proposal_rel = owned_proposal_rel };
 }

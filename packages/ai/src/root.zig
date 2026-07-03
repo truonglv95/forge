@@ -9,6 +9,7 @@ pub const provider = @import("provider.zig");
 pub const fake_provider = @import("fake_provider.zig");
 pub const gemini_provider = @import("gemini_provider.zig");
 pub const credentials = @import("credentials.zig");
+pub const provider_factory = @import("provider_factory.zig");
 pub const retry = @import("retry.zig");
 pub const secret_scanner = @import("secret_scanner.zig");
 pub const context = @import("context.zig");

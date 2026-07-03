@@ -11,6 +11,8 @@ pub const GlobalFlags = struct {
     once: bool = false,
     max_polls: u32 = 0,
     files: []const []const u8 = &.{},
+    provider: ?[]const u8 = null,
+    model: ?[]const u8 = null,
 };
 
 pub const Command = enum {
@@ -77,6 +79,12 @@ pub const CliArgs = struct {
                     if (i < args.len) {
                         flags.workspace = args[i];
                     }
+                } else if (std.mem.eql(u8, arg, "--provider")) {
+                    i += 1;
+                    if (i < args.len) flags.provider = args[i];
+                } else if (std.mem.eql(u8, arg, "--model")) {
+                    i += 1;
+                    if (i < args.len) flags.model = args[i];
                 } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
                     command = .help;
                     cmd_found = true;
