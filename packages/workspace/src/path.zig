@@ -36,6 +36,23 @@ pub const WorkspaceRoot = struct {
     pub fn init(dir: std.Io.Dir) WorkspaceRoot {
         return .{ .dir = dir };
     }
+
+    pub fn open(io: std.Io, workspace_path: []const u8) std.Io.Dir.OpenError!WorkspaceRoot {
+        const open_opts = std.Io.Dir.OpenOptions{
+            .access_sub_paths = true,
+            .iterate = true,
+        };
+        const dir = if (std.fs.path.isAbsolute(workspace_path))
+            try std.Io.Dir.openDirAbsolute(io, workspace_path, open_opts)
+        else
+            try std.Io.Dir.openDir(std.Io.Dir.cwd(), io, workspace_path, open_opts);
+        return .{ .dir = dir };
+    }
+
+    pub fn close(self: *WorkspaceRoot, io: std.Io) void {
+        self.dir.close(io);
+        self.* = undefined;
+    }
 };
 
 test "WorkspacePath validates safe relative paths" {

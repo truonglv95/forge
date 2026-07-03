@@ -30,6 +30,9 @@ pub const TransactionState = transaction.TransactionState;
 
 pub const recovery = @import("recovery.zig");
 
+pub const tree = @import("tree.zig");
+pub const ScanSummary = tree.ScanSummary;
+
 pub const subsystem = core.Subsystem.workspace;
 
 pub const AiApplyMode = enum { review, disabled };

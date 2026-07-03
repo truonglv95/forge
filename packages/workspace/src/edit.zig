@@ -61,16 +61,48 @@ pub const WorkspaceEdit = struct {
         }
     }
 
-    pub fn inverse(self: WorkspaceEdit, allocator: std.mem.Allocator) !WorkspaceEdit {
+    pub fn materializeContent(
+        self: WorkspaceEdit,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        root: @import("path.zig").WorkspaceRoot,
+        file_edit: FileEdit,
+    ) ![]const u8 {
         _ = self;
-        _ = allocator;
-        // Invert create -> delete
-        // Invert delete -> create
-        // Invert modify -> modify (with inverted TextEdits)
-        // For M1 MVP scaffolding, we just return NotImplemented error
-        return error.NotImplemented;
+        return switch (file_edit.operation) {
+            .create => try applyTextEdits(allocator, "", file_edit.edits),
+            .modify => blk: {
+                const wp = try @import("path.zig").WorkspacePath.parse(file_edit.path);
+                var snap = try @import("snapshot.zig").FileSnapshot.read(allocator, io, root, wp);
+                defer snap.deinit();
+                if (file_edit.expected_hash) |expected| {
+                    if (snap.hash != expected) return error.StaleContent;
+                }
+                break :blk try applyTextEdits(allocator, snap.content, file_edit.edits);
+            },
+            .delete => return error.UnexpectedTextEdits,
+        };
     }
 };
+
+pub fn applyTextEdits(allocator: std.mem.Allocator, content: []const u8, edits: []const TextEdit) ![]u8 {
+    if (edits.len == 0) return try allocator.dupe(u8, content);
+
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    var src_pos: usize = 0;
+    for (edits) |edit| {
+        const start: usize = @intCast(edit.start);
+        const end: usize = @intCast(edit.end);
+        if (start < src_pos or end > content.len or start > end) return error.InvalidRange;
+        try result.appendSlice(allocator, content[src_pos..start]);
+        try result.appendSlice(allocator, edit.replacement);
+        src_pos = end;
+    }
+    try result.appendSlice(allocator, content[src_pos..]);
+    return try result.toOwnedSlice(allocator);
+}
 
 pub fn contentHash(content: []const u8) u64 {
     return std.hash.Wyhash.hash(0, content);
