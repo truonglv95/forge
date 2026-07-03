@@ -16,6 +16,7 @@ const check_cmd = @import("check.zig");
 const context_cmd = @import("context_cmd.zig");
 const ask_cmd = @import("ask.zig");
 const plan_cmd = @import("plan.zig");
+const run_cmd = @import("run_cmd.zig");
 
 const Io = std.Io;
 
@@ -85,6 +86,9 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, write
         .ask => {
             return ask_cmd.run(allocator, io, parsed, writer) catch 2;
         },
+        .run => {
+            return run_cmd.run(allocator, io, parsed, writer) catch 2;
+        },
         .plan => {
             return plan_cmd.run(allocator, io, parsed, writer) catch 2;
         },
@@ -142,6 +146,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  check      Run validation checks
         \\  context    Preview AI context preparation
         \\  ask        Ask AI to propose a change (no auto-apply)
+        \\  run        List or show AI run records (list|show)
         \\  plan       Plan a proposal using AI
         \\  help       Show this help
         \\
