@@ -1,0 +1,16 @@
+{
+  "files": [
+    {
+      "path": "sample.txt",
+      "operation": "modify",
+      "expected_hash": 8375274903107611984,
+      "edits": [
+        {
+          "start": 0,
+          "end": 5,
+          "replacement": "Hello"
+        }
+      ]
+    }
+  ]
+}

@@ -54,28 +54,28 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, write
             return inspect_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .search => {
-            return search_cmd.run(allocator, parsed, writer) catch 2;
+            return search_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .watch => {
             return watch_cmd.run(allocator, parsed, writer) catch 2;
         },
         .diff => {
-            return diff_cmd.run(allocator, parsed, writer) catch 2;
+            return diff_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .apply => {
-            return apply_cmd.run(allocator, parsed, writer) catch 2;
+            return apply_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .undo => {
-            return undo_cmd.run(allocator, parsed, writer) catch 2;
+            return undo_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .history => {
-            return history_cmd.run(allocator, parsed, writer) catch 2;
+            return history_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .task => {
-            return task_cmd.run(allocator, parsed, writer) catch 2;
+            return task_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .check => {
-            return check_cmd.run(allocator, parsed, writer) catch 2;
+            return check_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .context => {
             return context_cmd.run(allocator, parsed, writer) catch 2;
@@ -143,6 +143,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --workspace <path>   Set the workspace root path
         \\  --json               Output machine-readable JSON
         \\  --dry-run            Dry-run flag (used with apply)
+        \\  --yes                Approve apply without interactive prompt
         \\
     );
 }

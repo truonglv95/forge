@@ -130,8 +130,8 @@ demo, instrumentation, and exit evidence exist.
 | Milestone | Outcome | Priority | Status |
 |---|---|---:|---|
 | M0 | Reproducible foundation + renderer decision | P0 | **In progress** |
-| M1 | Safe shared workspace and execution engine | P0 | Not started |
-| M2 | Deterministic headless CLI vertical slice | P0 | Not started |
+| M1 | Safe shared workspace and execution engine | P0 | **In progress** |
+| M2 | Deterministic headless CLI vertical slice | P0 | **In progress** |
 | M3 | AI-assisted CLI proof | P0 | Not started |
 | M4 | Native IDE editing foundation | P1 | Not started |
 | M5 | AI-first IDE vertical slice | P1 | Not started |

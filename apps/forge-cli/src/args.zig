@@ -7,6 +7,7 @@ pub const GlobalFlags = struct {
     quiet: bool = false,
     non_interactive: bool = false,
     dry_run: bool = false,
+    yes: bool = false,
 };
 
 pub const Command = enum {
@@ -54,6 +55,8 @@ pub const CliArgs = struct {
                     flags.non_interactive = true;
                 } else if (std.mem.eql(u8, arg, "--dry-run")) {
                     flags.dry_run = true;
+                } else if (std.mem.eql(u8, arg, "--yes")) {
+                    flags.yes = true;
                 } else if (std.mem.eql(u8, arg, "--workspace")) {
                     i += 1;
                     if (i < args.len) {

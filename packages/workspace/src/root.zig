@@ -33,6 +33,19 @@ pub const recovery = @import("recovery.zig");
 pub const tree = @import("tree.zig");
 pub const ScanSummary = tree.ScanSummary;
 
+pub const search = @import("search.zig");
+pub const SearchResult = search.SearchResult;
+
+pub const proposal = @import("proposal.zig");
+pub const OwnedProposal = proposal.OwnedProposal;
+
+pub const preview = @import("preview.zig");
+
+pub const history = @import("history.zig");
+pub const HistoryEntry = history.Entry;
+pub const HistoryEntryList = history.EntryList;
+pub const LoadedRecord = history.LoadedRecord;
+
 pub const subsystem = core.Subsystem.workspace;
 
 pub const AiApplyMode = enum { review, disabled };
