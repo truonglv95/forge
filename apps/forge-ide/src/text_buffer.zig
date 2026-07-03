@@ -44,7 +44,7 @@ pub const TextBuffer = struct {
     pub fn insertNewline(self: *TextBuffer) !void {
         var current_line = &self.lines.items[self.cursor_row];
         var new_line: std.ArrayList(u8) = .empty;
-        
+
         // Move characters after cursor to the new line
         if (self.cursor_col < current_line.items.len) {
             try new_line.appendSlice(self.allocator, current_line.items[self.cursor_col..]);
@@ -66,11 +66,11 @@ pub const TextBuffer = struct {
             // Merge with previous line
             var current_line = self.lines.orderedRemove(self.cursor_row);
             defer current_line.deinit(self.allocator);
-            
+
             self.cursor_row -= 1;
             var prev_line = &self.lines.items[self.cursor_row];
             self.cursor_col = prev_line.items.len; // Place cursor at the join point
-            
+
             try prev_line.appendSlice(self.allocator, current_line.items);
         }
     }
@@ -117,7 +117,7 @@ pub const TextBuffer = struct {
     // Render the buffer to a single string with an optional cursor marker
     pub fn toString(self: *TextBuffer, show_cursor: bool) ![]u8 {
         var result: std.ArrayList(u8) = .empty;
-        
+
         for (self.lines.items, 0..) |line, row_idx| {
             if (show_cursor and row_idx == self.cursor_row) {
                 try result.appendSlice(self.allocator, line.items[0..self.cursor_col]);
@@ -126,12 +126,12 @@ pub const TextBuffer = struct {
             } else {
                 try result.appendSlice(self.allocator, line.items);
             }
-            
+
             if (row_idx < self.lines.items.len - 1) {
                 try result.append(self.allocator, '\n');
             }
         }
-        
+
         // Null terminate
         try result.append(self.allocator, 0);
         return result.toOwnedSlice(self.allocator);

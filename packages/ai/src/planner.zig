@@ -27,13 +27,13 @@ pub const Planner = struct {
         defer p_alloc.deinit();
         const p_writer = &p_alloc.writer;
         try p_writer.writeAll("You are an expert software engineer. Your task is to output a single JSON object matching the WorkspaceEdit schema based on the following intent.\n\n");
-        
+
         try p_writer.writeAll("--- CONTEXT ---\n");
         for (self.ctx_builder.blocks.items) |block| {
             try p_writer.print("[{s}] {s}\n", .{ @tagName(block.block_type), block.name });
             try p_writer.print("{s}\n\n", .{block.content});
         }
-        
+
         try p_writer.writeAll("--- INSTRUCTIONS ---\n");
         try p_writer.writeAll(
             \\Respond ONLY with valid JSON. Do not use markdown blocks.
@@ -56,24 +56,24 @@ pub const Planner = struct {
 test "Planner execution with FakeProvider" {
     const allocator = std.testing.allocator;
     const fake_provider = @import("fake_provider.zig");
-    
+
     var ctx = context.ContextBuilder.init(allocator, 1024);
     defer ctx.deinit();
     try ctx.addBlock(.intent, "user intent", "Fix the bug");
-    
+
     var mock_llm = fake_provider.FakeProvider.init("{\"id\": \"123\", \"description\": \"mock\"}");
-    
+
     var planner = Planner.init(allocator, mock_llm.providerInterface(), &ctx);
-    
+
     var w_alloc = std.Io.Writer.Allocating.init(allocator);
     defer w_alloc.deinit();
-    
+
     var cancel_src = try kernel.cancellation.CancellationTokenSource.init(allocator);
     defer cancel_src.deinit();
     const token = cancel_src.getToken();
-    
+
     try planner.plan(&w_alloc.writer, &token);
-    
+
     const out_items = w_alloc.writer.buffer[0..w_alloc.writer.end];
     try std.testing.expectEqualStrings("{\"id\": \"123\", \"description\": \"mock\"}", out_items);
 }

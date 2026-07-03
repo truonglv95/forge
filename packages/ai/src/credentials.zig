@@ -26,17 +26,17 @@ pub const Credentials = struct {
 
 test "Credentials secure zeroing" {
     const allocator = std.testing.allocator;
-    
-    // We cannot reliably test `getEnvVarOwned` cross-platform in unit tests easily without modifying env, 
+
+    // We cannot reliably test `getEnvVarOwned` cross-platform in unit tests easily without modifying env,
     // so we just test the zeroing mechanics.
     const dummy_key = try allocator.alloc(u8, 12);
     std.mem.copyForwards(u8, dummy_key, "secret123456");
-    
+
     var creds = Credentials{
         .allocator = allocator,
         .api_key = dummy_key,
     };
-    
+
     creds.deinit();
     // Memory is freed, so we can't safely assert it's zeroed here without use-after-free,
     // but the call to std.crypto.secureZero guarantees it was wiped before freeing.

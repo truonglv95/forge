@@ -19,31 +19,33 @@ pub const View = struct {
     frame: Rect,
     bg_color: ?Color = null,
     children: std.ArrayList(*View),
-    
+
     pub fn init(frame: Rect) View {
         return .{
             .frame = frame,
             .children = .empty,
         };
     }
-    
+
     pub fn deinit(self: *View, allocator: std.mem.Allocator) void {
         self.children.deinit(allocator);
     }
-    
+
     pub fn addChild(self: *View, allocator: std.mem.Allocator, child: *View) !void {
         try self.children.append(allocator, child);
     }
-    
+
     pub fn render(self: *const View) void {
         if (self.bg_color) |color| {
             root.Renderer.drawRect(
-                self.frame.x, self.frame.y,
-                self.frame.w, self.frame.h,
+                self.frame.x,
+                self.frame.y,
+                self.frame.w,
+                self.frame.h,
                 color,
             );
         }
-        
+
         for (self.children.items) |child| {
             child.render();
         }
@@ -55,7 +57,7 @@ pub const LabelView = struct {
     text: []const u8,
     text_color: Color,
     font_size: f32,
-    
+
     pub fn init(frame: Rect, text: []const u8) LabelView {
         return .{
             .view = View.init(frame),
@@ -64,18 +66,12 @@ pub const LabelView = struct {
             .font_size = 14.0,
         };
     }
-    
+
     pub fn render(self: *const LabelView) void {
         // Draw background and children
         self.view.render();
-        
+
         // Draw Text
-        root.Renderer.drawText(
-            self.text, 
-            self.view.frame.x, 
-            self.view.frame.y, 
-            self.font_size, 
-            self.text_color
-        );
+        root.Renderer.drawText(self.text, self.view.frame.x, self.view.frame.y, self.font_size, self.text_color);
     }
 };
