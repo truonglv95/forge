@@ -28,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout_file_writer: Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
 
-    const exit_code = run(arena, init.io, args, stdout) catch |err| {
+    const exit_code = run(arena, init.io, init.environ_map, args, stdout) catch |err| {
         try stdout.print("error: {}\n", .{err});
         return;
     };
@@ -36,7 +36,13 @@ pub fn main(init: std.process.Init) !void {
     if (exit_code != 0) std.process.exit(exit_code);
 }
 
-fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, writer: *Io.Writer) Io.Writer.Error!u8 {
+fn run(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    args: []const []const u8,
+    writer: *Io.Writer,
+) Io.Writer.Error!u8 {
     const parsed = args_mod.CliArgs.parse(allocator, args) catch |err| {
         try writer.print("error parsing arguments: {}\n", .{err});
         return 2;
@@ -84,13 +90,13 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, write
             return context_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .ask => {
-            return ask_cmd.run(allocator, io, parsed, writer) catch 2;
+            return ask_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
         .run => {
             return run_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .plan => {
-            return plan_cmd.run(allocator, io, parsed, writer) catch 2;
+            return plan_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
         .help => {
             try printHelp(writer);
@@ -156,30 +162,57 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --dry-run            Dry-run flag (used with apply)
         \\  --yes                Approve apply without interactive prompt
         \\  --file <path>        Include file in AI context (repeatable)
+        \\  --provider <name>    AI provider: auto|fake|gemini (default: auto)
+        \\  --model <name>       Gemini model id (default: gemini-2.0-flash)
         \\  --once               Single watch poll (for tests)
         \\  --max-polls <n>      Limit watch polling iterations
         \\
     );
 }
 
+fn emptyEnvironMap(allocator: std.mem.Allocator) !*std.process.Environ.Map {
+    const map = try allocator.create(std.process.Environ.Map);
+    map.* = std.process.Environ.Map.init(allocator);
+    return map;
+}
+
 test "CLI exposes subcommands" {
+    const allocator = std.testing.allocator;
+    var environ = try emptyEnvironMap(allocator);
+    defer {
+        environ.deinit();
+        allocator.destroy(environ);
+    }
+
     var buffer: [2048]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
 
-    try std.testing.expectEqual(@as(u8, 0), try run(std.testing.allocator, std.testing.io, &.{ "forge", "version" }, &writer));
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, std.testing.io, environ, &.{ "forge", "version" }, &writer));
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), core.version) != null);
 }
 
 test "CLI returns error for unknown command" {
+    const allocator = std.testing.allocator;
+    var environ = try emptyEnvironMap(allocator);
+    defer {
+        environ.deinit();
+        allocator.destroy(environ);
+    }
+
     var buffer: [2048]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
-    try std.testing.expectEqual(@as(u8, 2), try run(std.testing.allocator, std.testing.io, &.{ "forge", "wat" }, &writer));
+    try std.testing.expectEqual(@as(u8, 2), try run(allocator, std.testing.io, environ, &.{ "forge", "wat" }, &writer));
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "unknown command") != null);
 }
 
 test "CLI workflow apply undo in temp workspace" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var environ = try emptyEnvironMap(allocator);
+    defer {
+        environ.deinit();
+        allocator.destroy(environ);
+    }
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
@@ -199,15 +232,15 @@ test "CLI workflow apply undo in temp workspace" {
     var writer = Io.Writer.fixed(&buffer);
 
     const search_args = [_][]const u8{ "forge", "search", "forge", "--workspace", ws };
-    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &search_args, &writer));
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, environ, &search_args, &writer));
 
     writer.end = 0;
     const apply_args = [_][]const u8{ "forge", "apply", "test.proposal.json", "--workspace", ws, "--yes" };
-    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &apply_args, &writer));
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, environ, &apply_args, &writer));
 
     writer.end = 0;
     const undo_args = [_][]const u8{ "forge", "undo", "1", "--workspace", ws };
-    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &undo_args, &writer));
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, environ, &undo_args, &writer));
 
     root.dir.access(io, "notes.txt", .{}) catch |err| switch (err) {
         error.FileNotFound => {},
@@ -218,6 +251,11 @@ test "CLI workflow apply undo in temp workspace" {
 test "CLI ask records run list entry" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
+    var environ = try emptyEnvironMap(allocator);
+    defer {
+        environ.deinit();
+        allocator.destroy(environ);
+    }
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
@@ -232,12 +270,12 @@ test "CLI ask records run list entry" {
     var writer = Io.Writer.fixed(&buffer);
 
     const ask_args = [_][]const u8{ "forge", "ask", "create note", "--workspace", ws, "--json", "--quiet" };
-    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &ask_args, &writer));
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, environ, &ask_args, &writer));
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\"run_id\"") != null);
 
     writer.end = 0;
     const list_args = [_][]const u8{ "forge", "run", "list", "--workspace", ws, "--json", "--quiet" };
-    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &list_args, &writer));
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, environ, &list_args, &writer));
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\"type\":\"run_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\"state\":\"proposed\"") != null);
 }

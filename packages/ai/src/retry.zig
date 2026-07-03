@@ -11,8 +11,8 @@ pub const RetryPolicy = struct {
 pub fn nextDelay(policy: RetryPolicy, attempt: u32, prng: *std.Random.DefaultPrng) u64 {
     if (attempt == 0) return 0;
 
-    const exp_delay = policy.base_delay_ms * (@as(u64, 1) << @intCast(std.math.min(attempt, 31)));
-    const capped_delay = std.math.min(exp_delay, policy.max_delay_ms);
+    const exp_delay = policy.base_delay_ms * (@as(u64, 1) << @intCast(@min(attempt, 31)));
+    const capped_delay = @min(exp_delay, policy.max_delay_ms);
 
     return prng.random().intRangeAtMost(u64, 0, capped_delay);
 }
