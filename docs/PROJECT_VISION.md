@@ -18,9 +18,11 @@ Every AI-generated change must:
 - be undoable and auditable.
 
 The near-term goal is not to build an entire ecosystem. It is to prove one
-valuable **vertical slice**: open a project, edit code in a native editor, ask AI
-to produce a change, review the diff, run validation, and safely apply or undo
-the result.
+valuable **vertical slice**: open a project, ask AI to produce a bounded change,
+review the diff, run validation, and safely apply or undo the result. Forge first
+proves this workflow through the shared headless engine and CLI, then delivers
+the same semantics through the native editor. This ordering tests the defining
+AI-first hypothesis before committing to broad IDE surface area.
 
 ## 2. Product boundaries
 
@@ -158,15 +160,22 @@ must not be treated as a validated architecture.
 
 ## 6. Delivery roadmap
 
-> Official status, checklists, and exit criteria are tracked in the
-> [Forge Delivery Roadmap](roadmap/ROADMAP.md). The sections below describe the
-> direction of each milestone. If status differs, the roadmap is authoritative.
+> Official status, feature-level checklists, validation thresholds, and exit
+> criteria are tracked in the [Forge Delivery Roadmap](roadmap/ROADMAP.md). The
+> roadmap is authoritative.
+
+The current delivery order is: M0 foundation and renderer decision; M1 safe
+shared engine; M2 deterministic CLI; M3 AI-assisted CLI proof; M4 native editor;
+M5 AI-first IDE workflow; M6 language intelligence and dogfood alpha; and M7
+beta hardening. The detailed milestone descriptions below preserve architectural
+direction, while the canonical roadmap controls current names, order, scope,
+and gates.
 
 The roadmap uses exit criteria instead of speculative deadlines. Work proceeds
 to the next milestone only after the current milestone's required criteria are
 met.
 
-### M0 — Foundation and decisions
+### Capability summary — foundation and decisions
 
 **Outcome:** a monorepo that builds and tests, supported by enough documented
 decisions to begin development without guessing at the architecture.
@@ -187,7 +196,7 @@ decisions to begin development without guessing at the architecture.
 - no starter code or package `hello` placeholders remain;
 - an RFC documents the renderer stack decision with a measured prototype.
 
-### M1 — Kernel and headless workspace
+### Capability summary — kernel and headless workspace
 
 **Outcome:** the CLI opens and observes a real workspace using the same
 primitives the IDE will reuse.
@@ -211,7 +220,7 @@ streams file events as the project changes.
 - Forge can inspect its own repository and deliberately handles permissions and
   symlinks.
 
-### M2 — Native editor vertical slice
+### Capability summary — native editor
 
 **Outcome:** the desktop application can open, edit, and save a real source file.
 
@@ -232,7 +241,7 @@ reopen it without content corruption.
 - saves are atomic and never silently overwrite external edits;
 - startup, idle memory, and frame-time benchmark baselines exist.
 
-### M3 — Language intelligence and task feedback
+### Capability summary — language intelligence and task feedback
 
 **Outcome:** Forge is useful enough to develop a small Zig change.
 
@@ -252,7 +261,7 @@ formatter, and execute `zig build test` inside Forge.
 - rename is previewed as a multi-file `WorkspaceEdit`;
 - tasks can be canceled and output never blocks the UI thread.
 
-### M4 — Safe AI editing MVP
+### Capability summary — safe AI editing
 
 **Outcome:** AI completes a small controlled change from prompt to verified diff.
 
@@ -276,7 +285,7 @@ tests, and undo the entire transaction.
 - the entire multi-file transaction can be undone;
 - provider, build, or test failures are visible and never lose user edits.
 
-### M5 — Daily-use alpha
+### Capability summary — daily-use alpha
 
 **Outcome:** the development team can dogfood Forge daily within a defined scope.
 
@@ -294,7 +303,7 @@ tests, and undo the entire transaction.
 - the team completes at least one end-to-end change using only Forge;
 - known limitations and the support matrix are published.
 
-### M6 — Beta and extensibility decision
+### Capability summary — beta and extensibility decision
 
 **Outcome:** prove Forge can expand without prematurely locking in its
 architecture.
@@ -351,17 +360,18 @@ what to measure:
 
 ## 10. Immediate next actions
 
-1. Build and measure the macOS renderer spike.
-2. Select the MVP renderer stack in an RFC using the spike results.
-3. Implement workspace path normalization and atomic file primitives.
-4. Add stale-write and rollback tests for `WorkspaceEdit` transactions.
-5. Begin the M1 headless workspace only after the renderer decision closes M0.
+1. Build and measure the macOS renderer spike and record the renderer RFC.
+2. Implement secure workspace-relative paths and adversarial tests.
+3. Implement atomic file snapshots and failure-injected write tests.
+4. Implement apply, rollback, recovery, history, and transaction-level undo.
+5. Deliver the deterministic CLI workflow, then validate AI usefulness through
+   the CLI before expanding the native IDE surface.
 
 ## 11. Long-term direction
 
-If the IDE reaches daily-use quality and the AI editing loop proves valuable,
-Forge may expand into a CLI, Agent, SDK, plugin ecosystem, and team services.
-This is a conditional direction, not an MVP commitment.
+If the CLI and IDE reach daily-use quality and the AI editing loop proves
+valuable, Forge may expand into an autonomous Agent, SDK, plugin ecosystem, and
+team services. This is a conditional direction, not an MVP commitment.
 
 The north star remains unchanged: **AI and developers collaborate through
 changes that can be understood, reviewed, verified, and undone.**

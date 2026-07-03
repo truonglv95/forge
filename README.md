@@ -29,13 +29,14 @@ editor buffer or filesystem.
 
 | Milestone | Goal | Status |
 |---|---|---|
-| M0 | Foundation and decisions | In progress |
-| M1 | Kernel and headless workspace | Not started |
-| M2 | Native editor vertical slice | Not started |
-| M3 | Language intelligence and tasks | Not started |
-| M4 | Safe AI editing MVP | Not started |
-| M5 | Daily-use alpha | Not started |
-| M6 | Beta and extensibility decision | Not started |
+| M0 | Foundation and renderer decision | In progress |
+| M1 | Safe shared workspace and execution engine | Not started |
+| M2 | Deterministic headless CLI vertical slice | Not started |
+| M3 | AI-assisted CLI proof | Not started |
+| M4 | Native IDE editing foundation | Not started |
+| M5 | AI-first IDE vertical slice | Not started |
+| M6 | Language intelligence and dogfood alpha | Not started |
+| M7 | Beta hardening and extensibility decision | Not started |
 
 See the [Project Roadmap](docs/roadmap/ROADMAP.md) for detailed checklists and
 exit criteria. See the [Project Vision](docs/PROJECT_VISION.md) for the product

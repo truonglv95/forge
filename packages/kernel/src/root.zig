@@ -8,6 +8,12 @@ pub const event = @import("event.zig");
 pub const Dispatcher = command.Dispatcher;
 pub const EventBus = event.EventBus;
 
+pub const cancellation = @import("cancellation.zig");
+pub const observability = @import("observability.zig");
+pub const process = @import("process.zig");
+pub const task = @import("task.zig");
+pub const registry = @import("registry.zig");
+
 pub const subsystem = core.Subsystem.kernel;
 
 pub const LifecycleState = enum {

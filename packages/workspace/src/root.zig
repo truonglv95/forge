@@ -10,6 +10,26 @@ pub const FileOperation = edit.FileOperation;
 pub const TextEdit = edit.TextEdit;
 pub const WorkspaceEdit = edit.WorkspaceEdit;
 
+pub const path = @import("path.zig");
+pub const WorkspacePath = path.WorkspacePath;
+pub const WorkspaceRoot = path.WorkspaceRoot;
+
+pub const ignore = @import("ignore.zig");
+pub const IgnoreRules = ignore.IgnoreRules;
+pub const Limits = ignore.Limits;
+
+pub const snapshot = @import("snapshot.zig");
+pub const FileSnapshot = snapshot.FileSnapshot;
+
+pub const atomic = @import("atomic.zig");
+
+pub const transaction = @import("transaction.zig");
+pub const TransactionService = transaction.TransactionService;
+pub const TransactionRecord = transaction.TransactionRecord;
+pub const TransactionState = transaction.TransactionState;
+
+pub const recovery = @import("recovery.zig");
+
 pub const subsystem = core.Subsystem.workspace;
 
 pub const AiApplyMode = enum { review, disabled };
