@@ -37,8 +37,8 @@ pub const Planner = struct {
         try p_writer.writeAll("--- INSTRUCTIONS ---\n");
         try p_writer.writeAll(
             \\Respond ONLY with valid JSON. Do not use markdown blocks.
-            \\Schema:
-            \\{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}
+            \\Schema (proposal v1):
+            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["zig build test"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}}
             \\For modify/delete include expected_hash from the current file snapshot.
         );
 

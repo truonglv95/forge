@@ -19,7 +19,30 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
     try edit.validate();
 
     if (parsed.flags.json) {
-        try writer.writeAll("{\"status\":\"ok\",\"type\":\"diff\",\"valid\":true,\"files\":");
+        try writer.writeAll("{\"status\":\"ok\",\"type\":\"diff\",\"valid\":true");
+        if (proposal.metadata.schema_version) |version| {
+            try writer.print(",\"schema_version\":{d}", .{version});
+        }
+        if (proposal.metadata.summary) |summary| {
+            try writer.print(",\"summary\":\"{s}\"", .{summary});
+        }
+        if (proposal.metadata.assumptions.len > 0) {
+            try writer.writeAll(",\"assumptions\":[");
+            for (proposal.metadata.assumptions, 0..) |item, index| {
+                if (index > 0) try writer.writeAll(",");
+                try writer.print("\"{s}\"", .{item});
+            }
+            try writer.writeAll("]");
+        }
+        if (proposal.metadata.validation_tasks.len > 0) {
+            try writer.writeAll(",\"validation_tasks\":[");
+            for (proposal.metadata.validation_tasks, 0..) |item, index| {
+                if (index > 0) try writer.writeAll(",");
+                try writer.print("\"{s}\"", .{item});
+            }
+            try writer.writeAll("]");
+        }
+        try writer.writeAll(",\"files\":");
         try writer.print("{d}}}\n", .{edit.files.len});
     } else {
         try writer.print("Diff preview for {s}\n\n", .{parsed.positional[0]});
