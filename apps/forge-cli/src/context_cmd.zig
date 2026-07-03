@@ -1,22 +1,30 @@
 const std = @import("std");
-const args_mod = @import("args.zig");
 const ai = @import("forge-ai");
+const args_mod = @import("args.zig");
+const workspace_cmd = @import("workspace_cmd.zig");
 
-pub fn run(allocator: std.mem.Allocator, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
-    _ = allocator;
+pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
+    var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
+    defer opened.close(io);
 
-    if (parsed.positional.len == 0) {
-        try writer.writeAll("error: context command requires an intent or files\n");
-        return 2;
+    const intent = if (parsed.positional.len > 0) parsed.positional[0] else null;
+
+    var ctx_builder = try ai.context_loader.build(allocator, io, opened.root, .{
+        .intent = intent,
+        .explicit_files = parsed.flags.files,
+    });
+    defer ctx_builder.deinit();
+
+    if (parsed.flags.json) {
+        try ai.context_loader.renderManifestJson(&ctx_builder, writer);
+    } else {
+        if (intent) |text| {
+            try writer.print("Context manifest for intent: '{s}'\n\n", .{text});
+        } else {
+            try writer.writeAll("Context manifest\n\n");
+        }
+        try ai.context_loader.renderManifestHuman(&ctx_builder, writer);
     }
 
-    // Stub implementation to show CLI integration for Context Engine MVP
-    try writer.print("Preparing context for intent: '{s}'\n", .{parsed.positional[0]});
-    try writer.writeAll("\n--- CONTEXT MANIFEST ---\n");
-    try writer.writeAll("[INCLUDED] Intent (32 bytes)\n");
-    try writer.writeAll("[REJECTED] .env (Secret file extension or name detected)\n");
-    try writer.writeAll("[TRUNCATED] large_log.txt (Context byte budget exceeded)\n");
-
-    try writer.writeAll("\nTotal Budget Used: 32 / 1048576 bytes\n");
     return 0;
 }

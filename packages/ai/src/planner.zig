@@ -38,13 +38,8 @@ pub const Planner = struct {
         try p_writer.writeAll(
             \\Respond ONLY with valid JSON. Do not use markdown blocks.
             \\Schema:
-            \\{
-            \\  "id": "uuid",
-            \\  "description": "Short summary",
-            \\  "modifications": [
-            \\    { "path": "file.txt", "content": "new contents" }
-            \\  ]
-            \\}
+            \\{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}
+            \\For modify/delete include expected_hash from the current file snapshot.
         );
 
         // Call the provider

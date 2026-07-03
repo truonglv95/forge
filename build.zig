@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "forge-core", .module = core },
             .{ .name = "forge-kernel", .module = kernel },
+            .{ .name = "forge-workspace", .module = workspace },
         },
     });
     const plugin = b.addModule("forge-plugin", .{

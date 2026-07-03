@@ -322,3 +322,39 @@ test "multi-file apply rolls back when a later file fails" {
     defer restored.deinit();
     try std.testing.expectEqualStrings("alpha", restored.content);
 }
+
+test "apply create and undo removes created file" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const files = [_]edit.FileEdit{.{
+        .path = "new.txt",
+        .operation = .create,
+        .expected_hash = null,
+        .edits = &.{.{ .start = 0, .end = 0, .replacement = "created" }},
+    }};
+
+    var service = TransactionService.init(allocator, io, root);
+    var record = TransactionRecord{
+        .id = 4,
+        .state = .approved,
+        .workspace_edit = .{ .files = &files },
+        .timestamp_ms = 0,
+    };
+    defer service.freeRecord(&record);
+
+    try service.apply(&record);
+
+    root.dir.access(io, "new.txt", .{}) catch return error.TestUnexpectedFailure;
+
+    try service.undo(&record);
+
+    root.dir.access(io, "new.txt", .{}) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+}

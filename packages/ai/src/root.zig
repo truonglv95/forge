@@ -12,7 +12,9 @@ pub const credentials = @import("credentials.zig");
 pub const retry = @import("retry.zig");
 pub const secret_scanner = @import("secret_scanner.zig");
 pub const context = @import("context.zig");
+pub const context_loader = @import("context_loader.zig");
 pub const planner = @import("planner.zig");
+pub const run_record = @import("run_record.zig");
 
 pub const ProposalStatus = enum {
     draft,
