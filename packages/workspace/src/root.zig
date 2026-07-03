@@ -36,6 +36,10 @@ pub const ScanSummary = tree.ScanSummary;
 pub const search = @import("search.zig");
 pub const SearchResult = search.SearchResult;
 
+pub const watch = @import("watch.zig");
+pub const WatchEvent = watch.Event;
+pub const WatchEventKind = watch.EventKind;
+
 pub const proposal = @import("proposal.zig");
 pub const OwnedProposal = proposal.OwnedProposal;
 
@@ -45,6 +49,8 @@ pub const history = @import("history.zig");
 pub const HistoryEntry = history.Entry;
 pub const HistoryEntryList = history.EntryList;
 pub const LoadedRecord = history.LoadedRecord;
+
+pub const runs = @import("runs.zig");
 
 pub const subsystem = core.Subsystem.workspace;
 

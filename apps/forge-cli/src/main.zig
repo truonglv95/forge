@@ -14,6 +14,7 @@ const history_cmd = @import("history.zig");
 const task_cmd = @import("task.zig");
 const check_cmd = @import("check.zig");
 const context_cmd = @import("context_cmd.zig");
+const ask_cmd = @import("ask.zig");
 const plan_cmd = @import("plan.zig");
 
 const Io = std.Io;
@@ -40,6 +41,7 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, write
         return 2;
     };
     defer allocator.free(parsed.positional);
+    defer allocator.free(parsed.flags.files);
 
     switch (parsed.command) {
         .version => {
@@ -57,7 +59,7 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, write
             return search_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .watch => {
-            return watch_cmd.run(allocator, parsed, writer) catch 2;
+            return watch_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .diff => {
             return diff_cmd.run(allocator, io, parsed, writer) catch 2;
@@ -78,7 +80,10 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, write
             return check_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .context => {
-            return context_cmd.run(allocator, parsed, writer) catch 2;
+            return context_cmd.run(allocator, io, parsed, writer) catch 2;
+        },
+        .ask => {
+            return ask_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .plan => {
             return plan_cmd.run(allocator, io, parsed, writer) catch 2;
@@ -136,6 +141,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  task       Run a workspace task
         \\  check      Run validation checks
         \\  context    Preview AI context preparation
+        \\  ask        Ask AI to propose a change (no auto-apply)
         \\  plan       Plan a proposal using AI
         \\  help       Show this help
         \\
@@ -144,6 +150,9 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --json               Output machine-readable JSON
         \\  --dry-run            Dry-run flag (used with apply)
         \\  --yes                Approve apply without interactive prompt
+        \\  --file <path>        Include file in AI context (repeatable)
+        \\  --once               Single watch poll (for tests)
+        \\  --max-polls <n>      Limit watch polling iterations
         \\
     );
 }
@@ -161,4 +170,42 @@ test "CLI returns error for unknown command" {
     var writer = Io.Writer.fixed(&buffer);
     try std.testing.expectEqual(@as(u8, 2), try run(std.testing.allocator, std.testing.io, &.{ "forge", "wat" }, &writer));
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "unknown command") != null);
+}
+
+test "CLI workflow apply undo in temp workspace" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge\n");
+
+    var ws_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const ws = try std.fmt.bufPrint(&ws_buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+
+    const proposal_json =
+        \\{"files":[{"path":"notes.txt","operation":"create","edits":[{"start":0,"end":0,"replacement":"from test\n"}]}]}
+    ;
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("test.proposal.json"), proposal_json);
+
+    var buffer: [8192]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+
+    const search_args = [_][]const u8{ "forge", "search", "forge", "--workspace", ws };
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &search_args, &writer));
+
+    writer.end = 0;
+    const apply_args = [_][]const u8{ "forge", "apply", "test.proposal.json", "--workspace", ws, "--yes" };
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &apply_args, &writer));
+
+    writer.end = 0;
+    const undo_args = [_][]const u8{ "forge", "undo", "1", "--workspace", ws };
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &undo_args, &writer));
+
+    root.dir.access(io, "notes.txt", .{}) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
 }
