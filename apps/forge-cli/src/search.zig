@@ -8,7 +8,7 @@ pub fn run(allocator: std.mem.Allocator, parsed: args_mod.CliArgs, writer: *std.
         try writer.writeAll("error: search requires a query\n");
         return 2;
     }
-    
+
     const query = parsed.positional[0];
 
     if (parsed.flags.json) {
@@ -17,6 +17,6 @@ pub fn run(allocator: std.mem.Allocator, parsed: args_mod.CliArgs, writer: *std.
         try writer.print("Searching for: '{s}'\n", .{query});
         try writer.writeAll("No matches found.\n");
     }
-    
+
     return 0;
 }

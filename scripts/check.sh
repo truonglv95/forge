@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly required_zig_version="0.16.0"
-readonly fmt_paths=(build.zig apps packages)
+readonly fmt_paths=(build.zig apps packages tools)
 
 usage() {
   cat <<'EOF'
