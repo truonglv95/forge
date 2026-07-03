@@ -34,9 +34,9 @@ pub const FakeProvider = struct {
         _ = allocator;
         _ = prompt;
         const self: *FakeProvider = @ptrCast(@alignCast(ptr));
-        
+
         if (cancel_token.isCancelled()) return provider.ProviderError.NetworkError;
-        
+
         writer.writeAll(self.response) catch return provider.ProviderError.NetworkError;
     }
 
@@ -54,23 +54,23 @@ pub const FakeProvider = struct {
 test "FakeProvider implements Provider interface correctly" {
     var fake = FakeProvider.init("Hello, world!");
     const p = fake.providerInterface();
-    
+
     var buffer: [1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     const allocator = fba.allocator();
-    
+
     var w_alloc = std.Io.Writer.Allocating.init(allocator);
     defer w_alloc.deinit();
-    
+
     var cancel_src = try kernel.cancellation.CancellationTokenSource.init(allocator);
     defer cancel_src.deinit();
     const token = cancel_src.getToken();
-    
+
     try p.ask(allocator, "Say hi", &w_alloc.writer, &token);
-    
+
     const out_items = w_alloc.writer.buffer[0..w_alloc.writer.end];
     try std.testing.expectEqualStrings("Hello, world!", out_items);
-    
+
     const meta = p.metadata();
     try std.testing.expectEqualStrings("fake", meta.provider_name);
 }

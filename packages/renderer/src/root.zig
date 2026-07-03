@@ -91,7 +91,7 @@ pub const Renderer = struct {
     pub fn setMouseCallback(callback: *const fn (event: MouseEvent) void) void {
         app_mouse_callback = callback;
     }
-    
+
     pub fn getWindowSize(width: *f32, height: *f32) void {
         mac.forge_mac_get_window_size(width, height);
     }
@@ -103,7 +103,7 @@ pub const Renderer = struct {
     pub fn setClipRect(x: f32, y: f32, w: f32, h: f32) void {
         mac.forge_mac_set_clip_rect(x, y, w, h);
     }
-    
+
     pub fn clearClipRect() void {
         mac.forge_mac_clear_clip_rect();
     }
@@ -115,7 +115,7 @@ pub const Renderer = struct {
     pub fn drawRoundedRect(x: f32, y: f32, w: f32, h: f32, radius: f32, color: Color) void {
         mac.forge_mac_draw_rounded_rect(x, y, w, h, color.r, color.g, color.b, color.a, radius);
     }
-    
+
     pub fn drawText(text: []const u8, x: f32, y: f32, font_size: f32, color: Color) void {
         mac.forge_mac_draw_text(@ptrCast(text.ptr), x, y, font_size, color.r, color.g, color.b, color.a);
     }

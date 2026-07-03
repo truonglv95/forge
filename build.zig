@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
     renderer.addIncludePath(b.path("packages/renderer/src/platform/mac"));
     renderer.addCSourceFile(.{
         .file = b.path("packages/renderer/src/platform/mac/mac_window.m"),
-        .flags = &.{ "-fobjc-arc" },
+        .flags = &.{"-fobjc-arc"},
     });
     renderer.linkFramework("AppKit", .{});
     renderer.linkFramework("Metal", .{});
@@ -123,16 +123,16 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    
+
     // Add include paths for C headers
     spike.root_module.addIncludePath(b.path("tools/renderer-spike/src"));
-    
+
     // Compile Objective-C Window Implementation
     spike.root_module.addCSourceFile(.{
         .file = b.path("tools/renderer-spike/src/mac_window.m"),
-        .flags = &.{ "-fobjc-arc" },
+        .flags = &.{"-fobjc-arc"},
     });
-    
+
     // Link macOS frameworks
     spike.root_module.linkFramework("AppKit", .{});
     spike.root_module.linkFramework("Metal", .{});
@@ -142,7 +142,7 @@ pub fn build(b: *std.Build) void {
     spike.root_module.linkFramework("CoreFoundation", .{});
     spike.root_module.linkSystemLibrary("objc", .{});
     spike.root_module.linkSystemLibrary("c", .{});
-    
+
     b.installArtifact(spike);
 
     const run_spike_cmd = b.addRunArtifact(spike);

@@ -35,16 +35,16 @@ pub const GeminiProvider = struct {
 
     fn askImpl(ptr: *anyopaque, allocator: std.mem.Allocator, prompt: []const u8, writer: *std.Io.Writer, cancel_token: *const kernel.cancellation.CancellationToken) provider.ProviderError!void {
         const self: *GeminiProvider = @ptrCast(@alignCast(ptr));
-        
+
         if (cancel_token.isCancelled()) return provider.ProviderError.NetworkError;
-        
+
         var client = std.http.Client{ .allocator = allocator };
         defer client.deinit();
-        
+
         // Prepare payload: {"contents": [{"parts": [{"text": "prompt"}]}]}
         var payload_alloc = std.Io.Writer.Allocating.init(allocator);
         defer payload_alloc.deinit();
-        
+
         std.json.stringify(.{
             .contents = &[_]struct {
                 parts: []const struct { text: []const u8 },
@@ -60,15 +60,15 @@ pub const GeminiProvider = struct {
 
         const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent";
         const uri = std.Uri.parse(endpoint) catch return provider.ProviderError.ProviderInternalError;
-        
+
         // Set up headers
         var headers = std.http.Headers.init(allocator);
         defer headers.deinit();
         headers.append("Content-Type", "application/json") catch return provider.ProviderError.ProviderInternalError;
         headers.append("x-goog-api-key", self.creds.api_key) catch return provider.ProviderError.AuthenticationFailed;
 
-        // In a real application, we would use fetch() or send/wait. For MVP proof of concept, we stub the actual 
-        // network execution if the prompt is just "test_mode" to avoid network flakiness in CI, but the full 
+        // In a real application, we would use fetch() or send/wait. For MVP proof of concept, we stub the actual
+        // network execution if the prompt is just "test_mode" to avoid network flakiness in CI, but the full
         // HTTP payload structure is prepared.
         if (std.mem.eql(u8, prompt, "test_mode")) {
             self.latest_usage = .{ .prompt_tokens = 5, .completion_tokens = 10, .total_tokens = 15 };
@@ -81,12 +81,12 @@ pub const GeminiProvider = struct {
             .extra_headers = headers,
         }) catch return provider.ProviderError.NetworkError;
         defer req.deinit();
-        
+
         req.send() catch return provider.ProviderError.NetworkError;
         req.writer().writeAll(payload_items) catch return provider.ProviderError.NetworkError;
         req.finish() catch return provider.ProviderError.NetworkError;
         req.wait() catch return provider.ProviderError.NetworkError;
-        
+
         if (req.response.status != .ok) {
             return provider.ProviderError.ProviderInternalError;
         }
@@ -94,15 +94,15 @@ pub const GeminiProvider = struct {
         // Read response body
         const body_str = req.reader().readAllAlloc(allocator, 1024 * 1024 * 10) catch return provider.ProviderError.NetworkError;
         defer allocator.free(body_str);
-        
+
         // Simplified parse (ignoring proper AST walk for brevity in MVP)
         // Extract text and usageMetadata roughly
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, body_str, .{}) catch return provider.ProviderError.MalformedResponse;
         defer parsed.deinit();
-        
+
         if (parsed.value != .object) return provider.ProviderError.MalformedResponse;
         const obj = parsed.value.object;
-        
+
         if (obj.get("usageMetadata")) |usage| {
             if (usage == .object) {
                 if (usage.object.get("promptTokenCount")) |ptc| {
@@ -116,7 +116,7 @@ pub const GeminiProvider = struct {
                 }
             }
         }
-        
+
         if (obj.get("candidates")) |candidates| {
             if (candidates == .array and candidates.array.items.len > 0) {
                 const first_cand = candidates.array.items[0];
@@ -141,7 +141,7 @@ pub const GeminiProvider = struct {
                 }
             }
         }
-        
+
         return provider.ProviderError.MalformedResponse;
     }
 
@@ -158,32 +158,32 @@ pub const GeminiProvider = struct {
 
 test "GeminiProvider payload building and test mode" {
     const allocator = std.testing.allocator;
-    
+
     const dummy_key = try allocator.alloc(u8, 4);
     std.mem.copyForwards(u8, dummy_key, "test");
-    
+
     var creds = credentials.Credentials{ .allocator = allocator, .api_key = dummy_key };
     defer creds.deinit();
-    
+
     var gemini = GeminiProvider.init(allocator, &creds);
     const p = gemini.providerInterface();
-    
+
     var buffer: [1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     const fba_alloc = fba.allocator();
-    
+
     var w_alloc = std.Io.Writer.Allocating.init(fba_alloc);
     defer w_alloc.deinit();
-    
+
     var cancel_src = try kernel.cancellation.CancellationTokenSource.init(fba_alloc);
     defer cancel_src.deinit();
     const token = cancel_src.getToken();
-    
+
     try p.ask(fba_alloc, "test_mode", &w_alloc.writer, &token);
-    
+
     const out_items = w_alloc.writer.buffer[0..w_alloc.writer.end];
     try std.testing.expectEqualStrings("Gemini test response", out_items);
-    
+
     const meta = p.metadata();
     try std.testing.expectEqualStrings("gemini", meta.provider_name);
 }
