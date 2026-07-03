@@ -214,3 +214,30 @@ test "CLI workflow apply undo in temp workspace" {
         else => return err,
     };
 }
+
+test "CLI ask records run list entry" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello\n");
+
+    var ws_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const ws = try std.fmt.bufPrint(&ws_buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+
+    var buffer: [8192]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+
+    const ask_args = [_][]const u8{ "forge", "ask", "create note", "--workspace", ws, "--json", "--quiet" };
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &ask_args, &writer));
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\"run_id\"") != null);
+
+    writer.end = 0;
+    const list_args = [_][]const u8{ "forge", "run", "list", "--workspace", ws, "--json", "--quiet" };
+    try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, &list_args, &writer));
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\"type\":\"run_list\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\"state\":\"proposed\"") != null);
+}

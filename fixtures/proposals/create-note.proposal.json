@@ -1,15 +1,21 @@
 {
-  "files": [
-    {
-      "path": "notes.txt",
-      "operation": "create",
-      "edits": [
-        {
-          "start": 0,
-          "end": 0,
-          "replacement": "created by forge\n"
-        }
-      ]
-    }
-  ]
+  "schema_version": 1,
+  "summary": "Create notes.txt with greeting",
+  "assumptions": ["No existing notes.txt"],
+  "validation_tasks": ["zig build test"],
+  "workspace_edit": {
+    "files": [
+      {
+        "path": "notes.txt",
+        "operation": "create",
+        "edits": [
+          {
+            "start": 0,
+            "end": 0,
+            "replacement": "created by forge\n"
+          }
+        ]
+      }
+    ]
+  }
 }
