@@ -1,7 +1,7 @@
 const std = @import("std");
 const args_mod = @import("args.zig");
-const ai = @import("forge-ai");
-const kernel = @import("forge-kernel");
+const workspace_cmd = @import("workspace_cmd.zig");
+const ai_workflow = @import("ai_workflow.zig");
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
     if (parsed.positional.len == 0) {
@@ -10,50 +10,36 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
     }
     const intent = parsed.positional[0];
 
-    try writer.print("Planning intent: '{s}'\n", .{intent});
-    try writer.writeAll("Building context...\n");
+    var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
+    defer opened.close(io);
 
-    var ctx_builder = ai.context.ContextBuilder.init(allocator, 1024 * 1024);
-    defer ctx_builder.deinit();
-    try ctx_builder.addBlock(.intent, "user_intent", intent);
+    if (!parsed.flags.quiet and !parsed.flags.json) {
+        try writer.print("Planning intent: '{s}'\n", .{intent});
+        try writer.writeAll("Building context...\nInvoking model...\n");
+    }
 
-    try writer.writeAll("Invoking AI Provider...\n");
-
-    // Fallback to fake provider if no key
-    var fake_prov = ai.fake_provider.FakeProvider.init(
-        \\{
-        \\  "id": "1234-5678",
-        \\  "description": "Generated proposal mock",
-        \\  "modifications": []
-        \\}
+    const generated = try ai_workflow.generateAndPersist(
+        allocator,
+        io,
+        opened,
+        .plan,
+        intent,
+        parsed.flags.files,
+        ai_workflow.default_plan_response,
     );
-    const p = fake_prov.providerInterface();
+    defer allocator.free(generated.run_id);
+    defer allocator.free(generated.proposal_rel);
 
-    var planner = ai.planner.Planner.init(allocator, p, &ctx_builder);
-
-    var w_alloc = std.Io.Writer.Allocating.init(allocator);
-    defer w_alloc.deinit();
-
-    var cancel_src = try kernel.cancellation.CancellationTokenSource.init(allocator);
-    defer cancel_src.deinit();
-    const token = cancel_src.getToken();
-
-    planner.plan(&w_alloc.writer, &token) catch |err| {
-        try writer.print("Error during planning: {}\n", .{err});
-        return 1;
-    };
-
-    // Save proposal to a local file
-    const out_path = ".forge-proposal.json";
-
-    var file = try std.Io.Dir.createFile(.cwd(), io, out_path, .{});
-    defer file.close(io);
-
-    const proposal_items = w_alloc.writer.buffer[0..w_alloc.writer.end];
-    try file.writeStreamingAll(io, proposal_items);
-
-    try writer.print("Proposal saved to {s}\n", .{out_path});
-    try writer.writeAll("Run `forge diff .forge/proposals/latest.json` to review.\n");
+    if (parsed.flags.json) {
+        try writer.print(
+            "{{\"status\":\"ok\",\"type\":\"plan\",\"run_id\":\"{s}\",\"proposal_path\":\"{s}\",\"state\":\"planning\"}}\n",
+            .{ generated.run_id, generated.proposal_rel },
+        );
+    } else {
+        try writer.print("Proposal saved to {s}\n", .{generated.proposal_rel});
+        try writer.print("Run record: .forge/runs/{s}.json\n", .{generated.run_id});
+        try writer.writeAll("Review with: forge diff <proposal> --workspace <path>\n");
+    }
 
     return 0;
 }
