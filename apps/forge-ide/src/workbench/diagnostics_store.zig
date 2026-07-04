@@ -61,46 +61,30 @@ pub const Store = struct {
     }
 
     fn requestAsync(self: *Store, doc: *@import("forge-editor").Document) void {
+        self.pending.store(true, .release);
+        defer self.pending.store(false, .release);
+        self.fetchForDocument(doc);
+    }
+
+    fn fetchForDocument(self: *Store, doc: *@import("forge-editor").Document) void {
         const owned = self.registry.copyMatchForPath(self.allocator, doc.path) catch return;
         const config = owned orelse return;
         defer lsp.Registry.freeConfig(self.allocator, config);
 
-        self.pending.store(true, .release);
+        const content = doc.buffer.content() catch return;
+        defer self.allocator.free(content);
 
-        const content = doc.buffer.content() catch {
-            self.pending.store(false, .release);
-            return;
-        };
+        const uri = lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path) catch return;
+        defer self.allocator.free(uri);
 
-        const ctx = self.allocator.create(FetchContext) catch {
-            self.allocator.free(content);
-            self.pending.store(false, .release);
-            return;
-        };
-        ctx.* = .{
-            .store = self,
-            .path = self.allocator.dupe(u8, doc.path) catch {
-                self.allocator.free(content);
-                self.allocator.destroy(ctx);
-                self.pending.store(false, .release);
-                return;
-            },
-            .language_id = self.allocator.dupe(u8, config.language_id) catch {
-                self.allocator.free(content);
-                self.allocator.free(ctx.path);
-                self.allocator.destroy(ctx);
-                self.pending.store(false, .release);
-                return;
-            },
-            .content = content,
-        };
+        const diag_req = lsp.diagnostics.buildDiagnosticRequest(self.allocator, 42, uri) catch return;
+        defer self.allocator.free(diag_req);
 
-        const thread = std.Thread.spawn(.{}, fetchThread, .{ctx}) catch {
-            ctx.deinit(self.allocator);
-            self.pending.store(false, .release);
-            return;
-        };
-        thread.detach();
+        var response_buf: [65536]u8 = undefined;
+        const len = self.proxy.request(config.language_id, diag_req, &response_buf, response_buf.len) catch return;
+
+        const list = lsp.diagnostics.parseDiagnosticResponse(self.allocator, response_buf[0..len]) catch lsp.diagnostics.List{ .items = &.{} };
+        self.applyResult(doc.path, list);
     }
 
     fn applyResult(self: *Store, path: []const u8, list: lsp.diagnostics.List) void {
@@ -113,53 +97,6 @@ pub const Store = struct {
         self.list = list;
     }
 };
-
-const FetchContext = struct {
-    store: *Store,
-    path: []const u8,
-    language_id: []const u8,
-    content: []const u8,
-
-    fn deinit(self: *FetchContext, allocator: std.mem.Allocator) void {
-        allocator.free(self.path);
-        allocator.free(self.language_id);
-        allocator.free(self.content);
-        allocator.destroy(self);
-    }
-};
-
-fn fetchThread(ctx: *FetchContext) void {
-    defer ctx.store.pending.store(false, .release);
-    const store = ctx.store;
-
-    const uri = lsp.diagnostics.fileUri(store.allocator, store.workspace_path, ctx.path) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer store.allocator.free(uri);
-
-    const wp = workspace.WorkspacePath.parse(ctx.path) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    _ = wp;
-
-    const diag_req = lsp.diagnostics.buildDiagnosticRequest(store.allocator, 42, uri) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer store.allocator.free(diag_req);
-
-    var response_buf: [65536]u8 = undefined;
-    const len = store.proxy.request(ctx.language_id, diag_req, &response_buf, 65536) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-
-    const list = lsp.diagnostics.parseDiagnosticResponse(store.allocator, response_buf[0..len]) catch lsp.diagnostics.List{ .items = &.{} };
-    store.applyResult(ctx.path, list);
-    ctx.deinit(store.allocator);
-}
 
 pub fn countForLine(list: lsp.diagnostics.List, line_index: usize) usize {
     var count: usize = 0;

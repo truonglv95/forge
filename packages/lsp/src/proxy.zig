@@ -74,6 +74,7 @@ const Job = struct {
     extension_id: []const u8 = "",
     done_mutex: PthreadMutex = .{},
     done_cond: PthreadCond = .{},
+    sync_ready: bool = false,
     done_flag: bool = false,
     wait: bool = true,
     result: union(enum) {
@@ -83,13 +84,17 @@ const Job = struct {
     } = .none,
 
     fn initSync(self: *Job) void {
+        if (self.sync_ready) return;
         self.done_mutex.init();
         self.done_cond.init();
+        self.sync_ready = true;
     }
 
     fn deinitSync(self: *Job) void {
+        if (!self.sync_ready) return;
         self.done_cond.deinit();
         self.done_mutex.deinit();
+        self.sync_ready = false;
     }
 
     fn waitDone(self: *Job) void {
@@ -222,7 +227,6 @@ pub const Proxy = struct {
 
     pub fn syncRegistry(self: *Proxy, source: *registry.Registry) !void {
         const job = try self.allocator.create(Job);
-        errdefer job.deinit(self.allocator);
 
         job.* = .{
             .kind = .sync_registry,
@@ -243,18 +247,11 @@ pub const Proxy = struct {
         if (request_json.len > max_request_bytes) return error.RequestTooLarge;
 
         const job = self.allocator.create(Job) catch return error.OutOfMemory;
-        errdefer job.deinit(self.allocator);
 
         job.* = .{
             .kind = .request,
-            .language_id = self.allocator.dupe(u8, language_id) catch {
-                job.deinit(self.allocator);
-                return error.OutOfMemory;
-            },
-            .request_json = self.allocator.dupe(u8, request_json) catch {
-                job.deinit(self.allocator);
-                return error.OutOfMemory;
-            },
+            .language_id = try self.allocator.dupe(u8, language_id),
+            .request_json = try self.allocator.dupe(u8, request_json),
             .response_out = response_out,
             .max_request_bytes = max_request_bytes,
             .wait = true,
@@ -298,7 +295,10 @@ pub const Proxy = struct {
     }
 
     fn runJob(self: *Proxy, job: *Job) ProxyError!usize {
-        try self.enqueue(job);
+        self.enqueue(job) catch |err| {
+            job.deinit(self.allocator);
+            return err;
+        };
         if (!job.wait) return 0;
 
         job.waitDone();
@@ -306,7 +306,7 @@ pub const Proxy = struct {
 
         return switch (job.result) {
             .ok => |len| len,
-            .err => |err| err,
+            .err => |proxy_err| proxy_err,
             .none => error.SessionFailed,
         };
     }
@@ -463,4 +463,17 @@ test "async proxy starts and stops cleanly" {
     var proxy = try Proxy.init(allocator, io, ".");
     defer proxy.deinit();
     try proxy.start();
+}
+
+test "request cleans up job on language-not-configured" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var proxy = try Proxy.init(allocator, io, ".");
+    defer proxy.deinit();
+    try proxy.start();
+
+    var response: [128]u8 = undefined;
+    const result = proxy.request("zig", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}", &response, response.len);
+    try std.testing.expectError(error.LanguageNotConfigured, result);
 }

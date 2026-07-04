@@ -77,87 +77,38 @@ pub const Store = struct {
         defer lsp.Registry.freeConfig(self.allocator, config);
 
         self.pending.store(true, .release);
+        defer self.pending.store(false, .release);
 
-        const ctx = self.allocator.create(FetchContext) catch {
-            self.pending.store(false, .release);
-            return;
-        };
-        ctx.* = .{
-            .store = self,
-            .path = self.allocator.dupe(u8, doc_path) catch {
-                self.allocator.destroy(ctx);
-                self.pending.store(false, .release);
-                return;
-            },
-            .language_id = self.allocator.dupe(u8, config.language_id) catch {
-                self.allocator.free(ctx.path);
-                self.allocator.destroy(ctx);
-                self.pending.store(false, .release);
-                return;
-            },
-            .line = line,
-            .character = col,
-            .anchor_x = anchor_x,
-            .anchor_y = anchor_y,
-        };
+        self.fetchHover(doc_path, config.language_id, line, col, anchor_x, anchor_y);
+    }
 
-        const thread = std.Thread.spawn(.{}, fetchThread, .{ctx}) catch {
-            ctx.deinit(self.allocator);
-            self.pending.store(false, .release);
-            return;
-        };
-        thread.detach();
+    fn fetchHover(
+        self: *Store,
+        doc_path: []const u8,
+        language_id: []const u8,
+        line: u32,
+        col: u32,
+        anchor_x: f32,
+        anchor_y: f32,
+    ) void {
+        const uri = lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc_path) catch return;
+        defer self.allocator.free(uri);
+
+        const hover_req = lsp.hover.buildHoverRequest(self.allocator, 91, uri, line, col) catch return;
+        defer self.allocator.free(hover_req);
+
+        var response_buf: [65536]u8 = undefined;
+        const len = self.proxy.request(language_id, hover_req, &response_buf, response_buf.len) catch return;
+
+        const parsed = lsp.hover.parseHoverResponse(self.allocator, response_buf[0..len]) catch null;
+
+        self.clearText();
+        self.text = parsed;
+        self.anchor_x = anchor_x;
+        self.anchor_y = anchor_y;
+        self.last_line = line;
+        self.last_col = col;
+        if (self.last_path) |old| self.allocator.free(old);
+        self.last_path = self.allocator.dupe(u8, doc_path) catch null;
     }
 };
-
-const FetchContext = struct {
-    store: *Store,
-    path: []const u8,
-    language_id: []const u8,
-    line: u32,
-    character: u32,
-    anchor_x: f32,
-    anchor_y: f32,
-
-    fn deinit(self: *FetchContext, allocator: std.mem.Allocator) void {
-        allocator.free(self.path);
-        allocator.free(self.language_id);
-        allocator.destroy(self);
-    }
-};
-
-fn fetchThread(ctx: *FetchContext) void {
-    defer ctx.store.pending.store(false, .release);
-    const store = ctx.store;
-
-    const uri = lsp.diagnostics.fileUri(store.allocator, store.workspace_path, ctx.path) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer store.allocator.free(uri);
-
-    const hover_req = lsp.hover.buildHoverRequest(store.allocator, 91, uri, ctx.line, ctx.character) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer store.allocator.free(hover_req);
-
-    var response_buf: [65536]u8 = undefined;
-    const len = store.proxy.request(ctx.language_id, hover_req, &response_buf, response_buf.len) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-
-    const parsed = lsp.hover.parseHoverResponse(store.allocator, response_buf[0..len]) catch null;
-
-    store.clearText();
-    store.text = parsed;
-    store.anchor_x = ctx.anchor_x;
-    store.anchor_y = ctx.anchor_y;
-    store.last_line = ctx.line;
-    store.last_col = ctx.character;
-    if (store.last_path) |old| store.allocator.free(old);
-    store.last_path = store.allocator.dupe(u8, ctx.path) catch null;
-
-    ctx.deinit(store.allocator);
-}

@@ -58,42 +58,18 @@ pub const Store = struct {
         self.request_generation += 1;
         const generation = self.request_generation;
         self.pending.store(true, .release);
+        defer self.pending.store(false, .release);
 
-        const ctx = self.allocator.create(FetchContext) catch {
-            self.pending.store(false, .release);
-            return;
-        };
-        ctx.* = .{
-            .store = self,
-            .generation = generation,
-            .path = self.allocator.dupe(u8, doc.path) catch {
-                self.allocator.destroy(ctx);
-                self.pending.store(false, .release);
-                return;
-            },
-            .language_id = self.allocator.dupe(u8, config.language_id) catch {
-                self.allocator.free(ctx.path);
-                self.allocator.destroy(ctx);
-                self.pending.store(false, .release);
-                return;
-            },
-            .line = @intCast(doc.buffer.cursor.row),
-            .character = @intCast(doc.buffer.cursor.col),
-            .content = doc.buffer.content() catch {
-                self.allocator.free(ctx.path);
-                self.allocator.free(ctx.language_id);
-                self.allocator.destroy(ctx);
-                self.pending.store(false, .release);
-                return;
-            },
-        };
+        const content = doc.buffer.content() catch return;
+        defer self.allocator.free(content);
 
-        const thread = std.Thread.spawn(.{}, fetchThread, .{ctx}) catch {
-            ctx.deinit(self.allocator);
-            self.pending.store(false, .release);
-            return;
-        };
-        thread.detach();
+        self.fetchCompletions(
+            doc.path,
+            config.language_id,
+            @intCast(doc.buffer.cursor.row),
+            @intCast(doc.buffer.cursor.col),
+            generation,
+        );
     }
 
     pub fn moveSelection(self: *Store, delta: i32) void {
@@ -112,65 +88,35 @@ pub const Store = struct {
         try doc.buffer.insertString(item.label);
         self.dismiss();
     }
-};
 
-const FetchContext = struct {
-    store: *Store,
-    generation: u64,
-    path: []const u8,
-    language_id: []const u8,
-    line: u32,
-    character: u32,
-    content: []const u8,
+    fn fetchCompletions(
+        self: *Store,
+        path: []const u8,
+        language_id: []const u8,
+        line: u32,
+        character: u32,
+        generation: u64,
+    ) void {
+        const uri = lsp.diagnostics.fileUri(self.allocator, self.workspace_path, path) catch return;
+        defer self.allocator.free(uri);
 
-    fn deinit(self: *FetchContext, allocator: std.mem.Allocator) void {
-        allocator.free(self.path);
-        allocator.free(self.language_id);
-        allocator.free(self.content);
-        allocator.destroy(self);
+        const req = lsp.completion.buildCompletionRequest(self.allocator, 77, uri, line, character) catch return;
+        defer self.allocator.free(req);
+
+        var response_buf: [65536]u8 = undefined;
+        const len = self.proxy.request(language_id, req, &response_buf, 65536) catch return;
+
+        const list = lsp.completion.parseCompletionResponse(self.allocator, response_buf[0..len]) catch lsp.completion.List{ .items = &.{} };
+
+        if (self.request_generation != generation) {
+            var discard = list;
+            discard.deinit(self.allocator);
+            return;
+        }
+
+        self.clearList();
+        self.list = list;
+        self.visible = list.items.len > 0;
+        self.selected = 0;
     }
 };
-
-fn fetchThread(ctx: *FetchContext) void {
-    defer ctx.store.pending.store(false, .release);
-    const store = ctx.store;
-
-    const uri = lsp.diagnostics.fileUri(store.allocator, store.workspace_path, ctx.path) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer store.allocator.free(uri);
-
-    const wp = workspace.WorkspacePath.parse(ctx.path) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    _ = wp;
-
-    const req = lsp.completion.buildCompletionRequest(store.allocator, 77, uri, ctx.line, ctx.character) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer store.allocator.free(req);
-
-    var response_buf: [65536]u8 = undefined;
-    const len = store.proxy.request(ctx.language_id, req, &response_buf, 65536) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-
-    const list = lsp.completion.parseCompletionResponse(store.allocator, response_buf[0..len]) catch lsp.completion.List{ .items = &.{} };
-
-    if (store.request_generation != ctx.generation) {
-        var discard = list;
-        discard.deinit(store.allocator);
-        ctx.deinit(store.allocator);
-        return;
-    }
-
-    store.clearList();
-    store.list = list;
-    store.visible = list.items.len > 0;
-    store.selected = 0;
-    ctx.deinit(store.allocator);
-}
