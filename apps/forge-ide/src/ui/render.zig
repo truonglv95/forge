@@ -296,6 +296,11 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
         }
         wb.agent.unlock();
 
+        const agent_actions = @import("agent_panel.zig").reviewActions(agent_x, agent_w, h);
+        renderer.Renderer.drawRoundedRect(agent_actions.apply.x, agent_actions.apply.y, agent_actions.apply.w, agent_actions.apply.h, 6, .{ .r = 0.2, .g = 0.55, .b = 0.35, .a = 1.0 });
+        renderer.Renderer.drawText("Apply", agent_actions.apply.x + 22, agent_actions.apply.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+        renderer.Renderer.drawRoundedRect(agent_actions.reject.x, agent_actions.reject.y, agent_actions.reject.w, agent_actions.reject.h, 6, .{ .r = 0.45, .g = 0.2, .b = 0.2, .a = 1.0 });
+        renderer.Renderer.drawText("Reject", agent_actions.reject.x + 16, agent_actions.reject.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
         renderer.Renderer.drawText("Cmd+Enter apply  Esc reject  Up/Down scroll", inner_x, h - 120, 10.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
     } else {
         for (state.chat_history.?.items) |msg| {

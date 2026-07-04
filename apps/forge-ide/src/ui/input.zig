@@ -677,6 +677,15 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
             const agent_panel = @import("agent_panel.zig");
+            if (wb.agent.show_review) {
+                if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, event.x, event.y)) |action| {
+                    switch (action) {
+                        .apply => wb.dispatch(.agent_apply) catch {},
+                        .reject => wb.dispatch(.agent_reject) catch {},
+                    }
+                    return;
+                }
+            }
             wb.agent.lock();
             const run_count = wb.agent.run_history.items.len;
             wb.agent.unlock();
