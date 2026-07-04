@@ -46,6 +46,7 @@ pub const Session = struct {
     show_review: bool = false,
     review_scroll_y: f32 = 0,
     worker_running: bool = false,
+    stream_text: std.ArrayList(u8) = .empty,
     last_transaction_id: ?u64 = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Session {
@@ -75,6 +76,7 @@ pub const Session = struct {
         self.freeLinesUnlocked(&self.diff_lines);
         self.context_lines.deinit(self.allocator);
         self.diff_lines.deinit(self.allocator);
+        self.stream_text.deinit(self.allocator);
         for (self.run_history.items) |entry| {
             self.allocator.free(entry.run_id);
             self.allocator.free(entry.state);
@@ -156,7 +158,23 @@ pub const Session = struct {
         self.show_review = false;
         self.review_scroll_y = 0;
         self.last_transaction_id = null;
+        self.stream_text.clearRetainingCapacity();
         self.freeLinesUnlocked(&self.diff_lines);
+    }
+
+    pub fn clearStreamText(self: *Session) void {
+        self.lock();
+        defer self.unlock();
+        self.stream_text.clearRetainingCapacity();
+    }
+
+    pub fn appendStreamChunk(self: *Session, chunk: []const u8) !void {
+        if (chunk.len == 0) return;
+        self.lock();
+        defer self.unlock();
+        const cap: usize = 64 * 1024;
+        if (self.stream_text.items.len + chunk.len > cap) return;
+        try self.stream_text.appendSlice(self.allocator, chunk);
     }
 
     pub fn resetForNewRun(self: *Session) void {
@@ -164,6 +182,7 @@ pub const Session = struct {
         defer self.unlock();
         self.clearProposalStateUnlocked();
         self.freeLinesUnlocked(&self.context_lines);
+        self.clearStreamText();
         self.phase = .idle;
         self.worker_running = false;
     }
@@ -183,6 +202,7 @@ pub const Session = struct {
         status_line: []const u8,
         show_review: bool,
         worker_running: bool,
+        stream_len: usize,
         summary: ?[]const u8,
         run_count: usize,
         selected_run_index: usize,
@@ -197,6 +217,7 @@ pub const Session = struct {
             .status_line = self.status_line,
             .show_review = self.show_review,
             .worker_running = self.worker_running,
+            .stream_len = self.stream_text.items.len,
             .summary = self.summary,
             .run_count = self.run_history.items.len,
             .selected_run_index = self.selected_run_index,

@@ -54,6 +54,13 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
+    if (event.keycode == 9 and event.modifiers & cmd_mask != 0) {
+        if (wb.focused_panel == .find or wb.focused_panel == .goto_line or wb.focused_panel == .rename or wb.focused_panel == .agent or wb.focused_panel == .editor) {
+            pasteIntoActiveBuffer(wb);
+            return;
+        }
+    }
+
     if (wb.focused_panel == .find) {
         handleFindKeys(wb, event);
         return;
@@ -114,8 +121,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
-    if (wb.bottom_panel_mode == .terminal) {
-        wb.focused_panel = .terminal;
+    if (wb.bottom_panel_mode == .terminal and wb.focused_panel == .terminal) {
         handleTerminalKeys(wb, event);
         return;
     }
@@ -139,17 +145,17 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             wb.dispatch(.agent_reject) catch {};
             return;
         }
-        const scroll_step: f32 = 14.0;
-        if (event.keycode == 126) {
-            wb.agent.review_scroll_y = @max(0, wb.agent.review_scroll_y - scroll_step);
+        if (event.keycode == 126 or event.keycode == 125) {
+            const scroll_step: f32 = 14.0;
+            if (event.keycode == 126) {
+                wb.agent.review_scroll_y = @max(0, wb.agent.review_scroll_y - scroll_step);
+            } else {
+                wb.agent.review_scroll_y += scroll_step;
+            }
             wb.clampReviewScroll(win_h);
             return;
         }
-        if (event.keycode == 125) {
-            wb.agent.review_scroll_y += scroll_step;
-            wb.clampReviewScroll(win_h);
-            return;
-        }
+        // Allow typing a new prompt while review is open; Enter submits below.
     }
 
     const ctrl_mask: i32 = 0x01;
@@ -172,7 +178,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
-    if (event.keycode == 8 and event.modifiers & cmd_mask != 0 and wb.focused_panel == .agent) {
+    if (event.keycode == 8 and event.modifiers & cmd_mask != 0 and wb.focused_panel == .agent and wb.agent.worker_running) {
         wb.dispatch(.agent_cancel) catch {};
         return;
     }
@@ -188,8 +194,10 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
 
     var active_buffer = if (wb.focused_panel == .editor)
         wb.activeBuffer() orelse return
+    else if (wb.focused_panel == .agent)
+        &wb.prompt_buffer
     else
-        &wb.prompt_buffer;
+        return;
 
     if (event.keycode == 13 and event.modifiers & cmd_mask != 0) {
         wb.dispatch(.close_active_tab) catch {};
@@ -246,7 +254,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
 
     if (event.keycode == 51) {
         active_buffer.backspace() catch {};
-    } else if (event.keycode == 36) {
+    } else if (event.keycode == 36 or event.keycode == 76) {
         if (wb.focused_panel == .agent) {
             submitAgentPrompt(wb);
         } else {
@@ -262,8 +270,11 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         active_buffer.moveUp();
     } else if (event.chars.len > 0) {
         const char_val = event.chars[0];
-        if (wb.focused_panel == .agent and char_val == '@' and !wb.agent.show_review) {
+        if (wb.focused_panel == .agent and char_val == '@' and !wb.agent.show_review and !wb.agent.worker_running) {
             wb.dispatch(.agent_scope_picker_open) catch {};
+            return;
+        }
+        if (wb.focused_panel == .agent and wb.agent.worker_running) {
             return;
         }
         if (char_val >= 32 or char_val == '\t') {
@@ -508,16 +519,43 @@ fn handleRenameKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.
     }
 }
 
-fn submitAgentPrompt(wb: *@import("../workbench.zig").Workbench) void {
-    const prompt_text = wb.prompt_buffer.toDisplayString(false) catch return;
-    defer state.gpa.free(prompt_text);
-    if (prompt_text.len == 0) return;
-    const text_len = if (prompt_text[prompt_text.len - 1] == 0) prompt_text.len - 1 else prompt_text.len;
-    if (text_len == 0) return;
-    if (wb.agent.worker_running) return;
+fn pasteIntoActiveBuffer(wb: *@import("../workbench.zig").Workbench) void {
+    const text = renderer.Renderer.clipboardText(state.gpa) catch return;
+    defer state.gpa.free(text);
+    if (text.len == 0) return;
 
+    const buffer = if (wb.focused_panel == .editor)
+        wb.activeBuffer() orelse return
+    else if (wb.focused_panel == .agent)
+        &wb.prompt_buffer
+    else if (wb.focused_panel == .find)
+        if (wb.find_bar.replace_mode and wb.find_bar.focus_replace)
+            &wb.find_bar.replace
+        else
+            &wb.find_bar.query
+    else if (wb.focused_panel == .goto_line)
+        &wb.goto_bar.input
+    else if (wb.focused_panel == .rename)
+        &wb.rename_bar.input
+    else
+        return;
+
+    buffer.insertString(text) catch {};
+}
+
+fn submitAgentPrompt(wb: *@import("../workbench.zig").Workbench) void {
+    if (wb.agent.worker_running) {
+        wb.setStatus("Agent is already running") catch {};
+        return;
+    }
+
+    const prompt_text = wb.prompt_buffer.content() catch return;
+    defer wb.prompt_buffer.allocator.free(prompt_text);
+    const trimmed = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);
+    if (trimmed.len == 0) return;
+
+    wb.focused_panel = .agent;
     wb.dispatch(.agent_submit) catch {};
-    state.prompt_buffer = &wb.prompt_buffer;
 }
 
 fn editorPosAt(
@@ -678,6 +716,9 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
             const agent_panel = @import("agent_panel.zig");
+            if (agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, event.x, event.y)) {
+                return;
+            }
             if (wb.agent.show_review) {
                 if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, event.x, event.y)) |action| {
                     switch (action) {

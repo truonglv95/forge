@@ -22,6 +22,8 @@ pub const Options = struct {
     kind: Kind = .auto,
     model: ?[]const u8 = null,
     fake_response: []const u8,
+    stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
+    stream_context: ?*anyopaque = null,
 };
 
 pub const Handle = struct {
@@ -51,7 +53,7 @@ pub fn create(
     return switch (resolved) {
         .fake => .{
             .allocator = allocator,
-            .fake = fake_provider.FakeProvider.init(options.fake_response),
+            .fake = fake_provider.FakeProvider.init(options.fake_response, options.stream_callback, options.stream_context),
         },
         .gemini => .{
             .allocator = allocator,
@@ -60,6 +62,8 @@ pub fn create(
                 io,
                 try credentials.Credentials.loadGemini(allocator, io, environ_map),
                 options.model orelse gemini_provider.default_model,
+                options.stream_callback,
+                options.stream_context,
             ),
         },
     };

@@ -134,8 +134,11 @@ pub const Workbench = struct {
     rename_bar: editor_find_mod.RenameBar,
     user_settings: settings_mod.Settings = .{},
     ide_launcher: []const u8 = "forge-ide",
+    environ_map: ?*const std.process.Environ.Map = null,
+    ai_provider: []const u8 = "auto",
+    ai_model: ?[]const u8 = null,
 
-    pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8, ide_launcher: []const u8) !void {
+    pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8, ide_launcher: []const u8, environ_map: ?*const std.process.Environ.Map) !void {
         var root = try workspace.WorkspaceRoot.open(io, workspace_path);
         errdefer root.close(io);
 
@@ -169,6 +172,8 @@ pub const Workbench = struct {
             .goto_bar = try editor_find_mod.GotoBar.init(allocator),
             .rename_bar = try editor_find_mod.RenameBar.init(allocator),
             .ide_launcher = try allocator.dupe(u8, ide_launcher),
+            .environ_map = environ_map,
+            .ai_provider = try allocator.dupe(u8, "auto"),
             .terminals = undefined,
             .lsp_sync = undefined,
             .diagnostics = undefined,
@@ -203,6 +208,12 @@ pub const Workbench = struct {
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
+
+        if (loadAiConfig(allocator, io, root)) |cfg| {
+            self.allocator.free(self.ai_provider);
+            self.ai_provider = cfg.provider;
+            self.ai_model = cfg.model;
+        } else |_| {}
 
         try self.explorer.rebuild(io, root);
         try self.restoreSessionTabs();
@@ -258,6 +269,8 @@ pub const Workbench = struct {
         self.goto_bar.deinit();
         self.rename_bar.deinit();
         self.user_settings.deinit(self.allocator);
+        self.allocator.free(self.ai_provider);
+        if (self.ai_model) |model| self.allocator.free(model);
         self.allocator.free(self.ide_launcher);
         self.palette.deinit();
         self.theme.deinit();
@@ -482,13 +495,28 @@ pub const Workbench = struct {
             .agent_submit => {
                 const prompt_text = try self.prompt_buffer.content();
                 defer self.prompt_buffer.allocator.free(prompt_text);
-                if (prompt_text.len == 0) return;
-                try self.appendChat(.user, prompt_text);
-                const active = self.tabs.activeDoc();
-                const scope = self.agent.effectiveScope(if (active) |doc| doc.path else null);
-                try agent_workflow.spawnGenerate(&self.agentHost(), prompt_text, scope);
+                const trimmed = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);
+                if (trimmed.len == 0) return;
+                const owned_prompt = try self.allocator.dupe(u8, trimmed);
+                defer self.allocator.free(owned_prompt);
+
                 self.prompt_buffer.deinit();
                 self.prompt_buffer = try editor.Buffer.init(self.allocator);
+                self.focused_panel = .agent;
+
+                try self.appendChat(.user, owned_prompt);
+                self.scrollChatToEnd(768);
+                const active = self.tabs.activeDoc();
+                const scope = self.agent.effectiveScope(if (active) |doc| doc.path else null);
+                agent_workflow.spawnGenerate(&self.agentHost(), owned_prompt, scope) catch |err| {
+                    const msg = switch (err) {
+                        error.AgentBusy => "Agent is already running",
+                        else => "Agent failed to start",
+                    };
+                    try self.setStatus(msg);
+                    return;
+                };
+                try self.setStatus("Agent: building context…");
             },
             .agent_cancel => {
                 agent_workflow.cancel(&self.agentHost());
@@ -510,6 +538,7 @@ pub const Workbench = struct {
                 self.agent.unlock();
                 try self.appendChat(.agent, "Proposal rejected.");
             },
+            .agent_show_review => try self.showAgentReview(),
             .agent_select_run => |index| {
                 self.agent.lock();
                 if (index < self.agent.run_history.items.len) {
@@ -963,6 +992,11 @@ pub const Workbench = struct {
         for (self.chat_history.items) |msg| {
             estimated_lines += std.mem.count(u8, msg.content, "\n") + 4;
         }
+        self.agent.lock();
+        if (self.agent.stream_text.items.len > 0) {
+            estimated_lines += std.mem.count(u8, self.agent.stream_text.items, "\n") + 4;
+        }
+        self.agent.unlock();
         const viewport = @max(0, agent_h - layout_mod.status_height - 180);
         self.chat_scroll_y = panel_scroll.clampScrollY(
             self.chat_scroll_y,
@@ -970,6 +1004,22 @@ pub const Workbench = struct {
             viewport,
             16.0,
         );
+    }
+
+    pub fn scrollChatToEnd(self: *Workbench, agent_h: f32) void {
+        const layout_mod = @import("ui/layout.zig");
+        var estimated_lines: usize = 0;
+        for (self.chat_history.items) |msg| {
+            estimated_lines += std.mem.count(u8, msg.content, "\n") + 4;
+        }
+        self.agent.lock();
+        if (self.agent.stream_text.items.len > 0) {
+            estimated_lines += std.mem.count(u8, self.agent.stream_text.items, "\n") + 4;
+        }
+        self.agent.unlock();
+        const viewport = @max(0, agent_h - layout_mod.status_height - 180);
+        const content_h = @as(f32, @floatFromInt(estimated_lines)) * 16.0;
+        self.chat_scroll_y = @max(0, content_h - viewport);
     }
 
     pub fn clampReviewScroll(self: *Workbench, agent_h: f32) void {
@@ -1425,6 +1475,29 @@ pub const Workbench = struct {
         var buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Copied {s}", .{entry.name}) catch "Copied value";
         try self.setStatus(msg);
+    }
+
+    pub fn showAgentReview(self: *Workbench) !void {
+        var owned_path: ?[]const u8 = null;
+        defer if (owned_path) |path| self.allocator.free(path);
+
+        const proposal_rel = blk: {
+            self.agent.lock();
+            defer self.agent.unlock();
+            if (self.agent.proposal_rel) |path| break :blk path;
+            if (self.agent.run_history.items.len == 0) break :blk null;
+            const entry = self.agent.run_history.items[self.agent.selected_run_index];
+            owned_path = try std.fmt.allocPrint(self.allocator, ".forge/proposals/{s}.json", .{entry.run_id});
+            break :blk owned_path.?;
+        };
+
+        if (proposal_rel) |rel| {
+            try agent_workflow.loadProposalPreview(&self.agentHost(), rel);
+            self.focused_panel = .agent;
+            try self.setStatus("Proposal review opened");
+            return;
+        }
+        try self.setStatus("No proposal to review — submit an agent prompt first");
     }
 
     pub fn gotoDebugStackFrame(self: *Workbench, index: usize) !void {
@@ -2075,6 +2148,9 @@ pub const Workbench = struct {
         return .{
             .allocator = self.allocator,
             .io = self.io,
+            .environ_map = self.environ_map,
+            .ai_provider = self.ai_provider,
+            .ai_model = self.ai_model,
             .workspace_root = self.workspace_root,
             .agent = &self.agent,
             .agent_cancel_slot = &self.agent_cancel_source,
@@ -2083,6 +2159,21 @@ pub const Workbench = struct {
             .refresh_explorer = Workbench.bridgeRefreshExplorer,
             .open_file = Workbench.bridgeOpenFile,
         };
+    }
+
+    fn loadAiConfig(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !struct {
+        provider: []const u8,
+        model: ?[]const u8,
+    } {
+        const wp = try workspace.WorkspacePath.parse("forge.toml");
+        var snap = try workspace.FileSnapshot.read(allocator, io, root, wp);
+        defer snap.deinit();
+        const config = try workspace.Config.parse(snap.content);
+        const provider = try allocator.dupe(u8, config.ai_provider);
+        errdefer allocator.free(provider);
+        const model = if (config.ai_model) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (model) |owned| allocator.free(owned);
+        return .{ .provider = provider, .model = model };
     }
 
     fn bridgeAppendChat(context: ?*anyopaque, role: agent_workflow.ChatRole, content: []const u8) void {
@@ -2290,7 +2381,7 @@ test "workbench opens workspace and loads extensions" {
     const io = std.testing.io;
 
     var wb: Workbench = undefined;
-    try Workbench.init(&wb, allocator, io, ".");
+    try Workbench.init(&wb, allocator, io, ".", "forge-ide", null);
     defer wb.deinit();
 
     try std.testing.expect(wb.extension_host.extensionCount() >= 1);

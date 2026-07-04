@@ -56,7 +56,7 @@ test "Planner execution with FakeProvider" {
     defer ctx.deinit();
     try ctx.addBlock(.intent, "user intent", "Fix the bug");
 
-    var mock_llm = fake_provider.FakeProvider.init("{\"id\": \"123\", \"description\": \"mock\"}");
+    var mock_llm = fake_provider.FakeProvider.init("{\"id\": \"123\", \"description\": \"mock\"}", null, null);
 
     var planner = Planner.init(allocator, mock_llm.providerInterface(), &ctx);
 

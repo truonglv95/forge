@@ -19,3 +19,6 @@ ui_font_size = 12
 [ai]
 # AI edits must remain review-only. Direct apply is not a supported mode.
 apply_mode = "review"
+# Provider: auto | fake | gemini  (auto picks gemini when credentials exist)
+provider = "auto"
+# model = "gemini-2.0-flash"

@@ -21,6 +21,8 @@ pub const GenerateOptions = struct {
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
     progress_callback: ?*const fn (?*anyopaque, progress.Phase) void = null,
     progress_context: ?*anyopaque = null,
+    stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
+    stream_context: ?*anyopaque = null,
     include_project_rules: bool = true,
 };
 
@@ -46,7 +48,13 @@ pub fn generateAndPersist(
     provider_options: provider_factory.Options,
     options: GenerateOptions,
 ) WorkflowError!Result {
-    var provider_handle = provider_factory.create(allocator, io, environ_map, provider_options) catch |err| switch (err) {
+    var provider_handle = provider_factory.create(allocator, io, environ_map, .{
+        .kind = provider_options.kind,
+        .model = provider_options.model,
+        .fake_response = provider_options.fake_response,
+        .stream_callback = options.stream_callback,
+        .stream_context = options.stream_context,
+    }) catch |err| switch (err) {
         provider_factory.FactoryError.MissingCredentials => return error.MissingProviderCredentials,
         else => return error.ProviderFailed,
     };
