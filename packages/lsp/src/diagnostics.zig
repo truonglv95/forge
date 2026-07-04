@@ -113,12 +113,14 @@ pub fn parseDiagnosticResponse(allocator: std.mem.Allocator, response_json: []co
     return .{ .items = try list.toOwnedSlice(allocator) };
 }
 
-pub fn buildDidOpenNotification(allocator: std.mem.Allocator, uri: []const u8, language_id: []const u8, text: []const u8) ![]const u8 {
-    const escaped = try escapeJsonString(allocator, text);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator,
-        \\{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{s}","languageId":"{s}","version":1,"text":"{s}"}}}}}}
-    , .{ uri, language_id, escaped });
+pub fn buildDidOpenNotification(
+    allocator: std.mem.Allocator,
+    uri: []const u8,
+    language_id: []const u8,
+    version: u32,
+    text: []const u8,
+) ![]const u8 {
+    return @import("sync.zig").buildDidOpenNotification(allocator, uri, language_id, version, text);
 }
 
 pub fn buildDiagnosticRequest(allocator: std.mem.Allocator, id: i32, uri: []const u8) ![]const u8 {
@@ -197,7 +199,7 @@ fn parseStringField(object: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
-fn escapeJsonString(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+pub fn escapeJsonString(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     for (text) |ch| {

@@ -362,7 +362,7 @@ fn handleTerminalKeys(wb: *@import("../workbench.zig").Workbench, event: rendere
 
     var buf: [64]u8 = undefined;
     const bytes = terminal_session_mod.TerminalSession.encodeKey(event, &buf) orelse return;
-    wb.terminal.writeInput(bytes);
+    wb.activeTerminal().writeInput(bytes);
     if (bytes.len == 1 and bytes[0] == '\r') {
         wb.dispatch(.terminal_submit) catch {};
     }
@@ -511,12 +511,16 @@ fn submitAgentPrompt(wb: *@import("../workbench.zig").Workbench) void {
 fn editorPosAt(
     wb: *@import("../workbench.zig").Workbench,
     editor_buf: *@import("forge-editor").Buffer,
-    geo: layout.Geometry,
+    pane_x: f32,
+    pane_w: f32,
+    scroll_y: f32,
+    scroll_x: f32,
     x: f32,
     y: f32,
 ) ?struct { row: usize, col: usize } {
-    const click_y = y - editor_scroll.firstLineY(&wb.theme) + wb.editor_scroll_y;
-    const click_x = x - geo.editor_x - editor_scroll.gutterWidth(&wb.theme) + wb.editor_scroll_x;
+    _ = pane_w;
+    const click_y = y - editor_scroll.firstLineY(&wb.theme) + scroll_y;
+    const click_x = x - pane_x - editor_scroll.gutterWidth(&wb.theme) + scroll_x;
     if (click_y < 0) return null;
     var row: usize = @intFromFloat(click_y / editor_scroll.lineHeight(&wb.theme));
     if (row >= editor_buf.lineCount()) row = if (editor_buf.lineCount() > 0) editor_buf.lineCount() - 1 else 0;
@@ -531,7 +535,6 @@ fn isEditorContentArea(geo: layout.Geometry, x: f32, y: f32) bool {
 
 pub fn onMouseEvent(event: renderer.MouseEvent) void {
     const wb = state.wb orelse return;
-    const editor_buf = wb.activeBuffer();
 
     var w: f32 = 0;
     var h: f32 = 0;
@@ -558,11 +561,14 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             renderer.Renderer.setCursor(0);
         }
         if (geo.shell_mode == .ide and isEditorContentArea(geo, event.x, event.y)) {
-            if (editor_buf != null) {
-                if (wb.tabs.activeDoc()) |doc| {
-                    if (editorPosAt(wb, editor_buf.?, geo, event.x, event.y)) |pos| {
-                        wb.requestEditorHover(doc.path, pos.row, pos.col, event.x, event.y);
-                    }
+            const pane = wb.paneAt(geo.editor_x, geo.editor_w, event.x);
+            if (wb.docForPane(pane)) |doc| {
+                const pane_x = wb.paneOriginX(geo.editor_x, geo.editor_w, pane);
+                const pane_w = wb.paneWidth(geo.editor_w);
+                const scroll_y = if (pane == .secondary) wb.split_scroll_y else wb.editor_scroll_y;
+                const scroll_x = if (pane == .secondary) wb.split_scroll_x else wb.editor_scroll_x;
+                if (editorPosAt(wb, &doc.buffer, pane_x, pane_w, scroll_y, scroll_x, event.x, event.y)) |pos| {
+                    wb.requestEditorHover(doc.path, pos.row, pos.col, event.x, event.y);
                 }
             }
         } else {
@@ -664,10 +670,16 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
         } else if (geo.shell_mode == .ide and isEditorContentArea(geo, event.x, event.y)) {
             wb.focused_panel = .editor;
-            if (editor_buf != null) {
-                if (editorPosAt(wb, editor_buf.?, geo, event.x, event.y)) |pos| {
-                    editor_buf.?.cursor.row = pos.row;
-                    editor_buf.?.cursor.col = pos.col;
+            const pane = wb.paneAt(geo.editor_x, geo.editor_w, event.x);
+            wb.editor_pane_focus = pane;
+            if (wb.docForPane(pane)) |doc| {
+                const pane_x = wb.paneOriginX(geo.editor_x, geo.editor_w, pane);
+                const pane_w = wb.paneWidth(geo.editor_w);
+                const scroll_y = if (pane == .secondary) wb.split_scroll_y else wb.editor_scroll_y;
+                const scroll_x = if (pane == .secondary) wb.split_scroll_x else wb.editor_scroll_x;
+                if (editorPosAt(wb, &doc.buffer, pane_x, pane_w, scroll_y, scroll_x, event.x, event.y)) |pos| {
+                    doc.buffer.cursor.row = pos.row;
+                    doc.buffer.cursor.col = pos.col;
                     wb.scrollEditorToCursor();
                     if (event.modifiers & cmd_mask != 0) {
                         wb.goToDefinition() catch {};
@@ -680,8 +692,16 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.dispatch(.{ .set_bottom_panel_mode = mode }) catch {};
             } else if (wb.bottom_panel_mode == .terminal and bottom_panel.inContentArea(geo.task_panel_y, event.y)) {
                 wb.focused_panel = .terminal;
-                wb.terminal.lock();
-                defer wb.terminal.unlock();
+                if (terminal_panel.hitSessionTab(geo.editor_x, geo.task_panel_y, event.x, event.y, wb.terminals.sessions.items.len)) |hit| {
+                    switch (hit) {
+                        .new => wb.dispatch(.terminal_new) catch {},
+                        .activate => |index| wb.dispatch(.{ .terminal_activate = index }) catch {},
+                    }
+                    return;
+                }
+                const terminal = wb.activeTerminal();
+                terminal.lock();
+                defer terminal.unlock();
                 if (terminal_panel.hitTest(
                     geo.editor_x,
                     geo.task_panel_y,
@@ -689,7 +709,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     event.x,
                     event.y,
                     wb.task_scroll_y,
-                    wb.terminal.lines.items,
+                    terminal.lines.items,
                 )) |pos| {
                     wb.focused_panel = .terminal;
                     wb.terminal_selection = .{ .anchor = pos, .cursor = pos };
@@ -758,8 +778,9 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.clampBottomPanelScroll(wb.bottom_panel_height);
             wb.syncTerminalSize();
         } else if (state.is_dragging_terminal_selection and wb.bottom_panel_mode == .terminal) {
-            wb.terminal.lock();
-            defer wb.terminal.unlock();
+            const terminal = wb.activeTerminal();
+            terminal.lock();
+            defer terminal.unlock();
             if (terminal_panel.hitTest(
                 geo.editor_x,
                 geo.task_panel_y,
@@ -767,7 +788,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 event.x,
                 event.y,
                 wb.task_scroll_y,
-                wb.terminal.lines.items,
+                terminal.lines.items,
             )) |pos| {
                 if (wb.terminal_selection) |*sel| sel.cursor = pos;
             }
@@ -816,9 +837,15 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and my >= geo.task_panel_y and mx >= geo.editor_x and mx < geo.agent_splitter_x) {
             wb.task_scroll_y += scroll_delta_y;
             wb.clampBottomPanelScroll(geo.task_panel_h);
-        } else if (geo.shell_mode == .ide and mx >= geo.editor_x and mx < geo.agent_splitter_x) {
-            if (scroll_delta_y != 0) wb.editor_scroll_y += scroll_delta_y;
-            if (scroll_delta_x != 0) wb.editor_scroll_x += scroll_delta_x;
+        } else if (geo.shell_mode == .ide and mx >= geo.editor_x and mx < geo.agent_splitter_x and my > 65.0 and my < geo.task_panel_y - 35) {
+            const pane = wb.paneAt(geo.editor_x, geo.editor_w, mx);
+            if (pane == .secondary) {
+                if (scroll_delta_y != 0) wb.split_scroll_y += scroll_delta_y;
+                if (scroll_delta_x != 0) wb.split_scroll_x += scroll_delta_x;
+            } else {
+                if (scroll_delta_y != 0) wb.editor_scroll_y += scroll_delta_y;
+                if (scroll_delta_x != 0) wb.editor_scroll_x += scroll_delta_x;
+            }
             wb.clampEditorScroll(geo.editor_w, geo.editor_h);
         }
     }

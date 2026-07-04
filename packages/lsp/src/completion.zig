@@ -26,9 +26,10 @@ pub fn buildDidOpenNotification(
     allocator: std.mem.Allocator,
     uri: []const u8,
     language_id: []const u8,
+    version: u32,
     text: []const u8,
 ) ![]const u8 {
-    return diagnostics.buildDidOpenNotification(allocator, uri, language_id, text);
+    return diagnostics.buildDidOpenNotification(allocator, uri, language_id, version, text);
 }
 
 pub fn buildCompletionRequest(
