@@ -369,34 +369,34 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
     [self.window makeFirstResponder:self];
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
-        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 0); // 0 = Down
+        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 0, ForgeMapModifiers(event.modifierFlags));
     }
 }
 
 - (void)mouseUp:(NSEvent *)event {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
-        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 1); // 1 = Up
+        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 1, ForgeMapModifiers(event.modifierFlags));
     }
 }
 
 - (void)mouseMoved:(NSEvent *)event {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
-        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 2); // 2 = Move
+        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 2, ForgeMapModifiers(event.modifierFlags));
     }
 }
 
 - (void)mouseDragged:(NSEvent *)event {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
-        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 3); // 3 = Drag
+        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 3, ForgeMapModifiers(event.modifierFlags));
     }
 }
 
 - (void)scrollWheel:(NSEvent *)event {
     if (g_mouseCallback) {
-        g_mouseCallback(event.scrollingDeltaX, event.scrollingDeltaY, 0, 4); // 4 = Scroll
+        g_mouseCallback(event.scrollingDeltaX, event.scrollingDeltaY, 0, 4, ForgeMapModifiers(event.modifierFlags));
     }
 }
 @end

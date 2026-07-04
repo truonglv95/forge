@@ -23,6 +23,7 @@ const git_status_mod = @import("git/status.zig");
 const git_diff_mod = @import("git/diff.zig");
 const diagnostics_store_mod = @import("workbench/diagnostics_store.zig");
 const completion_store_mod = @import("workbench/completion_store.zig");
+const hover_store_mod = @import("workbench/hover_store.zig");
 const terminal_session_mod = @import("workbench/terminal_session.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
@@ -67,6 +68,7 @@ pub const Workbench = struct {
     terminal: terminal_session_mod.TerminalSession,
     diagnostics: diagnostics_store_mod.Store,
     completions: completion_store_mod.Store,
+    hover: hover_store_mod.Store,
     events: kernel.EventBus(Event),
     palette: palette_mod.Palette,
     task_output: task_output_mod.TaskOutput,
@@ -139,20 +141,23 @@ pub const Workbench = struct {
             .terminal = undefined,
             .diagnostics = undefined,
             .completions = undefined,
+            .hover = undefined,
         };
         errdefer self.deinit();
 
         self.terminal = try terminal_session_mod.TerminalSession.init(allocator, io, self.workspace_path);
         self.diagnostics = diagnostics_store_mod.Store.init(allocator, io, self.workspace_path, self.workspace_root, &self.lsp_proxy, &self.lsp_registry);
         self.completions = completion_store_mod.Store.init(allocator, io, self.workspace_path, self.workspace_root, &self.lsp_proxy, &self.lsp_registry);
+        self.hover = hover_store_mod.Store.init(allocator, self.workspace_path, &self.lsp_proxy, &self.lsp_registry);
         try self.lsp_proxy.start();
         workspace.recovery.recoverPending(allocator, io, self.workspace_root) catch {};
 
         try self.extension_host.registerBuiltin(&builtin_ext.hello_extension);
         self.extension_host.setHostCallbacks(wasm_bridge.hostCallbacks());
+        self.marketplace_catalog = plugin.marketplace.loadCatalog(allocator, io, root) catch null;
+        try self.ensureBundledExtensions();
         try self.extension_host.discoverWorkspace(self.workspace_root);
         try self.extension_host.activateAll();
-        self.marketplace_catalog = plugin.marketplace.loadCatalog(allocator, io, root) catch null;
         try self.syncContributions();
         try self.palette.addExtensionCommands(&self.extension_host);
 
@@ -191,6 +196,7 @@ pub const Workbench = struct {
         self.terminal.deinit();
         self.diagnostics.deinit();
         self.completions.deinit();
+        self.hover.deinit();
         self.prompt_buffer.deinit();
         self.task_output.deinit();
         self.agent.deinit();
@@ -964,6 +970,31 @@ pub const Workbench = struct {
         try self.setStatus("Extensions reloaded");
     }
 
+    pub fn ensureBundledExtensions(self: *Workbench) !void {
+        const manifest_wp = workspace.WorkspacePath.parse(".forge/extensions/zig-lsp/forge.toml") catch return;
+        if (workspace.FileSnapshot.read(self.allocator, self.io, self.workspace_root, manifest_wp)) |snap_val| {
+            var snap = snap_val;
+            defer snap.deinit();
+            return;
+        } else |_| {}
+
+        const catalog = self.marketplace_catalog orelse return;
+        const entry = plugin.marketplace.findEntry(&catalog, "forge.lsp.zig") orelse return;
+        const dest = try plugin.marketplace.install(self.allocator, self.io, self.workspace_root, entry);
+        defer self.allocator.free(dest);
+    }
+
+    pub fn requestEditorHover(
+        self: *Workbench,
+        doc_path: []const u8,
+        row: usize,
+        col: usize,
+        anchor_x: f32,
+        anchor_y: f32,
+    ) void {
+        self.hover.requestAt(doc_path, @intCast(row), @intCast(col), anchor_x, anchor_y);
+    }
+
     pub fn syncContributions(self: *Workbench) !void {
         try self.keybindings.rebuild(&self.extension_host);
         self.lsp_registry.clear(self.allocator);
@@ -1322,6 +1353,7 @@ pub const Workbench = struct {
         }
 
         self.diagnostics.tick(dt, self.tabs.activeDoc());
+        self.hover.tick(dt);
 
         if (self.terminal_boot_pending) {
             self.terminal_boot_pending = false;

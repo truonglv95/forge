@@ -1,0 +1,11 @@
+[extension]
+id = "forge.lsp.zig"
+name = "Zig Language Server"
+version = "0.1.0"
+api_version = 1
+
+[[languages]]
+id = "zig"
+server = "zig"
+args = "language-server"
+file_pattern = "*.zig"

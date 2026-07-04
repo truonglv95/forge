@@ -887,7 +887,33 @@ fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@im
     if (wb.find_bar.open or wb.goto_bar.open) {
         drawEditorOverlay(wb, editor_x, editor_w);
     }
+    drawHoverTooltip(wb, editor_x, editor_w);
     renderer.Renderer.clearClipRect();
+}
+
+fn drawHoverTooltip(wb: *@import("../workbench.zig").Workbench, editor_x: f32, editor_w: f32) void {
+    const text = wb.hover.text orelse return;
+    if (text.len == 0) return;
+
+    var display_buf: [512:0]u8 = undefined;
+    const clipped = if (text.len > 511) text[0..511] else text;
+    @memcpy(display_buf[0..clipped.len], clipped);
+    display_buf[clipped.len] = 0;
+
+    const font_size: f32 = 11.0;
+    const padding: f32 = 8.0;
+    const max_w: f32 = @min(420, editor_w - 24);
+    const text_w = renderer.Renderer.measureText(@ptrCast(&display_buf), font_size);
+    const box_w = @min(max_w, text_w + padding * 2);
+    const box_h: f32 = font_size + padding * 2;
+    var box_x = wb.hover.anchor_x + 12;
+    var box_y = wb.hover.anchor_y - box_h - 8;
+    if (box_x + box_w > editor_x + editor_w - 8) box_x = editor_x + editor_w - box_w - 8;
+    if (box_x < editor_x + 8) box_x = editor_x + 8;
+    if (box_y < 70) box_y = wb.hover.anchor_y + 18;
+
+    renderer.Renderer.drawRect(box_x, box_y, box_w, box_h, .{ .r = 0.14, .g = 0.16, .b = 0.2, .a = 0.98 });
+    renderer.Renderer.drawText(@ptrCast(&display_buf), box_x + padding, box_y + padding, font_size, .{ .r = 0.92, .g = 0.92, .b = 0.92, .a = 1.0 });
 }
 
 fn drawFindHighlights(
