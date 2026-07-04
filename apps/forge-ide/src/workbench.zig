@@ -24,6 +24,7 @@ const git_diff_mod = @import("git/diff.zig");
 const diagnostics_store_mod = @import("workbench/diagnostics_store.zig");
 const completion_store_mod = @import("workbench/completion_store.zig");
 const hover_store_mod = @import("workbench/hover_store.zig");
+const references_store_mod = @import("workbench/references_store.zig");
 const terminal_session_mod = @import("workbench/terminal_session.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
@@ -31,7 +32,7 @@ const editor_find_mod = @import("workbench/editor_find.zig");
 const settings_mod = @import("workbench/settings.zig");
 const session_restore_mod = @import("workbench/session_restore.zig");
 
-pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, terminal, palette, conflict, recovery, find, goto_line };
+pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, terminal, palette, conflict, recovery, find, goto_line, rename };
 pub const ChatRole = enum { user, agent };
 pub const ChatMessage = struct {
     role: ChatRole,
@@ -69,6 +70,7 @@ pub const Workbench = struct {
     diagnostics: diagnostics_store_mod.Store,
     completions: completion_store_mod.Store,
     hover: hover_store_mod.Store,
+    references: references_store_mod.Store,
     events: kernel.EventBus(Event),
     palette: palette_mod.Palette,
     task_output: task_output_mod.TaskOutput,
@@ -107,6 +109,7 @@ pub const Workbench = struct {
     active_extension_theme: []const u8 = "",
     find_bar: editor_find_mod.FindBar,
     goto_bar: editor_find_mod.GotoBar,
+    rename_bar: editor_find_mod.RenameBar,
     user_settings: settings_mod.Settings = .{},
 
     pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8) !void {
@@ -138,10 +141,12 @@ pub const Workbench = struct {
             .debug_console = debug_console_mod.DebugConsole.init(allocator, io),
             .find_bar = try editor_find_mod.FindBar.init(allocator),
             .goto_bar = try editor_find_mod.GotoBar.init(allocator),
+            .rename_bar = try editor_find_mod.RenameBar.init(allocator),
             .terminal = undefined,
             .diagnostics = undefined,
             .completions = undefined,
             .hover = undefined,
+            .references = references_store_mod.Store.init(allocator),
         };
         errdefer self.deinit();
 
@@ -197,6 +202,7 @@ pub const Workbench = struct {
         self.diagnostics.deinit();
         self.completions.deinit();
         self.hover.deinit();
+        self.references.deinit();
         self.prompt_buffer.deinit();
         self.task_output.deinit();
         self.agent.deinit();
@@ -205,6 +211,7 @@ pub const Workbench = struct {
         self.scope_picker_filtered.deinit(self.allocator);
         self.find_bar.deinit();
         self.goto_bar.deinit();
+        self.rename_bar.deinit();
         self.user_settings.deinit(self.allocator);
         self.palette.deinit();
         self.theme.deinit();
@@ -355,6 +362,7 @@ pub const Workbench = struct {
                 try self.events.publish(.{ .explorer_refreshed = {} });
             },
             .run_task => |task_name| {
+                self.references.clear();
                 if (self.task_output.isRunning()) {
                     try self.setStatus("Task already running");
                     return;
@@ -543,6 +551,9 @@ pub const Workbench = struct {
             },
             .editor_scroll_to_cursor => self.scrollEditorToCursor(),
             .editor_go_to_definition => try self.goToDefinition(),
+            .editor_find_references => try self.findReferences(),
+            .editor_rename_symbol => try self.openRenameSymbol(),
+            .references_goto => |index| try self.gotoReference(index),
             .problems_goto => |index| try self.gotoProblem(index),
             .completion_accept => {
                 if (self.tabs.activeDoc()) |doc| try self.completions.acceptSelected(doc);
@@ -1197,10 +1208,191 @@ pub const Workbench = struct {
     pub fn closeEditorOverlay(self: *Workbench) void {
         self.find_bar.close();
         self.goto_bar.open = false;
-        if (self.focused_panel == .find or self.focused_panel == .goto_line) {
+        self.rename_bar.close();
+        if (self.focused_panel == .find or self.focused_panel == .goto_line or self.focused_panel == .rename) {
             self.focused_panel = self.previous_focus;
         }
         self.completions.dismiss();
+    }
+
+    pub fn openRenameSymbol(self: *Workbench) !void {
+        const buf = self.activeBuffer() orelse return;
+        const word = wordAtCursor(buf);
+        if (word.len == 0) {
+            try self.setStatus("No symbol at cursor");
+            return;
+        }
+        self.previous_focus = self.focused_panel;
+        self.focused_panel = .rename;
+        try self.rename_bar.openRename(word);
+    }
+
+    pub fn commitRenameSymbol(self: *Workbench) !void {
+        const name = self.rename_bar.name();
+        if (name.len == 0) return;
+        try self.renameSymbol(name);
+        self.closeEditorOverlay();
+    }
+
+    pub fn gotoReference(self: *Workbench, index: usize) !void {
+        if (index >= self.references.items.len) return;
+        const item = self.references.items[index];
+        try self.openFile(item.path);
+        if (self.activeBuffer()) |buf| {
+            buf.goToLine(@intCast(item.line + 1));
+            buf.cursor.col = @intCast(item.character);
+            self.scrollEditorToCursor();
+        }
+    }
+
+    fn lspSyncDocument(self: *Workbench, doc: *editor.Document, config: lsp.ServerConfig) ![]const u8 {
+        const uri = try lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path);
+        errdefer self.allocator.free(uri);
+        const content = try doc.buffer.content();
+        errdefer self.allocator.free(content);
+        const did_open = try lsp.diagnostics.buildDidOpenNotification(
+            self.allocator,
+            uri,
+            config.language_id,
+            content,
+        );
+        defer self.allocator.free(did_open);
+        var notify_buf: [65536]u8 = undefined;
+        _ = self.lsp_proxy.request(config.language_id, did_open, &notify_buf, notify_buf.len) catch {};
+        return uri;
+    }
+
+    pub fn gotoLocation(self: *Workbench, loc: lsp.navigation.Location) !void {
+        const rel = try lsp.navigation.uriToRelativePath(self.allocator, self.workspace_path, loc.uri);
+        if (rel) |path| {
+            defer self.allocator.free(path);
+            try self.openFile(path);
+            if (self.activeBuffer()) |buf| {
+                buf.goToLine(@intCast(loc.line + 1));
+                buf.cursor.col = @intCast(loc.character);
+                self.scrollEditorToCursor();
+            }
+            return;
+        }
+        try self.setStatus("Location outside workspace");
+    }
+
+    pub fn findReferences(self: *Workbench) !void {
+        const doc = self.tabs.activeDoc() orelse return;
+        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
+        const config = owned orelse {
+            try self.setStatus("No language server for this file");
+            return;
+        };
+        defer lsp.Registry.freeConfig(self.allocator, config);
+
+        const uri = try self.lspSyncDocument(self, doc, config);
+        defer self.allocator.free(uri);
+
+        const line: u32 = @intCast(doc.buffer.cursor.row);
+        const character: u32 = @intCast(doc.buffer.cursor.col);
+        const req = try lsp.references.buildReferencesRequest(self.allocator, 92, uri, line, character);
+        defer self.allocator.free(req);
+
+        var response_buf: [65536]u8 = undefined;
+        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
+            try self.setStatus("Find references failed");
+            return;
+        };
+
+        var list = try lsp.references.parseReferencesResponse(self.allocator, response_buf[0..len]);
+        defer list.deinit(self.allocator);
+
+        var items: std.ArrayList(references_store_mod.Item) = .empty;
+        errdefer {
+            for (items.items) |*item| item.deinit(self.allocator);
+            items.deinit(self.allocator);
+        }
+
+        for (list.items) |loc| {
+            const rel = try lsp.navigation.uriToRelativePath(self.allocator, self.workspace_path, loc.uri);
+            const path = rel orelse continue;
+            const label = try std.fmt.allocPrint(self.allocator, "{s}:{d}:{d}", .{
+                path,
+                loc.line + 1,
+                loc.character + 1,
+            });
+            errdefer self.allocator.free(label);
+            try items.append(self.allocator, .{
+                .path = path,
+                .line = loc.line,
+                .character = loc.character,
+                .label = label,
+            });
+        }
+
+        self.references.setItems(try items.toOwnedSlice(self.allocator));
+        self.bottom_panel_mode = .output;
+        self.task_scroll_y = 0;
+        var status_buf: [64]u8 = undefined;
+        const msg = try std.fmt.bufPrint(&status_buf, "{d} references", .{self.references.items.len});
+        try self.setStatus(msg);
+    }
+
+    pub fn renameSymbol(self: *Workbench, new_name: []const u8) !void {
+        const doc = self.tabs.activeDoc() orelse return;
+        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
+        const config = owned orelse {
+            try self.setStatus("No language server for this file");
+            return;
+        };
+        defer lsp.Registry.freeConfig(self.allocator, config);
+
+        const uri = try self.lspSyncDocument(self, doc, config);
+        defer self.allocator.free(uri);
+
+        const line: u32 = @intCast(doc.buffer.cursor.row);
+        const character: u32 = @intCast(doc.buffer.cursor.col);
+        const req = try lsp.rename.buildRenameRequest(self.allocator, 93, uri, line, character, new_name);
+        defer self.allocator.free(req);
+
+        var response_buf: [65536]u8 = undefined;
+        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
+            try self.setStatus("Rename failed");
+            return;
+        };
+
+        var edit = try lsp.rename.parseRenameResponse(self.allocator, response_buf[0..len]);
+        if (edit) |*workspace_edit| {
+            defer workspace_edit.deinit(self.allocator);
+            try self.applyWorkspaceEdit(workspace_edit);
+            try self.setStatus("Rename applied");
+            return;
+        }
+        try self.setStatus("Rename rejected by language server");
+    }
+
+    fn applyWorkspaceEdit(self: *Workbench, edit: *const lsp.rename.WorkspaceEdit) !void {
+        for (edit.files) |file_edit| {
+            const rel = try lsp.navigation.uriToRelativePath(self.allocator, self.workspace_path, file_edit.uri);
+            const path = rel orelse continue;
+            defer self.allocator.free(path);
+
+            const doc = try self.tabs.openOrActivate(path);
+            var index = file_edit.edits.len;
+            while (index > 0) {
+                index -= 1;
+                const text_edit = file_edit.edits[index];
+                const start_row: usize = @intCast(text_edit.line);
+                const start_col: usize = @intCast(text_edit.character);
+                const end_row: usize = @intCast(text_edit.end_line);
+                const end_col: usize = @intCast(text_edit.end_character);
+                if (start_row != end_row) continue;
+                const line = doc.buffer.lineAt(start_row);
+                const delete_len = if (end_col > start_col and end_col <= line.len)
+                    end_col - start_col
+                else if (start_col < line.len)
+                    @min(1, line.len - start_col)
+                else
+                    0;
+                try doc.buffer.replaceRange(start_row, start_col, delete_len, text_edit.new_text);
+            }
+        }
     }
 
     pub fn findNextMatch(self: *Workbench) !void {
@@ -1457,22 +1649,26 @@ pub const Workbench = struct {
         var location = try lsp.navigation.parseDefinitionResponse(self.allocator, response_buf[0..len]);
         if (location) |*loc| {
             defer loc.deinit(self.allocator);
-            const rel = try lsp.navigation.uriToRelativePath(self.allocator, self.workspace_path, loc.uri);
-            if (rel) |path| {
-                defer self.allocator.free(path);
-                try self.openFile(path);
-                if (self.activeBuffer()) |buf| {
-                    buf.goToLine(@intCast(loc.line + 1));
-                    buf.cursor.col = @intCast(loc.character);
-                    self.scrollEditorToCursor();
-                }
-                try self.setStatus("Go to definition");
-                return;
-            }
-            try self.setStatus("Definition outside workspace");
+            try self.gotoLocation(loc.*);
+            try self.setStatus("Go to definition");
             return;
         }
         try self.setStatus("No definition found");
+    }
+
+    fn wordAtCursor(buf: *editor.Buffer) []const u8 {
+        const line = buf.lineAt(buf.cursor.row);
+        if (line.len == 0) return "";
+        var start = buf.cursor.col;
+        if (start >= line.len) start = line.len - 1;
+        while (start > 0 and isIdentByte(line[start - 1])) start -= 1;
+        var end = start;
+        while (end < line.len and isIdentByte(line[end])) end += 1;
+        return line[start..end];
+    }
+
+    fn isIdentByte(ch: u8) bool {
+        return std.ascii.isAlphanumeric(ch) or ch == '_';
     }
 
     fn restoreRecoverySnapshots(self: *Workbench) !void {

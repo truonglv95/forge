@@ -59,6 +59,8 @@ pub const Registry = struct {
             .{ .key = "cmd+shift+z", .palette_id = "editor.redo" },
             .{ .key = "cmd+z", .palette_id = "editor.undo" },
             .{ .key = "f12", .palette_id = "editor.definition" },
+            .{ .key = "shift+f12", .palette_id = "editor.references" },
+            .{ .key = "f2", .palette_id = "editor.rename" },
         };
 
         for (builtins) |builtin| {
@@ -139,6 +141,9 @@ fn parseKey(raw: []const u8) ?ParsedKey {
     const key = key_part orelse return null;
     if (std.ascii.eqlIgnoreCase(key, "f12")) {
         return .{ .modifiers = modifiers, .keycode = 111 };
+    }
+    if (std.ascii.eqlIgnoreCase(key, "f2")) {
+        return .{ .modifiers = modifiers, .keycode = 120 };
     }
     const keycode = keycodeForChar(key[0]) orelse return null;
     return .{ .modifiers = modifiers, .keycode = keycode };

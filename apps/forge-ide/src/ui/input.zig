@@ -63,6 +63,11 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
+    if (wb.focused_panel == .rename) {
+        handleSymbolRenameKeys(wb, event);
+        return;
+    }
+
     if (wb.completions.visible and (event.keycode == 48 or event.keycode == 36)) {
         wb.dispatch(.completion_accept) catch {};
         return;
@@ -454,6 +459,25 @@ fn handleGotoKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.Ke
     }
 }
 
+fn handleSymbolRenameKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+    if (event.keycode == 53) {
+        wb.closeEditorOverlay();
+        return;
+    }
+    if (event.keycode == 36) {
+        wb.commitRenameSymbol() catch {};
+        return;
+    }
+    const input_buf = &wb.rename_bar.input;
+    if (event.keycode == 51) {
+        input_buf.backspace() catch {};
+        return;
+    }
+    if (event.chars.len > 0 and event.chars[0] >= 32) {
+        input_buf.insertString(event.chars) catch {};
+    }
+}
+
 fn handleRenameKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
         wb.cancelRename();
@@ -675,7 +699,20 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     wb.terminal_selection = null;
                 }
             } else if (bottom_panel.inContentArea(geo.task_panel_y, event.y)) {
-                if (wb.bottom_panel_mode == .problems) {
+                if (wb.bottom_panel_mode == .output and wb.references.active) {
+                    const references_panel = @import("../workbench/references_store.zig");
+                    if (references_panel.Store.hitTest(
+                        geo.editor_x,
+                        geo.task_panel_y,
+                        geo.task_panel_h,
+                        event.x,
+                        event.y,
+                        wb.task_scroll_y,
+                        wb.references.items.len,
+                    )) |index| {
+                        wb.dispatch(.{ .references_goto = index }) catch {};
+                    }
+                } else if (wb.bottom_panel_mode == .problems) {
                     const problems_panel = @import("problems_panel.zig");
                     if (problems_panel.hitTest(
                         geo.editor_x,
