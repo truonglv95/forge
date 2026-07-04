@@ -13,6 +13,8 @@ const git_panel = @import("git_panel.zig");
 const explorer_scroll = @import("explorer_scroll.zig");
 const tabs_ui = @import("tabs.zig");
 const theme_loader = @import("../theme_loader.zig");
+const bracket_match = @import("bracket_match.zig");
+const word_wrap = @import("word_wrap.zig");
 
 fn c(rgba: @import("forge-workspace").Rgba) renderer.Color {
     return theme_loader.toColor(rgba);
@@ -738,6 +740,44 @@ fn drawExplorerPanel(wb: *@import("../workbench.zig").Workbench, explorer_x: f32
     renderer.Renderer.clearClipRect();
 }
 
+fn drawBracketHighlight(
+    editor_buf: *@import("forge-editor").Buffer,
+    match: bracket_match.Match,
+    buf_line: usize,
+    start_col: usize,
+    end_col: usize,
+    text_x: f32,
+    line_y: f32,
+    line_h: f32,
+    font_size: f32,
+    theme: *const @import("forge-workspace").Theme,
+) void {
+    const hl = c(theme.colors.selection);
+    const mut = renderer.Color{ .r = hl.r, .g = hl.g, .b = hl.b, .a = 0.35 };
+    highlightBracketAt(editor_buf, match.from, buf_line, start_col, end_col, text_x, line_y, line_h, font_size, mut);
+    highlightBracketAt(editor_buf, match.to, buf_line, start_col, end_col, text_x, line_y, line_h, font_size, mut);
+}
+
+fn highlightBracketAt(
+    editor_buf: *@import("forge-editor").Buffer,
+    pos: bracket_match.Position,
+    buf_line: usize,
+    start_col: usize,
+    end_col: usize,
+    text_x: f32,
+    line_y: f32,
+    line_h: f32,
+    font_size: f32,
+    color: renderer.Color,
+) void {
+    if (pos.row != buf_line) return;
+    if (pos.col < start_col or pos.col >= end_col) return;
+    const line = editor_buf.lineAt(buf_line);
+    const x0 = text_x + editor_scroll.cursorX(line, pos.col, font_size);
+    const x1 = text_x + editor_scroll.cursorX(line, pos.col + 1, font_size);
+    renderer.Renderer.drawRect(x0, line_y, @max(4, x1 - x0), line_h, color);
+}
+
 fn drawEditorViewport(
     wb: *@import("../workbench.zig").Workbench,
     editor_buf: *@import("forge-editor").Buffer,
@@ -753,9 +793,11 @@ fn drawEditorViewport(
     const editor_view_h = editor_scroll.viewportHeight(editor_h);
     const gutter = editor_scroll.gutterWidth(theme);
     const line_h = editor_scroll.lineHeight(theme);
-    const char_w = editor_scroll.charWidth(theme);
     const font_size = theme.editor_font_size;
-    const text_x = editor_x + gutter - scroll_x;
+    const wrap_enabled = wb.user_settings.word_wrap;
+    const effective_scroll_x = if (wrap_enabled) @as(f32, 0) else scroll_x;
+    const text_x = editor_x + gutter - effective_scroll_x;
+    const viewport_w = editor_scroll.viewportWidth(editor_w, theme);
 
     if (pane_focused and wb.editor_split) {
         renderer.Renderer.drawRect(editor_x, 65, editor_w, 2, c(theme.colors.tab_active_bg));
@@ -765,14 +807,20 @@ fn drawEditorViewport(
     renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
     const show_cursor = @mod(state.time, 1.0) < 0.5;
     const show_editor_cursor = show_cursor and wb.focused_panel == .editor and pane_focused;
+    const bracket_pair = if (show_editor_cursor) bracket_match.findMatch(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col) else null;
 
     const line_count = editor_buf.lineCount();
-    const content_h = editor_scroll.contentHeight(line_count, theme);
-    const max_scroll_y = editor_scroll.maxScrollY(line_count, editor_h, theme);
+    const content_h = if (wrap_enabled)
+        word_wrap.contentHeight(editor_buf, viewport_w, font_size, theme)
+    else
+        editor_scroll.contentHeight(line_count, theme);
+    const max_scroll_y = if (wrap_enabled)
+        word_wrap.maxScrollY(editor_buf, editor_h, viewport_w, font_size, theme)
+    else
+        editor_scroll.maxScrollY(line_count, editor_h, theme);
     const max_line_len = editor_scroll.longestLineLen(editor_buf);
-    const content_w = @as(f32, @floatFromInt(max_line_len)) * char_w;
-    const viewport_w = editor_scroll.viewportWidth(editor_w, theme);
-    const max_scroll_x = editor_scroll.maxScrollX(content_w, editor_w, theme);
+    const content_w = @as(f32, @floatFromInt(max_line_len)) * editor_scroll.charWidth(theme);
+    const max_scroll_x = if (wrap_enabled) @as(f32, 0) else editor_scroll.maxScrollX(content_w, editor_w, theme);
 
     const show_diags = blk: {
         if (wb.diagnostics.active_path) |active_path| {
@@ -781,86 +829,186 @@ fn drawEditorViewport(
         break :blk false;
     };
 
-    var line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
     const diag_store = @import("../workbench/diagnostics_store.zig");
-    for (0..line_count) |idx| {
-        if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
-            if (wb.breakpoints.hasAt(file_path, idx)) {
-                renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, c(theme.colors.warning));
-            }
-            const debug_here = blk: {
-                if (wb.debug_stop_path) |stop_path| {
-                    if (wb.debug_stop_line) |stop_line| {
-                        break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == idx;
+    var line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
+
+    if (wrap_enabled) {
+        const visual_count = word_wrap.totalVisualLines(editor_buf, viewport_w, font_size);
+        for (0..visual_count) |visual_idx| {
+            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+                const seg = word_wrap.segmentAt(editor_buf, visual_idx, viewport_w, font_size);
+                if (seg.start_col == 0) {
+                    if (wb.breakpoints.hasAt(file_path, seg.buf_line)) {
+                        renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, c(theme.colors.warning));
+                    }
+                    const debug_here = blk: {
+                        if (wb.debug_stop_path) |stop_path| {
+                            if (wb.debug_stop_line) |stop_line| {
+                                break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == seg.buf_line;
+                            }
+                        }
+                        break :blk false;
+                    };
+                    if (debug_here) {
+                        renderer.Renderer.drawText("→", editor_x + 2, line_num_y, font_size, c(theme.colors.accent));
+                    }
+                    var num_buf: [16]u8 = undefined;
+                    const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{seg.buf_line + 1}) catch "";
+                    renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, c(theme.colors.line_number));
+                    if (show_diags) {
+                        if (diag_store.worstSeverityOnLine(wb.diagnostics.list, seg.buf_line)) |severity| {
+                            const marker = switch (severity) {
+                                .err => "!",
+                                .warning => "~",
+                                else => "·",
+                            };
+                            const marker_color = switch (severity) {
+                                .err => c(theme.colors.warning),
+                                .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
+                                else => c(theme.colors.text_muted),
+                            };
+                            renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
+                        }
                     }
                 }
-                break :blk false;
-            };
-            if (debug_here) {
-                renderer.Renderer.drawText("→", editor_x + 2, line_num_y, font_size, c(theme.colors.accent));
             }
-            var num_buf: [16]u8 = undefined;
-            const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{idx + 1}) catch "";
-            renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, c(theme.colors.line_number));
-            if (show_diags) {
-                if (diag_store.worstSeverityOnLine(wb.diagnostics.list, idx)) |severity| {
-                    const marker = switch (severity) {
-                        .err => "!",
-                        .warning => "~",
-                        else => "·",
-                    };
-                    const marker_color = switch (severity) {
-                        .err => c(theme.colors.warning),
-                        .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
-                        else => c(theme.colors.text_muted),
-                    };
-                    renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
+            line_num_y += line_h;
+        }
+    } else {
+        for (0..line_count) |idx| {
+            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+                if (wb.breakpoints.hasAt(file_path, idx)) {
+                    renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, c(theme.colors.warning));
+                }
+                const debug_here = blk: {
+                    if (wb.debug_stop_path) |stop_path| {
+                        if (wb.debug_stop_line) |stop_line| {
+                            break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == idx;
+                        }
+                    }
+                    break :blk false;
+                };
+                if (debug_here) {
+                    renderer.Renderer.drawText("→", editor_x + 2, line_num_y, font_size, c(theme.colors.accent));
+                }
+                var num_buf: [16]u8 = undefined;
+                const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{idx + 1}) catch "";
+                renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, c(theme.colors.line_number));
+                if (show_diags) {
+                    if (diag_store.worstSeverityOnLine(wb.diagnostics.list, idx)) |severity| {
+                        const marker = switch (severity) {
+                            .err => "!",
+                            .warning => "~",
+                            else => "·",
+                        };
+                        const marker_color = switch (severity) {
+                            .err => c(theme.colors.warning),
+                            .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
+                            else => c(theme.colors.text_muted),
+                        };
+                        renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
+                    }
                 }
             }
+            line_num_y += line_h;
         }
-        line_num_y += line_h;
     }
 
     renderer.Renderer.setClipRect(editor_x + gutter, 65, editor_w - gutter, editor_view_h);
     line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
-    for (0..line_count) |idx| {
-        if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
-            const debug_here = blk: {
-                if (wb.debug_stop_path) |stop_path| {
-                    if (wb.debug_stop_line) |stop_line| {
-                        break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == idx;
+
+    if (wrap_enabled) {
+        const visual_count = word_wrap.totalVisualLines(editor_buf, viewport_w, font_size);
+        const cursor_visual = word_wrap.visualIndexForCursor(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col, viewport_w, font_size);
+        for (0..visual_count) |visual_idx| {
+            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+                const seg = word_wrap.segmentAt(editor_buf, visual_idx, viewport_w, font_size);
+                const slice = editor_buf.lineAt(seg.buf_line)[seg.start_col..seg.end_col];
+                const seg_text_x = text_x + editor_scroll.cursorX(editor_buf.lineAt(seg.buf_line), seg.start_col, font_size);
+
+                const debug_here = blk: {
+                    if (wb.debug_stop_path) |stop_path| {
+                        if (wb.debug_stop_line) |stop_line| {
+                            break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == seg.buf_line and seg.start_col == 0;
+                        }
+                    }
+                    break :blk false;
+                };
+                if (debug_here) {
+                    renderer.Renderer.drawRect(seg_text_x - 4, line_num_y, viewport_w, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
+                }
+                drawFindHighlights(wb, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
+                drawHighlightedLine(slice, seg_text_x, line_num_y, theme);
+                if (bracket_pair) |pair| {
+                    drawBracketHighlight(editor_buf, pair, seg.buf_line, seg.start_col, seg.end_col, seg_text_x, line_num_y, line_h, font_size, theme);
+                }
+                if (show_diags) {
+                    for (wb.diagnostics.list.items) |diag| {
+                        if (diag.line != seg.buf_line) continue;
+                        const line = editor_buf.lineAt(seg.buf_line);
+                        const start_x = seg_text_x + editor_scroll.cursorX(line, @max(seg.start_col, @min(diag.character, seg.end_col)), font_size) - editor_scroll.cursorX(line, seg.start_col, font_size);
+                        const end_col = @min(if (diag.end_line == seg.buf_line) diag.end_character else line.len, seg.end_col);
+                        const end_x = seg_text_x + editor_scroll.cursorX(line, @max(seg.start_col, end_col), font_size) - editor_scroll.cursorX(line, seg.start_col, font_size);
+                        const underline_y = line_num_y + line_h - 3;
+                        const underline_color = switch (diag.severity) {
+                            .err => c(theme.colors.warning),
+                            .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
+                            else => c(theme.colors.text_muted),
+                        };
+                        renderer.Renderer.drawRect(start_x, underline_y, @max(4, end_x - start_x), 2, underline_color);
                     }
                 }
-                break :blk false;
-            };
-            if (debug_here) {
-                renderer.Renderer.drawRect(text_x - 4, line_num_y, content_w + 8, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
-            }
-            drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
-            drawHighlightedLine(editor_buf.lineAt(idx), text_x, line_num_y, theme);
-            if (show_diags) {
-                for (wb.diagnostics.list.items) |diag| {
-                    if (diag.line != idx) continue;
-                    const line = editor_buf.lineAt(idx);
-                    const start_x = text_x + editor_scroll.cursorX(line, @min(diag.character, line.len), font_size);
-                    const end_col = @min(if (diag.end_line == idx) diag.end_character else line.len, line.len);
-                    const end_x = text_x + editor_scroll.cursorX(line, end_col, font_size);
-                    const underline_y = line_num_y + line_h - 3;
-                    const underline_color = switch (diag.severity) {
-                        .err => c(theme.colors.warning),
-                        .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
-                        else => c(theme.colors.text_muted),
-                    };
-                    renderer.Renderer.drawRect(start_x, underline_y, @max(4, end_x - start_x), 2, underline_color);
+                if (show_editor_cursor and visual_idx == cursor_visual) {
+                    const line = editor_buf.lineAt(seg.buf_line);
+                    const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
+                    renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, c(theme.colors.cursor));
                 }
             }
-            if (show_editor_cursor and idx == editor_buf.cursor.row) {
-                const line = editor_buf.lineAt(idx);
-                const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
-                renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, c(theme.colors.cursor));
-            }
+            line_num_y += line_h;
         }
-        line_num_y += line_h;
+    } else {
+        for (0..line_count) |idx| {
+            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+                const debug_here = blk: {
+                    if (wb.debug_stop_path) |stop_path| {
+                        if (wb.debug_stop_line) |stop_line| {
+                            break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == idx;
+                        }
+                    }
+                    break :blk false;
+                };
+                if (debug_here) {
+                    renderer.Renderer.drawRect(text_x - 4, line_num_y, content_w + 8, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
+                }
+                drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
+                drawHighlightedLine(editor_buf.lineAt(idx), text_x, line_num_y, theme);
+                if (bracket_pair) |pair| {
+                    drawBracketHighlight(editor_buf, pair, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, theme);
+                }
+                if (show_diags) {
+                    for (wb.diagnostics.list.items) |diag| {
+                        if (diag.line != idx) continue;
+                        const line = editor_buf.lineAt(idx);
+                        const start_x = text_x + editor_scroll.cursorX(line, @min(diag.character, line.len), font_size);
+                        const end_col = @min(if (diag.end_line == idx) diag.end_character else line.len, line.len);
+                        const end_x = text_x + editor_scroll.cursorX(line, end_col, font_size);
+                        const underline_y = line_num_y + line_h - 3;
+                        const underline_color = switch (diag.severity) {
+                            .err => c(theme.colors.warning),
+                            .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
+                            else => c(theme.colors.text_muted),
+                        };
+                        renderer.Renderer.drawRect(start_x, underline_y, @max(4, end_x - start_x), 2, underline_color);
+                    }
+                }
+                if (show_editor_cursor and idx == editor_buf.cursor.row) {
+                    const line = editor_buf.lineAt(idx);
+                    const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
+                    renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, c(theme.colors.cursor));
+                }
+            }
+            line_num_y += line_h;
+        }
     }
 
     renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
@@ -1318,6 +1466,30 @@ fn drawTaskPanel(wb: *@import("../workbench.zig").Workbench, editor_x: f32, edit
             }
             if (wb.debug_console.lines.items.len == 0) {
                 renderer.Renderer.drawText("Debug console ready.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+            }
+        },
+        .debug_variables => {
+            const content_top = panel_y + 34.0;
+            const content_h = panel_h - 34.0;
+            renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
+            var line_y = content_top - wb.task_scroll_y;
+            if (line_y + 14 >= content_top and line_y < content_top + content_h) {
+                renderer.Renderer.drawText("LOCAL VARIABLES", editor_x + 20, line_y, 10.0, .{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 });
+            }
+            line_y += 16;
+            for (wb.debug_variables.items.items) |entry| {
+                if (line_y + 14 < content_top or line_y >= content_top + content_h) {
+                    line_y += 14;
+                    continue;
+                }
+                var buf: [512:0]u8 = undefined;
+                const label = std.fmt.bufPrint(&buf, "{s} ({s}) = {s}", .{ entry.name, entry.type_name, entry.value }) catch entry.name;
+                buf[label.len] = 0;
+                renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.85, .g = 0.92, .b = 0.75, .a = 1.0 });
+                line_y += 14;
+            }
+            if (wb.debug_variables.items.items.len == 0) {
+                renderer.Renderer.drawText("No variables — start debug session and step.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
             }
         },
     }

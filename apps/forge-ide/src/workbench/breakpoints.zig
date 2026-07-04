@@ -10,6 +10,11 @@ pub const Breakpoint = struct {
     }
 };
 
+pub const Entry = struct {
+    path: []const u8,
+    line: usize,
+};
+
 pub const Store = struct {
     allocator: std.mem.Allocator,
     items: std.ArrayList(Breakpoint),
@@ -48,5 +53,15 @@ pub const Store = struct {
             if (std.mem.eql(u8, bp.path, path) and bp.line == line) return true;
         }
         return false;
+    }
+
+    pub fn restoreAll(self: *Store, entries: []const Entry) !void {
+        self.clear();
+        for (entries) |entry| {
+            try self.items.append(self.allocator, .{
+                .path = try self.allocator.dupe(u8, entry.path),
+                .line = entry.line,
+            });
+        }
     }
 };

@@ -69,6 +69,7 @@ pub const Registry = struct {
             .{ .key = "f11", .palette_id = "debug.step_into" },
             .{ .key = "shift+f11", .palette_id = "debug.step_out" },
             .{ .key = "shift+alt+f", .palette_id = "editor.format" },
+            .{ .key = "cmd+.", .palette_id = "problem.quick_fix" },
         };
 
         for (builtins) |builtin| {
@@ -199,6 +200,7 @@ fn keycodeForChar(ch: u8) ?i32 {
             'u' => 32,
             'i' => 34,
             'p' => 35,
+            '.' => 47,
             else => null,
         },
     };

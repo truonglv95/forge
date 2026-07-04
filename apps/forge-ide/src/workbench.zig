@@ -31,6 +31,8 @@ const lsp_sync_mod = @import("workbench/lsp_sync.zig");
 const rename_preview_mod = @import("workbench/rename_preview.zig");
 const debug_lldb_session_mod = @import("workbench/debug_lldb_session.zig");
 const debug_stop_mod = @import("workbench/debug_stop.zig");
+const debug_variables_mod = @import("workbench/debug_variables.zig");
+const recent_workspaces_mod = @import("workbench/recent_workspaces.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
 const editor_find_mod = @import("workbench/editor_find.zig");
@@ -75,6 +77,8 @@ pub const Workbench = struct {
     debug_lldb: debug_lldb_session_mod.Session,
     debug_stop_path: ?[]const u8 = null,
     debug_stop_line: ?usize = null,
+    debug_variables: debug_variables_mod.Store,
+    recent_workspace_paths: []const []const u8 = &.{},
     terminals: terminal_group_mod.Group,
     lsp_sync: lsp_sync_mod.Store,
     diagnostics: diagnostics_store_mod.Store,
@@ -127,8 +131,9 @@ pub const Workbench = struct {
     goto_bar: editor_find_mod.GotoBar,
     rename_bar: editor_find_mod.RenameBar,
     user_settings: settings_mod.Settings = .{},
+    ide_launcher: []const u8 = "forge-ide",
 
-    pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8) !void {
+    pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8, ide_launcher: []const u8) !void {
         var root = try workspace.WorkspaceRoot.open(io, workspace_path);
         errdefer root.close(io);
 
@@ -155,10 +160,12 @@ pub const Workbench = struct {
             .chat_history = .empty,
             .breakpoints = breakpoints_mod.Store.init(allocator),
             .debug_console = debug_console_mod.DebugConsole.init(allocator, io),
+            .debug_variables = debug_variables_mod.Store.init(allocator),
             .debug_lldb = undefined,
             .find_bar = try editor_find_mod.FindBar.init(allocator),
             .goto_bar = try editor_find_mod.GotoBar.init(allocator),
             .rename_bar = try editor_find_mod.RenameBar.init(allocator),
+            .ide_launcher = try allocator.dupe(u8, ide_launcher),
             .terminals = undefined,
             .lsp_sync = undefined,
             .diagnostics = undefined,
@@ -185,6 +192,8 @@ pub const Workbench = struct {
         try self.extension_host.activateAll();
         try self.syncContributions();
         try self.palette.addExtensionCommands(&self.extension_host);
+        try recent_workspaces_mod.record(allocator, io, workspace_path);
+        try self.refreshRecentWorkspaces();
 
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
         self.user_settings = settings_mod.load(allocator, io, root) catch .{};
@@ -223,6 +232,8 @@ pub const Workbench = struct {
         if (self.search_results) |*results| results.deinit(self.allocator);
         if (self.git_status) |*status| status.deinit(self.allocator);
         if (self.debug_stop_path) |path| self.allocator.free(path);
+        self.debug_variables.deinit();
+        recent_workspaces_mod.freePaths(self.allocator, self.recent_workspace_paths);
         self.breakpoints.deinit();
         self.debug_console.deinit();
         self.debug_lldb.deinit();
@@ -243,6 +254,7 @@ pub const Workbench = struct {
         self.goto_bar.deinit();
         self.rename_bar.deinit();
         self.user_settings.deinit(self.allocator);
+        self.allocator.free(self.ide_launcher);
         self.palette.deinit();
         self.theme.deinit();
         if (self.active_extension_theme.len > 0) self.allocator.free(self.active_extension_theme);
@@ -278,6 +290,9 @@ pub const Workbench = struct {
                 try workspace_io.saveDocument(self.io, self.workspace_root, doc);
                 try recovery_mod.snapshotDirtyDocs(self.allocator, self.io, self.workspace_root, &self.tabs);
                 try self.events.publish(.{ .file_saved = doc.path });
+                if (std.mem.eql(u8, doc.path, ".forge/settings.toml")) {
+                    try self.reloadUserSettings();
+                }
                 try self.setStatus("Saved");
             },
             .explorer_toggle => |path| {
@@ -625,6 +640,9 @@ pub const Workbench = struct {
             .completion_dismiss => self.completions.dismiss(),
             .save_session_state => try self.persistSessionState(),
             .restore_session_state => try self.restoreSessionTabs(),
+            .settings_reload => try self.reloadUserSettings(),
+            .open_recent_workspace => |index| try self.openRecentWorkspace(index),
+            .problem_quick_fix => try self.quickFixAtCursor(),
         }
     }
 
@@ -786,22 +804,44 @@ pub const Workbench = struct {
 
     pub fn clampEditorScroll(self: *Workbench, editor_w: f32, editor_h: f32) void {
         const scroll = @import("ui/editor_scroll.zig");
+        const word_wrap = @import("ui/word_wrap.zig");
         const pane_w = self.paneWidth(editor_w);
+        const viewport_w = scroll.viewportWidth(pane_w, &self.theme);
+        const wrap = self.user_settings.word_wrap;
+
         if (self.docForPane(.primary)) |doc| {
-            const max_line_len = scroll.longestLineLen(&doc.buffer);
-            const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&self.theme);
-            self.editor_scroll_y = scroll.clampScrollY(self.editor_scroll_y, doc.buffer.lineCount(), editor_h, &self.theme);
-            self.editor_scroll_x = scroll.clampScrollX(self.editor_scroll_x, content_w, pane_w, &self.theme);
+            if (wrap) {
+                self.editor_scroll_y = std.math.clamp(
+                    self.editor_scroll_y,
+                    0,
+                    word_wrap.maxScrollY(&doc.buffer, editor_h, viewport_w, self.theme.editor_font_size, &self.theme),
+                );
+                self.editor_scroll_x = 0;
+            } else {
+                const max_line_len = scroll.longestLineLen(&doc.buffer);
+                const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&self.theme);
+                self.editor_scroll_y = scroll.clampScrollY(self.editor_scroll_y, doc.buffer.lineCount(), editor_h, &self.theme);
+                self.editor_scroll_x = scroll.clampScrollX(self.editor_scroll_x, content_w, pane_w, &self.theme);
+            }
         } else {
             self.editor_scroll_y = 0;
             self.editor_scroll_x = 0;
         }
         if (self.editor_split) {
             if (self.docForPane(.secondary)) |doc| {
-                const max_line_len = scroll.longestLineLen(&doc.buffer);
-                const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&self.theme);
-                self.split_scroll_y = scroll.clampScrollY(self.split_scroll_y, doc.buffer.lineCount(), editor_h, &self.theme);
-                self.split_scroll_x = scroll.clampScrollX(self.split_scroll_x, content_w, pane_w, &self.theme);
+                if (wrap) {
+                    self.split_scroll_y = std.math.clamp(
+                        self.split_scroll_y,
+                        0,
+                        word_wrap.maxScrollY(&doc.buffer, editor_h, viewport_w, self.theme.editor_font_size, &self.theme),
+                    );
+                    self.split_scroll_x = 0;
+                } else {
+                    const max_line_len = scroll.longestLineLen(&doc.buffer);
+                    const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&self.theme);
+                    self.split_scroll_y = scroll.clampScrollY(self.split_scroll_y, doc.buffer.lineCount(), editor_h, &self.theme);
+                    self.split_scroll_x = scroll.clampScrollX(self.split_scroll_x, content_w, pane_w, &self.theme);
+                }
             } else {
                 self.split_scroll_y = 0;
                 self.split_scroll_x = 0;
@@ -873,6 +913,7 @@ pub const Workbench = struct {
                 break :blk terminal.lines.items.len + partial;
             },
             .debug_console => self.debug_console.lines.items.len,
+            .debug_variables => self.debug_variables.items.items.len,
         };
     }
 
@@ -949,6 +990,7 @@ pub const Workbench = struct {
             try std.fmt.bufPrint(&buf, "Breakpoint removed at {s}:{d}", .{ doc.path, row + 1 });
         try self.debug_console.log(msg);
         try self.setStatus(msg);
+        try self.persistSessionState();
     }
 
     pub fn runLaunchConfig(self: *Workbench, index: usize) !void {
@@ -969,6 +1011,7 @@ pub const Workbench = struct {
             self.task_output.setRunning(true);
             self.debug_console.clear();
             self.clearDebugStop();
+            self.debug_variables.clear();
             try self.debug_console.log("Starting interactive lldb session…");
             try self.debug_lldb.start(
                 self.allocator,
@@ -1010,6 +1053,10 @@ pub const Workbench = struct {
     fn onDebugLine(context: ?*anyopaque, line: []const u8) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.debug_console.log(line) catch {};
+        if (debug_variables_mod.parseVariableLine(line)) |parsed| {
+            self.debug_variables.addParsed(parsed) catch {};
+            self.bottom_panel_mode = .debug_variables;
+        }
         if (debug_stop_mod.parseStopLine(line)) |loc| {
             self.applyDebugStop(loc.path, loc.line);
         }
@@ -1048,6 +1095,7 @@ pub const Workbench = struct {
     fn onDebugLldbFinished(context: ?*anyopaque, exit_code: i32) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.clearDebugStop();
+        self.debug_variables.clear();
         self.task_output.setRunning(false);
         var buf: [64]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Debug session ended (exit {d})", .{exit_code}) catch "Debug session ended";
@@ -1064,6 +1112,7 @@ pub const Workbench = struct {
             try self.setStatus("No active debug session");
             return;
         }
+        self.debug_variables.clear();
         try self.debug_lldb.continueExecution();
         try self.setStatus("Debug: continue");
     }
@@ -1073,6 +1122,7 @@ pub const Workbench = struct {
             try self.setStatus("No active debug session");
             return;
         }
+        self.debug_variables.clear();
         try self.debug_lldb.stepOver();
         try self.setStatus("Debug: step over");
     }
@@ -1082,6 +1132,7 @@ pub const Workbench = struct {
             try self.setStatus("No active debug session");
             return;
         }
+        self.debug_variables.clear();
         try self.debug_lldb.stepInto();
         try self.setStatus("Debug: step into");
     }
@@ -1091,6 +1142,7 @@ pub const Workbench = struct {
             try self.setStatus("No active debug session");
             return;
         }
+        self.debug_variables.clear();
         try self.debug_lldb.stepOut();
         try self.setStatus("Debug: step out");
     }
@@ -1099,6 +1151,7 @@ pub const Workbench = struct {
         if (!self.debug_lldb.isActive()) return;
         self.debug_lldb.stop();
         self.clearDebugStop();
+        self.debug_variables.clear();
         self.task_output.setRunning(false);
         self.debug_console.log("Debug session stopped") catch {};
     }
@@ -1322,7 +1375,96 @@ pub const Workbench = struct {
     pub fn reloadTheme(self: *Workbench) !void {
         self.theme.deinit();
         self.theme = try @import("theme_loader.zig").loadTheme(self.allocator, self.io, self.workspace_root, &self.extension_host);
+        settings_mod.applyToTheme(self.user_settings, &self.theme);
+        @import("theme_loader.zig").syncFontMetrics(&self.theme);
+        @import("theme_loader.zig").applyToRenderer(&self.theme);
         try self.setStatus("Theme reloaded");
+    }
+
+    pub fn reloadUserSettings(self: *Workbench) !void {
+        self.user_settings.deinit(self.allocator);
+        self.user_settings = settings_mod.load(self.allocator, self.io, self.workspace_root) catch .{};
+        settings_mod.applyToTheme(self.user_settings, &self.theme);
+        @import("theme_loader.zig").syncFontMetrics(&self.theme);
+        @import("theme_loader.zig").applyToRenderer(&self.theme);
+        try self.setStatus("Settings reloaded");
+    }
+
+    pub fn refreshRecentWorkspaces(self: *Workbench) !void {
+        recent_workspaces_mod.freePaths(self.allocator, self.recent_workspace_paths);
+        self.recent_workspace_paths = try recent_workspaces_mod.loadAll(self.allocator, self.io);
+        try self.palette.addRecentWorkspaces(self.recent_workspace_paths);
+    }
+
+    pub fn openRecentWorkspace(self: *Workbench, index: usize) !void {
+        if (index >= self.recent_workspace_paths.len) return;
+        const path = self.recent_workspace_paths[index];
+        if (std.mem.eql(u8, path, self.workspace_path)) {
+            try self.setStatus("Already in this workspace");
+            return;
+        }
+        try recent_workspaces_mod.spawnIde(self.allocator, self.ide_launcher, path);
+        try self.setStatus("Opened workspace in new Forge window");
+    }
+
+    pub fn quickFixAtCursor(self: *Workbench) !void {
+        const doc = self.tabs.activeDoc() orelse {
+            try self.setStatus("No file open for quick fix");
+            return;
+        };
+        const row: u32 = @intCast(doc.buffer.cursor.row);
+        const col: u32 = @intCast(doc.buffer.cursor.col);
+
+        var diag_match: ?lsp.diagnostics.Diagnostic = null;
+        for (self.diagnostics.list.items) |diag| {
+            if (diag.line != row) continue;
+            if (col >= diag.character and col <= diag.end_character) {
+                diag_match = diag;
+                break;
+            }
+        }
+        const diag = diag_match orelse {
+            try self.setStatus("No diagnostic at cursor");
+            return;
+        };
+
+        _ = try self.lsp_sync.ensureSyncedBlocking(doc);
+
+        const uri = try lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path);
+        defer self.allocator.free(uri);
+
+        const req = try lsp.code_action.buildCodeActionRequest(self.allocator, 95, uri, diag);
+        defer self.allocator.free(req);
+
+        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
+        const config = owned orelse {
+            try self.setStatus("No language server for quick fix");
+            return;
+        };
+        defer lsp.Registry.freeConfig(self.allocator, config);
+
+        var response_buf: [256 * 1024]u8 = undefined;
+        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch |err| {
+            try self.setStatus(@errorName(err));
+            return;
+        };
+
+        const actions = try lsp.code_action.parseCodeActionResponse(self.allocator, response_buf[0..len]);
+        defer {
+            for (actions) |*action| action.deinit(self.allocator);
+            self.allocator.free(actions);
+        }
+        if (actions.len == 0) {
+            try self.setStatus("No quick fixes available");
+            return;
+        }
+
+        if (actions[0].edit) |*edit| {
+            try self.applyWorkspaceEdit(edit);
+            try self.setStatus(actions[0].title);
+            return;
+        }
+        try self.setStatus("Quick fix has no edit");
     }
 
     pub fn clampTabScroll(self: *Workbench, editor_w: f32) void {
@@ -1458,16 +1600,23 @@ pub const Workbench = struct {
         const pane_w = self.paneWidth(geo.editor_w);
         const scroll_y: *f32 = if (pane == .secondary) &self.split_scroll_y else &self.editor_scroll_y;
         const scroll_x: *f32 = if (pane == .secondary) &self.split_scroll_x else &self.editor_scroll_x;
-        const scrolled = @import("ui/editor_scroll.zig").scrollToCursor(
-            scroll_y.*,
-            scroll_x.*,
-            &doc.buffer,
-            pane_w,
-            geo.editor_h,
-            &self.theme,
-        );
-        scroll_y.* = scrolled.y;
-        scroll_x.* = scrolled.x;
+        if (self.user_settings.word_wrap) {
+            const word_wrap = @import("ui/word_wrap.zig");
+            const viewport_w = @import("ui/editor_scroll.zig").viewportWidth(pane_w, &self.theme);
+            scroll_y.* = word_wrap.scrollToCursor(scroll_y.*, &doc.buffer, geo.editor_h, viewport_w, self.theme.editor_font_size, &self.theme);
+            scroll_x.* = 0;
+        } else {
+            const scrolled = @import("ui/editor_scroll.zig").scrollToCursor(
+                scroll_y.*,
+                scroll_x.*,
+                &doc.buffer,
+                pane_w,
+                geo.editor_h,
+                &self.theme,
+            );
+            scroll_y.* = scrolled.y;
+            scroll_x.* = scrolled.x;
+        }
     }
 
     pub fn openEditorFind(self: *Workbench, replace_mode: bool) !void {
@@ -1780,12 +1929,25 @@ pub const Workbench = struct {
         for (self.tabs.tabs.items) |doc| {
             try paths.append(self.allocator, doc.path);
         }
-        try session_restore_mod.saveOpenTabs(self.allocator, self.io, self.workspace_root, paths.items, self.tabs.active);
+        const layout: session_restore_mod.Layout = .{
+            .active = self.tabs.active,
+            .editor_split = self.editor_split,
+            .split_tab_index = self.split_tab_index,
+            .editor_pane_secondary = self.editor_pane_focus == .secondary,
+            .editor_scroll_y = self.editor_scroll_y,
+            .editor_scroll_x = self.editor_scroll_x,
+            .split_scroll_y = self.split_scroll_y,
+            .split_scroll_x = self.split_scroll_x,
+            .bottom_panel_mode = self.bottom_panel_mode,
+            .sidebar_view = self.sidebar_view,
+            .bottom_panel_height = self.bottom_panel_height,
+        };
+        try session_restore_mod.saveSession(self.allocator, self.io, self.workspace_root, paths.items, layout, &self.breakpoints);
     }
 
     pub fn restoreSessionTabs(self: *Workbench) !void {
-        const loaded = try session_restore_mod.loadOpenTabs(self.allocator, self.io, self.workspace_root);
-        defer session_restore_mod.freeLoadedTabs(self.allocator, loaded.paths);
+        const loaded = try session_restore_mod.loadSession(self.allocator, self.io, self.workspace_root);
+        defer session_restore_mod.freeLoadedSession(self.allocator, loaded.paths, loaded.breakpoint_lines);
         if (loaded.paths.len == 0) return;
 
         self.closeAllTabsWithLsp();
@@ -1797,10 +1959,27 @@ pub const Workbench = struct {
         for (self.tabs.tabs.items) |*doc| {
             _ = self.lsp_sync.ensureSyncedBlocking(doc) catch {};
         }
-        if (loaded.active < self.tabs.tabs.items.len) {
-            try self.activateTab(loaded.active);
+        if (loaded.layout.active < self.tabs.tabs.items.len) {
+            try self.activateTab(loaded.layout.active);
         }
-        try self.setStatus("Session tabs restored");
+
+        self.editor_split = loaded.layout.editor_split;
+        self.split_tab_index = if (loaded.layout.split_tab_index < self.tabs.tabs.items.len)
+            loaded.layout.split_tab_index
+        else
+            self.tabs.active;
+        self.editor_pane_focus = if (loaded.layout.editor_pane_secondary) .secondary else .primary;
+        self.editor_scroll_y = loaded.layout.editor_scroll_y;
+        self.editor_scroll_x = loaded.layout.editor_scroll_x;
+        self.split_scroll_y = loaded.layout.split_scroll_y;
+        self.split_scroll_x = loaded.layout.split_scroll_x;
+        self.bottom_panel_mode = loaded.layout.bottom_panel_mode;
+        self.sidebar_view = loaded.layout.sidebar_view;
+        self.bottom_panel_height = loaded.layout.bottom_panel_height;
+
+        try self.breakpoints.restoreAll(loaded.breakpoint_lines);
+
+        try self.setStatus("Session restored");
     }
 
     fn closeAllTabsWithLsp(self: *Workbench) void {

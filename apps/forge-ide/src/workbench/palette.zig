@@ -60,6 +60,7 @@ pub const Palette = struct {
         const builtins = [_]Entry{
             .{ .id = "palette.open", .title = "Show Command Palette", .category = "View", .command = .palette_open },
             .{ .id = "settings.open", .title = "Preferences: Open User Settings", .category = "View", .command = .{ .open_file = ".forge/settings.toml" } },
+            .{ .id = "settings.reload", .title = "Preferences: Reload Settings", .category = "View", .command = .settings_reload },
             .{ .id = "theme.reload", .title = "Theme: Reload from forge.toml", .category = "View", .command = .reload_theme },
             .{ .id = "view.ide", .title = "View: IDE Mode", .category = "View", .command = .{ .set_shell_mode = .ide } },
             .{ .id = "view.agent", .title = "View: Agent Window", .category = "View", .command = .{ .set_shell_mode = .agent_window } },
@@ -81,6 +82,7 @@ pub const Palette = struct {
             .{ .id = "editor.references", .title = "Find All References", .category = "Edit", .command = .editor_find_references },
             .{ .id = "editor.rename", .title = "Rename Symbol", .category = "Edit", .command = .editor_rename_symbol },
             .{ .id = "editor.format", .title = "Format Document", .category = "Edit", .command = .editor_format_document },
+            .{ .id = "problem.quick_fix", .title = "Problem: Quick Fix at Cursor", .category = "Edit", .command = .problem_quick_fix },
             .{ .id = "editor.split", .title = "Split Editor Right", .category = "Edit", .command = .editor_split_right },
             .{ .id = "editor.close_split", .title = "Close Editor Split", .category = "Edit", .command = .editor_close_split },
             .{ .id = "rename.accept", .title = "Rename: Accept Preview", .category = "Edit", .command = .rename_accept },
@@ -107,6 +109,7 @@ pub const Palette = struct {
             .{ .id = "terminal.close", .title = "Terminal: Close Active", .category = "Terminal", .command = .terminal_close },
             .{ .id = "terminal.next", .title = "Terminal: Next", .category = "Terminal", .command = .terminal_next },
             .{ .id = "view.debug_console", .title = "View: Show Debug Console", .category = "View", .command = .{ .set_bottom_panel_mode = .debug_console } },
+            .{ .id = "view.debug_variables", .title = "View: Show Debug Variables", .category = "View", .command = .{ .set_bottom_panel_mode = .debug_variables } },
             .{ .id = "debug.toggle_breakpoint", .title = "Debug: Toggle Breakpoint", .category = "Debug", .command = .debug_toggle_breakpoint },
             .{ .id = "debug.clear_breakpoints", .title = "Debug: Clear Breakpoints", .category = "Debug", .command = .debug_clear_breakpoints },
             .{ .id = "debug.continue", .title = "Debug: Continue", .category = "Debug", .command = .debug_continue },
@@ -133,6 +136,42 @@ pub const Palette = struct {
         }
 
         self.entries = try list.toOwnedSlice(self.allocator);
+    }
+
+    pub fn addRecentWorkspaces(self: *Palette, paths: []const []const u8) !void {
+        var list: std.ArrayList(Entry) = .empty;
+        errdefer {
+            for (list.items) |entry| self.freeEntry(entry);
+            list.deinit(self.allocator);
+        }
+
+        for (self.entries) |entry| {
+            if (std.mem.startsWith(u8, entry.id, "recent.")) continue;
+            try list.append(self.allocator, .{
+                .id = try self.allocator.dupe(u8, entry.id),
+                .title = try self.allocator.dupe(u8, entry.title),
+                .category = try self.allocator.dupe(u8, entry.category),
+                .command = try dupCommand(self.allocator, entry.command),
+            });
+        }
+
+        for (paths, 0..) |path, index| {
+            const base = std.fs.path.basename(path);
+            const title = try std.fmt.allocPrint(self.allocator, "Open Recent: {s}", .{base});
+            errdefer self.allocator.free(title);
+            const id = try std.fmt.allocPrint(self.allocator, "recent.{d}", .{index});
+            errdefer self.allocator.free(id);
+            try list.append(self.allocator, .{
+                .id = id,
+                .title = title,
+                .category = try self.allocator.dupe(u8, "File"),
+                .command = .{ .open_recent_workspace = index },
+            });
+        }
+
+        self.freeCatalog();
+        self.entries = try list.toOwnedSlice(self.allocator);
+        try self.applyFilter();
     }
 
     pub fn addExtensionCommands(self: *Palette, host: *const @import("forge-plugin").Host) !void {
