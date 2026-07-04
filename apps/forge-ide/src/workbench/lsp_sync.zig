@@ -73,7 +73,7 @@ pub const Store = struct {
         for (tabs.tabs.items) |*doc| {
             if (self.needsSync(doc)) {
                 self.cooldown = 0.4;
-                self.syncAsync(doc);
+                self.syncNow(doc);
                 return;
             }
         }
@@ -90,7 +90,7 @@ pub const Store = struct {
         const content = try doc.buffer.content();
         defer self.allocator.free(content);
 
-        try self.pushSync(config.language_id, uri, content, doc.path, true);
+        try self.pushSync(config.language_id, uri, content, doc.path);
         return uri;
     }
 
@@ -105,39 +105,21 @@ pub const Store = struct {
         return hash != state.?.last_hash;
     }
 
-    fn syncAsync(self: *Store, doc: *editor.Document) void {
+    fn syncNow(self: *Store, doc: *editor.Document) void {
         const owned = self.registry.copyMatchForPath(self.allocator, doc.path) catch return;
         const config = owned orelse return;
         defer lsp.Registry.freeConfig(self.allocator, config);
 
         const content = doc.buffer.content() catch return;
-        const ctx = self.allocator.create(SyncContext) catch {
-            doc.buffer.allocator.free(content);
-            return;
-        };
-        ctx.* = .{
-            .store = self,
-            .path = self.allocator.dupe(u8, doc.path) catch {
-                doc.buffer.allocator.free(content);
-                self.allocator.destroy(ctx);
-                return;
-            },
-            .language_id = self.allocator.dupe(u8, config.language_id) catch {
-                doc.buffer.allocator.free(content);
-                self.allocator.free(ctx.path);
-                self.allocator.destroy(ctx);
-                return;
-            },
-            .content = content,
-        };
+        defer doc.buffer.allocator.free(content);
 
         self.pending.store(true, .release);
-        const thread = std.Thread.spawn(.{}, syncThread, .{ctx}) catch {
-            ctx.deinit(self.allocator);
-            self.pending.store(false, .release);
-            return;
-        };
-        thread.detach();
+        defer self.pending.store(false, .release);
+
+        const uri = lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path) catch return;
+        defer self.allocator.free(uri);
+
+        self.pushSync(config.language_id, uri, content, doc.path) catch {};
     }
 
     fn pushSync(
@@ -146,7 +128,6 @@ pub const Store = struct {
         uri: []const u8,
         content: []const u8,
         path: []const u8,
-        blocking: bool,
     ) !void {
         const hash = workspace.edit.contentHash(content);
         const gop = try self.entries.getOrPut(path);
@@ -165,11 +146,7 @@ pub const Store = struct {
                 content,
             );
             defer self.allocator.free(msg);
-            if (blocking) {
-                _ = self.proxy.request(language_id, msg, &notify_buf, notify_buf.len) catch {};
-            } else {
-                _ = self.proxy.request(language_id, msg, &notify_buf, notify_buf.len) catch {};
-            }
+            _ = self.proxy.request(language_id, msg, &notify_buf, notify_buf.len) catch {};
             state.opened = true;
         } else if (hash != state.last_hash) {
             state.version += 1;
@@ -185,31 +162,3 @@ pub const Store = struct {
         state.last_hash = hash;
     }
 };
-
-const SyncContext = struct {
-    store: *Store,
-    path: []const u8,
-    language_id: []const u8,
-    content: []const u8,
-
-    fn deinit(self: *SyncContext, allocator: std.mem.Allocator) void {
-        allocator.free(self.path);
-        allocator.free(self.language_id);
-        allocator.free(self.content);
-        allocator.destroy(self);
-    }
-};
-
-fn syncThread(ctx: *SyncContext) void {
-    defer ctx.store.pending.store(false, .release);
-    const store = ctx.store;
-
-    const uri = lsp.diagnostics.fileUri(store.allocator, store.workspace_path, ctx.path) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer store.allocator.free(uri);
-
-    store.pushSync(ctx.language_id, uri, ctx.content, ctx.path, false) catch {};
-    ctx.deinit(store.allocator);
-}
