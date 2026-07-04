@@ -15,8 +15,9 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("Forge IDE starting for workspace: {s}\n", .{workspace_path});
 
+    const launcher: []const u8 = if (args.len > 0) args[0] else "forge-ide";
     const wb = try allocator.create(Workbench.Workbench);
-    try Workbench.Workbench.init(wb, allocator, io, workspace_path);
+    try Workbench.Workbench.init(wb, allocator, io, workspace_path, launcher);
     defer {
         wb.deinit();
         allocator.destroy(wb);

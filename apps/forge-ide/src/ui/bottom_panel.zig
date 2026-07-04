@@ -16,6 +16,7 @@ pub const tabs = [_]Tab{
     .{ .label = "PROBLEMS", .mode = .problems, .x_offset = 88, .w = 92 },
     .{ .label = "TERMINAL", .mode = .terminal, .x_offset = 184, .w = 82 },
     .{ .label = "DEBUG", .mode = .debug_console, .x_offset = 268, .w = 72 },
+    .{ .label = "VARS", .mode = .debug_variables, .x_offset = 344, .w = 52 },
 };
 
 pub fn tabBarTop(panel_y: f32) f32 {
