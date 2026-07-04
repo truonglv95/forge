@@ -7,6 +7,7 @@ const c = @cImport({
     @cInclude("pty_spawn.h");
     @cInclude("unistd.h");
     @cInclude("signal.h");
+    @cInclude("sys/ioctl.h");
     @cInclude("sys/types.h");
     @cInclude("sys/wait.h");
     @cInclude("stdlib.h");
@@ -31,6 +32,8 @@ pub const TerminalSession = struct {
     running: bool = false,
     starting: bool = false,
     exited: bool = false,
+    last_cols: u16 = 0,
+    last_rows: u16 = 0,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8) !TerminalSession {
         return .{
@@ -63,6 +66,22 @@ pub const TerminalSession = struct {
 
     pub fn isActive(self: *const TerminalSession) bool {
         return self.running or self.starting;
+    }
+
+    pub fn resize(self: *TerminalSession, cols: u16, rows: u16) void {
+        self.lock();
+        defer self.unlock();
+        if (self.master_fd < 0 or !self.running) return;
+        if (self.last_cols == cols and self.last_rows == rows) return;
+        self.last_cols = cols;
+        self.last_rows = rows;
+        var ws: c.struct_winsize = .{
+            .ws_row = rows,
+            .ws_col = cols,
+            .ws_xpixel = 0,
+            .ws_ypixel = 0,
+        };
+        _ = c.ioctl(self.master_fd, c.TIOCSWINSZ, &ws);
     }
 
     pub fn ensureStarted(self: *TerminalSession) !void {

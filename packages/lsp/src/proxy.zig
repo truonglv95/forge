@@ -220,7 +220,7 @@ pub const Proxy = struct {
         self.* = undefined;
     }
 
-    pub fn syncRegistry(self: *Proxy, source: *const registry.Registry) !void {
+    pub fn syncRegistry(self: *Proxy, source: *registry.Registry) !void {
         const job = try self.allocator.create(Job);
         errdefer job.deinit(self.allocator);
 
@@ -436,7 +436,10 @@ pub const Proxy = struct {
     }
 };
 
-fn cloneRegistryEntries(allocator: std.mem.Allocator, source: *const registry.Registry) ![]registry.ServerConfig {
+fn cloneRegistryEntries(allocator: std.mem.Allocator, source: *registry.Registry) ![]registry.ServerConfig {
+    source.mutex.lock();
+    defer source.mutex.unlock();
+
     var out = try allocator.alloc(registry.ServerConfig, source.servers.items.len);
     errdefer allocator.free(out);
 

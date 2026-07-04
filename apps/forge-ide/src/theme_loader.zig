@@ -85,7 +85,7 @@ fn readExtensionThemeId(source: []const u8) ?[]const u8 {
     return null;
 }
 
-fn readUserSettings(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?[]const u8 {
+pub fn readUserSettings(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?[]const u8 {
     const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return null;
     var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return null;
     defer snap.deinit();

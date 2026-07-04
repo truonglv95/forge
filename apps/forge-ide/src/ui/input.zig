@@ -53,6 +53,35 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
+    if (wb.focused_panel == .find) {
+        handleFindKeys(wb, event);
+        return;
+    }
+
+    if (wb.focused_panel == .goto_line) {
+        handleGotoKeys(wb, event);
+        return;
+    }
+
+    if (wb.completions.visible and (event.keycode == 48 or event.keycode == 36)) {
+        wb.dispatch(.completion_accept) catch {};
+        return;
+    }
+
+    if (wb.completions.visible and event.keycode == 53) {
+        wb.dispatch(.completion_dismiss) catch {};
+        return;
+    }
+
+    if (wb.completions.visible and event.keycode == 125) {
+        wb.completions.moveSelection(1);
+        return;
+    }
+    if (wb.completions.visible and event.keycode == 126) {
+        wb.completions.moveSelection(-1);
+        return;
+    }
+
     if (wb.agent.scope_picker_open) {
         handleScopePickerKeys(wb, event);
         return;
@@ -184,6 +213,11 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
 
     if (event.keycode == 6 and event.modifiers & cmd_mask != 0 and wb.focused_panel == .editor) {
         active_buffer.undo() catch {};
+        return;
+    }
+
+    if (event.keycode == 6 and event.modifiers & (cmd_mask | shift_mask) == (cmd_mask | shift_mask) and wb.focused_panel == .editor) {
+        active_buffer.redo() catch {};
         return;
     }
 
@@ -354,6 +388,72 @@ fn handleExtensionsFilterKeys(wb: *@import("../workbench.zig").Workbench, event:
     }
 }
 
+fn handleFindKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+    if (event.keycode == 53) {
+        wb.closeEditorOverlay();
+        return;
+    }
+    if (event.keycode == 36) {
+        if (wb.find_bar.replace_mode) {
+            if (wb.activeBuffer()) |buf| {
+                wb.find_bar.replaceCurrent(buf) catch {};
+                wb.scrollEditorToCursor();
+            }
+        } else {
+            wb.dispatch(.editor_find_next) catch {};
+        }
+        return;
+    }
+    if (event.keycode == 14 and event.modifiers & cmd_mask != 0) {
+        wb.dispatch(.editor_find_next) catch {};
+        return;
+    }
+    if (event.keycode == 14 and event.modifiers & (cmd_mask | shift_mask) == (cmd_mask | shift_mask)) {
+        wb.dispatch(.editor_find_prev) catch {};
+        return;
+    }
+    if (event.keycode == 48 and wb.find_bar.replace_mode) {
+        wb.find_bar.focus_replace = !wb.find_bar.focus_replace;
+        return;
+    }
+    const active_buf = if (wb.find_bar.replace_mode and wb.find_bar.focus_replace)
+        &wb.find_bar.replace
+    else
+        &wb.find_bar.query;
+    if (event.keycode == 51) {
+        active_buf.backspace() catch {};
+        if (!wb.find_bar.focus_replace) {
+            if (wb.activeBuffer()) |buf| wb.find_bar.refreshMatches(buf) catch {};
+        }
+        return;
+    }
+    if (event.chars.len > 0 and event.chars[0] >= 32) {
+        active_buf.insertString(event.chars) catch {};
+        if (!wb.find_bar.focus_replace) {
+            if (wb.activeBuffer()) |buf| wb.find_bar.refreshMatches(buf) catch {};
+        }
+    }
+}
+
+fn handleGotoKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+    if (event.keycode == 53) {
+        wb.closeEditorOverlay();
+        return;
+    }
+    if (event.keycode == 36) {
+        wb.commitGotoLine() catch {};
+        return;
+    }
+    const input_buf = &wb.goto_bar.input;
+    if (event.keycode == 51) {
+        input_buf.backspace() catch {};
+        return;
+    }
+    if (event.chars.len > 0 and event.chars[0] >= 32) {
+        input_buf.insertString(event.chars) catch {};
+    }
+}
+
 fn handleRenameKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
         wb.cancelRename();
@@ -485,6 +585,15 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 const click_row: usize = @intFromFloat(float_row);
                 wb.handleExplorerClick(click_row, event.x, geo.explorer_x) catch {};
             }
+        } else if (geo.shell_mode == .ide and event.x >= geo.agent_x) {
+            wb.focused_panel = .agent;
+            const agent_panel = @import("agent_panel.zig");
+            wb.agent.lock();
+            const run_count = wb.agent.run_history.items.len;
+            wb.agent.unlock();
+            if (agent_panel.hitTestRun(geo.agent_x, 20, event.y, run_count)) |index| {
+                wb.dispatch(.{ .agent_select_run = index }) catch {};
+            }
         } else if (event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
         } else if (geo.shell_mode == .ide and event.x >= geo.editor_x and event.x < geo.agent_splitter_x and event.y >= tabs_ui.tab_bar_top and event.y < tabs_ui.tab_bar_top + tabs_ui.tab_bar_height) {
@@ -509,6 +618,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     const col = editor_scroll.columnAtX(line, click_x, wb.theme.editor_font_size);
                     editor_buf.?.cursor.row = row;
                     editor_buf.?.cursor.col = col;
+                    wb.scrollEditorToCursor();
                 }
             }
         } else if (geo.shell_mode == .ide and event.y >= geo.task_panel_y) {
@@ -535,6 +645,20 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     wb.terminal_selection = null;
                 }
             } else if (bottom_panel.inContentArea(geo.task_panel_y, event.y)) {
+                if (wb.bottom_panel_mode == .problems) {
+                    const problems_panel = @import("problems_panel.zig");
+                    if (problems_panel.hitTest(
+                        geo.editor_x,
+                        geo.task_panel_y,
+                        geo.task_panel_h,
+                        event.x,
+                        event.y,
+                        wb.task_scroll_y,
+                        wb.diagnostics.list.items.len,
+                    )) |index| {
+                        wb.handleProblemsClick(index) catch {};
+                    }
+                }
                 wb.focused_panel = .editor;
             } else {
                 wb.focused_panel = .editor;
@@ -565,6 +689,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 @max(80.0, geo.content_h - 80.0),
             );
             wb.clampBottomPanelScroll(wb.bottom_panel_height);
+            wb.syncTerminalSize();
         } else if (state.is_dragging_terminal_selection and wb.bottom_panel_mode == .terminal) {
             wb.terminal.lock();
             defer wb.terminal.unlock();

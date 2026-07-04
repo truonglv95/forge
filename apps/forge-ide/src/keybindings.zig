@@ -53,6 +53,12 @@ pub const Registry = struct {
             .{ .key = "cmd+shift+x", .palette_id = "view.extensions" },
             .{ .key = "ctrl+`", .palette_id = "view.terminal" },
             .{ .key = "cmd+s", .palette_id = "file.save" },
+            .{ .key = "cmd+f", .palette_id = "editor.find" },
+            .{ .key = "cmd+alt+f", .palette_id = "editor.replace" },
+            .{ .key = "cmd+g", .palette_id = "editor.goto" },
+            .{ .key = "cmd+shift+z", .palette_id = "editor.redo" },
+            .{ .key = "cmd+z", .palette_id = "editor.undo" },
+            .{ .key = "f12", .palette_id = "editor.definition" },
         };
 
         for (builtins) |builtin| {
@@ -131,6 +137,9 @@ fn parseKey(raw: []const u8) ?ParsedKey {
         }
     }
     const key = key_part orelse return null;
+    if (std.ascii.eqlIgnoreCase(key, "f12")) {
+        return .{ .modifiers = modifiers, .keycode = 111 };
+    }
     const keycode = keycodeForChar(key[0]) orelse return null;
     return .{ .modifiers = modifiers, .keycode = keycode };
 }

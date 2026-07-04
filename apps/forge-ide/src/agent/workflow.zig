@@ -114,7 +114,6 @@ pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
     defer host.agent.unlock();
 
     clearLines(host.allocator, &host.agent.diff_lines);
-    clearLines(host.allocator, &host.agent.context_lines);
 
     const diff_bytes = diff_writer.writer.buffer[0..diff_writer.writer.end];
     var diff_it = std.mem.splitScalar(u8, diff_bytes, '\n');

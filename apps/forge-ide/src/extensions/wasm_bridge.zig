@@ -21,7 +21,9 @@ fn wasmSetStatus(message: []const u8) void {
 
 fn lspLanguageForFile(path: []const u8, out: []u8) ?usize {
     const wb = state.wb orelse return null;
-    const server = wb.lsp_registry.findForPath(path) orelse return null;
+    wb.lsp_registry.mutex.lock();
+    defer wb.lsp_registry.mutex.unlock();
+    const server = wb.lsp_registry.findForPathUnlocked(path) orelse return null;
     if (server.language_id.len > out.len) return null;
     @memcpy(out[0..server.language_id.len], server.language_id);
     return server.language_id.len;

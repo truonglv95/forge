@@ -1,6 +1,7 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc.zig");
 const registry = @import("registry.zig");
+const diagnostics = @import("diagnostics.zig");
 const process_spawn = @import("forge-util").process_spawn;
 
 pub const SessionError = error{
@@ -66,9 +67,11 @@ pub const Session = struct {
         if (!self.initialized) {
             const init_id = self.next_id;
             self.next_id += 1;
+            const root_uri = diagnostics.fileUri(self.allocator, self.workspace_path, "") catch return error.OutOfMemory;
+            defer self.allocator.free(root_uri);
             const init_req = try std.fmt.allocPrint(self.allocator,
-                \\{{"jsonrpc":"2.0","id":{d},"method":"initialize","params":{{"processId":null,"rootUri":null,"capabilities":{{}}}}}}
-            , .{init_id});
+                \\{{"jsonrpc":"2.0","id":{d},"method":"initialize","params":{{"processId":null,"rootUri":"{s}","capabilities":{{}}}}}}
+            , .{ init_id, root_uri });
             defer self.allocator.free(init_req);
             try self.writeMessage(init_req);
             const init_resp = try self.readResponse(65536);
