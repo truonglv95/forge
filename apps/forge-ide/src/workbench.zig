@@ -32,6 +32,7 @@ const rename_preview_mod = @import("workbench/rename_preview.zig");
 const debug_lldb_session_mod = @import("workbench/debug_lldb_session.zig");
 const debug_stop_mod = @import("workbench/debug_stop.zig");
 const debug_variables_mod = @import("workbench/debug_variables.zig");
+const debug_callstack_mod = @import("workbench/debug_callstack.zig");
 const recent_workspaces_mod = @import("workbench/recent_workspaces.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
@@ -78,6 +79,7 @@ pub const Workbench = struct {
     debug_stop_path: ?[]const u8 = null,
     debug_stop_line: ?usize = null,
     debug_variables: debug_variables_mod.Store,
+    debug_callstack: debug_callstack_mod.Store,
     recent_workspace_paths: []const []const u8 = &.{},
     terminals: terminal_group_mod.Group,
     lsp_sync: lsp_sync_mod.Store,
@@ -161,6 +163,7 @@ pub const Workbench = struct {
             .breakpoints = breakpoints_mod.Store.init(allocator),
             .debug_console = debug_console_mod.DebugConsole.init(allocator, io),
             .debug_variables = debug_variables_mod.Store.init(allocator),
+            .debug_callstack = debug_callstack_mod.Store.init(allocator),
             .debug_lldb = undefined,
             .find_bar = try editor_find_mod.FindBar.init(allocator),
             .goto_bar = try editor_find_mod.GotoBar.init(allocator),
@@ -233,6 +236,7 @@ pub const Workbench = struct {
         if (self.git_status) |*status| status.deinit(self.allocator);
         if (self.debug_stop_path) |path| self.allocator.free(path);
         self.debug_variables.deinit();
+        self.debug_callstack.deinit();
         recent_workspaces_mod.freePaths(self.allocator, self.recent_workspace_paths);
         self.breakpoints.deinit();
         self.debug_console.deinit();
@@ -641,8 +645,11 @@ pub const Workbench = struct {
             .save_session_state => try self.persistSessionState(),
             .restore_session_state => try self.restoreSessionTabs(),
             .settings_reload => try self.reloadUserSettings(),
+            .settings_toggle_word_wrap => try self.toggleWordWrap(),
             .open_recent_workspace => |index| try self.openRecentWorkspace(index),
             .problem_quick_fix => try self.quickFixAtCursor(),
+            .debug_stack_goto => |index| try self.gotoDebugStackFrame(index),
+            .debug_copy_variable => |index| try self.copyDebugVariable(index),
         }
     }
 
@@ -914,6 +921,7 @@ pub const Workbench = struct {
             },
             .debug_console => self.debug_console.lines.items.len,
             .debug_variables => self.debug_variables.items.items.len,
+            .debug_callstack => self.debug_callstack.items.items.len,
         };
     }
 
@@ -1011,7 +1019,7 @@ pub const Workbench = struct {
             self.task_output.setRunning(true);
             self.debug_console.clear();
             self.clearDebugStop();
-            self.debug_variables.clear();
+            self.clearDebugInspect();
             try self.debug_console.log("Starting interactive lldb session…");
             try self.debug_lldb.start(
                 self.allocator,
@@ -1057,6 +1065,10 @@ pub const Workbench = struct {
             self.debug_variables.addParsed(parsed) catch {};
             self.bottom_panel_mode = .debug_variables;
         }
+        if (debug_callstack_mod.parseFrameLine(line)) |parsed| {
+            self.debug_callstack.addFrame(parsed) catch {};
+            self.bottom_panel_mode = .debug_callstack;
+        }
         if (debug_stop_mod.parseStopLine(line)) |loc| {
             self.applyDebugStop(loc.path, loc.line);
         }
@@ -1077,6 +1089,9 @@ pub const Workbench = struct {
             }
             self.debug_stop_path = self.allocator.dupe(u8, doc.path) catch return;
             self.debug_stop_line = line;
+            if (self.debug_lldb.isActive()) {
+                self.debug_lldb.refreshBacktrace() catch {};
+            }
             if (self.activeFilePath()) |active| {
                 if (std.mem.eql(u8, active, doc.path)) self.scrollEditorToLine(line);
             }
@@ -1092,10 +1107,15 @@ pub const Workbench = struct {
         self.scrollEditorToCursor();
     }
 
+    fn clearDebugInspect(self: *Workbench) void {
+        self.debug_variables.clear();
+        self.debug_callstack.clear();
+    }
+
     fn onDebugLldbFinished(context: ?*anyopaque, exit_code: i32) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.clearDebugStop();
-        self.debug_variables.clear();
+        self.clearDebugInspect();
         self.task_output.setRunning(false);
         var buf: [64]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Debug session ended (exit {d})", .{exit_code}) catch "Debug session ended";
@@ -1112,7 +1132,7 @@ pub const Workbench = struct {
             try self.setStatus("No active debug session");
             return;
         }
-        self.debug_variables.clear();
+        self.clearDebugInspect();
         try self.debug_lldb.continueExecution();
         try self.setStatus("Debug: continue");
     }
@@ -1122,7 +1142,7 @@ pub const Workbench = struct {
             try self.setStatus("No active debug session");
             return;
         }
-        self.debug_variables.clear();
+        self.clearDebugInspect();
         try self.debug_lldb.stepOver();
         try self.setStatus("Debug: step over");
     }
@@ -1132,7 +1152,7 @@ pub const Workbench = struct {
             try self.setStatus("No active debug session");
             return;
         }
-        self.debug_variables.clear();
+        self.clearDebugInspect();
         try self.debug_lldb.stepInto();
         try self.setStatus("Debug: step into");
     }
@@ -1142,7 +1162,7 @@ pub const Workbench = struct {
             try self.setStatus("No active debug session");
             return;
         }
-        self.debug_variables.clear();
+        self.clearDebugInspect();
         try self.debug_lldb.stepOut();
         try self.setStatus("Debug: step out");
     }
@@ -1151,7 +1171,7 @@ pub const Workbench = struct {
         if (!self.debug_lldb.isActive()) return;
         self.debug_lldb.stop();
         self.clearDebugStop();
-        self.debug_variables.clear();
+        self.clearDebugInspect();
         self.task_output.setRunning(false);
         self.debug_console.log("Debug session stopped") catch {};
     }
@@ -1388,6 +1408,41 @@ pub const Workbench = struct {
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
         try self.setStatus("Settings reloaded");
+    }
+
+    pub fn toggleWordWrap(self: *Workbench) !void {
+        const next = !self.user_settings.word_wrap;
+        try settings_mod.writeWordWrap(self.allocator, self.io, self.workspace_root, next);
+        try self.reloadUserSettings();
+        const msg = if (next) "Word wrap enabled" else "Word wrap disabled";
+        try self.setStatus(msg);
+    }
+
+    pub fn copyDebugVariable(self: *Workbench, index: usize) !void {
+        if (index >= self.debug_variables.items.items.len) return;
+        const entry = self.debug_variables.items.items[index];
+        @import("forge-renderer").Renderer.setClipboardText(entry.value);
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Copied {s}", .{entry.name}) catch "Copied value";
+        try self.setStatus(msg);
+    }
+
+    pub fn gotoDebugStackFrame(self: *Workbench, index: usize) !void {
+        if (index >= self.debug_callstack.items.items.len) return;
+        const frame = self.debug_callstack.items.items[index];
+        for (self.tabs.tabs.items) |doc| {
+            if (!debug_stop_mod.pathsMatch(doc.path, frame.path)) continue;
+            for (self.tabs.tabs.items, 0..) |_, tab_index| {
+                if (std.mem.eql(u8, self.tabs.tabs.items[tab_index].path, doc.path)) {
+                    try self.activateTab(tab_index);
+                    break;
+                }
+            }
+            self.applyDebugStop(doc.path, frame.line);
+            try self.setStatus("Jumped to stack frame");
+            return;
+        }
+        try self.setStatus("Stack frame file not open");
     }
 
     pub fn refreshRecentWorkspaces(self: *Workbench) !void {

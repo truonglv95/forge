@@ -105,6 +105,23 @@ fn breakAt(line: []const u8, start: usize, max_w: f32, font_size: f32) usize {
     return line.len;
 }
 
+pub fn columnAtVisualRow(
+    buf: *const editor.Buffer,
+    visual_index: usize,
+    click_x: f32,
+    viewport_w: f32,
+    font_size: f32,
+) ?struct { row: usize, col: usize } {
+    const seg = segmentAt(buf, visual_index, viewport_w, font_size);
+    const line = buf.lineAt(seg.buf_line);
+    const slice = if (seg.end_col > seg.start_col) line[seg.start_col..seg.end_col] else line[0..0];
+    const col_in_slice = editor_scroll.columnAtX(slice, click_x, font_size);
+    return .{
+        .row = seg.buf_line,
+        .col = @min(seg.start_col + col_in_slice, line.len),
+    };
+}
+
 pub fn scrollToCursor(
     scroll_y: f32,
     buf: *const editor.Buffer,

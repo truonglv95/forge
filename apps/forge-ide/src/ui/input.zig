@@ -3,6 +3,7 @@ const renderer = @import("forge-renderer");
 const state = @import("state.zig");
 const layout = @import("layout.zig");
 const editor_scroll = @import("editor_scroll.zig");
+const word_wrap = @import("word_wrap.zig");
 const activity_bar = @import("activity_bar.zig");
 const search_panel = @import("search_panel.zig");
 const debug_panel = @import("debug_panel.zig");
@@ -529,10 +530,24 @@ fn editorPosAt(
     x: f32,
     y: f32,
 ) ?struct { row: usize, col: usize } {
-    _ = pane_w;
     const click_y = y - editor_scroll.firstLineY(&wb.theme) + scroll_y;
     const click_x = x - pane_x - editor_scroll.gutterWidth(&wb.theme) + scroll_x;
     if (click_y < 0) return null;
+
+    if (wb.user_settings.word_wrap) {
+        const viewport_w = editor_scroll.viewportWidth(pane_w, &wb.theme);
+        const visual_row: usize = @intFromFloat(click_y / editor_scroll.lineHeight(&wb.theme));
+        const effective_x = click_x - scroll_x;
+        if (effective_x < 0) return null;
+        return word_wrap.columnAtVisualRow(
+            editor_buf,
+            visual_row,
+            effective_x,
+            viewport_w,
+            wb.theme.editor_font_size,
+        );
+    }
+
     var row: usize = @intFromFloat(click_y / editor_scroll.lineHeight(&wb.theme));
     if (row >= editor_buf.lineCount()) row = if (editor_buf.lineCount() > 0) editor_buf.lineCount() - 1 else 0;
     const line = editor_buf.lineAt(row);
@@ -756,6 +771,32 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         wb.diagnostics.list.items.len,
                     )) |index| {
                         wb.handleProblemsClick(index) catch {};
+                    }
+                } else if (wb.bottom_panel_mode == .debug_variables) {
+                    const debug_variables = @import("../workbench/debug_variables.zig");
+                    if (debug_variables.hitTest(
+                        geo.editor_x,
+                        geo.task_panel_y,
+                        geo.task_panel_h,
+                        event.x,
+                        event.y,
+                        wb.task_scroll_y,
+                        wb.debug_variables.items.items.len,
+                    )) |index| {
+                        wb.dispatch(.{ .debug_copy_variable = index }) catch {};
+                    }
+                } else if (wb.bottom_panel_mode == .debug_callstack) {
+                    const debug_callstack = @import("../workbench/debug_callstack.zig");
+                    if (debug_callstack.hitTest(
+                        geo.editor_x,
+                        geo.task_panel_y,
+                        geo.task_panel_h,
+                        event.x,
+                        event.y,
+                        wb.task_scroll_y,
+                        wb.debug_callstack.items.items.len,
+                    )) |index| {
+                        wb.dispatch(.{ .debug_stack_goto = index }) catch {};
                     }
                 }
                 wb.focused_panel = .editor;

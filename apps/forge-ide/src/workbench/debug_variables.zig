@@ -1,4 +1,5 @@
 const std = @import("std");
+const panel_scroll = @import("../ui/panel_scroll.zig");
 
 pub const Entry = struct {
     type_name: []const u8,
@@ -58,6 +59,27 @@ pub fn parseVariableLine(line: []const u8) ?ParsedLine {
     if (name.len == 0 or value.len == 0) return null;
 
     return .{ .type_name = type_name, .name = name, .value = value };
+}
+
+pub fn hitTest(
+    editor_x: f32,
+    panel_y: f32,
+    panel_h: f32,
+    x: f32,
+    y: f32,
+    scroll_y: f32,
+    item_count: usize,
+) ?usize {
+    const header_h: f32 = 16;
+    const top = panel_y + panel_scroll.bottom_content_top + header_h;
+    const viewport = panel_scroll.bottomViewportHeight(panel_h) - header_h;
+    if (x < editor_x or y < top or y >= top + viewport) return null;
+
+    const float_line = (y - top + scroll_y) / panel_scroll.bottom_line_h;
+    if (float_line < 0) return null;
+    const line: usize = @intFromFloat(float_line);
+    if (line >= item_count) return null;
+    return line;
 }
 
 test "parseVariableLine reads lldb locals" {

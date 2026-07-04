@@ -90,19 +90,26 @@ pub const Session = struct {
         try self.writeLine("process continue");
     }
 
+    pub fn refreshBacktrace(self: *Session) !void {
+        try self.writeLine("thread backtrace");
+    }
+
     pub fn stepOver(self: *Session) !void {
         try self.writeLine("thread step-over");
         try self.writeLine("frame variable");
+        try self.writeLine("thread backtrace");
     }
 
     pub fn stepInto(self: *Session) !void {
         try self.writeLine("thread step-in");
         try self.writeLine("frame variable");
+        try self.writeLine("thread backtrace");
     }
 
     pub fn stepOut(self: *Session) !void {
         try self.writeLine("thread step-out");
         try self.writeLine("frame variable");
+        try self.writeLine("thread backtrace");
     }
 
     fn readerMain(self: *Session) void {
