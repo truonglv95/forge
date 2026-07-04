@@ -30,6 +30,7 @@ const terminal_group_mod = @import("workbench/terminal_group.zig");
 const lsp_sync_mod = @import("workbench/lsp_sync.zig");
 const rename_preview_mod = @import("workbench/rename_preview.zig");
 const debug_lldb_session_mod = @import("workbench/debug_lldb_session.zig");
+const debug_stop_mod = @import("workbench/debug_stop.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
 const editor_find_mod = @import("workbench/editor_find.zig");
@@ -72,6 +73,8 @@ pub const Workbench = struct {
     breakpoints: breakpoints_mod.Store,
     debug_console: debug_console_mod.DebugConsole,
     debug_lldb: debug_lldb_session_mod.Session,
+    debug_stop_path: ?[]const u8 = null,
+    debug_stop_line: ?usize = null,
     terminals: terminal_group_mod.Group,
     lsp_sync: lsp_sync_mod.Store,
     diagnostics: diagnostics_store_mod.Store,
@@ -219,6 +222,7 @@ pub const Workbench = struct {
         self.search_buffer.deinit();
         if (self.search_results) |*results| results.deinit(self.allocator);
         if (self.git_status) |*status| status.deinit(self.allocator);
+        if (self.debug_stop_path) |path| self.allocator.free(path);
         self.breakpoints.deinit();
         self.debug_console.deinit();
         self.debug_lldb.deinit();
@@ -610,6 +614,7 @@ pub const Workbench = struct {
             .editor_go_to_definition => try self.goToDefinition(),
             .editor_find_references => try self.findReferences(),
             .editor_rename_symbol => try self.openRenameSymbol(),
+            .editor_format_document => try self.formatDocument(),
             .editor_split_right => try self.splitEditorRight(),
             .editor_close_split => try self.closeEditorSplit(),
             .references_goto => |index| try self.gotoReference(index),
@@ -845,7 +850,8 @@ pub const Workbench = struct {
 
     pub fn clampRunScroll(self: *Workbench, window_h: f32) void {
         const scroll = @import("ui/debug_panel.zig");
-        self.run_scroll_y = scroll.clampScrollY(self.run_scroll_y, self.breakpoints.items.items.len, window_h);
+        const debug_active = self.debug_lldb.isActive();
+        self.run_scroll_y = scroll.clampScrollY(self.run_scroll_y, self.breakpoints.items.items.len, window_h, debug_active);
     }
 
     pub fn bottomPanelLineCount(self: *const Workbench) usize {
@@ -962,6 +968,7 @@ pub const Workbench = struct {
             self.task_output.clear();
             self.task_output.setRunning(true);
             self.debug_console.clear();
+            self.clearDebugStop();
             try self.debug_console.log("Starting interactive lldb session…");
             try self.debug_lldb.start(
                 self.allocator,
@@ -1003,10 +1010,44 @@ pub const Workbench = struct {
     fn onDebugLine(context: ?*anyopaque, line: []const u8) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.debug_console.log(line) catch {};
+        if (debug_stop_mod.parseStopLine(line)) |loc| {
+            self.applyDebugStop(loc.path, loc.line);
+        }
+    }
+
+    fn clearDebugStop(self: *Workbench) void {
+        if (self.debug_stop_path) |path| self.allocator.free(path);
+        self.debug_stop_path = null;
+        self.debug_stop_line = null;
+    }
+
+    fn applyDebugStop(self: *Workbench, parsed_path: []const u8, line: usize) void {
+        for (self.tabs.tabs.items) |doc| {
+            if (!debug_stop_mod.pathsMatch(doc.path, parsed_path)) continue;
+            if (self.debug_stop_path) |old| {
+                if (std.mem.eql(u8, old, doc.path) and self.debug_stop_line == line) return;
+                self.allocator.free(old);
+            }
+            self.debug_stop_path = self.allocator.dupe(u8, doc.path) catch return;
+            self.debug_stop_line = line;
+            if (self.activeFilePath()) |active| {
+                if (std.mem.eql(u8, active, doc.path)) self.scrollEditorToLine(line);
+            }
+            return;
+        }
+    }
+
+    fn scrollEditorToLine(self: *Workbench, line: usize) void {
+        if (self.activeBuffer()) |buf| {
+            buf.cursor.row = @intCast(@min(line, buf.lineCount() - 1));
+            buf.cursor.col = 0;
+        }
+        self.scrollEditorToCursor();
     }
 
     fn onDebugLldbFinished(context: ?*anyopaque, exit_code: i32) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
+        self.clearDebugStop();
         self.task_output.setRunning(false);
         var buf: [64]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Debug session ended (exit {d})", .{exit_code}) catch "Debug session ended";
@@ -1057,6 +1098,7 @@ pub const Workbench = struct {
     pub fn debugStop(self: *Workbench) void {
         if (!self.debug_lldb.isActive()) return;
         self.debug_lldb.stop();
+        self.clearDebugStop();
         self.task_output.setRunning(false);
         self.debug_console.log("Debug session stopped") catch {};
     }
@@ -1066,6 +1108,13 @@ pub const Workbench = struct {
             .run_launch => |index| try self.dispatch(.{ .debug_run_launch = index }),
             .toggle_breakpoint => try self.dispatch(.debug_toggle_breakpoint),
             .clear_breakpoints => try self.dispatch(.debug_clear_breakpoints),
+            .debug_control => |control| switch (control) {
+                .continue_exec => try self.dispatch(.debug_continue),
+                .step_over => try self.dispatch(.debug_step_over),
+                .step_into => try self.dispatch(.debug_step_into),
+                .step_out => try self.dispatch(.debug_step_out),
+                .stop => self.dispatch(.debug_stop) catch {},
+            },
         }
     }
 
@@ -1611,6 +1660,57 @@ pub const Workbench = struct {
     pub fn renameSymbol(self: *Workbench, new_name: []const u8) !void {
         try self.previewRenameSymbol(new_name);
         if (self.rename_preview.active) try self.acceptRenamePreview();
+    }
+
+    pub fn formatDocument(self: *Workbench) !void {
+        const doc = self.tabs.activeDoc() orelse {
+            try self.setStatus("No file open to format");
+            return;
+        };
+        _ = try self.lsp_sync.ensureSyncedBlocking(doc);
+
+        const uri = try lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path);
+        defer self.allocator.free(uri);
+
+        const req = try lsp.format.buildFormatRequest(self.allocator, 94, uri, 4);
+        defer self.allocator.free(req);
+
+        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
+        const config = owned orelse {
+            try self.setStatus("No language server for format");
+            return;
+        };
+        defer lsp.Registry.freeConfig(self.allocator, config);
+
+        var response_buf: [256 * 1024]u8 = undefined;
+        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch |err| {
+            try self.setStatus(@errorName(err));
+            return;
+        };
+
+        const edits = try lsp.format.parseFormatResponse(self.allocator, response_buf[0..len]);
+        defer {
+            for (edits) |*edit| edit.deinit(self.allocator);
+            self.allocator.free(edits);
+        }
+        if (edits.len == 0) {
+            try self.setStatus("Nothing to format");
+            return;
+        }
+
+        var index = edits.len;
+        while (index > 0) {
+            index -= 1;
+            const text_edit = edits[index];
+            try doc.buffer.applyLspTextEdit(
+                @intCast(text_edit.line),
+                @intCast(text_edit.character),
+                @intCast(text_edit.end_line),
+                @intCast(text_edit.end_character),
+                text_edit.new_text,
+            );
+        }
+        try self.setStatus("Document formatted");
     }
 
     fn applyWorkspaceEdit(self: *Workbench, edit: *const lsp.rename.WorkspaceEdit) !void {

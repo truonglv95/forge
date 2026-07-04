@@ -68,6 +68,7 @@ pub const Registry = struct {
             .{ .key = "f10", .palette_id = "debug.step_over" },
             .{ .key = "f11", .palette_id = "debug.step_into" },
             .{ .key = "shift+f11", .palette_id = "debug.step_out" },
+            .{ .key = "shift+alt+f", .palette_id = "editor.format" },
         };
 
         for (builtins) |builtin| {
