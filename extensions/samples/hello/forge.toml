@@ -1,0 +1,9 @@
+[extension]
+id = "forge.samples.hello"
+name = "Hello Sample"
+version = "0.1.0"
+api_version = 1
+
+[[commands]]
+id = "hello.say"
+title = "Say Hello"

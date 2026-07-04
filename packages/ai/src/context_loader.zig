@@ -6,6 +6,12 @@ pub const LoadOptions = struct {
     max_bytes: usize = 1024 * 1024,
     intent: ?[]const u8 = null,
     explicit_files: []const []const u8 = &.{},
+    include_project_rules: bool = true,
+};
+
+pub const rules_paths = struct {
+    pub const forge_md = "FORGE.md";
+    pub const forge_toml = "forge.toml";
 };
 
 pub fn build(
@@ -16,30 +22,62 @@ pub fn build(
 ) !context.ContextBuilder {
     var builder = context.ContextBuilder.init(allocator, options.max_bytes);
 
+    if (options.include_project_rules) {
+        try loadOptionalRulesBlock(allocator, io, root, &builder, rules_paths.forge_md);
+        try loadOptionalRulesBlock(allocator, io, root, &builder, rules_paths.forge_toml);
+    }
+
     if (options.intent) |intent| {
         try builder.addBlock(.intent, "intent", intent);
     }
 
     for (options.explicit_files) |file_path| {
-        const wp = workspace.WorkspacePath.parse(file_path) catch {
-            try builder.rejected.put(try allocator.dupe(u8, file_path), "Invalid workspace path");
-            continue;
-        };
-
-        var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch |err| {
-            const reason = switch (err) {
-                error.FileNotFound => "File not found",
-                else => "Failed to read file",
-            };
-            try builder.rejected.put(try allocator.dupe(u8, file_path), reason);
-            continue;
-        };
-        defer snap.deinit();
-
-        try builder.addBlock(.file, file_path, snap.content);
+        try loadExplicitFile(allocator, io, root, &builder, file_path);
     }
 
     return builder;
+}
+
+fn loadOptionalRulesBlock(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    builder: *context.ContextBuilder,
+    rel_path: []const u8,
+) !void {
+    const wp = workspace.WorkspacePath.parse(rel_path) catch return;
+    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer snap.deinit();
+    if (snap.content.len == 0) return;
+    try builder.addBlock(.rules, rel_path, snap.content);
+}
+
+fn loadExplicitFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    builder: *context.ContextBuilder,
+    file_path: []const u8,
+) !void {
+    const wp = workspace.WorkspacePath.parse(file_path) catch {
+        try builder.rejected.put(try allocator.dupe(u8, file_path), "Invalid workspace path");
+        return;
+    };
+
+    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch |err| {
+        const reason = switch (err) {
+            error.FileNotFound => "File not found",
+            else => "Failed to read file",
+        };
+        try builder.rejected.put(try allocator.dupe(u8, file_path), reason);
+        return;
+    };
+    defer snap.deinit();
+
+    try builder.addBlock(.file, file_path, snap.content);
 }
 
 pub fn renderManifestHuman(builder: *const context.ContextBuilder, writer: *std.Io.Writer) !void {

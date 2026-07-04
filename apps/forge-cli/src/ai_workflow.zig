@@ -5,25 +5,24 @@ const kernel = @import("forge-kernel");
 const workspace_cmd = @import("workspace_cmd.zig");
 const args_mod = @import("args.zig");
 
-pub const Mode = enum {
-    ask,
-    plan,
-};
-
+pub const Mode = ai.proposal_workflow.Mode;
 pub const Result = struct {
     run_id: []const u8,
     proposal_rel: []const u8,
 };
 
-pub const WorkflowError = error{
-    MissingProviderCredentials,
-    ProviderFailed,
+pub const WorkflowError = ai.proposal_workflow.WorkflowError;
+
+pub const GenerateOptions = struct {
+    cancel_token: ?*const kernel.cancellation.CancellationToken = null,
+    progress_writer: ?*std.Io.Writer = null,
+    progress_json: bool = false,
 };
 
 pub fn providerOptionsFromFlags(mode: Mode, flags: args_mod.GlobalFlags) ai.provider_factory.Options {
     const fake_response = switch (mode) {
-        .ask => default_ask_response,
-        .plan => default_plan_response,
+        .ask => ai.proposal_workflow.default_ask_response,
+        .plan => ai.proposal_workflow.default_plan_response,
     };
 
     return .{
@@ -32,6 +31,16 @@ pub fn providerOptionsFromFlags(mode: Mode, flags: args_mod.GlobalFlags) ai.prov
         .fake_response = fake_response,
     };
 }
+
+fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
+    const ctx: *ProgressBridge = @ptrCast(@alignCast(context.?));
+    ai.progress.emitIf(ctx.writer, ctx.json, phase);
+}
+
+const ProgressBridge = struct {
+    writer: ?*std.Io.Writer,
+    json: bool,
+};
 
 pub fn generateAndPersist(
     allocator: std.mem.Allocator,
@@ -42,77 +51,42 @@ pub fn generateAndPersist(
     intent: []const u8,
     files: []const []const u8,
     provider_options: ai.provider_factory.Options,
+    generate_options: GenerateOptions,
 ) WorkflowError!Result {
-    var provider_handle = ai.provider_factory.create(allocator, io, environ_map, provider_options) catch |err| switch (err) {
-        ai.provider_factory.FactoryError.MissingCredentials => return error.MissingProviderCredentials,
+    var bridge = ProgressBridge{
+        .writer = generate_options.progress_writer,
+        .json = generate_options.progress_json,
+    };
+
+    var inner = ai.proposal_workflow.generateAndPersist(
+        allocator,
+        io,
+        environ_map,
+        opened.root,
+        intent,
+        files,
+        provider_options,
+        .{
+            .surface = .cli,
+            .mode = mode,
+            .cancel_token = generate_options.cancel_token,
+            .progress_callback = progressBridge,
+            .progress_context = &bridge,
+        },
+    ) catch |err| switch (err) {
+        error.MissingProviderCredentials => return error.MissingProviderCredentials,
+        error.Cancelled => return error.Cancelled,
         else => return error.ProviderFailed,
     };
-    defer provider_handle.deinit();
+    defer ai.proposal_workflow.deinitResult(allocator, &inner);
 
-    var ctx_builder = ai.context_loader.build(allocator, io, opened.root, .{
-        .intent = intent,
-        .explicit_files = files,
-    }) catch return error.ProviderFailed;
-    defer ctx_builder.deinit();
-
-    const provider = provider_handle.interface();
-    const meta = provider.metadata();
-
-    var planner = ai.planner.Planner.init(allocator, provider, &ctx_builder);
-
-    var response = std.Io.Writer.Allocating.init(allocator);
-    defer response.deinit();
-
-    var cancel_src = kernel.cancellation.CancellationTokenSource.init(allocator) catch return error.ProviderFailed;
-    defer cancel_src.deinit();
-    const token = cancel_src.getToken();
-
-    planner.plan(&response.writer, &token) catch return error.ProviderFailed;
-
-    const proposal_body = response.writer.buffer[0..response.writer.end];
-    const timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
-    const run_id = ai.run_record.makeRunId(allocator, timestamp_ms) catch return error.ProviderFailed;
+    const run_id = allocator.dupe(u8, inner.run_id) catch return error.ProviderFailed;
     errdefer allocator.free(run_id);
+    const proposal_rel = allocator.dupe(u8, inner.proposal_rel) catch return error.ProviderFailed;
+    errdefer allocator.free(proposal_rel);
 
-    workspace.history.ensureLayout(io, opened.root) catch return error.ProviderFailed;
-
-    var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.ProviderFailed;
-    workspace.atomic.replaceFile(io, opened.root, workspace.WorkspacePath.parse(proposal_rel) catch return error.ProviderFailed, proposal_body) catch return error.ProviderFailed;
-
-    const initial_state: ai.run_record.State = switch (mode) {
-        .ask => .proposed,
-        .plan => .planning,
-    };
-
-    const record = ai.run_record.Record{
-        .run_id = run_id,
-        .surface = .cli,
-        .intent = intent,
-        .state = initial_state,
-        .proposal_path = proposal_rel,
-        .provider_id = meta.provider_name,
-        .model_id = meta.model_name,
-        .timestamp_ms = timestamp_ms,
-    };
-
-    const json_body = ai.run_record.formatJson(allocator, record) catch return error.ProviderFailed;
-    defer allocator.free(json_body);
-    workspace.runs.persistRun(io, opened.root, run_id, json_body) catch return error.ProviderFailed;
-
-    const index_line = ai.run_record.formatIndexLine(allocator, record) catch return error.ProviderFailed;
-    defer allocator.free(index_line);
-    workspace.runs.appendIndex(allocator, io, opened.root, index_line) catch return error.ProviderFailed;
-
-    const owned_proposal_rel = allocator.dupe(u8, proposal_rel) catch return error.ProviderFailed;
-
-    return .{ .run_id = run_id, .proposal_rel = owned_proposal_rel };
+    return .{ .run_id = run_id, .proposal_rel = proposal_rel };
 }
 
-pub const default_ask_response =
-    \\{"schema_version":1,"summary":"Create notes.txt from ask intent","assumptions":["No conflicting notes.txt exists"],"validation_tasks":["zig build test"],"workspace_edit":{"files":[{"path":"notes.txt","operation":"create","edits":[{"start":0,"end":0,"replacement":"generated by forge ask\n"}]}]}}
-;
-
-pub const default_plan_response =
-    \\{"schema_version":1,"summary":"Create plan.txt from planner","assumptions":["Workspace is writable"],"validation_tasks":["zig build test"],"workspace_edit":{"files":[{"path":"plan.txt","operation":"create","edits":[{"start":0,"end":0,"replacement":"planned change\n"}]}]}}
-;
+pub const default_ask_response = ai.proposal_workflow.default_ask_response;
+pub const default_plan_response = ai.proposal_workflow.default_plan_response;

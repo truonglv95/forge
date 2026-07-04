@@ -43,3 +43,40 @@ pub fn loadProposal(
 pub fn approved(parsed: args_mod.CliArgs) bool {
     return parsed.flags.non_interactive or parsed.flags.yes;
 }
+
+pub fn applyProposal(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    opened: OpenedWorkspace,
+    proposal_path: []const u8,
+    writer: *std.Io.Writer,
+    json: bool,
+) !u8 {
+    var proposal = try loadProposal(allocator, io, opened, proposal_path);
+    defer proposal.deinit();
+
+    const workspace_edit = proposal.workspaceEdit();
+    try workspace_edit.validate();
+
+    var service = workspace.TransactionService.init(allocator, io, opened.root);
+    const tx_id = try workspace.history.nextTransactionId(allocator, io, opened.root);
+
+    var record = workspace.TransactionRecord{
+        .id = tx_id,
+        .state = .approved,
+        .workspace_edit = workspace_edit,
+        .timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds(),
+    };
+    defer service.freeRecord(&record);
+
+    try service.apply(&record);
+    try workspace.history.persistApplied(allocator, io, opened.root, &record, proposal_path);
+
+    if (json) {
+        try writer.print("{{\"status\":\"ok\",\"type\":\"apply\",\"transaction_id\":{d},\"state\":\"applied\"}}\n", .{tx_id});
+    } else {
+        try writer.print("Applied transaction {d}\n", .{tx_id});
+    }
+
+    return 0;
+}

@@ -1,0 +1,14 @@
+[extension]
+id = "forge.theme.solarized"
+name = "Solarized"
+version = "0.1.0"
+api_version = 1
+
+[[themes]]
+id = "solarized-dark"
+label = "Solarized Dark"
+path = "themes/solarized.toml"
+
+[[keybindings]]
+key = "cmd+shift+t"
+command = "theme.forge.theme.solarized.solarized-dark"

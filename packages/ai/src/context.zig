@@ -5,6 +5,7 @@ pub const BlockType = enum {
     file,
     intent,
     diagnostic,
+    rules,
 };
 
 pub const ContextBlock = struct {

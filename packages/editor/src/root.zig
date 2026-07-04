@@ -1,4 +1,4 @@
-//! Editor-domain value types. Buffer implementation begins in M2.
+//! Editor-domain value types and text buffer.
 
 const std = @import("std");
 const core = @import("forge-core");
@@ -19,7 +19,15 @@ pub const TextRange = struct {
     }
 };
 
-test "text range reports an empty selection" {
-    const position = Position{ .line = 3, .column = 7 };
-    try std.testing.expect((TextRange{ .start = position, .end = position }).isEmpty());
+pub const buffer = @import("buffer.zig");
+pub const Buffer = buffer.Buffer;
+pub const Cursor = buffer.Cursor;
+pub const document = @import("document.zig");
+pub const Document = document.Document;
+pub const TabGroup = document.TabGroup;
+
+test {
+    std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(buffer);
+    std.testing.refAllDecls(document);
 }

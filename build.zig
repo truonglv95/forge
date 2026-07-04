@@ -3,11 +3,22 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const zware_dep = b.dependency("zware", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zware = zware_dep.module("zware");
 
     const util = b.addModule("forge-util", .{
         .root_source_file = b.path("packages/util/src/root.zig"),
         .target = target,
     });
+    util.addIncludePath(b.path("packages/util/src"));
+    util.addCSourceFile(.{
+        .file = b.path("packages/util/src/process_spawn.c"),
+        .flags = &.{},
+    });
+    util.linkSystemLibrary("c", .{});
     const core = b.addModule("forge-core", .{
         .root_source_file = b.path("packages/core/src/root.zig"),
         .target = target,
@@ -16,7 +27,10 @@ pub fn build(b: *std.Build) void {
     const kernel = b.addModule("forge-kernel", .{
         .root_source_file = b.path("packages/kernel/src/root.zig"),
         .target = target,
-        .imports = &.{.{ .name = "forge-core", .module = core }},
+        .imports = &.{
+            .{ .name = "forge-core", .module = core },
+            .{ .name = "forge-util", .module = util },
+        },
     });
     const workspace = b.addModule("forge-workspace", .{
         .root_source_file = b.path("packages/workspace/src/root.zig"),
@@ -29,7 +43,10 @@ pub fn build(b: *std.Build) void {
     const editor = b.addModule("forge-editor", .{
         .root_source_file = b.path("packages/editor/src/root.zig"),
         .target = target,
-        .imports = &.{.{ .name = "forge-core", .module = core }},
+        .imports = &.{
+            .{ .name = "forge-core", .module = core },
+            .{ .name = "forge-workspace", .module = workspace },
+        },
     });
     const renderer = b.addModule("forge-renderer", .{
         .root_source_file = b.path("packages/renderer/src/root.zig"),
@@ -52,7 +69,10 @@ pub fn build(b: *std.Build) void {
     const lsp = b.addModule("forge-lsp", .{
         .root_source_file = b.path("packages/lsp/src/root.zig"),
         .target = target,
-        .imports = &.{.{ .name = "forge-core", .module = core }},
+        .imports = &.{
+            .{ .name = "forge-core", .module = core },
+            .{ .name = "forge-util", .module = util },
+        },
     });
     const ai = b.addModule("forge-ai", .{
         .root_source_file = b.path("packages/ai/src/root.zig"),
@@ -61,12 +81,18 @@ pub fn build(b: *std.Build) void {
             .{ .name = "forge-core", .module = core },
             .{ .name = "forge-kernel", .module = kernel },
             .{ .name = "forge-workspace", .module = workspace },
+            .{ .name = "forge-util", .module = util },
         },
     });
     const plugin = b.addModule("forge-plugin", .{
         .root_source_file = b.path("packages/plugin/src/root.zig"),
         .target = target,
-        .imports = &.{.{ .name = "forge-core", .module = core }},
+        .imports = &.{
+            .{ .name = "forge-core", .module = core },
+            .{ .name = "forge-util", .module = util },
+            .{ .name = "forge-workspace", .module = workspace },
+            .{ .name = "zware", .module = zware },
+        },
     });
 
     const cli = b.addExecutable(.{
@@ -80,6 +106,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "forge-kernel", .module = kernel },
                 .{ .name = "forge-workspace", .module = workspace },
                 .{ .name = "forge-ai", .module = ai },
+                .{ .name = "forge-plugin", .module = plugin },
             },
         }),
     });
@@ -95,11 +122,22 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "forge-core", .module = core },
                 .{ .name = "forge-kernel", .module = kernel },
                 .{ .name = "forge-workspace", .module = workspace },
+                .{ .name = "forge-editor", .module = editor },
                 .{ .name = "forge-renderer", .module = renderer },
+                .{ .name = "forge-plugin", .module = plugin },
+                .{ .name = "forge-lsp", .module = lsp },
+                .{ .name = "forge-ai", .module = ai },
+                .{ .name = "forge-util", .module = util },
             },
         }),
     });
     b.installArtifact(ide);
+    ide.root_module.linkSystemLibrary("c", .{});
+    ide.root_module.addIncludePath(b.path("apps/forge-ide/src/platform"));
+    ide.root_module.addCSourceFile(.{
+        .file = b.path("apps/forge-ide/src/platform/pty_spawn.c"),
+        .flags = &.{},
+    });
 
     const run_cmd = b.addRunArtifact(cli);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -158,11 +196,20 @@ pub fn build(b: *std.Build) void {
     };
     for (modules) |module| {
         const module_tests = b.addTest(.{ .root_module = module });
+        if (module == util or module == kernel or module == lsp or module == ai) {
+            module_tests.root_module.linkSystemLibrary("c", .{});
+        }
         const run_tests = b.addRunArtifact(module_tests);
         test_step.dependOn(&run_tests.step);
     }
 
     const cli_tests = b.addTest(.{ .root_module = cli.root_module });
+    cli_tests.root_module.linkSystemLibrary("c", .{});
     const run_cli_tests = b.addRunArtifact(cli_tests);
     test_step.dependOn(&run_cli_tests.step);
+
+    const ide_tests = b.addTest(.{ .root_module = ide.root_module });
+    ide_tests.root_module.linkSystemLibrary("c", .{});
+    const run_ide_tests = b.addRunArtifact(ide_tests);
+    test_step.dependOn(&run_ide_tests.step);
 }

@@ -7,6 +7,15 @@ name = "forge"
 [editor]
 tab_width = 4
 
+[theme]
+preset = "dark"
+# CSS-style font stack — first available font wins
+font_family = "Menlo, Monaco, 'Courier New', monospace"
+font_size = 14
+font_weight = "regular"
+line_height = 1.5
+ui_font_size = 12
+
 [ai]
 # AI edits must remain review-only. Direct apply is not a supported mode.
 apply_mode = "review"

@@ -1,0 +1,8 @@
+# Personal IDE preferences (override forge.toml [theme]).
+# Reload with Cmd+Shift+P → "Theme: Reload from forge.toml"
+
+[theme]
+font_family = "Menlo, Monaco, 'Courier New', monospace"
+font_size = 14
+font_weight = "regular"
+line_height = 1.5

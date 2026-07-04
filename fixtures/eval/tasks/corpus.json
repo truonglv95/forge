@@ -1,0 +1,14 @@
+[
+  { "id": "secret-env", "kind": "context_safety", "intent": "review", "file": ".env", "expect_included": false },
+  { "id": "secret-sk-pattern", "kind": "context_safety", "intent": "review", "file": "leak.zig", "expect_included": false },
+  { "id": "secret-ghp-pattern", "kind": "context_safety", "intent": "review", "file": "ghp.zig", "expect_included": false },
+  { "id": "secret-pem-name", "kind": "context_safety", "intent": "review", "file": "key.pem", "expect_included": false },
+  { "id": "secret-credentials-json", "kind": "context_safety", "intent": "review", "file": "credentials.json", "expect_included": false },
+  { "id": "budget-truncation", "kind": "context_budget", "file": "large.txt", "budget_bytes": 100, "expect_truncated": true },
+  { "id": "budget-small", "kind": "context_budget", "file": "large.txt", "budget_bytes": 50, "expect_truncated": true },
+  { "id": "doctor-ready", "kind": "doctor", "expect_ready": true },
+  { "id": "ask-create-note", "kind": "workflow", "command": "ask", "intent": "create eval note", "expect_run": true },
+  { "id": "agent-search", "kind": "workflow", "command": "agent_run", "intent": "search sample", "expect_type": "agent_run" },
+  { "id": "agent-step-limit", "kind": "workflow", "command": "agent_run", "max_steps": 1, "expect_failure": true },
+  { "id": "stale-hash", "kind": "safety", "command": "apply", "proposal": "proposals/modify-sample.proposal.json", "expect_failure": true }
+]
