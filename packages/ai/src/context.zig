@@ -6,6 +6,17 @@ pub const BlockType = enum {
     intent,
     diagnostic,
     rules,
+    attachment,
+    retrieval,
+    git_diff,
+    recent,
+    semantic,
+    imports,
+    lsp,
+    docs,
+    fused,
+    memory,
+    web,
 };
 
 pub const ContextBlock = struct {
@@ -13,6 +24,14 @@ pub const ContextBlock = struct {
     name: []const u8,
     content: []const u8,
     is_truncated: bool = false,
+    detail: ?[]const u8 = null,
+};
+
+pub const ManifestExtra = struct {
+    kind: BlockType,
+    name: []const u8,
+    detail: []const u8,
+    bytes: usize = 0,
 };
 
 pub const ContextBuilder = struct {
@@ -21,6 +40,7 @@ pub const ContextBuilder = struct {
     used_bytes: usize,
     blocks: std.ArrayList(ContextBlock),
     rejected: std.StringHashMap([]const u8),
+    manifest_extras: std.ArrayList(ManifestExtra),
 
     pub fn init(allocator: std.mem.Allocator, max_bytes: usize) ContextBuilder {
         return .{
@@ -29,18 +49,58 @@ pub const ContextBuilder = struct {
             .used_bytes = 0,
             .blocks = .empty,
             .rejected = std.StringHashMap([]const u8).init(allocator),
+            .manifest_extras = .empty,
         };
     }
 
     pub fn deinit(self: *ContextBuilder) void {
+        for (self.blocks.items) |block| {
+            self.allocator.free(block.name);
+            self.allocator.free(block.content);
+            if (block.detail) |detail| self.allocator.free(detail);
+        }
         self.blocks.deinit(self.allocator);
+        for (self.manifest_extras.items) |extra| {
+            self.allocator.free(extra.name);
+            self.allocator.free(extra.detail);
+        }
+        self.manifest_extras.deinit(self.allocator);
+        var reject_it = self.rejected.iterator();
+        while (reject_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
         self.rejected.deinit();
     }
 
+    pub fn addManifestExtra(
+        self: *ContextBuilder,
+        kind: BlockType,
+        name: []const u8,
+        detail: []const u8,
+        bytes: usize,
+    ) !void {
+        try self.manifest_extras.append(self.allocator, .{
+            .kind = kind,
+            .name = try self.allocator.dupe(u8, name),
+            .detail = try self.allocator.dupe(u8, detail),
+            .bytes = bytes,
+        });
+    }
+
     pub fn addBlock(self: *ContextBuilder, btype: BlockType, name: []const u8, content: []const u8) !void {
+        try self.addBlockWithDetail(btype, name, content, null);
+    }
+
+    pub fn addBlockWithDetail(
+        self: *ContextBuilder,
+        btype: BlockType,
+        name: []const u8,
+        content: []const u8,
+        detail: ?[]const u8,
+    ) !void {
         // 1. Check if the file is a known secret file
         if (btype == .file and secret_scanner.isSecretFile(name)) {
-            try self.rejected.put(name, "Secret file extension or name detected");
+            try self.rejected.put(try self.allocator.dupe(u8, name), "Secret file extension or name detected");
             return;
         }
 
@@ -49,32 +109,34 @@ pub const ContextBuilder = struct {
             // Safe
         } else |err| {
             if (err == error.ContainsSecret) {
-                try self.rejected.put(name, "Contains secret pattern");
+                try self.rejected.put(try self.allocator.dupe(u8, name), "Contains secret pattern");
                 return;
             }
         }
 
         // 3. Handle capacity and truncation
         if (self.used_bytes >= self.max_bytes) {
-            try self.rejected.put(name, "Context byte budget exceeded");
+            try self.rejected.put(try self.allocator.dupe(u8, name), "Context byte budget exceeded");
             return;
         }
 
-        var block = ContextBlock{
-            .block_type = btype,
-            .name = name,
-            .content = content,
-            .is_truncated = false,
-        };
-
         const remaining = self.max_bytes - self.used_bytes;
-        if (content.len > remaining) {
-            block.content = content[0..remaining];
-            block.is_truncated = true;
-        }
+        const take_len = @min(content.len, remaining);
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const owned_content = try self.allocator.dupe(u8, content[0..take_len]);
+        errdefer self.allocator.free(owned_content);
+        const owned_detail = if (detail) |text| try self.allocator.dupe(u8, text) else null;
+        errdefer if (owned_detail) |text| self.allocator.free(text);
 
-        try self.blocks.append(self.allocator, block);
-        self.used_bytes += block.content.len;
+        try self.blocks.append(self.allocator, .{
+            .block_type = btype,
+            .name = owned_name,
+            .content = owned_content,
+            .is_truncated = content.len > remaining,
+            .detail = owned_detail,
+        });
+        self.used_bytes += owned_content.len;
     }
 };
 

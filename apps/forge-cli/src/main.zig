@@ -155,7 +155,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --yes                Approve apply without interactive prompt
         \\  --file <path>        Include file in AI context (repeatable)
         \\  --provider <name>    AI provider: auto|fake|gemini (default: auto)
-        \\  --model <name>       Gemini model id (default: gemini-2.0-flash)
+        \\  --model <name>       Gemini model id (default: gemini-2.5-flash)
         \\  --budget-bytes <n>   Context byte budget for forge context (default: 1MiB)
         \\  --capability <name>  Agent capability: read_only|propose|propose_and_task
         \\  --once               Single watch poll (for tests)

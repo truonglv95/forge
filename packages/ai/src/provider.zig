@@ -21,6 +21,11 @@ pub const ModelMetadata = struct {
     context_window: usize,
 };
 
+pub const ImagePart = struct {
+    mime_type: []const u8,
+    data_base64: []const u8,
+};
+
 pub const ProviderError = error{
     AuthenticationFailed,
     RateLimitExceeded,
@@ -36,13 +41,27 @@ pub const Provider = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        ask: *const fn (*anyopaque, allocator: std.mem.Allocator, prompt: []const u8, writer: *std.Io.Writer, cancel_token: *const kernel.cancellation.CancellationToken) ProviderError!void,
+        ask: *const fn (
+            *anyopaque,
+            allocator: std.mem.Allocator,
+            prompt: []const u8,
+            images: []const ImagePart,
+            writer: *std.Io.Writer,
+            cancel_token: *const kernel.cancellation.CancellationToken,
+        ) ProviderError!void,
         metadata: *const fn (*const anyopaque) ModelMetadata,
         usage: *const fn (*const anyopaque) TokenUsage,
     };
 
-    pub fn ask(self: Provider, allocator: std.mem.Allocator, prompt: []const u8, writer: *std.Io.Writer, cancel_token: *const kernel.cancellation.CancellationToken) ProviderError!void {
-        return self.vtable.ask(self.ptr, allocator, prompt, writer, cancel_token);
+    pub fn ask(
+        self: Provider,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        images: []const ImagePart,
+        writer: *std.Io.Writer,
+        cancel_token: *const kernel.cancellation.CancellationToken,
+    ) ProviderError!void {
+        return self.vtable.ask(self.ptr, allocator, prompt, images, writer, cancel_token);
     }
 
     pub fn metadata(self: Provider) ModelMetadata {
@@ -51,5 +70,16 @@ pub const Provider = struct {
 
     pub fn usage(self: Provider) TokenUsage {
         return self.vtable.usage(self.ptr);
+    }
+
+    pub fn errorMessage(err: ProviderError) []const u8 {
+        return switch (err) {
+            error.AuthenticationFailed => "Gemini API key invalid or expired — check GEMINI_API_KEY",
+            error.RateLimitExceeded => "Gemini quota exceeded — try gemini-2.5-flash or enable billing",
+            error.ContextLengthExceeded => "Prompt too large for Gemini model",
+            error.NetworkError => "Network error calling Gemini",
+            error.MalformedResponse => "Gemini returned an unexpected response",
+            error.ProviderInternalError => "Gemini provider error",
+        };
     }
 };

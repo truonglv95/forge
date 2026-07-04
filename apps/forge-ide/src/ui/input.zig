@@ -16,6 +16,7 @@ const keybindings_mod = @import("../keybindings.zig");
 const terminal_session_mod = @import("../workbench/terminal_session.zig");
 const terminal_panel = @import("terminal_panel.zig");
 const bottom_panel = @import("bottom_panel.zig");
+const scroll_axis = @import("scroll_axis.zig");
 
 const cmd_mask: i32 = 0x08;
 const shift_mask: i32 = 0x02;
@@ -109,6 +110,16 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     if (wb.agent.scope_picker_open) {
         handleScopePickerKeys(wb, event);
         return;
+    }
+
+    if (wb.focused_panel == .agent and event.keycode == 53) {
+        wb.agent.lock();
+        const menus_open = wb.agent.mode_menu_open or wb.agent.model_menu_open;
+        wb.agent.unlock();
+        if (menus_open) {
+            wb.dispatch(.agent_close_menus) catch {};
+            return;
+        }
     }
 
     if (wb.renaming) {
@@ -281,9 +292,14 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             active_buffer.insertString(event.chars) catch {};
         }
     }
+
+    if (wb.focused_panel == .agent) {
+        wb.ensurePromptCursorVisible();
+    }
 }
 
 fn handleScopePickerKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+    const scope_picker_mod = @import("../agent/scope_picker.zig");
     if (event.keycode == 53) {
         wb.dispatch(.agent_scope_picker_close) catch {};
         return;
@@ -294,10 +310,12 @@ fn handleScopePickerKeys(wb: *@import("../workbench.zig").Workbench, event: rend
     }
     if (event.keycode == 125) {
         wb.agent.lock();
-        if (wb.scope_picker_filtered.items.len > 0) {
+        const query = wb.agent.scope_query[0..wb.agent.scope_query_len];
+        const total = scope_picker_mod.visibleRowCount(wb.scope_picker_filtered.items.len, query);
+        if (total > 0) {
             wb.agent.scope_picker_selected +%= 1;
-            if (wb.agent.scope_picker_selected >= wb.scope_picker_filtered.items.len) {
-                wb.agent.scope_picker_selected = wb.scope_picker_filtered.items.len - 1;
+            if (wb.agent.scope_picker_selected >= total) {
+                wb.agent.scope_picker_selected = total - 1;
             }
         }
         wb.agent.unlock();
@@ -520,6 +538,11 @@ fn handleRenameKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.
 }
 
 fn pasteIntoActiveBuffer(wb: *@import("../workbench.zig").Workbench) void {
+    if (wb.focused_panel == .agent) {
+        wb.pasteIntoAgent() catch {};
+        return;
+    }
+
     const text = renderer.Renderer.clipboardText(state.gpa) catch return;
     defer state.gpa.free(text);
     if (text.len == 0) return;
@@ -625,6 +648,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else {
             renderer.Renderer.setCursor(0);
         }
+
+        if (geo.shell_mode == .ide and wb.sidebar_view == .explorer and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= explorer_scroll.list_top and event.y < h - layout.status_height) {
+            state.explorer_hover_row = explorer_scroll.rowAtPoint(wb.explorer_scroll_y, event.y);
+        } else {
+            state.explorer_hover_row = null;
+        }
+
         if (geo.shell_mode == .ide and isEditorContentArea(geo, event.x, event.y)) {
             const pane = wb.paneAt(geo.editor_x, geo.editor_w, event.x);
             if (wb.docForPane(pane)) |doc| {
@@ -716,15 +746,86 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
             const agent_panel = @import("agent_panel.zig");
-            if (agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, event.x, event.y)) {
+            const context_inspector_mod = @import("context_inspector.zig");
+            const agent_composer_mod = @import("agent_composer.zig");
+            wb.agent.lock();
+            const entry_count = wb.agent.context_entries.items.len;
+            const attachment_count = wb.agent.attachments.items.len;
+            wb.agent.unlock();
+            if (context_inspector_mod.hitToggle(geo.agent_x, geo.agent_w, h, entry_count, attachment_count, &wb.prompt_buffer, event.x, event.y)) {
+                wb.dispatch(.agent_toggle_context_inspector) catch {};
+                return;
+            }
+            const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer);
+            if (agent_composer_mod.hitAttachmentRemove(&wb.agent, composer_layout, event.x, event.y)) |index| {
+                wb.dispatch(.{ .agent_remove_attachment = index }) catch {};
+                return;
+            }
+            const hit = agent_composer_mod.hitTest(&wb.agent, composer_layout, event.x, event.y);
+            switch (hit) {
+                .mode_menu => {
+                    wb.dispatch(.agent_toggle_mode_menu) catch {};
+                    return;
+                },
+                .model_menu => {
+                    wb.dispatch(.agent_toggle_model_menu) catch {};
+                    return;
+                },
+                .mode_item => {
+                    if (agent_composer_mod.modeIndexAt(&wb.agent, composer_layout, event.x, event.y)) |index| {
+                        wb.dispatch(.{ .agent_set_mode = agent_composer_mod.modes[index].mode }) catch {};
+                    }
+                    return;
+                },
+                .model_item => {
+                    if (agent_composer_mod.modelIndexAt(&wb.agent, composer_layout, event.x, event.y)) |index| {
+                        wb.dispatch(.{ .agent_set_model = index }) catch {};
+                    }
+                    return;
+                },
+                .scope => {
+                    wb.dispatch(.agent_scope_picker_open) catch {};
+                    return;
+                },
+                .send => {
+                    submitAgentPrompt(wb);
+                    return;
+                },
+                .input => {},
+                else => {
+                    wb.agent.closeMenus();
+                },
+            }
+            if (agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, event.x, event.y)) {
                 return;
             }
             if (wb.agent.show_review) {
-                if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, event.x, event.y)) |action| {
+                if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, event.x, event.y)) |action| {
                     switch (action) {
                         .apply => wb.dispatch(.agent_apply) catch {},
                         .reject => wb.dispatch(.agent_reject) catch {},
                     }
+                    return;
+                }
+                wb.agent.lock();
+                const run_count = @min(wb.agent.run_history.items.len, agent_panel.max_visible_runs);
+                const has_summary = wb.agent.summary != null;
+                const review_scroll = wb.agent.review_scroll_y;
+                wb.agent.unlock();
+                if (agent_panel.hitReviewHunk(
+                    &wb.agent,
+                    run_count,
+                    wb.chat_scroll_y,
+                    review_scroll,
+                    has_summary,
+                    event.x,
+                    event.y,
+                    geo.agent_x,
+                    20,
+                )) |hunk_index| {
+                    wb.agent.lock();
+                    wb.agent.review.toggle(hunk_index);
+                    wb.agent.unlock();
                     return;
                 }
             }
@@ -900,8 +1001,9 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
     } else if (event.action == .scroll) {
         const mx = state.last_mouse_x;
         const my = state.last_mouse_y;
-        const scroll_delta_y = -event.y;
-        const scroll_delta_x = -event.x;
+        const raw = scroll_axis.predominantDeltas(-event.x, -event.y);
+        const scroll_delta_y = raw.y;
+        const scroll_delta_x = raw.x;
 
         if (geo.shell_mode == .ide and mx >= geo.explorer_x and mx < geo.explorer_splitter_x and my >= layout.header_height) {
             switch (wb.sidebar_view) {
@@ -931,8 +1033,18 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.agent.review_scroll_y += scroll_delta_y;
                 wb.clampReviewScroll(h);
             } else {
-                wb.chat_scroll_y += scroll_delta_y;
-                wb.clampChatScroll(h);
+                wb.agent.lock();
+                const attachment_count = wb.agent.attachments.items.len;
+                wb.agent.unlock();
+                const agent_panel = @import("agent_panel.zig");
+                const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer);
+                if (composer_layout.scroll_max > 0 and agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, mx, my)) {
+                    wb.prompt_scroll_y += scroll_delta_y;
+                    wb.clampPromptScroll(geo.agent_w);
+                } else {
+                    wb.chat_scroll_y += scroll_delta_y;
+                    wb.clampChatScroll(h);
+                }
             }
         } else if (geo.shell_mode == .ide and my >= tabs_ui.tab_bar_top and my < tabs_ui.tab_bar_top + tabs_ui.tab_bar_height and mx >= geo.editor_x and mx < geo.agent_splitter_x) {
             const tab_delta = if (scroll_delta_x != 0) scroll_delta_x else scroll_delta_y;
@@ -944,11 +1056,11 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and mx >= geo.editor_x and mx < geo.agent_splitter_x and my > 65.0 and my < geo.task_panel_y - 35) {
             const pane = wb.paneAt(geo.editor_x, geo.editor_w, mx);
             if (pane == .secondary) {
-                if (scroll_delta_y != 0) wb.split_scroll_y += scroll_delta_y;
-                if (scroll_delta_x != 0) wb.split_scroll_x += scroll_delta_x;
+                wb.split_scroll_y += scroll_delta_y;
+                wb.split_scroll_x += scroll_delta_x;
             } else {
-                if (scroll_delta_y != 0) wb.editor_scroll_y += scroll_delta_y;
-                if (scroll_delta_x != 0) wb.editor_scroll_x += scroll_delta_x;
+                wb.editor_scroll_y += scroll_delta_y;
+                wb.editor_scroll_x += scroll_delta_x;
             }
             wb.clampEditorScroll(geo.editor_w, geo.editor_h);
         }

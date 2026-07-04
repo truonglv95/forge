@@ -36,6 +36,10 @@ pub const ScanSummary = tree.ScanSummary;
 pub const search = @import("search.zig");
 pub const SearchResult = search.SearchResult;
 
+pub const git_diff = @import("git_diff.zig");
+pub const recent_files = @import("recent_files.zig");
+pub const codebase_index = @import("codebase_index.zig");
+
 pub const watch = @import("watch.zig");
 pub const WatchEvent = watch.Event;
 pub const WatchEventKind = watch.EventKind;
@@ -52,6 +56,7 @@ pub const LoadedRecord = history.LoadedRecord;
 
 pub const runs = @import("runs.zig");
 pub const sessions = @import("sessions.zig");
+pub const agent_memory = @import("agent_memory.zig");
 
 pub const theme = @import("theme.zig");
 pub const Theme = theme.Theme;

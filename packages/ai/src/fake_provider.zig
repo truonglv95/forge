@@ -5,6 +5,7 @@ const streaming = @import("streaming.zig");
 
 pub const FakeProvider = struct {
     response: []const u8,
+    plan_response: ?[]const u8 = null,
     simulated_usage: provider.TokenUsage,
     meta: provider.ModelMetadata,
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
@@ -15,8 +16,18 @@ pub const FakeProvider = struct {
         stream_callback: ?*const fn (?*anyopaque, []const u8) void,
         stream_context: ?*anyopaque,
     ) FakeProvider {
+        return initWithPlan(response, null, stream_callback, stream_context);
+    }
+
+    pub fn initWithPlan(
+        response: []const u8,
+        plan_response: ?[]const u8,
+        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
+        stream_context: ?*anyopaque,
+    ) FakeProvider {
         return .{
             .response = response,
+            .plan_response = plan_response,
             .simulated_usage = .{ .prompt_tokens = 10, .completion_tokens = 20, .total_tokens = 30 },
             .meta = .{
                 .provider_name = "fake",
@@ -39,14 +50,26 @@ pub const FakeProvider = struct {
         };
     }
 
-    fn askImpl(ptr: *anyopaque, allocator: std.mem.Allocator, prompt: []const u8, writer: *std.Io.Writer, cancel_token: *const kernel.cancellation.CancellationToken) provider.ProviderError!void {
+    fn askImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        images: []const provider.ImagePart,
+        writer: *std.Io.Writer,
+        cancel_token: *const kernel.cancellation.CancellationToken,
+    ) provider.ProviderError!void {
         _ = allocator;
-        _ = prompt;
+        _ = images;
         const self: *FakeProvider = @ptrCast(@alignCast(ptr));
 
         if (cancel_token.isCancelled()) return provider.ProviderError.NetworkError;
 
-        try streaming.writeChunks(self.response, writer, cancel_token, .{
+        const payload = if (std.mem.indexOf(u8, prompt, "MARKDOWN PLAN MODE") != null)
+            self.plan_response orelse self.response
+        else
+            self.response;
+
+        try streaming.writeChunks(payload, writer, cancel_token, .{
             .on_chunk = self.stream_callback,
             .on_chunk_context = self.stream_context,
         });
@@ -78,7 +101,7 @@ test "FakeProvider honours cancellation while streaming" {
     defer cancel_src.deinit();
     cancel_src.cancel();
 
-    try std.testing.expectError(provider.ProviderError.NetworkError, p.ask(allocator, "hi", &w_alloc.writer, &cancel_src.getToken()));
+    try std.testing.expectError(provider.ProviderError.NetworkError, p.ask(allocator, "hi", &.{}, &w_alloc.writer, &cancel_src.getToken()));
 }
 
 test "FakeProvider implements Provider interface correctly" {
@@ -96,7 +119,7 @@ test "FakeProvider implements Provider interface correctly" {
     defer cancel_src.deinit();
     const token = cancel_src.getToken();
 
-    try p.ask(allocator, "Say hi", &w_alloc.writer, &token);
+    try p.ask(allocator, "Say hi", &.{}, &w_alloc.writer, &token);
 
     const out_items = w_alloc.writer.buffer[0..w_alloc.writer.end];
     try std.testing.expectEqualStrings("Hello, world!", out_items);

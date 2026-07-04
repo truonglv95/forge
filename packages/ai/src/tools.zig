@@ -10,6 +10,9 @@ pub const CapabilityProfile = enum {
 pub const ToolId = enum {
     read_file,
     search,
+    codebase_search,
+    remember,
+    fetch_url,
     list_tree,
     run_task,
     propose_edit,
@@ -21,11 +24,11 @@ pub const ToolId = enum {
 pub fn isAllowed(profile: CapabilityProfile, tool: ToolId) bool {
     return switch (profile) {
         .read_only => switch (tool) {
-            .read_file, .search, .list_tree, .show_context => true,
+            .read_file, .search, .codebase_search, .fetch_url, .list_tree, .show_context => true,
             else => false,
         },
         .propose => switch (tool) {
-            .read_file, .search, .list_tree, .show_context, .propose_edit => true,
+            .read_file, .search, .codebase_search, .fetch_url, .list_tree, .show_context, .propose_edit, .remember => true,
             else => false,
         },
         .propose_and_task => switch (tool) {
@@ -39,6 +42,9 @@ pub fn name(tool: ToolId) []const u8 {
     return switch (tool) {
         .read_file => "read_file",
         .search => "search",
+        .codebase_search => "codebase_search",
+        .remember => "remember",
+        .fetch_url => "fetch_url",
         .list_tree => "list_tree",
         .run_task => "run_task",
         .propose_edit => "propose_edit",

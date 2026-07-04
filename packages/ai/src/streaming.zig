@@ -8,6 +8,23 @@ pub const Options = struct {
     on_chunk_context: ?*anyopaque = null,
 };
 
+/// Invokes `on_chunk` for slices of `content` without writing to a writer.
+pub fn emitChunks(
+    content: []const u8,
+    cancel_token: *const kernel.cancellation.CancellationToken,
+    options: Options,
+) provider.ProviderError!void {
+    if (cancel_token.isCancelled()) return provider.ProviderError.NetworkError;
+
+    var offset: usize = 0;
+    while (offset < content.len) {
+        if (cancel_token.isCancelled()) return provider.ProviderError.NetworkError;
+        const end = @min(offset + options.chunk_size, content.len);
+        if (options.on_chunk) |callback| callback(options.on_chunk_context, content[offset..end]);
+        offset = end;
+    }
+}
+
 /// Writes `content` to `writer` in chunks, checking cancellation between chunks.
 pub fn writeChunks(
     content: []const u8,
@@ -52,4 +69,27 @@ test "writeChunks stops when cancelled" {
         &cancel_src.getToken(),
         .{},
     ));
+}
+
+test "emitChunks handles long thought payloads" {
+    var cancel_src = try kernel.cancellation.CancellationTokenSource.init(std.testing.allocator);
+    defer cancel_src.deinit();
+
+    var count: usize = 0;
+    const Counter = struct {
+        n: *usize,
+        fn onChunk(ctx: ?*anyopaque, _: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.n.* += 1;
+        }
+    };
+    var counter = Counter{ .n = &count };
+
+    const long_text = "thought " ** 40;
+    try emitChunks(long_text, &cancel_src.getToken(), .{
+        .on_chunk = Counter.onChunk,
+        .on_chunk_context = &counter,
+        .chunk_size = 32,
+    });
+    try std.testing.expect(count > 1);
 }

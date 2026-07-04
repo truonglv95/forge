@@ -3,6 +3,8 @@ const ai = @import("forge-ai");
 const workspace = @import("forge-workspace");
 const kernel = @import("forge-kernel");
 const session_mod = @import("session.zig");
+const review_store = @import("review_store.zig");
+const agent_ui_queue = @import("../workbench/agent_ui_queue.zig");
 
 pub const ChatRole = enum { user, agent };
 
@@ -13,16 +15,26 @@ pub const Host = struct {
     ai_provider: []const u8,
     ai_model: ?[]const u8,
     workspace_root: workspace.WorkspaceRoot,
+    workspace_path: []const u8,
     agent: *session_mod.Session,
     agent_cancel_slot: *?*kernel.cancellation.CancellationTokenSource,
     context: ?*anyopaque,
     append_chat: *const fn (?*anyopaque, ChatRole, []const u8) void,
+    set_status: *const fn (?*anyopaque, []const u8) void,
+    enqueue_ui: *const fn (?*anyopaque, agent_ui_queue.Op) void,
     refresh_explorer: *const fn (?*anyopaque) void,
     open_file: *const fn (?*anyopaque, []const u8) void,
+    snapshot_conversation: *const fn (?*anyopaque, std.mem.Allocator) []const ai.conversation.Turn,
+    free_conversation_snapshot: *const fn (?*anyopaque, std.mem.Allocator, []const ai.conversation.Turn) void,
+    snapshot_recent_files: *const fn (?*anyopaque, std.mem.Allocator) []const []const u8,
+    free_recent_files_snapshot: *const fn (?*anyopaque, std.mem.Allocator, []const []const u8) void,
+    snapshot_context_supplement: *const fn (?*anyopaque, std.mem.Allocator) ai.context_supplement.Supplement,
+    free_context_supplement: *const fn (?*anyopaque, std.mem.Allocator, ai.context_supplement.Supplement) void,
 };
 
 pub const default_ask_response = ai.proposal_workflow.default_ask_response;
 pub const default_plan_response = ai.proposal_workflow.default_plan_response;
+pub const default_plan_markdown = ai.proposal_workflow.default_plan_markdown;
 
 pub const AgentError = error{
     AgentBusy,
@@ -30,27 +42,102 @@ pub const AgentError = error{
     ProviderFailed,
     Cancelled,
     MissingProviderCredentials,
-};
+    StepLimitReached,
+    InvalidProposal,
+    NoAcceptedHunks,
+} || ai.provider.ProviderError;
 
-pub fn spawnGenerate(host: *const Host, intent: []const u8, scope_files: []const []const u8) AgentError!void {
+pub fn refreshContextPreview(host: *const Host, intent: ?[]const u8, active_file: ?[]const u8) AgentError!void {
+    const scope = host.agent.effectiveScope(active_file);
+    const attachments = collectAttachmentInputs(host) catch return error.ProviderFailed;
+    defer freeAttachmentInputs(host.allocator, attachments);
+
+    var builder = try buildContext(host, intent, scope, active_file, attachments);
+    defer builder.deinit();
+
+    var manifest_items: std.ArrayList(ai.context_loader.ManifestItem) = .empty;
+    defer ai.context_loader.freeManifestItems(host.allocator, &manifest_items);
+    ai.context_loader.collectManifest(host.allocator, &builder, &manifest_items) catch return error.ProviderFailed;
+
+    var entries: std.ArrayList(session_mod.ContextEntry) = .empty;
+    for (manifest_items.items) |item| {
+        const status: session_mod.ContextEntryStatus = switch (item.status) {
+            .included => .included,
+            .truncated => .truncated,
+            .rejected => .rejected,
+        };
+        entries.append(host.allocator, .{
+            .kind = (host.allocator.dupe(u8, @tagName(item.kind)) catch return error.ProviderFailed),
+            .name = (host.allocator.dupe(u8, item.name) catch return error.ProviderFailed),
+            .status = status,
+            .bytes = item.bytes,
+            .reason = if (item.reason) |text| (host.allocator.dupe(u8, text) catch return error.ProviderFailed) else null,
+        }) catch return error.ProviderFailed;
+    }
+
+    host.agent.replaceContextManifest(builder.used_bytes, builder.max_bytes, entries);
+}
+
+pub fn spawnGenerate(host: *const Host, intent: []const u8, scope_files: []const []const u8, active_file: ?[]const u8) AgentError!void {
     if (host.agent.worker_running) return error.AgentBusy;
 
-    const ctx = host.allocator.create(GenerateContext) catch return error.ProviderFailed;
+    const conversation = host.snapshot_conversation(host.context, host.allocator);
+    const ctx = host.allocator.create(GenerateContext) catch {
+        host.free_conversation_snapshot(host.context, host.allocator, conversation);
+        return error.ProviderFailed;
+    };
+
+    const intent_owned = host.allocator.dupe(u8, intent) catch {
+        host.free_conversation_snapshot(host.context, host.allocator, conversation);
+        host.allocator.destroy(ctx);
+        return error.ProviderFailed;
+    };
+    const scope_owned = dupeStringSlice(host.allocator, scope_files) catch {
+        host.allocator.free(intent_owned);
+        host.free_conversation_snapshot(host.context, host.allocator, conversation);
+        host.allocator.destroy(ctx);
+        return error.ProviderFailed;
+    };
+    const active_owned: ?[]const u8 = if (active_file) |path| host.allocator.dupe(u8, path) catch null else null;
+
     ctx.* = .{
         .host = host.*,
-        .intent = host.allocator.dupe(u8, intent) catch return error.ProviderFailed,
-        .scope_files = dupeStringSlice(host.allocator, scope_files) catch return error.ProviderFailed,
-        .cancel_source = kernel.cancellation.CancellationTokenSource.init(host.allocator) catch return error.ProviderFailed,
+        .intent = intent_owned,
+        .scope_files = scope_owned,
+        .active_file = active_owned,
+        .conversation = conversation,
+        .cancel_source = kernel.cancellation.CancellationTokenSource.init(host.allocator) catch {
+            if (active_owned) |path| host.allocator.free(path);
+            freeStringSlice(host.allocator, scope_owned);
+            host.allocator.free(intent_owned);
+            host.free_conversation_snapshot(host.context, host.allocator, conversation);
+            host.allocator.destroy(ctx);
+            return error.ProviderFailed;
+        },
     };
 
     host.agent.resetForNewRun();
-    host.agent.clearStreamText();
-    host.agent.setPhase(.building_context, "Building context...") catch {};
+    if (resolveProviderLabel(host)) |provider_label| {
+        defer host.allocator.free(provider_label);
+        host.agent.setProviderLabel(provider_label) catch {};
+        var start_buf: [160]u8 = undefined;
+        const start_status = std.fmt.bufPrint(&start_buf, "Starting ({s}) — building context...", .{provider_label}) catch "Building context...";
+        host.agent.setPhase(.building_context, start_status) catch {};
+        host.set_status(host.context, start_status);
+    } else |_| {
+        host.agent.setProviderLabel("unknown") catch {};
+        host.agent.setPhase(.building_context, "Building context...") catch {};
+        host.set_status(host.context, "Building context...");
+    }
     host.agent.lock();
     host.agent.worker_running = true;
     if (host.agent.intent) |old| host.allocator.free(old);
     host.agent.intent = host.allocator.dupe(u8, intent) catch "";
+    if (host.agent.run_active_file) |old| host.allocator.free(old);
+    host.agent.run_active_file = if (active_file) |path| host.allocator.dupe(u8, path) catch null else null;
     host.agent.unlock();
+
+    refreshContextPreview(host, intent, active_file) catch {};
 
     const thread = std.Thread.spawn(.{}, generateWorker, .{ctx}) catch {
         ctx.deinit();
@@ -70,7 +157,13 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
     var proposal = workspace.OwnedProposal.readPath(host.allocator, host.io, host.workspace_root, proposal_rel) catch return error.ProviderFailed;
     defer proposal.deinit();
 
-    const workspace_edit = proposal.workspaceEdit();
+    var filtered = host.agent.review.buildAcceptedEdit(host.allocator, &proposal) catch |err| switch (err) {
+        error.NoAcceptedHunks => return error.NoAcceptedHunks,
+        else => return error.ProviderFailed,
+    };
+    defer filtered.deinit(host.allocator);
+
+    const workspace_edit = filtered.workspaceEdit();
     workspace_edit.validate() catch return error.ProviderFailed;
 
     var service = workspace.TransactionService.init(host.allocator, host.io, host.workspace_root);
@@ -87,6 +180,10 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
     service.apply(&record) catch return error.ProviderFailed;
     workspace.history.persistApplied(host.allocator, host.io, host.workspace_root, &record, proposal_rel) catch return error.ProviderFailed;
 
+    if (host.agent.run_id) |run_id| {
+        workspace.runs.updateRunState(host.allocator, host.io, host.workspace_root, run_id, "done", tx_id) catch {};
+    }
+
     host.agent.lock();
     host.agent.last_transaction_id = tx_id;
     host.agent.show_review = false;
@@ -96,11 +193,40 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
     host.agent.unlock();
 
     host.refresh_explorer(host.context);
-    for (proposal.files) |file| {
+    for (filtered.files) |file| {
         host.open_file(host.context, file.path);
     }
 
+    refreshRunHistory(host) catch {};
+
     return tx_id;
+}
+
+pub fn rejectCurrentProposal(host: *const Host) void {
+    if (host.agent.run_id) |run_id| {
+        workspace.runs.updateRunState(host.allocator, host.io, host.workspace_root, run_id, "cancelled", null) catch {};
+    }
+
+    host.agent.lock();
+    host.agent.show_review = false;
+    host.agent.review.clear(host.allocator);
+    host.agent.phase = .idle;
+    if (host.agent.status_line.len > 0) host.allocator.free(host.agent.status_line);
+    host.agent.status_line = host.allocator.dupe(u8, "Proposal rejected") catch "";
+    host.agent.unlock();
+
+    refreshRunHistory(host) catch {};
+}
+
+pub fn applyManifestText(host: *const Host, manifest_text: []const u8) !void {
+    host.agent.lock();
+    defer host.agent.unlock();
+    clearLines(host.allocator, &host.agent.context_lines);
+    var line_it = std.mem.splitScalar(u8, manifest_text, '\n');
+    while (line_it.next()) |line| {
+        if (line.len == 0) continue;
+        try host.agent.context_lines.append(host.allocator, try host.allocator.dupe(u8, line));
+    }
 }
 
 pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
@@ -110,20 +236,17 @@ pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
     const edit = proposal.workspaceEdit();
     try edit.validate();
 
-    var diff_writer = std.Io.Writer.Allocating.init(host.allocator);
-    defer diff_writer.deinit();
-    try workspace.preview.renderDiff(host.allocator, host.io, host.workspace_root, edit, &diff_writer.writer);
-
     host.agent.lock();
     defer host.agent.unlock();
 
-    clearLines(host.allocator, &host.agent.diff_lines);
+    host.agent.review.clear(host.allocator);
+    try host.agent.review.buildFromProposal(host.allocator, host.io, host.workspace_root, &proposal);
 
-    const diff_bytes = diff_writer.writer.buffer[0..diff_writer.writer.end];
-    var diff_it = std.mem.splitScalar(u8, diff_bytes, '\n');
-    while (diff_it.next()) |line| {
-        if (line.len == 0) continue;
-        try host.agent.diff_lines.append(host.allocator, try host.allocator.dupe(u8, line));
+    clearLines(host.allocator, &host.agent.diff_lines);
+    for (host.agent.review.hunks) |hunk| {
+        for (hunk.diff_lines) |line| {
+            try host.agent.diff_lines.append(host.allocator, try host.allocator.dupe(u8, line));
+        }
     }
 
     if (proposal.metadata.summary) |summary| {
@@ -144,6 +267,14 @@ pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
     host.agent.show_review = true;
     host.agent.phase = .reviewing;
     host.agent.review_scroll_y = 0;
+
+    if (host.agent.run_id) |run_id| {
+        workspace.runs.updateRunState(host.allocator, host.io, host.workspace_root, run_id, "reviewing", null) catch {};
+    }
+
+    if (proposal.files.len > 0) {
+        host.open_file(host.context, proposal.files[0].path);
+    }
 }
 
 pub fn refreshRunHistory(host: *const Host) !void {
@@ -175,23 +306,30 @@ const GenerateContext = struct {
     host: Host,
     intent: []const u8,
     scope_files: []const []const u8,
+    active_file: ?[]const u8,
+    conversation: []const ai.conversation.Turn,
     cancel_source: kernel.cancellation.CancellationTokenSource,
 
     fn deinit(self: *GenerateContext) void {
         self.host.allocator.free(self.intent);
         freeStringSlice(self.host.allocator, self.scope_files);
+        if (self.active_file) |path| self.host.allocator.free(path);
+        self.host.free_conversation_snapshot(self.host.context, self.host.allocator, self.conversation);
         self.cancel_source.deinit();
         self.host.allocator.destroy(self);
     }
 };
 
-fn providerOptions(host: *const Host, fake_response: []const u8) ai.provider_factory.Options {
+fn providerOptions(host: *const Host, fake_response: []const u8, fake_plan: ?[]const u8) ai.provider_factory.Options {
     return .{
         .kind = ai.provider_factory.Kind.parse(host.ai_provider),
         .model = host.ai_model,
         .fake_response = fake_response,
+        .fake_plan_response = fake_plan,
         .stream_callback = streamBridge,
         .stream_context = @ptrCast(@constCast(host)),
+        .thinking_callback = thinkingBridge,
+        .thinking_context = @ptrCast(@constCast(host)),
     };
 }
 
@@ -201,30 +339,55 @@ fn generateWorker(ctx: *GenerateContext) void {
     ctx.host.agent_cancel_slot.* = &ctx.cancel_source;
     defer ctx.host.agent_cancel_slot.* = null;
 
-    const fake_response = switch (ctx.host.agent.mode) {
+    const mode = ctx.host.agent.mode;
+    const fake_response = switch (mode) {
         .ask => default_ask_response,
         .plan => default_plan_response,
+        .agent => default_ask_response,
+    };
+    const fake_plan = if (mode == .plan) default_plan_markdown else null;
+
+    const run_fn = switch (mode) {
+        .agent => agentRunInner(ctx, providerOptions(&ctx.host, fake_response, null)),
+        else => generateInner(ctx, providerOptions(&ctx.host, fake_response, fake_plan)),
     };
 
-    generateInner(ctx, providerOptions(&ctx.host, fake_response)) catch |err| {
-        const msg = switch (err) {
-            error.Cancelled => "Cancelled",
-            error.MissingProviderCredentials => "Missing provider credentials",
-            else => "Agent failed",
-        };
-        ctx.host.agent.lock();
-        ctx.host.agent.phase = if (err == error.Cancelled) .cancelled else .failed;
-        if (ctx.host.agent.status_line.len > 0) ctx.host.allocator.free(ctx.host.agent.status_line);
-        ctx.host.agent.status_line = ctx.host.allocator.dupe(u8, msg) catch "";
-        ctx.host.agent.worker_running = false;
-        ctx.host.agent.unlock();
-        ctx.host.append_chat(ctx.host.context, .agent, msg);
+    run_fn catch |err| {
+        const msg = agentFailureMessage(err);
+        const owned = ctx.host.allocator.dupe(u8, msg) catch return;
+        ctx.host.enqueue_ui(ctx.host.context, .{
+            .run_failed = .{
+                .phase = if (err == error.Cancelled) .cancelled else .failed,
+                .message = owned,
+            },
+        });
+    };
+}
+
+fn agentFailureMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.Cancelled => "Cancelled",
+        error.MissingProviderCredentials => "Missing Gemini API key — export GEMINI_API_KEY or add Keychain entry (forge-gemini)",
+        error.AuthenticationFailed => ai.provider.Provider.errorMessage(error.AuthenticationFailed),
+        error.RateLimitExceeded => ai.provider.Provider.errorMessage(error.RateLimitExceeded),
+        error.ContextLengthExceeded => ai.provider.Provider.errorMessage(error.ContextLengthExceeded),
+        error.NetworkError => ai.provider.Provider.errorMessage(error.NetworkError),
+        error.MalformedResponse => ai.provider.Provider.errorMessage(error.MalformedResponse),
+        error.ProviderInternalError => ai.provider.Provider.errorMessage(error.ProviderInternalError),
+        error.InvalidProposal => "Invalid proposal — model response could not be parsed or validated",
+        error.StepLimitReached => "Agent reached step limit before proposing",
+        else => "Agent failed",
     };
 }
 
 fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Options) AgentError!void {
     const host = &ctx.host;
     const cancel_token = ctx.cancel_source.getToken();
+
+    const attachments = collectAttachmentInputs(host) catch return error.ProviderFailed;
+    defer freeAttachmentInputs(host.allocator, attachments);
+    const recent_files = collectRecentFiles(host) catch &.{};
+    defer if (recent_files.len > 0) host.free_recent_files_snapshot(host.context, host.allocator, recent_files);
 
     var result = ai.proposal_workflow.generateAndPersist(
         host.allocator,
@@ -237,7 +400,7 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
         .{
             .surface = .ide,
             .mode = switch (host.agent.mode) {
-                .ask => .ask,
+                .ask, .agent => .ask,
                 .plan => .plan,
             },
             .cancel_token = &cancel_token,
@@ -245,44 +408,153 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .progress_context = host,
             .stream_callback = streamBridge,
             .stream_context = host,
+            .thinking_callback = thinkingBridge,
+            .thinking_context = host,
+            .active_file = ctx.active_file,
+            .attachments = attachments,
+            .conversation = ctx.conversation,
+            .workspace_cwd = host.workspace_path,
+            .recent_files = recent_files,
         },
     ) catch |err| switch (err) {
         ai.proposal_workflow.WorkflowError.Cancelled => return error.Cancelled,
         ai.proposal_workflow.WorkflowError.MissingProviderCredentials => return error.MissingProviderCredentials,
-        else => return error.ProviderFailed,
+        ai.proposal_workflow.WorkflowError.InvalidProposal => return error.InvalidProposal,
+        else => |e| return e,
     };
     defer ai.proposal_workflow.deinitResult(host.allocator, &result);
 
-    var builder = ai.context_loader.build(host.allocator, host.io, host.workspace_root, .{
-        .intent = ctx.intent,
-        .explicit_files = ctx.scope_files,
-        .include_project_rules = true,
-    }) catch return;
+    const manifest_owned = try buildManifestText(host, ctx.intent, ctx.scope_files, ctx.active_file, attachments);
+    defer host.allocator.free(manifest_owned);
+
+    const plan_owned = if (result.plan_body) |plan| host.allocator.dupe(u8, plan) catch return error.ProviderFailed else null;
+    errdefer if (plan_owned) |text| host.allocator.free(text);
+
+    var chat_buf: [512]u8 = undefined;
+    const chat_line = if (plan_owned != null)
+        std.fmt.bufPrint(&chat_buf, "Plan ready — proposal: {s}", .{result.proposal_rel}) catch "Proposal ready"
+    else
+        std.fmt.bufPrint(&chat_buf, "Proposal ready: {s}", .{result.proposal_rel}) catch "Proposal ready";
+    const chat_owned = host.allocator.dupe(u8, chat_line) catch return error.ProviderFailed;
+    errdefer host.allocator.free(chat_owned);
+
+    try enqueueRunFinished(host, result.run_id, result.proposal_rel, chat_owned, manifest_owned, plan_owned);
+}
+
+fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Options) AgentError!void {
+    const host = &ctx.host;
+    const cancel_token = ctx.cancel_source.getToken();
+
+    const attachments = collectAttachmentInputs(host) catch return error.ProviderFailed;
+    defer freeAttachmentInputs(host.allocator, attachments);
+    const recent_files = collectRecentFiles(host) catch &.{};
+    defer if (recent_files.len > 0) host.free_recent_files_snapshot(host.context, host.allocator, recent_files);
+
+    var result = ai.agent.run(
+        host.allocator,
+        host.io,
+        host.environ_map,
+        host.workspace_root,
+        ctx.intent,
+        .{
+            .max_steps = 8,
+            .provider_options = provider_options,
+            .explicit_files = ctx.scope_files,
+            .active_file = ctx.active_file,
+            .attachments = attachments,
+            .conversation = ctx.conversation,
+            .surface = .ide,
+            .cancel_token = &cancel_token,
+            .progress_callback = phaseBridge,
+            .progress_context = host,
+            .step_callback = stepBridge,
+            .step_context = host,
+            .workspace_cwd = host.workspace_path,
+            .recent_files = recent_files,
+        },
+    ) catch |err| switch (err) {
+        error.Cancelled => return error.Cancelled,
+        error.ProviderFailed => return error.ProviderFailed,
+        error.InvalidProposal => return error.InvalidProposal,
+        error.StepLimitReached => return error.StepLimitReached,
+        else => return error.ProviderFailed,
+    };
+    defer ai.agent.deinitResult(host.allocator, &result);
+
+    const run_id = result.final_run_id orelse return error.ProviderFailed;
+    const proposal_rel = result.proposal_rel orelse return error.NoProposal;
+
+    const manifest_owned = try buildManifestText(host, ctx.intent, ctx.scope_files, ctx.active_file, attachments);
+    defer host.allocator.free(manifest_owned);
+
+    var chat_buf: [512]u8 = undefined;
+    const chat_line = std.fmt.bufPrint(&chat_buf, "Agent finished — proposal: {s}", .{proposal_rel}) catch "Proposal ready";
+    const chat_owned = host.allocator.dupe(u8, chat_line) catch return error.ProviderFailed;
+    errdefer host.allocator.free(chat_owned);
+
+    try enqueueRunFinished(host, run_id, proposal_rel, chat_owned, manifest_owned, null);
+}
+
+fn buildManifestText(
+    host: *const Host,
+    intent: []const u8,
+    scope_files: []const []const u8,
+    active_file: ?[]const u8,
+    attachments: []const ai.context_loader.AttachmentInput,
+) AgentError![]u8 {
+    var builder = try buildContext(host, intent, scope_files, active_file, attachments);
     defer builder.deinit();
-    captureContextManifest(host, &builder) catch {};
 
-    host.agent.lock();
-    host.agent.run_id = host.allocator.dupe(u8, result.run_id) catch null;
-    host.agent.proposal_rel = host.allocator.dupe(u8, result.proposal_rel) catch null;
-    host.agent.worker_running = false;
-    host.agent.phase = .proposal_ready;
-    if (host.agent.status_line.len > 0) host.allocator.free(host.agent.status_line);
-    host.agent.status_line = host.allocator.dupe(u8, "Proposal ready for review") catch "";
-    host.agent.unlock();
+    var manifest_writer = std.Io.Writer.Allocating.init(host.allocator);
+    defer manifest_writer.deinit();
+    ai.context_loader.renderManifestHuman(&builder, &manifest_writer.writer) catch return error.ProviderFailed;
+    return host.allocator.dupe(u8, manifest_writer.writer.buffer[0..manifest_writer.writer.end]) catch error.ProviderFailed;
+}
 
-    loadProposalPreview(host, result.proposal_rel) catch {};
-    refreshRunHistory(host) catch {};
+fn enqueueRunFinished(
+    host: *const Host,
+    run_id: []const u8,
+    proposal_rel: []const u8,
+    chat_owned: []const u8,
+    manifest_owned: []const u8,
+    plan_owned: ?[]const u8,
+) AgentError!void {
+    const run_id_owned = host.allocator.dupe(u8, run_id) catch return error.ProviderFailed;
+    errdefer host.allocator.free(run_id_owned);
+    const proposal_rel_owned = host.allocator.dupe(u8, proposal_rel) catch return error.ProviderFailed;
+    errdefer host.allocator.free(proposal_rel_owned);
 
-    var status_buf: [256]u8 = undefined;
-    const agent_msg = std.fmt.bufPrint(&status_buf, "Proposal ready: {s}", .{result.proposal_rel}) catch "Proposal ready";
-    host.append_chat(host.context, .agent, agent_msg);
+    host.enqueue_ui(host.context, .{
+        .run_finished = .{
+            .run_id = run_id_owned,
+            .proposal_rel = proposal_rel_owned,
+            .chat_text = chat_owned,
+            .manifest_text = manifest_owned,
+            .plan_text = plan_owned,
+        },
+    });
 }
 
 fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
     const host: *Host = @ptrCast(@alignCast(context.?));
-    if (phase == .sending) host.agent.clearStreamText();
+    if (phase == .context_built) {
+        host.agent.lock();
+        const intent_copy = if (host.agent.intent) |text| host.allocator.dupe(u8, text) catch null else null;
+        host.agent.unlock();
+        if (intent_copy) |intent| {
+            defer host.allocator.free(intent);
+            const active_file = blk: {
+                host.agent.lock();
+                defer host.agent.unlock();
+                break :blk host.agent.run_active_file;
+            };
+            refreshContextPreview(host, intent, active_file) catch {};
+        }
+    }
     const mapped: session_mod.Phase = switch (phase) {
         .context_built => .building_context,
+        .planning => .building_context,
+        .plan_ready => .streaming,
         .sending => .sending,
         .streaming => .streaming,
         .parsing => .parsing,
@@ -290,34 +562,109 @@ fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
     };
     const label = switch (phase) {
         .context_built => "Building context...",
+        .planning => "Planning implementation...",
+        .plan_ready => "Plan ready — generating proposal...",
         .sending => "Sending to provider...",
         .streaming => "Streaming response...",
         .parsing => "Parsing proposal...",
         .proposal_ready => "Proposal ready for review",
     };
-    host.agent.setPhase(mapped, label) catch {};
+    const owned = host.allocator.dupe(u8, label) catch return;
+    host.enqueue_ui(host.context, .{ .set_phase = .{ .phase = mapped, .label = owned } });
+    host.enqueue_ui(host.context, .{ .set_status = host.allocator.dupe(u8, label) catch return });
+}
+
+fn resolveProviderLabel(host: *const Host) ![]const u8 {
+    const kind = ai.provider_factory.Kind.parse(host.ai_provider);
+    const resolved = resolveProviderKind(host, kind) catch {
+        return host.allocator.dupe(u8, "gemini (missing API key)");
+    };
+    return switch (resolved) {
+        .gemini => blk: {
+            if (host.ai_model) |model| {
+                break :blk try std.fmt.allocPrint(host.allocator, "gemini/{s}", .{model});
+            }
+            break :blk try host.allocator.dupe(u8, "gemini");
+        },
+        .fake => blk: {
+            if (kind == .gemini) {
+                break :blk try host.allocator.dupe(u8, "fake (GEMINI_API_KEY not visible to IDE)");
+            }
+            if (kind == .auto) {
+                break :blk try host.allocator.dupe(u8, "fake (no API key — launch IDE from terminal or use Keychain)");
+            }
+            break :blk try host.allocator.dupe(u8, "fake");
+        },
+    };
+}
+
+fn resolveProviderKind(host: *const Host, kind: ai.provider_factory.Kind) !enum { fake, gemini } {
+    return switch (kind) {
+        .fake => .fake,
+        .gemini => {
+            var creds = ai.credentials.Credentials.loadGemini(host.allocator, host.io, host.environ_map) catch {
+                return error.MissingCredentials;
+            };
+            defer creds.deinit();
+            return .gemini;
+        },
+        .auto => {
+            var creds = ai.credentials.Credentials.loadGemini(host.allocator, host.io, host.environ_map) catch {
+                return .fake;
+            };
+            defer creds.deinit();
+            return .gemini;
+        },
+    };
+}
+
+fn ensureStreamingPhase(host: *Host) void {
+    host.agent.lock();
+    const already = host.agent.stream_live;
+    if (!already) host.agent.stream_live = true;
+    host.agent.unlock();
+    if (already) return;
+    const owned = host.allocator.dupe(u8, "Streaming response...") catch return;
+    host.enqueue_ui(host.context, .{
+        .set_phase = .{ .phase = .streaming, .label = owned },
+    });
+}
+
+fn enqueueStreamChunk(host: *Host, chunk: []const u8, kind: enum { thought, text }) void {
+    if (chunk.len == 0) return;
+    ensureStreamingPhase(host);
+    const owned = host.allocator.dupe(u8, chunk) catch return;
+    const op: agent_ui_queue.Op = switch (kind) {
+        .thought => .{ .append_thinking = owned },
+        .text => .{ .append_stream = owned },
+    };
+    host.enqueue_ui(host.context, op);
+}
+
+fn stepBridge(context: ?*anyopaque, step: ai.agent.Step) void {
+    const host: *Host = @ptrCast(@alignCast(context.?));
+    const kind_owned = host.allocator.dupe(u8, step.kind) catch return;
+    const summary_owned = host.allocator.dupe(u8, step.summary) catch {
+        host.allocator.free(kind_owned);
+        return;
+    };
+    host.enqueue_ui(host.context, .{
+        .append_step = .{
+            .index = step.index,
+            .kind = kind_owned,
+            .summary = summary_owned,
+        },
+    });
 }
 
 fn streamBridge(context: ?*anyopaque, chunk: []const u8) void {
     const host: *Host = @ptrCast(@alignCast(context.?));
-    host.agent.appendStreamChunk(chunk) catch {};
+    enqueueStreamChunk(host, chunk, .text);
 }
 
-fn captureContextManifest(host: *const Host, builder: *const ai.context.ContextBuilder) !void {
-    var manifest_writer = std.Io.Writer.Allocating.init(host.allocator);
-    defer manifest_writer.deinit();
-    try ai.context_loader.renderManifestHuman(builder, &manifest_writer.writer);
-
-    host.agent.lock();
-    defer host.agent.unlock();
-    clearLines(host.allocator, &host.agent.context_lines);
-
-    const bytes = manifest_writer.writer.buffer[0..manifest_writer.writer.end];
-    var line_it = std.mem.splitScalar(u8, bytes, '\n');
-    while (line_it.next()) |line| {
-        if (line.len == 0) continue;
-        try host.agent.context_lines.append(host.allocator, try host.allocator.dupe(u8, line));
-    }
+fn thinkingBridge(context: ?*anyopaque, chunk: []const u8) void {
+    const host: *Host = @ptrCast(@alignCast(context.?));
+    enqueueStreamChunk(host, chunk, .thought);
 }
 
 fn clearLines(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8)) void {
@@ -336,5 +683,73 @@ fn dupeStringSlice(allocator: std.mem.Allocator, items: []const []const u8) ![]c
 
 fn freeStringSlice(allocator: std.mem.Allocator, items: []const []const u8) void {
     for (items) |item| allocator.free(item);
+    allocator.free(items);
+}
+
+fn collectRecentFiles(host: *const Host) ![]const []const u8 {
+    return host.snapshot_recent_files(host.context, host.allocator);
+}
+
+fn buildContext(
+    host: *const Host,
+    intent: ?[]const u8,
+    explicit_files: []const []const u8,
+    active_file: ?[]const u8,
+    attachments: []const ai.context_loader.AttachmentInput,
+) AgentError!ai.context.ContextBuilder {
+    const recent = host.snapshot_recent_files(host.context, host.allocator);
+    defer host.free_recent_files_snapshot(host.context, host.allocator, recent);
+
+    const supplement = host.snapshot_context_supplement(host.context, host.allocator);
+    defer host.free_context_supplement(host.context, host.allocator, supplement);
+
+    return ai.context_loader.build(host.allocator, host.io, host.workspace_root, .{
+        .intent = intent,
+        .explicit_files = explicit_files,
+        .active_file = active_file,
+        .attachments = attachments,
+        .include_project_rules = true,
+        .workspace_cwd = host.workspace_path,
+        .recent_files = recent,
+        .supplement = supplement,
+        .prefer_gemini_embeddings = true,
+        .environ_map = host.environ_map,
+    }) catch return error.ProviderFailed;
+}
+
+fn collectAttachmentInputs(host: *const Host) ![]const ai.context_loader.AttachmentInput {
+    host.agent.lock();
+    defer host.agent.unlock();
+
+    var items: std.ArrayList(ai.context_loader.AttachmentInput) = .empty;
+    errdefer {
+        for (items.items) |item| {
+            host.allocator.free(item.label);
+            if (item.text) |text| host.allocator.free(text);
+            if (item.stored_path) |path| host.allocator.free(path);
+        }
+        items.deinit(host.allocator);
+    }
+
+    for (host.agent.attachments.items) |attachment| {
+        try items.append(host.allocator, .{
+            .kind = switch (attachment.kind) {
+                .text_snippet => .text_snippet,
+                .image => .image,
+            },
+            .label = try host.allocator.dupe(u8, attachment.label),
+            .text = if (attachment.text_preview) |text| try host.allocator.dupe(u8, text) else null,
+            .stored_path = if (attachment.stored_path) |path| try host.allocator.dupe(u8, path) else null,
+        });
+    }
+    return try items.toOwnedSlice(host.allocator);
+}
+
+fn freeAttachmentInputs(allocator: std.mem.Allocator, items: []const ai.context_loader.AttachmentInput) void {
+    for (items) |item| {
+        allocator.free(item.label);
+        if (item.text) |text| allocator.free(text);
+        if (item.stored_path) |path| allocator.free(path);
+    }
     allocator.free(items);
 }

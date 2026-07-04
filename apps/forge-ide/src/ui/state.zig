@@ -25,6 +25,7 @@ pub var is_dragging_bottom_panel_splitter: bool = false;
 pub var is_dragging_terminal_selection: bool = false;
 pub var last_mouse_x: f32 = 0;
 pub var last_mouse_y: f32 = 0;
+pub var explorer_hover_row: ?usize = null;
 
 pub const StatusBridge = struct {
     pub fn setStatus(message: []const u8) void {

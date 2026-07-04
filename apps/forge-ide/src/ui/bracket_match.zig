@@ -106,7 +106,10 @@ fn scanBackward(buf: *const editor.Buffer, start_row: usize, start_col: usize, c
             c -= 1;
         }
         r -= 1;
-        if (r >= 0) c = @intCast(buf.lineAt(@intCast(r)).len - 1);
+        if (r >= 0) {
+            const prev_line = buf.lineAt(@intCast(r));
+            c = if (prev_line.len == 0) -1 else @intCast(prev_line.len - 1);
+        }
     }
     return null;
 }
@@ -132,7 +135,7 @@ fn skipContextReverse(line: []const u8, c: *i32) bool {
     if (line[idx] == '"') {
         var i: i32 = @as(i32, @intCast(idx)) - 1;
         while (i >= 0 and line[@intCast(i)] != '"') i -= 1;
-        if (i >= 0) c.* = i - 1;
+        if (i >= 0) c.* = i - 1 else c.* -= 1;
         return true;
     }
     return false;
@@ -149,4 +152,12 @@ test "matching parens on same line" {
     try std.testing.expectEqual(@as(usize, 9), m.?.from.col);
     try std.testing.expectEqual(@as(usize, 0), m.?.to.row);
     try std.testing.expectEqual(@as(usize, 16), m.?.to.col);
+}
+
+test "scanBackward does not overflow on empty preceding line" {
+    var buf = editor.Buffer.init(std.testing.allocator);
+    defer buf.deinit();
+    try buf.setText("\n)\n");
+    const m = findMatch(&buf, 1, 0);
+    try std.testing.expect(m == null);
 }

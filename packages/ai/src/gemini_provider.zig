@@ -3,18 +3,28 @@ const provider = @import("provider.zig");
 const credentials = @import("credentials.zig");
 const kernel = @import("forge-kernel");
 const retry = @import("retry.zig");
-const streaming = @import("streaming.zig");
+const gemini_sse = @import("gemini_sse.zig");
 
-pub const default_model = "gemini-2.0-flash";
+pub const default_model = "gemini-2.5-flash";
 pub const test_mode_prompt = "test_mode";
 
 const endpoint_base = "https://generativelanguage.googleapis.com/v1beta/models/";
 
-const GeminiPart = struct { text: []const u8 };
+const GeminiPart = struct {
+    text: ?[]const u8 = null,
+    inlineData: ?struct {
+        mimeType: []const u8,
+        data: []const u8,
+    } = null,
+};
 const GeminiContent = struct { parts: []const GeminiPart };
+const GeminiThinkingConfig = struct {
+    includeThoughts: bool = true,
+};
 const GeminiGenerationConfig = struct {
     temperature: f32,
     responseMimeType: []const u8,
+    thinkingConfig: GeminiThinkingConfig,
 };
 const GeminiRequestPayload = struct {
     contents: []const GeminiContent,
@@ -30,6 +40,8 @@ pub const GeminiProvider = struct {
     latest_usage: provider.TokenUsage,
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
+    thinking_callback: ?*const fn (?*anyopaque, []const u8) void = null,
+    thinking_context: ?*anyopaque = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -38,6 +50,8 @@ pub const GeminiProvider = struct {
         model_name: []const u8,
         stream_callback: ?*const fn (?*anyopaque, []const u8) void,
         stream_context: ?*anyopaque,
+        thinking_callback: ?*const fn (?*anyopaque, []const u8) void,
+        thinking_context: ?*anyopaque,
     ) GeminiProvider {
         return .{
             .allocator = allocator,
@@ -52,6 +66,8 @@ pub const GeminiProvider = struct {
             .latest_usage = .{},
             .stream_callback = stream_callback,
             .stream_context = stream_context,
+            .thinking_callback = thinking_callback,
+            .thinking_context = thinking_context,
         };
     }
 
@@ -74,6 +90,7 @@ pub const GeminiProvider = struct {
         ptr: *anyopaque,
         allocator: std.mem.Allocator,
         prompt: []const u8,
+        images: []const provider.ImagePart,
         writer: *std.Io.Writer,
         cancel_token: *const kernel.cancellation.CancellationToken,
     ) provider.ProviderError!void {
@@ -87,10 +104,10 @@ pub const GeminiProvider = struct {
             return;
         }
 
-        const payload = buildRequestPayload(allocator, prompt) catch return provider.ProviderError.ProviderInternalError;
+        const payload = buildRequestPayload(allocator, prompt, images) catch return provider.ProviderError.ProviderInternalError;
         defer allocator.free(payload);
 
-        const endpoint = buildEndpoint(allocator, self.model_name) catch return provider.ProviderError.ProviderInternalError;
+        const endpoint = buildStreamEndpoint(allocator, self.model_name) catch return provider.ProviderError.ProviderInternalError;
         defer allocator.free(endpoint);
 
         const api_headers = [_]std.http.Header{
@@ -104,9 +121,6 @@ pub const GeminiProvider = struct {
             .max_delay_ms = 4000,
         };
         var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Timestamp.now(self.io, .real).toMilliseconds()));
-
-        var body = std.Io.Writer.Allocating.init(allocator);
-        defer body.deinit();
 
         var attempt: u32 = 0;
         while (true) : (attempt += 1) {
@@ -125,7 +139,12 @@ pub const GeminiProvider = struct {
                 }
             }
 
-            body.writer.end = 0;
+            var bridge = SseBridge{ .provider = self };
+            var sse_parser = gemini_sse.Parser.init(allocator, .{
+                .on_chunk = SseBridge.onChunk,
+                .context = &bridge,
+            });
+            defer sse_parser.deinit();
 
             var client = std.http.Client{
                 .allocator = allocator,
@@ -141,28 +160,60 @@ pub const GeminiProvider = struct {
                     .content_type = .{ .override = "application/json" },
                 },
                 .extra_headers = &api_headers,
-                .response_writer = &body.writer,
+                .response_writer = sse_parser.ioWriter(),
             }) catch return provider.ProviderError.NetworkError;
+
+            sse_parser.releaseWriter();
 
             const mapped = mapHttpStatus(result.status);
             if (mapped == .retry and attempt + 1 < policy.max_attempts) continue;
             if (mapped != .ok) return mapped.toProviderError();
 
-            const response_text = body.writer.buffer[0..body.writer.end];
-            const normalized = normalizeModelText(allocator, response_text) catch |err| switch (err) {
+            const parsed = parseStreamResult(self, allocator, &sse_parser, writer) catch |err| switch (err) {
                 error.AuthenticationFailed => return provider.ProviderError.AuthenticationFailed,
                 error.RateLimitExceeded => return provider.ProviderError.RateLimitExceeded,
-                else => return provider.ProviderError.MalformedResponse,
+                error.MalformedResponse => return provider.ProviderError.MalformedResponse,
             };
-            defer allocator.free(normalized);
-            self.latest_usage = extractUsage(allocator, response_text) catch .{};
-            try streaming.writeChunks(normalized, writer, cancel_token, .{
-                .on_chunk = self.stream_callback,
-                .on_chunk_context = self.stream_context,
-            });
+            defer allocator.free(parsed);
+            if (parsed.len == 0) return provider.ProviderError.MalformedResponse;
             return;
         }
     }
+
+    fn parseStreamResult(
+        self: *GeminiProvider,
+        allocator: std.mem.Allocator,
+        sse_parser: *gemini_sse.Parser,
+        writer: *std.Io.Writer,
+    ) gemini_sse.ParseError![]u8 {
+        try sse_parser.finish();
+        if (sse_parser.terminal_error) |err| return switch (err) {
+            error.AuthenticationFailed => error.AuthenticationFailed,
+            error.RateLimitExceeded => error.RateLimitExceeded,
+            else => error.MalformedResponse,
+        };
+
+        self.latest_usage = sse_parser.latest_usage;
+        const normalized = stripMarkdownFence(allocator, sse_parser.assembledText()) catch return error.MalformedResponse;
+        writer.writeAll(normalized) catch return error.MalformedResponse;
+        return normalized;
+    }
+
+    const SseBridge = struct {
+        provider: *GeminiProvider,
+
+        fn onChunk(context: ?*anyopaque, kind: gemini_sse.ChunkKind, chunk: []const u8) void {
+            const bridge: *SseBridge = @ptrCast(@alignCast(context.?));
+            switch (kind) {
+                .thought => if (bridge.provider.thinking_callback) |callback| {
+                    callback(bridge.provider.thinking_context, chunk);
+                },
+                .text => if (bridge.provider.stream_callback) |callback| {
+                    callback(bridge.provider.stream_context, chunk);
+                },
+            }
+        }
+    };
 
     fn metadataImpl(ptr: *const anyopaque) provider.ModelMetadata {
         const self: *const GeminiProvider = @ptrCast(@alignCast(ptr));
@@ -201,26 +252,51 @@ fn mapHttpStatus(status: std.http.Status) StatusAction {
     return switch (status) {
         .ok => .ok,
         .unauthorized, .forbidden => .auth_failed,
-        .too_many_requests => .retry,
+        .too_many_requests => .rate_limited,
         .request_timeout, .service_unavailable, .bad_gateway, .gateway_timeout, .internal_server_error => .retry,
         .payload_too_large, .uri_too_long => .context_exceeded,
         else => .provider_error,
     };
 }
 
+fn buildStreamEndpoint(allocator: std.mem.Allocator, model_name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}{s}:streamGenerateContent?alt=sse", .{ endpoint_base, model_name });
+}
+
 fn buildEndpoint(allocator: std.mem.Allocator, model_name: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}{s}:generateContent", .{ endpoint_base, model_name });
 }
 
-fn buildRequestPayload(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
-    const part = GeminiPart{ .text = prompt };
-    const content = GeminiContent{ .parts = &[_]GeminiPart{part} };
+fn buildRequestPayload(allocator: std.mem.Allocator, prompt: []const u8, images: []const provider.ImagePart) ![]u8 {
+    const response_mime = if (std.mem.indexOf(u8, prompt, "MARKDOWN PLAN MODE") != null)
+        "text/plain"
+    else
+        "application/json";
+
+    var parts: std.ArrayList(GeminiPart) = .empty;
+    defer parts.deinit(allocator);
+
+    for (images) |image| {
+        try parts.append(allocator, .{
+            .inlineData = .{
+                .mimeType = image.mime_type,
+                .data = image.data_base64,
+            },
+        });
+    }
+    try parts.append(allocator, .{ .text = prompt });
+
+    const owned_parts = try parts.toOwnedSlice(allocator);
+    defer allocator.free(owned_parts);
+
+    const content = GeminiContent{ .parts = owned_parts };
 
     return try std.json.Stringify.valueAlloc(allocator, GeminiRequestPayload{
         .contents = &[_]GeminiContent{content},
         .generationConfig = .{
             .temperature = 0.2,
-            .responseMimeType = "application/json",
+            .responseMimeType = response_mime,
+            .thinkingConfig = .{ .includeThoughts = true },
         },
     }, .{});
 }
@@ -232,10 +308,13 @@ const GenerateResponse = struct {
 
     const Candidate = struct {
         content: ?struct {
-            parts: ?[]struct {
-                text: ?[]const u8 = null,
-            } = null,
+            parts: ?[]Part = null,
         } = null,
+    };
+
+    const Part = struct {
+        text: ?[]const u8 = null,
+        thought: ?bool = null,
     };
 
     const UsageMetadata = struct {
@@ -318,7 +397,7 @@ test "GeminiProvider test mode" {
     };
     defer creds.deinit();
 
-    var gemini = GeminiProvider.init(allocator, std.testing.io, creds, default_model, null, null);
+    var gemini = GeminiProvider.init(allocator, std.testing.io, creds, default_model, null, null, null, null);
     defer gemini.deinit();
     const p = gemini.providerInterface();
 
@@ -328,7 +407,7 @@ test "GeminiProvider test mode" {
     var cancel_src = try kernel.cancellation.CancellationTokenSource.init(allocator);
     defer cancel_src.deinit();
 
-    try p.ask(allocator, test_mode_prompt, &w_alloc.writer, &cancel_src.getToken());
+    try p.ask(allocator, test_mode_prompt, &.{}, &w_alloc.writer, &cancel_src.getToken());
 
     const out = w_alloc.writer.buffer[0..w_alloc.writer.end];
     try std.testing.expect(std.mem.indexOf(u8, out, "schema_version") != null);

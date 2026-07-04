@@ -6,18 +6,50 @@ const editor_scroll = @import("editor_scroll.zig");
 const activity_bar = @import("activity_bar.zig");
 const sidebar_view = @import("sidebar_view.zig");
 const extensions_panel = @import("extensions_panel.zig");
+const context_inspector = @import("context_inspector.zig");
+const agent_composer = @import("agent_composer.zig");
 const search_panel = @import("search_panel.zig");
 const activity_icons = @import("activity_icons.zig");
 const debug_panel = @import("debug_panel.zig");
 const git_panel = @import("git_panel.zig");
 const explorer_scroll = @import("explorer_scroll.zig");
+const icons = @import("icons.zig");
 const tabs_ui = @import("tabs.zig");
 const theme_loader = @import("../theme_loader.zig");
 const bracket_match = @import("bracket_match.zig");
 const word_wrap = @import("word_wrap.zig");
+const scrollbar = @import("scrollbar.zig");
+const panel_scroll = @import("panel_scroll.zig");
+const agent_panel = @import("agent_panel.zig");
+const plugin = @import("forge-plugin");
+const ai = @import("forge-ai");
+const agent_scope_picker_mod = @import("../agent/scope_picker.zig");
 
 fn c(rgba: @import("forge-workspace").Rgba) renderer.Color {
     return theme_loader.toColor(rgba);
+}
+
+fn drawSidebarScrollbar(
+    panel_x: f32,
+    panel_w: f32,
+    list_top: f32,
+    window_h: f32,
+    scroll_y: f32,
+    row_count: usize,
+    row_h: f32,
+) void {
+    const metrics = scrollbar.sidebarMetrics(row_count, row_h, list_top, window_h, layout.status_height);
+    const show = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, panel_x, list_top, panel_w, metrics.viewport_h);
+    scrollbar.drawVertical(
+        panel_x + panel_w - scrollbar.track_w - 2,
+        list_top,
+        metrics.viewport_h,
+        scroll_y,
+        metrics.max_scroll,
+        metrics.content_h,
+        metrics.viewport_h,
+        show,
+    );
 }
 
 fn drawHighlightedLine(line: []const u8, x: f32, y: f32, theme: *const @import("forge-workspace").Theme) void {
@@ -148,6 +180,8 @@ pub fn onRenderFrame() void {
     wb.tickFrame(0.016) catch {};
     theme_loader.applyShellColors(theme.*);
 
+    renderer.Renderer.clearClipRect();
+
     var w: f32 = 0;
     var h: f32 = 0;
     renderer.Renderer.getWindowSize(&w, &h);
@@ -203,21 +237,28 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
     renderer.Renderer.setClipRect(agent_x, layout.header_height, agent_w, h - layout.header_height - layout.status_height);
+    defer renderer.Renderer.clearClipRect();
 
-    const snap = wb.agent.snapshot();
+    var status_copy: [320]u8 = undefined;
+    var provider_copy: [128]u8 = undefined;
+    const snap = wb.agent.snapshot(&status_copy, &provider_copy);
     if (snap.worker_running) wb.clampChatScroll(h);
 
-    var mode_buf: [32:0]u8 = undefined;
-    const mode_label = std.fmt.bufPrint(&mode_buf, "AGENT — {s}", .{@tagName(snap.mode)}) catch "AGENT";
+    var mode_buf: [64:0]u8 = undefined;
+    const mode_label = std.fmt.bufPrint(&mode_buf, "Chat", .{}) catch "Chat";
     mode_buf[mode_label.len] = 0;
-    renderer.Renderer.drawText(@ptrCast(&mode_buf), inner_x, 45, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    renderer.Renderer.drawText(@ptrCast(&mode_buf), inner_x, 42, 13.0, .{ .r = 0.82, .g = 0.84, .b = 0.9, .a = 1.0 });
+
+    if (snap.worker_running) {
+        renderer.Renderer.drawRoundedRect(inner_x - 4, 58, content_w + 8, 20, 4, .{ .r = 0.15, .g = 0.28, .b = 0.42, .a = 1.0 });
+    }
 
     if (snap.status_line.len > 0) {
         var status_buf: [320:0]u8 = undefined;
-        const spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+        const spinner_frames = "|/-\\";
         var prefix_len: usize = 0;
         if (snap.worker_running) {
-            const frame_idx = @as(usize, @intFromFloat(@mod(state.time * 10.0, 10.0))) % spinner_frames.len;
+            const frame_idx = @as(usize, @intFromFloat(@mod(state.time * 8.0, 4.0))) % spinner_frames.len;
             prefix_len = 2;
             status_buf[0] = spinner_frames[frame_idx];
             status_buf[1] = ' ';
@@ -225,15 +266,19 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
         const clipped = if (snap.status_line.len > 319 - prefix_len) snap.status_line[0 .. 319 - prefix_len] else snap.status_line;
         @memcpy(status_buf[prefix_len .. prefix_len + clipped.len], clipped);
         status_buf[prefix_len + clipped.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&status_buf), inner_x, 62, 11.0, .{ .r = 0.75, .g = 0.85, .b = 1.0, .a = 1.0 });
+        const status_color = if (snap.worker_running)
+            renderer.Color{ .r = 0.85, .g = 0.95, .b = 1.0, .a = 1.0 }
+        else
+            renderer.Color{ .r = 0.75, .g = 0.85, .b = 1.0, .a = 1.0 };
+        renderer.Renderer.drawText(@ptrCast(&status_buf), inner_x, 62, 12.0, status_color);
     }
 
-    var run_y: f32 = 82.0;
+    var run_y: f32 = 72.0;
     wb.agent.lock();
     const run_count = wb.agent.run_history.items.len;
     const selected_run = wb.agent.selected_run_index;
     for (wb.agent.run_history.items, 0..) |entry, index| {
-        if (index >= 4) break;
+        if (index >= 3) break;
         var run_buf: [128:0]u8 = undefined;
         const run_line = std.fmt.bufPrint(&run_buf, "{s} {s}", .{ entry.run_id, entry.state }) catch entry.run_id;
         run_buf[run_line.len] = 0;
@@ -247,20 +292,13 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
     wb.agent.unlock();
     _ = run_count;
 
-    var scope_y = run_y;
-    wb.agent.lock();
-    for (wb.agent.scope_files.items) |path| {
-        var chip_buf: [160:0]u8 = undefined;
-        const base = std.fs.path.basename(path);
-        const chip = std.fmt.bufPrint(&chip_buf, "@ {s}", .{base}) catch base;
-        chip_buf[chip.len] = 0;
-        renderer.Renderer.drawRoundedRect(inner_x - 2, scope_y - 2, content_w - 10, 16, 4, .{ .r = 0.18, .g = 0.28, .b = 0.38, .a = 1.0 });
-        renderer.Renderer.drawText(@ptrCast(&chip_buf), inner_x + 4, scope_y, 10.0, .{ .r = 0.85, .g = 0.95, .b = 1.0, .a = 1.0 });
-        scope_y += 18.0;
-    }
-    wb.agent.unlock();
+    const composer_layout = agent_composer.computeLayout(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer);
+    wb.clampPromptScroll(agent_w);
+    const visible_entries = context_inspector.effectiveEntryCount(&wb.agent, snap.context_entry_count);
+    const strip_top = context_inspector.stripTop(h, snap.context_inspector_expanded, visible_entries, snap.attachment_count, agent_w, &wb.prompt_buffer);
+    const chat_bottom = strip_top - 4;
 
-    var content_y: f32 = scope_y + 8.0 - wb.chat_scroll_y;
+    var content_y: f32 = run_y + 8.0 - wb.chat_scroll_y;
 
     if (snap.show_review) {
         renderer.Renderer.drawText("REVIEW", inner_x, content_y, 11.0, .{ .r = 1.0, .g = 0.7, .b = 0.4, .a = 1.0 });
@@ -279,7 +317,7 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
         review_y += 14.0;
         wb.agent.lock();
         for (wb.agent.context_lines.items) |line| {
-            if (review_y > h - 180) break;
+            if (review_y > chat_bottom) break;
             var ctx_buf: [512:0]u8 = undefined;
             const clipped = if (line.len > 511) line[0..511] else line;
             @memcpy(ctx_buf[0..clipped.len], clipped);
@@ -288,25 +326,47 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
             review_y += 11.0;
         }
         review_y += 6.0;
-        renderer.Renderer.drawText("DIFF", inner_x, review_y, 10.0, .{ .r = 0.55, .g = 0.75, .b = 1.0, .a = 1.0 });
+        renderer.Renderer.drawText("CHANGES (click to toggle)", inner_x, review_y, 10.0, .{ .r = 0.55, .g = 0.75, .b = 1.0, .a = 1.0 });
         review_y += 14.0;
-        for (wb.agent.diff_lines.items) |line| {
-            if (review_y > h - 180) break;
-            var line_buf: [512:0]u8 = undefined;
-            const clipped = if (line.len > 511) line[0..511] else line;
-            @memcpy(line_buf[0..clipped.len], clipped);
-            line_buf[clipped.len] = 0;
-            var color = renderer.Color{ .r = 0.85, .g = 0.85, .b = 0.85, .a = 1.0 };
-            if (line.len > 0 and line[0] == '+') color = .{ .r = 0.5, .g = 0.9, .b = 0.5, .a = 1.0 };
-            if (line.len > 0 and line[0] == '-') color = .{ .r = 0.95, .g = 0.45, .b = 0.45, .a = 1.0 };
-            if (line.len > 3 and std.mem.startsWith(u8, line, "---")) color = .{ .r = 0.95, .g = 0.85, .b = 0.45, .a = 1.0 };
-            if (line.len > 3 and std.mem.startsWith(u8, line, "+++")) color = .{ .r = 0.55, .g = 0.85, .b = 0.95, .a = 1.0 };
-            renderer.Renderer.drawText(@ptrCast(&line_buf), inner_x + 6, review_y, 10.0, color);
-            review_y += 12.0;
+        for (wb.agent.review.hunks) |hunk| {
+            if (review_y > chat_bottom) break;
+            const block_h = @import("../agent/review_store.zig").Store.hunkBlockHeight(hunk);
+            const accepted = hunk.accepted;
+            const header_bg = if (accepted)
+                renderer.Color{ .r = 0.14, .g = 0.22, .b = 0.16, .a = 1.0 }
+            else
+                renderer.Color{ .r = 0.18, .g = 0.14, .b = 0.14, .a = 1.0 };
+            renderer.Renderer.drawRoundedRect(inner_x, review_y - 2, content_w - 8, block_h + 4, 4, header_bg);
+            var header_buf: [384:0]u8 = undefined;
+            const marker = if (accepted) "[x] " else "[ ] ";
+            const header = std.fmt.bufPrint(&header_buf, "{s}{s}", .{ marker, hunk.label }) catch hunk.label;
+            header_buf[header.len] = 0;
+            const header_color = if (accepted)
+                renderer.Color{ .r = 0.75, .g = 0.95, .b = 0.75, .a = 1.0 }
+            else
+                renderer.Color{ .r = 0.65, .g = 0.55, .b = 0.55, .a = 1.0 };
+            renderer.Renderer.drawText(@ptrCast(&header_buf), inner_x + 6, review_y, 10.0, header_color);
+            var line_y = review_y + 14.0;
+            for (hunk.diff_lines) |line| {
+                if (line_y > chat_bottom) break;
+                var line_buf: [512:0]u8 = undefined;
+                const clipped = if (line.len > 511) line[0..511] else line;
+                @memcpy(line_buf[0..clipped.len], clipped);
+                line_buf[clipped.len] = 0;
+                var color = renderer.Color{ .r = 0.75, .g = 0.75, .b = 0.75, .a = if (accepted) 1.0 else 0.45 };
+                if (line.len > 0 and line[0] == '+') color = .{ .r = 0.5, .g = 0.9, .b = 0.5, .a = if (accepted) 1.0 else 0.45 };
+                if (line.len > 0 and line[0] == '-') color = .{ .r = 0.95, .g = 0.45, .b = 0.45, .a = if (accepted) 1.0 else 0.45 };
+                if (line.len > 3 and std.mem.startsWith(u8, line, "---")) color = .{ .r = 0.95, .g = 0.85, .b = 0.45, .a = if (accepted) 1.0 else 0.45 };
+                if (line.len > 3 and std.mem.startsWith(u8, line, "+++")) color = .{ .r = 0.55, .g = 0.85, .b = 0.95, .a = if (accepted) 1.0 else 0.45 };
+                renderer.Renderer.drawText(@ptrCast(&line_buf), inner_x + 10, line_y, 9.5, color);
+                line_y += 12.0;
+            }
+            review_y += block_h + 6.0;
         }
         wb.agent.unlock();
     } else {
         for (state.chat_history.?.items) |msg| {
+            if (content_y > chat_bottom) break;
             const lines = @as(f32, @floatFromInt(std.mem.count(u8, msg.content, "\n") + 1));
             const bubble_h = lines * 16.0 + 10.0;
             const bubble_x = agent_x + 10;
@@ -320,52 +380,208 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
             content_y += bubble_h + 10.0;
         }
 
-        if (snap.worker_running and snap.stream_len > 0) {
+        if (snap.worker_running) {
             wb.agent.lock();
-            const stream = wb.agent.stream_text.items;
-            const tail_start = if (stream.len > 512) stream.len - 512 else 0;
-            const shown = stream[tail_start..];
-            var stream_buf: [513:0]u8 = undefined;
-            @memcpy(stream_buf[0..shown.len], shown);
-            stream_buf[shown.len] = 0;
+            for (wb.agent.agent_steps.items) |step| {
+                if (content_y > chat_bottom) break;
+                var step_buf: [512]u8 = undefined;
+                const step_line = std.fmt.bufPrint(&step_buf, "{d}. {s}: {s}", .{ step.index, step.kind, step.summary }) catch continue;
+                const step_h = 18.0;
+                renderer.Renderer.drawRoundedRect(agent_x + 10, content_y - 2, content_w, step_h, 6, .{ .r = 0.16, .g = 0.18, .b = 0.22, .a = 1.0 });
+                renderer.Renderer.drawText(step_line, inner_x + 8, content_y, 11.0, .{ .r = 0.75, .g = 0.85, .b = 0.95, .a = 1.0 });
+                content_y += step_h + 6;
+            }
             wb.agent.unlock();
 
-            const stream_lines = @as(f32, @floatFromInt(std.mem.count(u8, shown, "\n") + 1));
-            const stream_h = stream_lines * 16.0 + 10.0;
-            const bubble_x = agent_x + 10;
-            renderer.Renderer.drawRoundedRect(bubble_x, content_y - 4, content_w, stream_h, 8.0, .{ .r = 0.12, .g = 0.22, .b = 0.18, .a = 1.0 });
-            renderer.Renderer.drawText(@ptrCast(&stream_buf), inner_x + 8, content_y, 12.0, .{ .r = 0.75, .g = 0.95, .b = 0.8, .a = 1.0 });
+            var thinking_copy: [2048]u8 = undefined;
+            var stream_copy: [2048]u8 = undefined;
+            var thinking_len: usize = 0;
+            var stream_len: usize = 0;
+            wb.agent.lock();
+            const thinking_src = wb.agent.thinking_text.items;
+            const stream_src = wb.agent.stream_text.items;
+            const thinking_take = @min(thinking_src.len, thinking_copy.len);
+            if (thinking_take > 0) {
+                const thinking_start = thinking_src.len - thinking_take;
+                @memcpy(thinking_copy[0..thinking_take], thinking_src[thinking_start..]);
+                thinking_len = thinking_take;
+            }
+            const stream_take = @min(stream_src.len, stream_copy.len);
+            if (stream_take > 0) {
+                const stream_start = stream_src.len - stream_take;
+                @memcpy(stream_copy[0..stream_take], stream_src[stream_start..]);
+                stream_len = stream_take;
+            }
+            wb.agent.unlock();
+
+            if (thinking_len > 0) {
+                content_y = drawLiveBubble(
+                    agent_x,
+                    content_w,
+                    inner_x,
+                    content_y,
+                    "Thinking",
+                    thinking_copy[0..thinking_len],
+                    .{ .r = 0.14, .g = 0.18, .b = 0.28, .a = 1.0 },
+                    .{ .r = 0.75, .g = 0.82, .b = 0.95, .a = 1.0 },
+                );
+            } else if (stream_len == 0) {
+                var waiting_buf: [384:0]u8 = undefined;
+                if (std.fmt.bufPrint(
+                    &waiting_buf,
+                    "Thinking ({s})...\n{s}",
+                    .{ snap.provider_label, snap.status_line },
+                )) |waiting| {
+                    waiting_buf[waiting.len] = 0;
+                    content_y = drawLiveBubble(
+                        agent_x,
+                        content_w,
+                        inner_x,
+                        content_y,
+                        "",
+                        waiting_buf[0..waiting.len],
+                        .{ .r = 0.12, .g = 0.22, .b = 0.32, .a = 1.0 },
+                        .{ .r = 0.8, .g = 0.95, .b = 0.85, .a = 1.0 },
+                    );
+                } else |_| {}
+            }
+
+            if (stream_len > 0) {
+                _ = drawLiveBubble(
+                    agent_x,
+                    content_w,
+                    inner_x,
+                    content_y,
+                    "Generating",
+                    stream_copy[0..stream_len],
+                    .{ .r = 0.12, .g = 0.24, .b = 0.18, .a = 1.0 },
+                    .{ .r = 0.85, .g = 0.95, .b = 0.88, .a = 1.0 },
+                );
+            }
         }
     }
 
-    const input_y = h - layout.status_height - 100;
-    const input_bg = if (snap.worker_running)
-        renderer.Color{ .r = 0.14, .g = 0.14, .b = 0.14, .a = 1.0 }
-    else
-        renderer.Color{ .r = 0.2, .g = 0.2, .b = 0.2, .a = 1.0 };
-    renderer.Renderer.drawRoundedRect(agent_x + 10, input_y, content_w, 80, 12.0, input_bg);
-    const show_cursor = @mod(state.time, 1.0) < 0.5;
-    const show_prompt_cursor = show_cursor and wb.focused_panel == .agent and !snap.show_review and !snap.worker_running;
-    const prompt_str = wb.prompt_buffer.toDisplayString(show_prompt_cursor) catch return;
-    defer state.gpa.free(prompt_str);
-    renderer.Renderer.drawText(prompt_str, inner_x, input_y + 10, 14.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-    if (!snap.show_review and !snap.worker_running) {
-        renderer.Renderer.drawText("@ add scope file", inner_x, input_y + 58, 10.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
-    } else if (snap.worker_running) {
-        renderer.Renderer.drawText("Agent running — Cmd+C to cancel", inner_x, input_y + 58, 10.0, .{ .r = 0.55, .g = 0.65, .b = 0.55, .a = 1.0 });
+    if (snap.show_review) {
+        wb.agent.lock();
+        const review_content = agent_panel.reviewContentHeight(&wb.agent);
+        wb.agent.unlock();
+        const review_top = run_y + 8;
+        const review_viewport = @max(0, chat_bottom - review_top);
+        const review_max = @max(0, review_content - review_viewport);
+        const show_review_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, review_top, agent_w, review_viewport);
+        scrollbar.drawVertical(
+            agent_x + agent_w - scrollbar.track_w - 4,
+            review_top,
+            review_viewport,
+            wb.agent.review_scroll_y,
+            review_max,
+            review_content,
+            review_viewport,
+            show_review_scroll,
+        );
+    } else {
+        var chat_lines: usize = 0;
+        for (state.chat_history.?.items) |msg| {
+            chat_lines += std.mem.count(u8, msg.content, "\n") + 4;
+        }
+        if (snap.worker_running) chat_lines += 6;
+        const chat_top = run_y + 8;
+        const chat_viewport = @max(0, chat_bottom - chat_top);
+        const chat_content = @as(f32, @floatFromInt(@max(1, chat_lines))) * 16;
+        const chat_max = @max(0, chat_content - chat_viewport);
+        const show_chat_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, chat_top, agent_w, chat_viewport);
+        scrollbar.drawVertical(
+            agent_x + agent_w - scrollbar.track_w - 4,
+            chat_top,
+            chat_viewport,
+            wb.chat_scroll_y,
+            chat_max,
+            chat_content,
+            chat_viewport,
+            show_chat_scroll,
+        );
     }
+
+    context_inspector.draw(
+        &wb.agent,
+        agent_x,
+        agent_w,
+        h,
+        snap.context_used_bytes,
+        snap.context_max_bytes,
+        snap.context_entry_count,
+        snap.context_inspector_expanded,
+        snap.attachment_count,
+        &wb.prompt_buffer,
+    );
+
+    const show_prompt_cursor = @mod(state.time, 1.0) < 0.5 and wb.focused_panel == .agent and !snap.show_review and !snap.worker_running;
+    agent_composer.draw(
+        &wb.agent,
+        composer_layout,
+        wb.ai_model,
+        &wb.prompt_buffer,
+        wb.prompt_scroll_y,
+        show_prompt_cursor,
+        snap.worker_running,
+        snap.show_review,
+    );
 
     if (snap.show_review) {
-        const agent_actions = @import("agent_panel.zig").reviewActions(agent_x, agent_w, h);
+        const agent_actions = @import("agent_panel.zig").reviewActions(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer);
+        wb.agent.lock();
+        const accepted = wb.agent.review.acceptedCount();
+        const total = wb.agent.review.hunks.len;
+        wb.agent.unlock();
         renderer.Renderer.drawRoundedRect(agent_actions.apply.x, agent_actions.apply.y, agent_actions.apply.w, agent_actions.apply.h, 6, .{ .r = 0.2, .g = 0.55, .b = 0.35, .a = 1.0 });
-        renderer.Renderer.drawText("Apply", agent_actions.apply.x + 22, agent_actions.apply.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+        var apply_buf: [32:0]u8 = undefined;
+        const apply_label = std.fmt.bufPrint(&apply_buf, "Apply ({d}/{d})", .{ accepted, total }) catch "Apply";
+        apply_buf[apply_label.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&apply_buf), agent_actions.apply.x + 8, agent_actions.apply.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
         renderer.Renderer.drawRoundedRect(agent_actions.reject.x, agent_actions.reject.y, agent_actions.reject.w, agent_actions.reject.h, 6, .{ .r = 0.45, .g = 0.2, .b = 0.2, .a = 1.0 });
-        renderer.Renderer.drawText("Reject", agent_actions.reject.x + 16, agent_actions.reject.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+        renderer.Renderer.drawText("Reject all", agent_actions.reject.x + 10, agent_actions.reject.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
         const hint_y = agent_actions.apply.y - 14;
-        renderer.Renderer.drawText("Review proposal — Apply or Reject", inner_x, hint_y, 10.0, .{ .r = 0.65, .g = 0.65, .b = 0.65, .a = 1.0 });
+        renderer.Renderer.drawText("Click hunks to accept/reject — Apply selected", inner_x, hint_y, 10.0, .{ .r = 0.65, .g = 0.65, .b = 0.65, .a = 1.0 });
+    }
+}
+
+fn drawLiveBubble(
+    agent_x: f32,
+    content_w: f32,
+    inner_x: f32,
+    content_y: f32,
+    title: []const u8,
+    text: []const u8,
+    bg: renderer.Color,
+    fg: renderer.Color,
+) f32 {
+    const tail_chars: usize = 1400;
+    const shown = if (text.len > tail_chars) text[text.len - tail_chars ..] else text;
+    var line_count: usize = if (title.len > 0) 1 else 0;
+    line_count += std.mem.count(u8, shown, "\n") + 1;
+    const bubble_h = @as(f32, @floatFromInt(line_count)) * 14.0 + 14.0;
+    const bubble_x = agent_x + 10;
+    renderer.Renderer.drawRoundedRect(bubble_x, content_y - 4, content_w, bubble_h, 8.0, bg);
+
+    var y = content_y;
+    if (title.len > 0) {
+        var title_buf: [64:0]u8 = undefined;
+        const title_line = std.fmt.bufPrint(&title_buf, "{s}", .{title}) catch title;
+        title_buf[title_line.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&title_buf), inner_x + 8, y, 11.0, .{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 0.85 });
+        y += 16.0;
     }
 
-    renderer.Renderer.clearClipRect();
+    var line_it = std.mem.splitScalar(u8, shown, '\n');
+    while (line_it.next()) |line| {
+        var line_buf: [512:0]u8 = undefined;
+        const clipped = if (line.len > 511) line[0..511] else line;
+        @memcpy(line_buf[0..clipped.len], clipped);
+        line_buf[clipped.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&line_buf), inner_x + 8, y, 11.0, fg);
+        y += 14.0;
+    }
+    return content_y + bubble_h + 10.0;
 }
 
 fn drawScopePicker(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agent_w: f32, h: f32) void {
@@ -390,16 +606,40 @@ fn drawScopePicker(wb: *@import("../workbench.zig").Workbench, agent_x: f32, age
 
     var row_y = box_y + 64;
     const max_rows: usize = 12;
-    const show_rows = @min(wb.scope_picker_filtered.items.len, max_rows);
-    for (0..show_rows) |visible_index| {
-        const path_index = wb.scope_picker_filtered.items[visible_index];
+    const pinned_count = agent_scope_picker_mod.pinnedVisibleCount(query_buf[0..wb.agent.scope_query_len]);
+    var visible_rows: usize = @min(wb.scope_picker_filtered.items.len, max_rows);
+    if (pinned_count > 0 and visible_rows + pinned_count <= max_rows) {
+        visible_rows += pinned_count;
+    } else if (pinned_count > 0) {
+        visible_rows = max_rows;
+    }
+
+    var draw_index: usize = 0;
+    while (draw_index < pinned_count and draw_index < visible_rows) : (draw_index += 1) {
+        if (draw_index == selected) {
+            renderer.Renderer.drawRoundedRect(box_x + 8, row_y - 2, box_w - 16, 18, 3, .{ .r = 0.22, .g = 0.35, .b = 0.55, .a = 1.0 });
+        }
+        const label = agent_scope_picker_mod.pinnedLabelAt(query_buf[0..wb.agent.scope_query_len], draw_index) orelse "@pinned";
+        var line_buf: [384:0]u8 = undefined;
+        @memcpy(line_buf[0..label.len], label);
+        line_buf[label.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&line_buf), box_x + 14, row_y, 11.0, .{ .r = 0.75, .g = 0.95, .b = 1.0, .a = 1.0 });
+        row_y += 20;
+    }
+
+    while (draw_index < visible_rows) : (draw_index += 1) {
+        const list_index = draw_index - pinned_count;
+        if (list_index >= wb.scope_picker_filtered.items.len) break;
+        const path_index = wb.scope_picker_filtered.items[list_index];
         const path = wb.scope_picker_paths.items[path_index];
-        if (visible_index == selected) {
+        if (draw_index == selected) {
             renderer.Renderer.drawRoundedRect(box_x + 8, row_y - 2, box_w - 16, 18, 3, .{ .r = 0.22, .g = 0.35, .b = 0.55, .a = 1.0 });
         }
         var line_buf: [384:0]u8 = undefined;
-        @memcpy(line_buf[0..path.len], path);
-        line_buf[path.len] = 0;
+        var label_buf: [384]u8 = undefined;
+        const label = ai.scope_resolver.displayLabel(path, &label_buf);
+        @memcpy(line_buf[0..label.len], label);
+        line_buf[label.len] = 0;
         renderer.Renderer.drawText(@ptrCast(&line_buf), box_x + 14, row_y, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
         row_y += 20;
     }
@@ -464,6 +704,8 @@ fn drawSearchPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, pan
         renderer.Renderer.drawText("Enter query and click Search.", panel_x + 16, search_panel.list_top + 8, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
     }
     renderer.Renderer.clearClipRect();
+    const result_count = if (wb.search_results) |results| results.matches.len else 0;
+    drawSidebarScrollbar(panel_x, panel_w, search_panel.list_top, h, wb.search_scroll_y, result_count, search_panel.row_h);
 }
 
 fn drawGitPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_w: f32, h: f32) void {
@@ -505,6 +747,8 @@ fn drawGitPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_
         renderer.Renderer.drawText("Click Refresh to load status.", panel_x + 16, git_panel.list_top + 8, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
     }
     renderer.Renderer.clearClipRect();
+    const git_count = if (wb.git_status) |status| if (status.is_repo) status.entries.len else 0 else 0;
+    drawSidebarScrollbar(panel_x, panel_w, git_panel.list_top, h, wb.git_scroll_y, git_count, git_panel.row_h);
 }
 
 fn drawDebugPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_w: f32, h: f32) void {
@@ -572,6 +816,21 @@ fn drawDebugPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, pane
         y += debug_panel.row_h;
     }
     renderer.Renderer.clearClipRect();
+    const bp_count = wb.breakpoints.items.items.len;
+    const debug_viewport = debug_panel.viewportHeight(h);
+    const debug_content = debug_panel.contentHeight(bp_count, debug_active);
+    const debug_max = debug_panel.maxScrollY(bp_count, h, debug_active);
+    const show_debug_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, panel_x, debug_panel.list_top, panel_w, debug_viewport);
+    scrollbar.drawVertical(
+        panel_x + panel_w - scrollbar.track_w - 2,
+        debug_panel.list_top,
+        debug_viewport,
+        wb.run_scroll_y,
+        debug_max,
+        debug_content,
+        debug_viewport,
+        show_debug_scroll,
+    );
 }
 
 fn drawExtensionsPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_w: f32, h: f32) void {
@@ -590,7 +849,6 @@ fn drawExtensionsPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32,
     var y = extensions_panel.list_top - wb.extensions_scroll_y;
     const btn_w = (panel_w - 44) / 2;
     const filter = wb.extensionsFilterSlice();
-    const scope_picker = @import("../agent/scope_picker.zig");
 
     if (y + 22 >= 65 and y < h - layout.status_height) {
         renderer.Renderer.drawRoundedRect(panel_x + 12, y, btn_w, 18, 4, .{ .r = 0.22, .g = 0.25, .b = 0.3, .a = 1.0 });
@@ -654,7 +912,7 @@ fn drawExtensionsPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32,
         }
     } else if (wb.extensions_panel_mode == .installed) {
         for (host.extensions.items, 0..) |ext, index| {
-            if (filter.len > 0 and !scope_picker.matchesQuery(filter, ext.name) and !scope_picker.matchesQuery(filter, ext.id)) continue;
+            if (filter.len > 0 and !agent_scope_picker_mod.matchesQuery(filter, ext.name) and !agent_scope_picker_mod.matchesQuery(filter, ext.id)) continue;
             const block_h = extensions_panel.blockHeight(&ext);
             if (y + block_h >= 65 and y < h - layout.status_height) {
                 const selected = wb.selected_extension_index == index;
@@ -703,7 +961,7 @@ fn drawExtensionsPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32,
         }
     } else if (wb.marketplace_catalog) |catalog| {
         for (catalog.entries, 0..) |entry, index| {
-            if (filter.len > 0 and !scope_picker.matchesQuery(filter, entry.name) and !scope_picker.matchesQuery(filter, entry.id) and !scope_picker.matchesQuery(filter, entry.description)) continue;
+            if (filter.len > 0 and !agent_scope_picker_mod.matchesQuery(filter, entry.name) and !agent_scope_picker_mod.matchesQuery(filter, entry.id) and !agent_scope_picker_mod.matchesQuery(filter, entry.description)) continue;
             if (y + extensions_panel.marketplace_row_h >= 65 and y < h - layout.status_height) {
                 renderer.Renderer.drawRoundedRect(panel_x + 8, y, panel_w - 16, extensions_panel.marketplace_row_h - 6, 4, c(theme.colors.selection));
                 var title_buf: [128:0]u8 = undefined;
@@ -729,6 +987,21 @@ fn drawExtensionsPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32,
     }
 
     renderer.Renderer.clearClipRect();
+    const catalog_ptr: ?*const plugin.MarketplaceCatalog = if (wb.marketplace_catalog) |*catalog| catalog else null;
+    const ext_content = extensions_panel.contentHeight(host, catalog_ptr, wb.extensions_panel_mode, filter, wb.extensions_detail_index);
+    const ext_viewport = extensions_panel.viewportHeight(h);
+    const ext_max = extensions_panel.maxScrollY(host, catalog_ptr, wb.extensions_panel_mode, h, filter, wb.extensions_detail_index);
+    const show_ext_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, panel_x, extensions_panel.list_top, panel_w, ext_viewport);
+    scrollbar.drawVertical(
+        panel_x + panel_w - scrollbar.track_w - 2,
+        extensions_panel.list_top,
+        ext_viewport,
+        wb.extensions_scroll_y,
+        ext_max,
+        ext_content,
+        ext_viewport,
+        show_ext_scroll,
+    );
 }
 
 fn drawExplorerPanel(wb: *@import("../workbench.zig").Workbench, explorer_x: f32, explorer_panel_width: f32, h: f32) void {
@@ -741,45 +1014,60 @@ fn drawExplorerPanel(wb: *@import("../workbench.zig").Workbench, explorer_x: f32
     wb.explorer.visibleRows(wb.activeFilePath(), &visible) catch {};
 
     var file_y: f32 = explorer_scroll.list_top - wb.explorer_scroll_y;
-    for (visible.items) |row| {
+    const chevron_slot_w: f32 = 12;
+    const label_gap: f32 = 8;
+    for (visible.items, 0..) |row, row_index| {
         const indent = @as(f32, @floatFromInt(row.depth)) * 14.0;
-        const prefix = if (row.kind == .directory)
-            if (row.expanded) "v " else "> "
-        else
-            "  ";
+        const label_x = explorer_x + 20 + indent + chevron_slot_w + label_gap;
 
         const row_h = explorer_scroll.row_height;
         if (file_y + row_h >= 65 and file_y < h - layout.status_height) {
-            if (row.active) {
+            const hovered = state.explorer_hover_row == row_index and !row.selected and !row.active;
+            if (hovered) {
+                renderer.Renderer.drawRoundedRect(explorer_x + 8, file_y - 2, explorer_panel_width - 16, 18, 3, .{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 });
+            } else if (row.active) {
                 renderer.Renderer.drawRoundedRect(explorer_x + 8, file_y - 2, explorer_panel_width - 16, 18, 3, c(theme.colors.accent));
             } else if (row.selected) {
                 renderer.Renderer.drawRoundedRect(explorer_x + 8, file_y - 2, explorer_panel_width - 16, 18, 3, c(theme.colors.selection));
             }
 
+            if (row.kind == .directory) {
+                const chevron_color = if (row.selected or row.active)
+                    icons.chevron_color
+                else
+                    renderer.Color{ .r = 0.62, .g = 0.64, .b = 0.68, .a = 1.0 };
+                icons.drawChevron(.{
+                    .x = explorer_x + 20 + indent,
+                    .y = file_y + 1,
+                    .w = chevron_slot_w,
+                    .h = row_h - 2,
+                }, if (row.expanded) .down else .right, chevron_color);
+            }
+
             if (wb.renaming and row.selected) {
                 const rename_str = wb.rename_buffer.toDisplayString(true) catch "";
                 defer state.gpa.free(rename_str);
-                renderer.Renderer.drawRoundedRect(explorer_x + 16 + indent, file_y - 2, explorer_panel_width - 32, 18, 3, .{ .r = 0.2, .g = 0.25, .b = 0.35, .a = 1.0 });
-                renderer.Renderer.drawText(rename_str, explorer_x + 20 + indent, file_y, 13.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+                renderer.Renderer.drawRoundedRect(label_x - 4, file_y - 2, explorer_panel_width - 32, 18, 3, .{ .r = 0.2, .g = 0.25, .b = 0.35, .a = 1.0 });
+                renderer.Renderer.drawText(rename_str, label_x, file_y, 13.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
             } else {
                 var label_buf: [512:0]u8 = undefined;
                 const name = row.name;
-                const max_name = @min(name.len, label_buf.len - 4);
-                @memcpy(label_buf[0..prefix.len], prefix);
-                @memcpy(label_buf[prefix.len .. prefix.len + max_name], name[0..max_name]);
-                label_buf[prefix.len + max_name] = 0;
+                const max_name = @min(name.len, label_buf.len - 1);
+                @memcpy(label_buf[0..max_name], name[0..max_name]);
+                label_buf[max_name] = 0;
                 const color = if (row.active)
                     renderer.Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 }
                 else if (row.selected)
                     renderer.Color{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 }
                 else
                     renderer.Color{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 };
-                renderer.Renderer.drawText(@ptrCast(&label_buf), explorer_x + 20 + indent, file_y, 13.0, color);
+                renderer.Renderer.drawText(@ptrCast(&label_buf), label_x, file_y, 13.0, color);
             }
         }
         file_y += row_h;
     }
     renderer.Renderer.clearClipRect();
+    drawSidebarScrollbar(explorer_x, explorer_panel_width, explorer_scroll.list_top, h, wb.explorer_scroll_y, visible.items.len, explorer_scroll.row_height);
 }
 
 fn drawBracketHighlight(
@@ -820,6 +1108,82 @@ fn highlightBracketAt(
     renderer.Renderer.drawRect(x0, line_y, @max(4, x1 - x0), line_h, color);
 }
 
+fn lineColAtBufferOffset(editor_buf: *@import("forge-editor").Buffer, offset: usize) struct { line: usize, col: usize } {
+    var pos: usize = 0;
+    const line_count = editor_buf.lineCount();
+    for (0..line_count) |line| {
+        const line_len = editor_buf.lineAt(line).len;
+        const line_end = pos + line_len;
+        if (offset <= line_end) return .{ .line = line, .col = offset - pos };
+        pos = line_end + 1;
+    }
+    if (line_count > 0) {
+        const last = line_count - 1;
+        return .{ .line = last, .col = editor_buf.lineAt(last).len };
+    }
+    return .{ .line = 0, .col = 0 };
+}
+
+fn reviewLineHasChange(
+    wb: *@import("../workbench.zig").Workbench,
+    editor_buf: *@import("forge-editor").Buffer,
+    file_path: []const u8,
+    line_index: usize,
+) bool {
+    if (!wb.agent.show_review) return false;
+    wb.agent.lock();
+    defer wb.agent.unlock();
+    for (wb.agent.review.hunks) |hunk| {
+        if (!hunk.accepted or !std.mem.eql(u8, hunk.path, file_path)) continue;
+        if (hunk.edit_start == null or hunk.edit_end == null) return true;
+        const del_start = lineColAtBufferOffset(editor_buf, @intCast(hunk.edit_start.?));
+        const del_end = lineColAtBufferOffset(editor_buf, @intCast(hunk.edit_end.?));
+        if (line_index >= del_start.line and line_index <= del_end.line) return true;
+    }
+    return false;
+}
+
+fn drawReviewLineOverlay(
+    wb: *@import("../workbench.zig").Workbench,
+    theme: *const @import("forge-workspace").Theme,
+    editor_buf: *@import("forge-editor").Buffer,
+    file_path: []const u8,
+    line_index: usize,
+    text_x: f32,
+    line_y: f32,
+    line_h: f32,
+    font_size: f32,
+) void {
+    if (!wb.agent.show_review) return;
+    wb.agent.lock();
+    defer wb.agent.unlock();
+    const line = editor_buf.lineAt(line_index);
+    for (wb.agent.review.hunks) |hunk| {
+        if (!hunk.accepted or !std.mem.eql(u8, hunk.path, file_path)) continue;
+        const edit_start = hunk.edit_start orelse continue;
+        const edit_end = hunk.edit_end orelse continue;
+        const del_start = lineColAtBufferOffset(editor_buf, @intCast(edit_start));
+        const del_end = lineColAtBufferOffset(editor_buf, @intCast(edit_end));
+        if (line_index < del_start.line or line_index > del_end.line) continue;
+
+        const start_col = if (line_index == del_start.line) del_start.col else 0;
+        const end_col = if (line_index == del_end.line) del_end.col else line.len;
+        const start_x = text_x + editor_scroll.cursorX(line, start_col, font_size);
+        const end_x = text_x + editor_scroll.cursorX(line, end_col, font_size);
+        renderer.Renderer.drawRect(start_x, line_y, @max(4, end_x - start_x), line_h, .{ .r = 0.75, .g = 0.2, .b = 0.2, .a = 0.28 });
+
+        if (hunk.replacement) |replacement| {
+            if (replacement.len > 0 and line_index == del_start.line) {
+                const first_line_end = std.mem.indexOfScalar(u8, replacement, '\n') orelse replacement.len;
+                const preview = replacement[0..first_line_end];
+                const ins_x = text_x + editor_scroll.cursorX(line, start_col, font_size);
+                const ins_w = @as(f32, @floatFromInt(preview.len)) * editor_scroll.charWidth(theme);
+                renderer.Renderer.drawRect(ins_x, line_y, @max(4, ins_w), line_h, .{ .r = 0.2, .g = 0.65, .b = 0.3, .a = 0.35 });
+            }
+        }
+    }
+}
+
 fn drawEditorViewport(
     wb: *@import("../workbench.zig").Workbench,
     editor_buf: *@import("forge-editor").Buffer,
@@ -849,7 +1213,10 @@ fn drawEditorViewport(
     renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
     const show_cursor = @mod(state.time, 1.0) < 0.5;
     const show_editor_cursor = show_cursor and wb.focused_panel == .editor and pane_focused;
-    const bracket_pair = if (show_editor_cursor) bracket_match.findMatch(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col) else null;
+    const bracket_pair = if (show_editor_cursor and !wb.agent.worker_running)
+        bracket_match.findMatch(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col)
+    else
+        null;
 
     const line_count = editor_buf.lineCount();
     const content_h = if (wrap_enabled)
@@ -951,6 +1318,9 @@ fn drawEditorViewport(
                         renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
                     }
                 }
+                if (reviewLineHasChange(wb, editor_buf, file_path, idx)) {
+                    renderer.Renderer.drawText("±", editor_x + gutter - 14, line_num_y, font_size, .{ .r = 0.55, .g = 0.85, .b = 0.95, .a = 1.0 });
+                }
             }
             line_num_y += line_h;
         }
@@ -979,6 +1349,7 @@ fn drawEditorViewport(
                 if (debug_here) {
                     renderer.Renderer.drawRect(seg_text_x - 4, line_num_y, viewport_w, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
                 }
+                drawReviewLineOverlay(wb, theme, editor_buf, file_path, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
                 drawFindHighlights(wb, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
                 drawHighlightedLine(slice, seg_text_x, line_num_y, theme);
                 if (bracket_pair) |pair| {
@@ -1022,6 +1393,7 @@ fn drawEditorViewport(
                 if (debug_here) {
                     renderer.Renderer.drawRect(text_x - 4, line_num_y, content_w + 8, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
                 }
+                drawReviewLineOverlay(wb, theme, editor_buf, file_path, idx, text_x, line_num_y, line_h, font_size);
                 drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
                 drawHighlightedLine(editor_buf.lineAt(idx), text_x, line_num_y, theme);
                 if (bracket_pair) |pair| {
@@ -1054,20 +1426,27 @@ fn drawEditorViewport(
     }
 
     renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
-    if (max_scroll_y > 0) {
-        const scroll_ratio = scroll_y / max_scroll_y;
-        const scrollbar_h = @max(20.0, editor_view_h * (editor_view_h / content_h));
-        const scrollbar_y = 65.0 + scroll_ratio * (editor_view_h - scrollbar_h);
-        renderer.Renderer.drawRoundedRect(editor_x + editor_w - 12, scrollbar_y, 8, scrollbar_h, 4.0, .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 0.5 });
-    }
-
-    if (max_scroll_x > 0) {
-        const scroll_ratio = scroll_x / max_scroll_x;
-        const scrollbar_w = @max(20.0, viewport_w * (viewport_w / content_w));
-        const scrollbar_x = editor_x + gutter + scroll_ratio * (viewport_w - scrollbar_w);
-        const scrollbar_y = 65.0 + editor_view_h - 10;
-        renderer.Renderer.drawRoundedRect(scrollbar_x, scrollbar_y, scrollbar_w, 8, 4.0, .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 0.5 });
-    }
+    const show_editor_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, editor_x, 65, editor_w, editor_view_h);
+    scrollbar.drawVertical(
+        editor_x + editor_w - scrollbar.track_w - 4,
+        65,
+        editor_view_h,
+        scroll_y,
+        max_scroll_y,
+        content_h,
+        editor_view_h,
+        show_editor_scroll,
+    );
+    scrollbar.drawHorizontal(
+        editor_x + gutter,
+        65 + editor_view_h - scrollbar.track_w - 2,
+        viewport_w,
+        scroll_x,
+        max_scroll_x,
+        content_w,
+        viewport_w,
+        show_editor_scroll,
+    );
     renderer.Renderer.clearClipRect();
 }
 
@@ -1489,7 +1868,6 @@ fn drawTaskPanel(wb: *@import("../workbench.zig").Workbench, editor_x: f32, edit
                     "Starting terminal…";
                 renderer.Renderer.drawText(hint, editor_x + 20, content_top + 8, 12.0, .{ .r = 0.50, .g = 0.58, .b = 0.68, .a = 1.0 });
             }
-            renderer.Renderer.setClipRect(0, 0, 100000, 100000);
         },
         .debug_console => {
             wb.debug_console.lock();
@@ -1564,6 +1942,22 @@ fn drawTaskPanel(wb: *@import("../workbench.zig").Workbench, editor_x: f32, edit
         },
     }
     renderer.Renderer.clearClipRect();
+    const bottom_content_top = panel_y + 34.0;
+    const bottom_content_h = panel_h - 34.0;
+    const bottom_line_count = wb.bottomPanelLineCount();
+    const bottom_content = @as(f32, @floatFromInt(@max(1, bottom_line_count))) * panel_scroll.bottom_line_h;
+    const bottom_max = @max(0, bottom_content - bottom_content_h);
+    const show_bottom_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, editor_x, bottom_content_top, editor_w, bottom_content_h);
+    scrollbar.drawVertical(
+        editor_x + editor_w - scrollbar.track_w - 4,
+        bottom_content_top,
+        bottom_content_h,
+        wb.task_scroll_y,
+        bottom_max,
+        bottom_content,
+        bottom_content_h,
+        show_bottom_scroll,
+    );
 }
 
 fn drawStatusBar(wb: *@import("../workbench.zig").Workbench, w: f32, h: f32, shell_mode: layout.ShellMode) void {

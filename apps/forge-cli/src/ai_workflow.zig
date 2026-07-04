@@ -24,11 +24,13 @@ pub fn providerOptionsFromFlags(mode: Mode, flags: args_mod.GlobalFlags) ai.prov
         .ask => ai.proposal_workflow.default_ask_response,
         .plan => ai.proposal_workflow.default_plan_response,
     };
+    const fake_plan = if (mode == .plan) ai.proposal_workflow.default_plan_markdown else null;
 
     return .{
         .kind = ai.provider_factory.Kind.parse(flags.provider),
         .model = flags.model,
         .fake_response = fake_response,
+        .fake_plan_response = fake_plan,
     };
 }
 
@@ -76,7 +78,7 @@ pub fn generateAndPersist(
     ) catch |err| switch (err) {
         error.MissingProviderCredentials => return error.MissingProviderCredentials,
         error.Cancelled => return error.Cancelled,
-        else => return error.ProviderFailed,
+        else => |e| return e,
     };
     defer ai.proposal_workflow.deinitResult(allocator, &inner);
 
@@ -86,6 +88,36 @@ pub fn generateAndPersist(
     errdefer allocator.free(proposal_rel);
 
     return .{ .run_id = run_id, .proposal_rel = proposal_rel };
+}
+
+pub fn writeError(writer: *std.Io.Writer, err: WorkflowError) !u8 {
+    switch (err) {
+        error.MissingProviderCredentials => {
+            try writer.writeAll("error: gemini provider requires GEMINI_API_KEY, GOOGLE_API_KEY, or macOS Keychain entry (service forge-gemini)\n");
+            return 2;
+        },
+        error.Cancelled => return 130,
+        error.ProviderFailed => {
+            try writer.writeAll("error: AI provider failed\n");
+            return 2;
+        },
+        error.InvalidProposal => {
+            try writer.writeAll("error: model returned an invalid proposal JSON\n");
+            return 2;
+        },
+        error.AuthenticationFailed,
+        error.RateLimitExceeded,
+        error.ContextLengthExceeded,
+        error.NetworkError,
+        error.MalformedResponse,
+        error.ProviderInternalError,
+        => |e| {
+            try writer.writeAll("error: ");
+            try writer.writeAll(ai.provider.Provider.errorMessage(e));
+            try writer.writeAll("\n");
+            return 2;
+        },
+    }
 }
 
 pub const default_ask_response = ai.proposal_workflow.default_ask_response;

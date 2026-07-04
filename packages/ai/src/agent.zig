@@ -1,12 +1,17 @@
 const std = @import("std");
 const workspace = @import("forge-workspace");
 const kernel = @import("forge-kernel");
+const provider_mod = @import("provider.zig");
 const provider_factory = @import("provider_factory.zig");
 const planner = @import("planner.zig");
 const context_loader = @import("context_loader.zig");
 const run_record = @import("run_record.zig");
 const tools = @import("tools.zig");
 const tool_executor = @import("tool_executor.zig");
+const proposal_workflow = @import("proposal_workflow.zig");
+const conversation = @import("conversation.zig");
+const multimodal = @import("multimodal.zig");
+const gemini_agent = @import("gemini_agent.zig");
 const progress = @import("progress.zig");
 
 pub const Config = struct {
@@ -14,9 +19,19 @@ pub const Config = struct {
     provider_options: provider_factory.Options,
     capability_profile: tools.CapabilityProfile = .propose,
     workspace_cwd: []const u8 = ".",
+    explicit_files: []const []const u8 = &.{},
+    active_file: ?[]const u8 = null,
+    attachments: []const context_loader.AttachmentInput = &.{},
+    conversation: []const conversation.Turn = &.{},
+    recent_files: []const []const u8 = &.{},
+    surface: run_record.Surface = .cli,
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
     progress_writer: ?*std.Io.Writer = null,
     progress_json: bool = false,
+    progress_callback: ?*const fn (?*anyopaque, progress.Phase) void = null,
+    progress_context: ?*anyopaque = null,
+    step_callback: ?*const fn (?*anyopaque, Step) void = null,
+    step_context: ?*anyopaque = null,
 };
 
 pub const Step = struct {
@@ -38,6 +53,7 @@ pub const AgentError = error{
     ProviderFailed,
     WorkspaceFailed,
     Cancelled,
+    InvalidProposal,
 };
 
 pub fn run(
@@ -60,7 +76,15 @@ pub fn run(
     const session_id = workspace.sessions.makeSessionId(allocator, timestamp_ms) catch return error.WorkspaceFailed;
     errdefer allocator.free(session_id);
 
-    var ctx_builder = context_loader.build(allocator, io, root, .{ .intent = intent, .explicit_files = &.{} }) catch return error.WorkspaceFailed;
+    var ctx_builder = context_loader.build(allocator, io, root, .{
+        .intent = intent,
+        .explicit_files = config.explicit_files,
+        .active_file = config.active_file,
+        .attachments = config.attachments,
+        .include_project_rules = true,
+        .workspace_cwd = config.workspace_cwd,
+        .recent_files = config.recent_files,
+    }) catch return error.WorkspaceFailed;
     defer ctx_builder.deinit();
     emitProgress(config, .context_built);
 
@@ -71,45 +95,75 @@ pub fn run(
         .cwd = config.workspace_cwd,
         .profile = config.capability_profile,
         .cancel_token = config.cancel_token,
+        .environ_map = environ_map,
     };
 
     var next_index: u32 = 1;
-    var first_match_path: ?[]const u8 = null;
-    errdefer if (first_match_path) |path| allocator.free(path);
 
-    var search_term_buf: [128]u8 = undefined;
-    const search_term = firstToken(intent, &search_term_buf);
-    if (search_term.len > 0) {
-        const search_out = tool_executor.search(tool_ctx, search_term) catch |err| return mapToolError(err);
-        defer allocator.free(search_out.summary);
-        first_match_path = search_out.first_match_path;
-        try appendStep(allocator, &steps, next_index, "search", search_out.summary, null);
-        next_index += 1;
-    }
+    if (provider_handle.gemini) |*gemini| {
+        const NativeCtx = struct {
+            allocator: std.mem.Allocator,
+            steps: *std.ArrayList(Step),
+            config: Config,
 
-    if (config.max_steps >= 3 and tools.isAllowed(config.capability_profile, .list_tree)) {
-        if (config.max_steps < next_index + 1) return error.StepLimitReached;
-        const tree_out = tool_executor.listTree(tool_ctx) catch |err| return mapToolError(err);
-        defer allocator.free(tree_out.summary);
-        try appendStep(allocator, &steps, next_index, "list_tree", tree_out.summary, null);
-        next_index += 1;
-    }
+            fn onStep(ctx: ?*anyopaque, index: u32, kind: []const u8, summary: []const u8) void {
+                const self: *@This() = @ptrCast(@alignCast(ctx.?));
+                appendStep(self.allocator, self.steps, index, kind, summary, null, self.config) catch {};
+            }
+        };
+        var native_ctx = NativeCtx{ .allocator = allocator, .steps = &steps, .config = config };
+        gemini_agent.exploreWithGemini(allocator, io, gemini, intent, &ctx_builder, tool_ctx, .{
+            .max_tool_steps = config.max_steps,
+            .cancel_token = config.cancel_token,
+            .step_callback = NativeCtx.onStep,
+            .step_context = &native_ctx,
+        }) catch |err| switch (err) {
+            error.Cancelled => return error.Cancelled,
+            error.StepLimitReached => return error.StepLimitReached,
+            else => return error.ProviderFailed,
+        };
+        next_index = @as(u32, @intCast(steps.items.len)) + 1;
+    } else {
+        var first_match_path: ?[]const u8 = null;
+        errdefer if (first_match_path) |path| allocator.free(path);
 
-    if (config.max_steps >= 4 and tools.isAllowed(config.capability_profile, .read_file)) {
-        if (first_match_path) |rel_path| {
-            if (config.max_steps < next_index + 1) return error.StepLimitReached;
-            const read_out = tool_executor.readFile(tool_ctx, rel_path) catch |err| return mapToolError(err);
-            defer allocator.free(read_out.summary);
-            try appendStep(allocator, &steps, next_index, "read_file", read_out.summary, null);
+        var search_term_buf: [128]u8 = undefined;
+        const search_term = firstToken(intent, &search_term_buf);
+        if (search_term.len > 0) {
+            const search_out = tool_executor.search(tool_ctx, search_term) catch |err| return mapToolError(err);
+            defer allocator.free(search_out.summary);
+            first_match_path = search_out.first_match_path;
+            try appendStep(allocator, &steps, next_index, "search", search_out.summary, null, config);
             next_index += 1;
+        }
+
+        if (config.max_steps >= 3 and tools.isAllowed(config.capability_profile, .list_tree)) {
+            if (config.max_steps < next_index + 1) return error.StepLimitReached;
+            const tree_out = tool_executor.listTree(tool_ctx) catch |err| return mapToolError(err);
+            defer allocator.free(tree_out.summary);
+            try appendStep(allocator, &steps, next_index, "list_tree", tree_out.summary, null, config);
+            next_index += 1;
+        }
+
+        if (config.max_steps >= 4 and tools.isAllowed(config.capability_profile, .read_file)) {
+            if (first_match_path) |rel_path| {
+                if (config.max_steps < next_index + 1) return error.StepLimitReached;
+                const read_out = tool_executor.readFile(tool_ctx, rel_path) catch |err| return mapToolError(err);
+                defer allocator.free(read_out.summary);
+                try appendStep(allocator, &steps, next_index, "read_file", read_out.summary, null, config);
+                next_index += 1;
+            }
         }
     }
 
     if (config.max_steps < next_index) return error.StepLimitReached;
     if (!tools.isAllowed(config.capability_profile, .propose_edit)) return error.StepLimitReached;
 
-    const provider = provider_handle.interface();
-    var planner_inst = planner.Planner.init(allocator, provider, &ctx_builder);
+    const llm = provider_handle.interface();
+    const images = multimodal.loadImages(allocator, io, root, config.attachments) catch &[_]provider_mod.ImagePart{};
+    defer if (images.len > 0) multimodal.freeImages(allocator, images);
+
+    var planner_inst = planner.Planner.init(allocator, llm, &ctx_builder, config.conversation, images);
 
     var response = std.Io.Writer.Allocating.init(allocator);
     defer response.deinit();
@@ -128,16 +182,17 @@ pub fn run(
     errdefer allocator.free(run_id);
 
     const proposal_body = response.writer.buffer[0..response.writer.end];
+    proposal_workflow.validateProposalBody(allocator, proposal_body) catch return error.InvalidProposal;
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.WorkspaceFailed;
 
     workspace.history.ensureLayout(io, root) catch return error.WorkspaceFailed;
     workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.WorkspaceFailed, proposal_body) catch return error.WorkspaceFailed;
 
-    const meta = provider.metadata();
+    const meta = llm.metadata();
     const record = run_record.Record{
         .run_id = run_id,
-        .surface = .cli,
+        .surface = config.surface,
         .intent = intent,
         .state = .proposed,
         .proposal_path = proposal_rel,
@@ -155,7 +210,7 @@ pub fn run(
     workspace.runs.appendIndex(allocator, io, root, index_line) catch return error.WorkspaceFailed;
 
     const propose_summary = std.fmt.allocPrint(allocator, "proposal at {s}", .{proposal_rel}) catch return error.WorkspaceFailed;
-    try appendStep(allocator, &steps, next_index, "propose", propose_summary, run_id);
+    try appendStep(allocator, &steps, next_index, "propose", propose_summary, run_id, config);
     emitProgress(config, .proposal_ready);
 
     const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
@@ -258,7 +313,16 @@ fn appendStep(
     kind: []const u8,
     summary: []const u8,
     run_id: ?[]const u8,
+    config: Config,
 ) AgentError!void {
+    if (config.step_callback) |callback| {
+        callback(config.step_context, .{
+            .index = index,
+            .kind = kind,
+            .summary = summary,
+            .run_id = run_id,
+        });
+    }
     steps.append(allocator, .{
         .index = index,
         .kind = allocator.dupe(u8, kind) catch return error.WorkspaceFailed,
@@ -277,6 +341,10 @@ fn mapToolError(err: tool_executor.AgentToolError) AgentError {
 }
 
 fn emitProgress(config: Config, phase: progress.Phase) void {
+    if (config.progress_callback) |callback| {
+        callback(config.progress_context, phase);
+        return;
+    }
     if (config.progress_json) {
         progress.emitJson(phase, config.progress_writer);
     } else {

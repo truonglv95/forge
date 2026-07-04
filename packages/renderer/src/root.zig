@@ -128,7 +128,10 @@ pub const Renderer = struct {
     }
 
     pub fn drawText(text: []const u8, x: f32, y: f32, font_size: f32, color: Color) void {
-        mac.forge_mac_draw_text(@ptrCast(text.ptr), x, y, font_size, color.r, color.g, color.b, color.a);
+        if (text.len == 0) return;
+        const len = std.mem.indexOfScalar(u8, text, 0) orelse text.len;
+        if (len == 0) return;
+        mac.forge_mac_draw_text_len(@ptrCast(text.ptr), len, x, y, font_size, color.r, color.g, color.b, color.a);
     }
 
     pub fn drawStyledText(text: []const u8, x: f32, y: f32, font_size: f32, spans: []const TextSpan) void {
@@ -189,5 +192,10 @@ pub const Renderer = struct {
         const len = mac.forge_mac_get_clipboard_text(&buf, buf.len);
         if (len == 0) return try allocator.dupe(u8, "");
         return try allocator.dupe(u8, buf[0..len]);
+    }
+
+    pub fn saveClipboardPng(path: []const u8) bool {
+        if (path.len == 0) return false;
+        return mac.forge_mac_save_clipboard_png(@ptrCast(path.ptr)) == 1;
     }
 };

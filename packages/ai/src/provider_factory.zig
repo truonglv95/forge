@@ -22,8 +22,11 @@ pub const Options = struct {
     kind: Kind = .auto,
     model: ?[]const u8 = null,
     fake_response: []const u8,
+    fake_plan_response: ?[]const u8 = null,
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
+    thinking_callback: ?*const fn (?*anyopaque, []const u8) void = null,
+    thinking_context: ?*anyopaque = null,
 };
 
 pub const Handle = struct {
@@ -53,7 +56,12 @@ pub fn create(
     return switch (resolved) {
         .fake => .{
             .allocator = allocator,
-            .fake = fake_provider.FakeProvider.init(options.fake_response, options.stream_callback, options.stream_context),
+            .fake = fake_provider.FakeProvider.initWithPlan(
+                options.fake_response,
+                options.fake_plan_response,
+                options.stream_callback,
+                options.stream_context,
+            ),
         },
         .gemini => .{
             .allocator = allocator,
@@ -64,6 +72,8 @@ pub fn create(
                 options.model orelse gemini_provider.default_model,
                 options.stream_callback,
                 options.stream_context,
+                options.thinking_callback,
+                options.thinking_context,
             ),
         },
     };
