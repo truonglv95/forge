@@ -845,7 +845,8 @@ pub const Workbench = struct {
             },
             .problems => self.diagnostics.list.items.len,
             .terminal => blk: {
-                const terminal = self.activeTerminal();
+                const terminals: *terminal_group_mod.Group = @constCast(&self.terminals);
+                const terminal = terminals.activeSession();
                 terminal.lock();
                 defer terminal.unlock();
                 const partial: usize = if (terminal.local_input != null or terminal.isActive()) 1 else 0;
