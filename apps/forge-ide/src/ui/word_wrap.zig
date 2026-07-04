@@ -86,7 +86,7 @@ pub fn maxScrollY(buf: *const editor.Buffer, editor_h: f32, viewport_w: f32, fon
     return @max(0, content - viewport);
 }
 
-fn breakAt(line: []const u8, start: usize, max_w: f32, font_size: f32) usize {
+pub fn breakAt(line: []const u8, start: usize, max_w: f32, font_size: f32) usize {
     if (start >= line.len) return start;
     var last_space: ?usize = null;
     var i = start;

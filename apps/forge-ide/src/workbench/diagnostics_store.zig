@@ -51,8 +51,8 @@ pub const Store = struct {
         self.cooldown = 0;
     }
 
-    pub fn tick(self: *Store, dt: f32, doc: ?*@import("forge-editor").Document) void {
-        if (doc == null) return;
+    pub fn tick(self: *Store, dt: f32, doc: ?*@import("forge-editor").Document, agent_busy: bool) void {
+        if (doc == null or agent_busy) return;
         if (self.pending.load(.acquire)) return;
         self.cooldown -= dt;
         if (self.cooldown > 0) return;

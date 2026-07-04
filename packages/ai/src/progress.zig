@@ -2,6 +2,8 @@ const std = @import("std");
 
 pub const Phase = enum {
     context_built,
+    planning,
+    plan_ready,
     sending,
     streaming,
     parsing,

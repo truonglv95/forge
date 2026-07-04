@@ -147,6 +147,10 @@ fn runAgent(
             try writer.writeAll("error: agent workspace operation failed\n");
             return 2;
         },
+        ai.agent.AgentError.InvalidProposal => {
+            try writer.writeAll("error: agent returned invalid proposal JSON\n");
+            return 2;
+        },
     };
     defer ai.agent.deinitResult(allocator, &result);
 

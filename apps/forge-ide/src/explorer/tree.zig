@@ -13,9 +13,16 @@ pub const VisibleEntry = struct {
 
 pub const Tree = struct {
     allocator: std.mem.Allocator,
+    all_paths: []CachedPath,
     entries: []Entry,
     expanded_paths: std.StringHashMap(void),
     selected_path: ?[]const u8 = null,
+
+    const CachedPath = struct {
+        path: []const u8,
+        kind: std.Io.File.Kind,
+        depth: u32,
+    };
 
     const Entry = struct {
         path: []const u8,
@@ -27,19 +34,36 @@ pub const Tree = struct {
     pub fn init(allocator: std.mem.Allocator) Tree {
         return .{
             .allocator = allocator,
+            .all_paths = &.{},
             .entries = &.{},
             .expanded_paths = std.StringHashMap(void).init(allocator),
         };
     }
 
     pub fn deinit(self: *Tree) void {
-        for (self.entries) |entry| self.allocator.free(entry.path);
-        self.allocator.free(self.entries);
+        self.freeAllPaths();
+        self.freeEntries();
         if (self.selected_path) |path| self.allocator.free(path);
         self.expanded_paths.deinit();
     }
 
+    fn freeAllPaths(self: *Tree) void {
+        for (self.all_paths) |entry| self.allocator.free(entry.path);
+        self.allocator.free(self.all_paths);
+        self.all_paths = &.{};
+    }
+
+    fn freeEntries(self: *Tree) void {
+        for (self.entries) |entry| self.allocator.free(entry.path);
+        self.allocator.free(self.entries);
+        self.entries = &.{};
+    }
+
     pub fn rebuild(self: *Tree, io: std.Io, root: workspace.WorkspaceRoot) !void {
+        try self.rescan(io, root);
+    }
+
+    pub fn rescan(self: *Tree, io: std.Io, root: workspace.WorkspaceRoot) !void {
         var summary = try workspace.tree.scan(self.allocator, io, root, ".");
         defer summary.deinit();
 
@@ -67,9 +91,30 @@ pub const Tree = struct {
             }
         }.less);
 
-        for (self.entries) |entry| self.allocator.free(entry.path);
-        self.allocator.free(self.entries);
-        self.entries = &.{};
+        self.freeAllPaths();
+
+        var cached: std.ArrayList(CachedPath) = .empty;
+        errdefer {
+            for (cached.items) |entry| self.allocator.free(entry.path);
+            cached.deinit(self.allocator);
+        }
+
+        for (sorted.items) |path| {
+            const kind = paths.get(path).?;
+            const owned_path = try self.allocator.dupe(u8, path);
+            try cached.append(self.allocator, .{
+                .path = owned_path,
+                .kind = kind,
+                .depth = pathDepth(path),
+            });
+        }
+
+        self.all_paths = try cached.toOwnedSlice(self.allocator);
+        try self.refreshVisible();
+    }
+
+    pub fn refreshVisible(self: *Tree) !void {
+        self.freeEntries();
 
         var built: std.ArrayList(Entry) = .empty;
         errdefer {
@@ -77,19 +122,14 @@ pub const Tree = struct {
             built.deinit(self.allocator);
         }
 
-        for (sorted.items) |path| {
-            const kind = paths.get(path).?;
-            const depth = pathDepth(path);
-            if (depth == 0 and kind == .directory) {
-                try self.expanded_paths.put(try self.allocator.dupe(u8, path), {});
-            }
-            if (!self.isPathVisible(path)) continue;
-            const owned_path = try self.allocator.dupe(u8, path);
+        for (self.all_paths) |cached| {
+            if (!self.isPathVisible(cached.path)) continue;
+            const owned_path = try self.allocator.dupe(u8, cached.path);
             try built.append(self.allocator, .{
                 .path = owned_path,
                 .name = basename(owned_path),
-                .kind = kind,
-                .depth = depth,
+                .kind = cached.kind,
+                .depth = cached.depth,
             });
         }
 
@@ -130,6 +170,7 @@ pub const Tree = struct {
         } else {
             try self.expanded_paths.put(try self.allocator.dupe(u8, path), {});
         }
+        try self.refreshVisible();
     }
 
     pub fn select(self: *Tree, path: []const u8) !void {
@@ -202,7 +243,6 @@ test "tree hides nested entries when parent collapsed" {
     try std.testing.expect(!has_nested);
 
     try tree.toggleExpand("src");
-    try tree.rebuild(io, root);
     rows.clearRetainingCapacity();
     try tree.visibleRows(null, &rows);
 

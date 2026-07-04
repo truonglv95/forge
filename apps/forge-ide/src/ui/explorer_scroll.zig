@@ -20,6 +20,13 @@ pub fn clampScrollY(scroll_y: f32, row_count: usize, window_h: f32) f32 {
     return std.math.clamp(scroll_y, 0, maxScrollY(row_count, window_h));
 }
 
+pub fn rowAtPoint(scroll_y: f32, y: f32) ?usize {
+    if (y < list_top) return null;
+    const float_row = (y - list_top + scroll_y) / row_height;
+    if (float_row < 0) return null;
+    return @intFromFloat(float_row);
+}
+
 test "explorer scroll reaches last row" {
     const max = maxScrollY(100, 800);
     try std.testing.expect(max > 0);

@@ -13,6 +13,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
         .intent = intent,
         .explicit_files = parsed.flags.files,
         .max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else 1024 * 1024,
+        .workspace_cwd = opened.path,
     });
     defer ctx_builder.deinit();
 

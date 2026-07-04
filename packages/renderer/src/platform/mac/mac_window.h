@@ -27,6 +27,7 @@ void forge_mac_set_cursor(int type);
 void forge_mac_draw_rect(float x, float y, float w, float h, float r, float g, float b, float a);
 void forge_mac_draw_rounded_rect(float x, float y, float w, float h, float r, float g, float b, float a, float cornerRadius);
 void forge_mac_draw_text(const char *text, float x, float y, float fontSize, float r, float g, float b, float a);
+void forge_mac_draw_text_len(const char *text, size_t len, float x, float y, float fontSize, float r, float g, float b, float a);
 void forge_mac_draw_styled_text(const char *text, size_t len, float x, float y, float fontSize, const ForgeTextSpan *spans, size_t span_count);
 void forge_mac_set_text_style(const char *fontFamily, int fontWeight);
 void forge_mac_set_editor_text_metrics(float editorFontSize, float lineHeight, float baseline);
@@ -38,5 +39,6 @@ void forge_mac_set_clip_rect(float x, float y, float w, float h);
 void forge_mac_clear_clip_rect(void);
 void forge_mac_set_clipboard_text(const char* text, size_t len);
 size_t forge_mac_get_clipboard_text(char* out, size_t cap);
+int forge_mac_save_clipboard_png(const char* out_path);
 
 #endif

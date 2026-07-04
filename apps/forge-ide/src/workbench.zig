@@ -17,7 +17,9 @@ const tasks_mod = @import("workbench/tasks.zig");
 const recovery_mod = @import("workbench/recovery.zig");
 const agent_session = @import("agent/session.zig");
 const agent_workflow = @import("agent/workflow.zig");
+const ai = @import("forge-ai");
 const agent_scope_picker = @import("agent/scope_picker.zig");
+const renderer = @import("forge-renderer");
 const search_engine = @import("search/engine.zig");
 const git_status_mod = @import("git/status.zig");
 const git_diff_mod = @import("git/diff.zig");
@@ -39,6 +41,8 @@ const breakpoints_mod = @import("workbench/breakpoints.zig");
 const editor_find_mod = @import("workbench/editor_find.zig");
 const settings_mod = @import("workbench/settings.zig");
 const session_restore_mod = @import("workbench/session_restore.zig");
+const chat_persistence_mod = @import("workbench/chat_persistence.zig");
+const agent_ui_queue_mod = @import("workbench/agent_ui_queue.zig");
 
 pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, terminal, palette, conflict, recovery, find, goto_line, rename };
 pub const EditorPane = enum { primary, secondary };
@@ -92,6 +96,7 @@ pub const Workbench = struct {
     palette: palette_mod.Palette,
     task_output: task_output_mod.TaskOutput,
     agent: agent_session.Session,
+    agent_ui_queue: agent_ui_queue_mod.Queue = .{},
     agent_cancel_source: ?*kernel.cancellation.CancellationTokenSource = null,
     scope_picker_paths: std.ArrayList([]const u8),
     scope_picker_filtered: std.ArrayList(usize),
@@ -119,6 +124,7 @@ pub const Workbench = struct {
     sidebar_view: @import("ui/sidebar_view.zig").SidebarView = .explorer,
     selected_extension_index: ?usize = null,
     chat_scroll_y: f32 = 0,
+    prompt_scroll_y: f32 = 0,
     task_scroll_y: f32 = 0,
     status_message: []const u8 = "",
     untitled_serial: u32 = 0,
@@ -226,6 +232,7 @@ pub const Workbench = struct {
             self.focused_panel = .recovery;
         }
         agent_workflow.refreshRunHistory(&self.agentHost()) catch {};
+        try self.restoreChatHistory();
         self.debug_lldb = .{
             .allocator = allocator,
             .on_line = onDebugLine,
@@ -262,6 +269,7 @@ pub const Workbench = struct {
         self.prompt_buffer.deinit();
         self.task_output.deinit();
         self.agent.deinit();
+        self.agent_ui_queue.deinit(self.allocator);
         self.clearScopePickerPaths();
         self.scope_picker_paths.deinit(self.allocator);
         self.scope_picker_filtered.deinit(self.allocator);
@@ -314,7 +322,6 @@ pub const Workbench = struct {
             },
             .explorer_toggle => |path| {
                 try self.explorer.toggleExpand(path);
-                try self.explorer.rebuild(self.io, self.workspace_root);
             },
             .explorer_select => |path| try self.explorer.select(path),
             .explorer_create_file => |name| {
@@ -485,10 +492,12 @@ pub const Workbench = struct {
             .agent_set_mode => |mode| {
                 self.agent.lock();
                 self.agent.mode = mode;
+                self.agent.mode_menu_open = false;
                 self.agent.unlock();
                 const label = switch (mode) {
                     .ask => "Ask mode",
                     .plan => "Plan mode",
+                    .agent => "Agent mode",
                 };
                 try self.setStatus(label);
             },
@@ -502,13 +511,15 @@ pub const Workbench = struct {
 
                 self.prompt_buffer.deinit();
                 self.prompt_buffer = try editor.Buffer.init(self.allocator);
+                self.prompt_scroll_y = 0;
                 self.focused_panel = .agent;
 
                 try self.appendChat(.user, owned_prompt);
                 self.scrollChatToEnd(768);
                 const active = self.tabs.activeDoc();
-                const scope = self.agent.effectiveScope(if (active) |doc| doc.path else null);
-                agent_workflow.spawnGenerate(&self.agentHost(), owned_prompt, scope) catch |err| {
+                const active_path = if (active) |doc| doc.path else null;
+                const scope = self.agent.effectiveScope(active_path);
+                agent_workflow.spawnGenerate(&self.agentHost(), owned_prompt, scope, active_path) catch |err| {
                     const msg = switch (err) {
                         error.AgentBusy => "Agent is already running",
                         else => "Agent failed to start",
@@ -530,13 +541,9 @@ pub const Workbench = struct {
                 try self.appendChat(.agent, "Changes applied to workspace.");
             },
             .agent_reject => {
-                self.agent.lock();
-                self.agent.show_review = false;
-                self.agent.phase = .idle;
-                if (self.agent.status_line.len > 0) self.allocator.free(self.agent.status_line);
-                self.agent.status_line = self.allocator.dupe(u8, "Proposal rejected") catch "";
-                self.agent.unlock();
+                agent_workflow.rejectCurrentProposal(&self.agentHost());
                 try self.appendChat(.agent, "Proposal rejected.");
+                try self.setStatus("Proposal rejected");
             },
             .agent_show_review => try self.showAgentReview(),
             .agent_select_run => |index| {
@@ -544,6 +551,8 @@ pub const Workbench = struct {
                 if (index < self.agent.run_history.items.len) {
                     self.agent.selected_run_index = index;
                     const entry = self.agent.run_history.items[index];
+                    if (self.agent.run_id) |old| self.allocator.free(old);
+                    self.agent.run_id = self.allocator.dupe(u8, entry.run_id) catch null;
                     if (self.agent.proposal_rel) |old| self.allocator.free(old);
                     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
                     const proposal_rel = std.fmt.bufPrint(&path_buf, ".forge/proposals/{s}.json", .{entry.run_id}) catch "";
@@ -555,12 +564,31 @@ pub const Workbench = struct {
                 }
             },
             .agent_refresh_runs => try agent_workflow.refreshRunHistory(&self.agentHost()),
-            .agent_add_scope => |path| try self.agent.addScopeFile(path),
-            .agent_remove_scope => |path| self.agent.removeScopeFile(path),
-            .agent_clear_scope => self.agent.clearScope(),
+            .agent_add_scope => |path| {
+                try self.agent.addScopeFile(path);
+                self.refreshAgentContextPreview();
+            },
+            .agent_remove_scope => |path| {
+                self.agent.removeScopeFile(path);
+                self.refreshAgentContextPreview();
+            },
+            .agent_clear_scope => {
+                self.agent.clearScope();
+                self.refreshAgentContextPreview();
+            },
             .agent_scope_picker_open => try self.openScopePicker(),
             .agent_scope_picker_close => self.agent.closeScopePicker(),
             .agent_scope_picker_select => try self.selectScopePickerEntry(),
+            .agent_toggle_context_inspector => self.agent.toggleContextInspector(),
+            .agent_toggle_mode_menu => self.agent.toggleModeMenu(),
+            .agent_toggle_model_menu => self.agent.toggleModelMenu(),
+            .agent_close_menus => self.agent.closeMenus(),
+            .agent_set_model => |index| try self.setAgentModelIndex(index),
+            .agent_remove_attachment => |index| {
+                self.agent.removeAttachment(index);
+                self.refreshAgentContextPreview();
+                try self.setStatus("Attachment removed");
+            },
             .set_shell_mode => |mode| {
                 self.shell_mode = mode;
                 if (mode == .agent_window) self.focused_panel = .agent;
@@ -707,18 +735,148 @@ pub const Workbench = struct {
         self.agent.unlock();
     }
 
+    pub fn setAgentModelIndex(self: *Workbench, index: usize) !void {
+        const agent_composer = @import("ui/agent_composer.zig");
+        if (index >= agent_composer.models.len) return;
+        const model_id = agent_composer.models[index].id;
+        if (self.ai_model) |old| self.allocator.free(old);
+        self.ai_model = try self.allocator.dupe(u8, model_id);
+        self.agent.closeMenus();
+        try self.setStatus("Model updated");
+    }
+
+    pub fn pasteIntoAgent(self: *Workbench) !void {
+        const timestamp_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const rel_path = try std.fmt.bufPrint(&path_buf, ".forge/attachments/att_{d}.png", .{timestamp_ms});
+        var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const abs_path = try std.fmt.bufPrint(&abs_buf, "{s}/{s}", .{ self.workspace_path, rel_path });
+
+        try self.ensureAgentAttachmentsDir();
+
+        if (renderer.Renderer.saveClipboardPng(abs_path)) {
+            var label_buf: [64:0]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buf, "image_{d}.png", .{timestamp_ms}) catch "image.png";
+            label_buf[label.len] = 0;
+            try self.agent.addAttachment(.{
+                .kind = .image,
+                .label = try self.allocator.dupe(u8, label_buf[0..label.len]),
+                .stored_path = try self.allocator.dupe(u8, rel_path),
+                .text_preview = null,
+            });
+            self.refreshAgentContextPreview();
+            try self.setStatus("Pasted image attachment");
+            return;
+        }
+
+        const text = renderer.Renderer.clipboardText(self.allocator) catch return;
+        defer self.allocator.free(text);
+        if (text.len == 0) return;
+
+        if (text.len > 4096) {
+            var label_buf: [32:0]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buf, "paste_{d}.txt", .{timestamp_ms}) catch "paste.txt";
+            label_buf[label.len] = 0;
+            const preview = try self.allocator.dupe(u8, text[0..4096]);
+            try self.agent.addAttachment(.{
+                .kind = .text_snippet,
+                .label = try self.allocator.dupe(u8, label_buf[0..label.len]),
+                .stored_path = null,
+                .text_preview = preview,
+            });
+            self.refreshAgentContextPreview();
+            try self.setStatus("Pasted text attachment");
+            return;
+        }
+
+        try self.prompt_buffer.insertString(text);
+        self.ensurePromptCursorVisible();
+    }
+
+    fn composerInputHeight(self: *Workbench, agent_w: f32) f32 {
+        const ac = @import("ui/agent_composer.zig");
+        self.agent.lock();
+        const attachment_count = self.agent.attachments.items.len;
+        self.agent.unlock();
+        const visual_lines = ac.visualLineCount(&self.prompt_buffer, agent_w);
+        const composer_h = ac.composerHeight(attachment_count, visual_lines);
+        const attachment_extra = if (attachment_count > 0) ac.attachment_row_h else 0;
+        return composer_h - ac.composer_chrome_h - attachment_extra;
+    }
+
+    pub fn clampPromptScroll(self: *Workbench, agent_w: f32) void {
+        const ac = @import("ui/agent_composer.zig");
+        const visual_lines = ac.visualLineCount(&self.prompt_buffer, agent_w);
+        const input_h = self.composerInputHeight(agent_w);
+        self.prompt_scroll_y = ac.clampPromptScroll(self.prompt_scroll_y, visual_lines, input_h);
+    }
+
+    pub fn ensurePromptCursorVisible(self: *Workbench) void {
+        var w: f32 = 0;
+        var h: f32 = 0;
+        renderer.Renderer.getWindowSize(&w, &h);
+        const geo = @import("ui/layout.zig").compute(self.shell_mode, w, h, self.explorer_panel_width, self.agent_panel_width, self.bottom_panel_height);
+        const ac = @import("ui/agent_composer.zig");
+        const max_w = ac.promptMaxWidth(geo.agent_w);
+        const input_h = self.composerInputHeight(geo.agent_w);
+        self.prompt_scroll_y = ac.ensureCursorVisible(self.prompt_scroll_y, &self.prompt_buffer, max_w, input_h);
+    }
+
+    fn ensureAgentAttachmentsDir(self: *Workbench) !void {
+        var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const dir_path = try std.fmt.bufPrint(&dir_buf, "{s}/.forge/attachments", .{self.workspace_path});
+        std.Io.Dir.createDirPath(std.Io.Dir.cwd(), self.io, dir_path) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+    }
+
+    pub fn refreshAgentContextPreview(self: *Workbench) void {
+        const host = self.agentHost();
+        const active = self.tabs.activeDoc();
+        const active_path = if (active) |doc| doc.path else null;
+        const intent_owned = blk: {
+            self.agent.lock();
+            defer self.agent.unlock();
+            if (self.agent.intent) |text| break :blk self.allocator.dupe(u8, text) catch null;
+            break :blk null;
+        };
+        if (intent_owned) |intent| {
+            defer self.allocator.free(intent);
+            agent_workflow.refreshContextPreview(&host, intent, active_path) catch {};
+            return;
+        }
+        const prompt = self.prompt_buffer.content() catch return;
+        defer self.prompt_buffer.allocator.free(prompt);
+        const trimmed = std.mem.trim(u8, prompt, &std.ascii.whitespace);
+        if (trimmed.len == 0) {
+            agent_workflow.refreshContextPreview(&host, null, active_path) catch {};
+        } else {
+            agent_workflow.refreshContextPreview(&host, trimmed, active_path) catch {};
+        }
+    }
+
     pub fn selectScopePickerEntry(self: *Workbench) !void {
-        if (self.scope_picker_filtered.items.len == 0) {
+        const query = self.agent.scope_query[0..self.agent.scope_query_len];
+        const total_rows = agent_scope_picker.visibleRowCount(self.scope_picker_filtered.items.len, query);
+        if (total_rows == 0) {
             self.agent.closeScopePicker();
             return;
         }
         self.agent.lock();
         const selected = self.agent.scope_picker_selected;
         self.agent.unlock();
-        const path_index = self.scope_picker_filtered.items[selected];
-        const path = self.scope_picker_paths.items[path_index];
-        try self.agent.addScopeFile(path);
+
+        if (agent_scope_picker.pinnedMarkerAt(query, selected)) |marker| {
+            try self.agent.addScopeFile(marker);
+        } else if (agent_scope_picker.fileListIndex(selected, query)) |list_index| {
+            if (list_index >= self.scope_picker_filtered.items.len) return;
+            const path_index = self.scope_picker_filtered.items[list_index];
+            const path = self.scope_picker_paths.items[path_index];
+            try self.agent.addScopeFile(path);
+        }
         self.agent.closeScopePicker();
+        self.refreshAgentContextPreview();
         try self.setStatus("Added to agent scope");
     }
 
@@ -756,7 +914,7 @@ pub const Workbench = struct {
 
     pub fn setStatus(self: *Workbench, message: []const u8) !void {
         if (self.status_message.len > 0) self.allocator.free(self.status_message);
-        self.status_message = try self.allocator.dupe(u8, message);
+        self.status_message = try self.allocator.dupeZ(u8, message);
         try self.events.publish(.{ .status_message = self.status_message });
     }
 
@@ -967,7 +1125,6 @@ pub const Workbench = struct {
 
     pub fn copyTerminalSelection(self: *Workbench) !void {
         const terminal_panel = @import("ui/terminal_panel.zig");
-        const renderer = @import("forge-renderer");
         const sel = self.terminal_selection orelse return;
         if (sel.isEmpty()) return;
 
@@ -988,6 +1145,8 @@ pub const Workbench = struct {
     pub fn clampChatScroll(self: *Workbench, agent_h: f32) void {
         const panel_scroll = @import("ui/panel_scroll.zig");
         const layout_mod = @import("ui/layout.zig");
+        const context_inspector_mod = @import("ui/context_inspector.zig");
+        const agent_panel_mod = @import("ui/agent_panel.zig");
         var estimated_lines: usize = 0;
         for (self.chat_history.items) |msg| {
             estimated_lines += std.mem.count(u8, msg.content, "\n") + 4;
@@ -996,8 +1155,15 @@ pub const Workbench = struct {
         if (self.agent.stream_text.items.len > 0) {
             estimated_lines += std.mem.count(u8, self.agent.stream_text.items, "\n") + 4;
         }
+        if (self.agent.thinking_text.items.len > 0) {
+            estimated_lines += std.mem.count(u8, self.agent.thinking_text.items, "\n") + 4;
+        }
+        const entry_count = self.agent.context_entries.items.len;
+        const expanded = self.agent.context_inspector_expanded;
+        const attachment_count = self.agent.attachments.items.len;
         self.agent.unlock();
-        const viewport = @max(0, agent_h - layout_mod.status_height - 180);
+        const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count);
+        const viewport = @max(0, agent_h - layout_mod.status_height - 110 - bottom);
         self.chat_scroll_y = panel_scroll.clampScrollY(
             self.chat_scroll_y,
             estimated_lines,
@@ -1008,6 +1174,8 @@ pub const Workbench = struct {
 
     pub fn scrollChatToEnd(self: *Workbench, agent_h: f32) void {
         const layout_mod = @import("ui/layout.zig");
+        const context_inspector_mod = @import("ui/context_inspector.zig");
+        const agent_panel_mod = @import("ui/agent_panel.zig");
         var estimated_lines: usize = 0;
         for (self.chat_history.items) |msg| {
             estimated_lines += std.mem.count(u8, msg.content, "\n") + 4;
@@ -1016,8 +1184,15 @@ pub const Workbench = struct {
         if (self.agent.stream_text.items.len > 0) {
             estimated_lines += std.mem.count(u8, self.agent.stream_text.items, "\n") + 4;
         }
+        if (self.agent.thinking_text.items.len > 0) {
+            estimated_lines += std.mem.count(u8, self.agent.thinking_text.items, "\n") + 4;
+        }
+        const entry_count = self.agent.context_entries.items.len;
+        const expanded = self.agent.context_inspector_expanded;
+        const attachment_count = self.agent.attachments.items.len;
         self.agent.unlock();
-        const viewport = @max(0, agent_h - layout_mod.status_height - 180);
+        const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count);
+        const viewport = @max(0, agent_h - layout_mod.status_height - 110 - bottom);
         const content_h = @as(f32, @floatFromInt(estimated_lines)) * 16.0;
         self.chat_scroll_y = @max(0, content_h - viewport);
     }
@@ -1025,15 +1200,16 @@ pub const Workbench = struct {
     pub fn clampReviewScroll(self: *Workbench, agent_h: f32) void {
         const panel_scroll = @import("ui/panel_scroll.zig");
         const layout_mod = @import("ui/layout.zig");
+        const agent_panel_mod = @import("ui/agent_panel.zig");
         self.agent.lock();
-        const line_count = self.agent.context_lines.items.len + self.agent.diff_lines.items.len + 8;
+        const content_h = agent_panel_mod.reviewContentHeight(&self.agent);
         self.agent.unlock();
         const viewport = @max(0, agent_h - layout_mod.status_height - 200);
         self.agent.review_scroll_y = panel_scroll.clampScrollY(
             self.agent.review_scroll_y,
-            line_count,
+            @intFromFloat(content_h),
             viewport,
-            12.0,
+            1.0,
         );
     }
 
@@ -1637,6 +1813,8 @@ pub const Workbench = struct {
     }
 
     pub fn handleExplorerClick(self: *Workbench, row_index: usize, click_x: f32, explorer_x: f32) !void {
+        _ = click_x;
+        _ = explorer_x;
         if (self.renaming) return;
         const path = self.explorer.hitTestRow(row_index) orelse return;
         const kind = self.explorerKind(path) orelse return;
@@ -1648,10 +1826,7 @@ pub const Workbench = struct {
             },
             .directory => {
                 self.focused_panel = .explorer;
-                const chevron_x = explorer_x + 20 + @as(f32, @floatFromInt(self.explorerPathDepth(path))) * 14.0;
-                if (click_x < chevron_x + 14) {
-                    try self.dispatch(.{ .explorer_toggle = path });
-                }
+                try self.dispatch(.{ .explorer_toggle = path });
             },
             else => {},
         }
@@ -2071,6 +2246,39 @@ pub const Workbench = struct {
             .bottom_panel_height = self.bottom_panel_height,
         };
         try session_restore_mod.saveSession(self.allocator, self.io, self.workspace_root, paths.items, layout, &self.breakpoints);
+        try self.persistChatHistory();
+    }
+
+    pub fn persistChatHistory(self: *Workbench) !void {
+        var stored: std.ArrayList(chat_persistence_mod.StoredMessage) = .empty;
+        defer stored.deinit(self.allocator);
+        for (self.chat_history.items) |msg| {
+            const role: []const u8 = switch (msg.role) {
+                .user => "user",
+                .agent => "agent",
+            };
+            try stored.append(self.allocator, .{
+                .role = role,
+                .content = msg.content,
+            });
+        }
+        try chat_persistence_mod.saveMessages(self.allocator, self.io, self.workspace_root, stored.items);
+    }
+
+    pub fn restoreChatHistory(self: *Workbench) !void {
+        const loaded = try chat_persistence_mod.loadMessages(self.allocator, self.io, self.workspace_root);
+        defer chat_persistence_mod.freeLoadedMessages(self.allocator, loaded);
+        if (loaded.len == 0) return;
+
+        for (self.chat_history.items) |msg| self.allocator.free(msg.content);
+        self.chat_history.clearRetainingCapacity();
+
+        for (loaded) |msg| {
+            const role: ChatRole = if (std.mem.eql(u8, msg.role, "user")) .user else .agent;
+            const owned = try self.allocator.dupeZ(u8, msg.content);
+            try self.chat_history.append(self.allocator, .{ .role = role, .content = owned });
+        }
+        self.scrollChatToEnd(768);
     }
 
     pub fn restoreSessionTabs(self: *Workbench) !void {
@@ -2152,13 +2360,228 @@ pub const Workbench = struct {
             .ai_provider = self.ai_provider,
             .ai_model = self.ai_model,
             .workspace_root = self.workspace_root,
+            .workspace_path = self.workspace_path,
             .agent = &self.agent,
             .agent_cancel_slot = &self.agent_cancel_source,
             .context = self,
             .append_chat = Workbench.bridgeAppendChat,
+            .set_status = Workbench.bridgeSetStatus,
+            .enqueue_ui = Workbench.bridgeEnqueueAgentUi,
             .refresh_explorer = Workbench.bridgeRefreshExplorer,
             .open_file = Workbench.bridgeOpenFile,
+            .snapshot_conversation = Workbench.bridgeSnapshotConversation,
+            .free_conversation_snapshot = Workbench.bridgeFreeConversationSnapshot,
+            .snapshot_recent_files = Workbench.bridgeSnapshotRecentFiles,
+            .free_recent_files_snapshot = Workbench.bridgeFreeRecentFilesSnapshot,
+            .snapshot_context_supplement = Workbench.bridgeSnapshotContextSupplement,
+            .free_context_supplement = Workbench.bridgeFreeContextSupplement,
         };
+    }
+
+    pub fn snapshotContextSupplement(self: *Workbench, allocator: std.mem.Allocator) !ai.context_supplement.Supplement {
+        var diagnostics: std.ArrayList(ai.context_supplement.DiagnosticEntry) = .empty;
+        errdefer ai.context_supplement.freeDiagnosticEntries(allocator, diagnostics.items);
+
+        var lsp_hints: std.ArrayList(ai.context_supplement.LspHint) = .empty;
+        errdefer ai.context_supplement.freeLspHints(allocator, lsp_hints.items);
+
+        var cursor_owned: ?[]const u8 = null;
+        errdefer if (cursor_owned) |path| allocator.free(path);
+
+        var hover_owned: ?[]const u8 = null;
+        errdefer if (hover_owned) |text| allocator.free(text);
+
+        var cursor_pos: ?ai.context_supplement.CursorPosition = null;
+
+        const doc = self.tabs.activeDoc();
+        if (doc) |active| {
+            cursor_owned = try allocator.dupe(u8, active.path);
+            const line: u32 = @intCast(active.buffer.cursor.row);
+            const character: u32 = @intCast(active.buffer.cursor.col);
+            cursor_pos = .{
+                .path = cursor_owned.?,
+                .line = line,
+                .character = character,
+            };
+
+            for (self.diagnostics.list.items) |diag| {
+                try diagnostics.append(allocator, .{
+                    .path = try allocator.dupe(u8, active.path),
+                    .line = diag.line,
+                    .character = diag.character,
+                    .severity = try allocator.dupe(u8, diagnosticSeverityLabel(diag.severity)),
+                    .message = try allocator.dupe(u8, diag.message),
+                });
+            }
+
+            const owned = self.lsp_registry.copyMatchForPath(allocator, active.path) catch null;
+            if (owned) |config| {
+                defer lsp.Registry.freeConfig(allocator, config);
+
+                if (self.lspSyncDocument(active)) |uri| {
+                    defer allocator.free(uri);
+
+                    const hover_req = lsp.hover.buildHoverRequest(allocator, 93, uri, line, character) catch null;
+                    if (hover_req) |hover_req_body| {
+                        defer allocator.free(hover_req_body);
+                        var hover_buf: [65536]u8 = undefined;
+                        if (self.lsp_proxy.request(config.language_id, hover_req_body, &hover_buf, hover_buf.len) catch null) |hover_len| {
+                            hover_owned = lsp.hover.parseHoverResponse(allocator, hover_buf[0..hover_len]) catch null;
+                        }
+                    }
+
+                    const def_req = lsp.navigation.buildDefinitionRequest(allocator, 91, uri, line, character) catch null;
+                    if (def_req) |req| {
+                        defer allocator.free(req);
+                        var response_buf: [65536]u8 = undefined;
+                        if (self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len)) |len| {
+                            if (lsp.navigation.parseDefinitionResponse(allocator, response_buf[0..len])) |location| {
+                                if (location) |loc_value| {
+                                    var loc = loc_value;
+                                    defer loc.deinit(allocator);
+                                    if (lsp.navigation.uriToRelativePath(allocator, self.workspace_path, loc.uri) catch null) |rel| {
+                                        try lsp_hints.append(allocator, .{
+                                            .kind = .definition,
+                                            .path = rel,
+                                            .line = loc.line,
+                                            .character = loc.character,
+                                        });
+                                    }
+                                }
+                            } else |_| {}
+                        } else |_| {}
+                    }
+
+                    const refs_req = lsp.references.buildReferencesRequest(allocator, 94, uri, line, character) catch null;
+                    if (refs_req) |req| {
+                        defer allocator.free(req);
+                        var response_buf: [65536]u8 = undefined;
+                        if (self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len)) |len| {
+                            if (lsp.references.parseReferencesResponse(allocator, response_buf[0..len])) |list| {
+                                var owned_list = list;
+                                defer owned_list.deinit(allocator);
+                                var ref_count: usize = 0;
+                                for (owned_list.items) |loc_value| {
+                                    if (ref_count >= 5) break;
+                                    var loc = loc_value;
+                                    defer loc.deinit(allocator);
+                                    if (lsp.navigation.uriToRelativePath(allocator, self.workspace_path, loc.uri) catch null) |rel| {
+                                        try lsp_hints.append(allocator, .{
+                                            .kind = .reference,
+                                            .path = rel,
+                                            .line = loc.line,
+                                            .character = loc.character,
+                                        });
+                                        ref_count += 1;
+                                    }
+                                }
+                            } else |_| {}
+                        } else |_| {}
+                    }
+                } else |_| {}
+            }
+        }
+
+        return .{
+            .cursor = cursor_pos,
+            .diagnostics = try diagnostics.toOwnedSlice(allocator),
+            .lsp_hints = try lsp_hints.toOwnedSlice(allocator),
+            .hover_text = hover_owned,
+        };
+    }
+
+    fn diagnosticSeverityLabel(severity: lsp.diagnostics.Severity) []const u8 {
+        return switch (severity) {
+            .err => "error",
+            .warning => "warning",
+            .info => "info",
+            .hint => "hint",
+            else => "unknown",
+        };
+    }
+
+    fn bridgeSnapshotContextSupplement(context: ?*anyopaque, allocator: std.mem.Allocator) ai.context_supplement.Supplement {
+        const self: *Workbench = @ptrCast(@alignCast(context.?));
+        return self.snapshotContextSupplement(allocator) catch .{};
+    }
+
+    fn bridgeFreeContextSupplement(context: ?*anyopaque, allocator: std.mem.Allocator, supplement: ai.context_supplement.Supplement) void {
+        _ = context;
+        ai.context_supplement.freeSupplement(allocator, supplement);
+    }
+
+    pub fn snapshotRecentTabPaths(self: *Workbench, allocator: std.mem.Allocator) ![]const []const u8 {
+        var paths: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (paths.items) |path| allocator.free(path);
+            paths.deinit(allocator);
+        }
+
+        if (self.tabs.tabs.items.len == 0) return try paths.toOwnedSlice(allocator);
+
+        if (self.tabs.active < self.tabs.tabs.items.len) {
+            try paths.append(allocator, try allocator.dupe(u8, self.tabs.tabs.items[self.tabs.active].path));
+        }
+
+        var index = self.tabs.tabs.items.len;
+        while (index > 0) {
+            index -= 1;
+            if (index == self.tabs.active) continue;
+            const path = self.tabs.tabs.items[index].path;
+            var duplicate = false;
+            for (paths.items) |existing| {
+                if (std.mem.eql(u8, existing, path)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+            try paths.append(allocator, try allocator.dupe(u8, path));
+        }
+
+        return try paths.toOwnedSlice(allocator);
+    }
+
+    fn bridgeSnapshotRecentFiles(context: ?*anyopaque, allocator: std.mem.Allocator) []const []const u8 {
+        const self: *Workbench = @ptrCast(@alignCast(context.?));
+        return self.snapshotRecentTabPaths(allocator) catch return &.{};
+    }
+
+    fn bridgeFreeRecentFilesSnapshot(context: ?*anyopaque, allocator: std.mem.Allocator, paths: []const []const u8) void {
+        _ = context;
+        for (paths) |path| allocator.free(path);
+        allocator.free(paths);
+    }
+
+    pub fn snapshotAgentConversation(self: *Workbench, allocator: std.mem.Allocator) ![]ai.conversation.Turn {
+        var turns: std.ArrayList(ai.conversation.Turn) = .empty;
+        errdefer ai.conversation.freeTurns(allocator, turns.items);
+
+        var end = self.chat_history.items.len;
+        if (end > 0 and self.chat_history.items[end - 1].role == .user) end -= 1;
+
+        const start = if (end > ai.conversation.max_turns) end - ai.conversation.max_turns else 0;
+        for (self.chat_history.items[start..end]) |msg| {
+            const slice = ai.conversation.truncateContent(msg.content);
+            try turns.append(allocator, .{
+                .role = switch (msg.role) {
+                    .user => .user,
+                    .agent => .agent,
+                },
+                .content = try allocator.dupe(u8, slice),
+            });
+        }
+        return try turns.toOwnedSlice(allocator);
+    }
+
+    fn bridgeSnapshotConversation(context: ?*anyopaque, allocator: std.mem.Allocator) []const ai.conversation.Turn {
+        const self: *Workbench = @ptrCast(@alignCast(context.?));
+        return self.snapshotAgentConversation(allocator) catch return &.{};
+    }
+
+    fn bridgeFreeConversationSnapshot(context: ?*anyopaque, allocator: std.mem.Allocator, turns: []const ai.conversation.Turn) void {
+        _ = context;
+        ai.conversation.freeTurns(allocator, turns);
     }
 
     fn loadAiConfig(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !struct {
@@ -2182,6 +2605,76 @@ pub const Workbench = struct {
         self.appendChat(mapped, content) catch {};
     }
 
+    fn bridgeSetStatus(context: ?*anyopaque, message: []const u8) void {
+        const self: *Workbench = @ptrCast(@alignCast(context.?));
+        self.setStatus(message) catch {};
+    }
+
+    fn bridgeEnqueueAgentUi(context: ?*anyopaque, op: agent_ui_queue_mod.Op) void {
+        const self: *Workbench = @ptrCast(@alignCast(context.?));
+        self.agent_ui_queue.push(self.allocator, op) catch {
+            var owned = op;
+            owned.deinit(self.allocator);
+        };
+    }
+
+    pub fn flushAgentUi(self: *Workbench) !void {
+        const ops = try self.agent_ui_queue.takeAll(self.allocator);
+        defer self.allocator.free(ops);
+        const host = self.agentHost();
+        for (ops) |*op| {
+            defer op.deinit(self.allocator);
+            switch (op.*) {
+                .append_chat => |payload| {
+                    const mapped: ChatRole = if (payload.role == .user) .user else .agent;
+                    try self.appendChat(mapped, payload.text);
+                },
+                .set_status => |text| try self.setStatus(text),
+                .append_thinking => |text| try self.agent.appendThinkingChunk(text),
+                .append_stream => |text| try self.agent.appendStreamChunk(text),
+                .append_step => |payload| try self.agent.appendAgentStep(payload.index, payload.kind, payload.summary),
+                .set_phase => |payload| {
+                    if (payload.phase == .sending) {
+                        self.agent.clearStreamText();
+                    } else if (payload.phase == .streaming) {
+                        self.agent.lock();
+                        self.agent.stream_live = true;
+                        self.agent.unlock();
+                    }
+                    try self.agent.setPhase(payload.phase, payload.label);
+                },
+                .run_finished => |payload| {
+                    self.agent.lock();
+                    if (self.agent.run_id) |old| self.allocator.free(old);
+                    if (self.agent.proposal_rel) |old| self.allocator.free(old);
+                    self.agent.run_id = try self.allocator.dupe(u8, payload.run_id);
+                    self.agent.proposal_rel = try self.allocator.dupe(u8, payload.proposal_rel);
+                    self.agent.worker_running = false;
+                    self.agent.unlock();
+
+                    try agent_workflow.applyManifestText(&host, payload.manifest_text);
+                    try agent_workflow.loadProposalPreview(&host, payload.proposal_rel);
+                    try agent_workflow.refreshRunHistory(&host);
+                    if (payload.plan_text) |plan| {
+                        try self.appendChat(.agent, plan);
+                    }
+                    try self.appendChat(.agent, payload.chat_text);
+                    try self.agent.setPhase(.proposal_ready, "Proposal ready for review");
+                    try self.setStatus("Proposal ready for review");
+                    self.scrollChatToEnd(768);
+                },
+                .run_failed => |payload| {
+                    self.agent.lock();
+                    self.agent.worker_running = false;
+                    self.agent.unlock();
+                    try self.agent.setPhase(payload.phase, payload.message);
+                    try self.appendChat(.agent, payload.message);
+                    try self.setStatus(payload.message);
+                },
+            }
+        }
+    }
+
     fn bridgeRefreshExplorer(context: ?*anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context.?));
         self.explorer.rebuild(self.io, self.workspace_root) catch {};
@@ -2195,6 +2688,7 @@ pub const Workbench = struct {
     pub fn appendChat(self: *Workbench, role: ChatRole, content: []const u8) !void {
         const owned = try self.allocator.dupeZ(u8, content);
         try self.chat_history.append(self.allocator, .{ .role = role, .content = owned });
+        self.persistChatHistory() catch {};
     }
 
     pub fn openConflictDialog(self: *Workbench, path: []const u8) !void {
@@ -2214,6 +2708,12 @@ pub const Workbench = struct {
     }
 
     pub fn tickFrame(self: *Workbench, dt: f32) !void {
+        try self.flushAgentUi();
+
+        if (self.agent.worker_running) {
+            self.scrollChatToEnd(768);
+        }
+
         self.conflict_check_cooldown -= dt;
         if (self.conflict_check_cooldown <= 0) {
             self.conflict_check_cooldown = 2.0;
@@ -2227,7 +2727,7 @@ pub const Workbench = struct {
             }
         }
 
-        self.diagnostics.tick(dt, self.tabs.activeDoc());
+        self.diagnostics.tick(dt, self.tabs.activeDoc(), self.agent.worker_running);
         self.hover.tick(dt);
 
         if (self.terminal_boot_pending) {

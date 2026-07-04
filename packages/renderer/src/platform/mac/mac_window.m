@@ -932,12 +932,17 @@ float forge_mac_measure_text_width(const char* text, size_t len, float fontSize)
 }
 
 void forge_mac_draw_text(const char* text, float x, float y, float fontSize, float r, float g, float b, float a) {
-    if (!g_renderer || !g_renderer.currentEncoder) return;
+    if (!text) return;
+    forge_mac_draw_text_len(text, strlen(text), x, y, fontSize, r, g, b, a);
+}
+
+void forge_mac_draw_text_len(const char* text, size_t len, float x, float y, float fontSize, float r, float g, float b, float a) {
+    if (!g_renderer || !g_renderer.currentEncoder || !text || len == 0) return;
     @autoreleasepool {
         CGFloat scale = ForgeBackingScale();
 
-        NSString *nsText = [NSString stringWithUTF8String:text];
-        if (nsText.length == 0) return;
+        NSString *nsText = [[NSString alloc] initWithBytes:text length:len encoding:NSUTF8StringEncoding];
+        if (!nsText || nsText.length == 0) return;
 
         CTFontRef font = ForgeGetFont(fontSize * scale);
         if (!font) return;
@@ -1046,5 +1051,26 @@ size_t forge_mac_get_clipboard_text(char* out, size_t cap) {
         memcpy(out, utf8, len);
         out[len] = '\0';
         return len;
+    }
+}
+
+int forge_mac_save_clipboard_png(const char* out_path) {
+    if (!out_path) return 0;
+    @autoreleasepool {
+        NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+        NSData *data = [pasteboard dataForType:NSPasteboardTypePNG];
+        if (!data) {
+            NSImage *image = [[NSImage alloc] initWithPasteboard:pasteboard];
+            if (!image || image.size.width <= 0 || image.size.height <= 0) return 0;
+            NSData *tiff = [image TIFFRepresentation];
+            if (!tiff) return 0;
+            NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:tiff];
+            if (!rep) return 0;
+            data = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        }
+        if (!data || data.length == 0) return 0;
+        NSString *path = [NSString stringWithUTF8String:out_path];
+        if (!path) return 0;
+        return [data writeToFile:path atomically:YES] ? 1 : 0;
     }
 }

@@ -47,19 +47,12 @@ pub fn run(
             .progress_writer = progress_writer,
             .progress_json = parsed.flags.json,
         },
-    ) catch |err| switch (err) {
-        error.MissingProviderCredentials => {
-            try writer.writeAll("error: gemini provider requires GEMINI_API_KEY, GOOGLE_API_KEY, or macOS Keychain entry (service forge-gemini)\n");
-            return 2;
-        },
-        error.Cancelled => {
+    ) catch |err| {
+        if (err == error.Cancelled) {
             try writer.writeAll("error: ask cancelled\n");
             return 130;
-        },
-        error.ProviderFailed => {
-            try writer.writeAll("error: AI provider failed\n");
-            return 2;
-        },
+        }
+        return ai_workflow.writeError(writer, err);
     };
     defer allocator.free(generated.run_id);
     defer allocator.free(generated.proposal_rel);
