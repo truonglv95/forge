@@ -61,6 +61,9 @@ pub const Registry = struct {
             .{ .key = "f12", .palette_id = "editor.definition" },
             .{ .key = "shift+f12", .palette_id = "editor.references" },
             .{ .key = "f2", .palette_id = "editor.rename" },
+            .{ .key = "cmd+\\", .palette_id = "editor.split" },
+            .{ .key = "ctrl+shift+`", .palette_id = "terminal.new" },
+            .{ .key = "ctrl+shift+]", .palette_id = "terminal.next" },
         };
 
         for (builtins) |builtin| {

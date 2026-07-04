@@ -144,15 +144,6 @@ fn fetchThread(ctx: *FetchContext) void {
     };
     _ = wp;
 
-    const did_open = lsp.diagnostics.buildDidOpenNotification(store.allocator, uri, ctx.language_id, ctx.content) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer store.allocator.free(did_open);
-
-    var notify_buf: [65536]u8 = undefined;
-    _ = store.proxy.request(ctx.language_id, did_open, &notify_buf, 65536) catch {};
-
     const diag_req = lsp.diagnostics.buildDiagnosticRequest(store.allocator, 42, uri) catch {
         ctx.deinit(store.allocator);
         return;

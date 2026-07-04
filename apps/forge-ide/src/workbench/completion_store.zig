@@ -146,16 +146,6 @@ fn fetchThread(ctx: *FetchContext) void {
         return;
     };
     _ = wp;
-    const snap_content = ctx.content;
-
-    const did_open = lsp.completion.buildDidOpenNotification(store.allocator, uri, ctx.language_id, snap_content) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer store.allocator.free(did_open);
-
-    var notify_buf: [65536]u8 = undefined;
-    _ = store.proxy.request(ctx.language_id, did_open, &notify_buf, 65536) catch {};
 
     const req = lsp.completion.buildCompletionRequest(store.allocator, 77, uri, ctx.line, ctx.character) catch {
         ctx.deinit(store.allocator);

@@ -26,6 +26,8 @@ const completion_store_mod = @import("workbench/completion_store.zig");
 const hover_store_mod = @import("workbench/hover_store.zig");
 const references_store_mod = @import("workbench/references_store.zig");
 const terminal_session_mod = @import("workbench/terminal_session.zig");
+const terminal_group_mod = @import("workbench/terminal_group.zig");
+const lsp_sync_mod = @import("workbench/lsp_sync.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
 const editor_find_mod = @import("workbench/editor_find.zig");
@@ -33,6 +35,7 @@ const settings_mod = @import("workbench/settings.zig");
 const session_restore_mod = @import("workbench/session_restore.zig");
 
 pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, terminal, palette, conflict, recovery, find, goto_line, rename };
+pub const EditorPane = enum { primary, secondary };
 pub const ChatRole = enum { user, agent };
 pub const ChatMessage = struct {
     role: ChatRole,
@@ -66,7 +69,8 @@ pub const Workbench = struct {
     run_scroll_y: f32 = 0,
     breakpoints: breakpoints_mod.Store,
     debug_console: debug_console_mod.DebugConsole,
-    terminal: terminal_session_mod.TerminalSession,
+    terminals: terminal_group_mod.Group,
+    lsp_sync: lsp_sync_mod.Store,
     diagnostics: diagnostics_store_mod.Store,
     completions: completion_store_mod.Store,
     hover: hover_store_mod.Store,
@@ -91,6 +95,11 @@ pub const Workbench = struct {
     shell_mode: @import("ui/layout.zig").ShellMode = .ide,
     editor_scroll_y: f32 = 0,
     editor_scroll_x: f32 = 0,
+    split_scroll_y: f32 = 0,
+    split_scroll_x: f32 = 0,
+    editor_split: bool = false,
+    editor_pane_focus: EditorPane = .primary,
+    split_tab_index: usize = 0,
     tab_scroll_x: f32 = 0,
     explorer_scroll_y: f32 = 0,
     extensions_scroll_y: f32 = 0,
@@ -142,7 +151,8 @@ pub const Workbench = struct {
             .find_bar = try editor_find_mod.FindBar.init(allocator),
             .goto_bar = try editor_find_mod.GotoBar.init(allocator),
             .rename_bar = try editor_find_mod.RenameBar.init(allocator),
-            .terminal = undefined,
+            .terminals = undefined,
+            .lsp_sync = undefined,
             .diagnostics = undefined,
             .completions = undefined,
             .hover = undefined,
@@ -150,7 +160,8 @@ pub const Workbench = struct {
         };
         errdefer self.deinit();
 
-        self.terminal = try terminal_session_mod.TerminalSession.init(allocator, io, self.workspace_path);
+        self.terminals = try terminal_group_mod.Group.init(allocator, io, self.workspace_path);
+        self.lsp_sync = lsp_sync_mod.Store.init(allocator, self.workspace_path, &self.lsp_proxy, &self.lsp_registry);
         self.diagnostics = diagnostics_store_mod.Store.init(allocator, io, self.workspace_path, self.workspace_root, &self.lsp_proxy, &self.lsp_registry);
         self.completions = completion_store_mod.Store.init(allocator, io, self.workspace_path, self.workspace_root, &self.lsp_proxy, &self.lsp_registry);
         self.hover = hover_store_mod.Store.init(allocator, self.workspace_path, &self.lsp_proxy, &self.lsp_registry);
@@ -198,7 +209,8 @@ pub const Workbench = struct {
         if (self.git_status) |*status| status.deinit(self.allocator);
         self.breakpoints.deinit();
         self.debug_console.deinit();
-        self.terminal.deinit();
+        self.terminals.deinit();
+        self.lsp_sync.deinit();
         self.diagnostics.deinit();
         self.completions.deinit();
         self.hover.deinit();
@@ -527,6 +539,30 @@ pub const Workbench = struct {
                 try self.refreshGitStatus();
                 try self.updateTerminalPrompt();
             },
+            .terminal_new => {
+                try self.terminals.addSession();
+                self.bottom_panel_mode = .terminal;
+                self.focused_panel = .terminal;
+                self.terminal_boot_pending = true;
+                try self.setStatus("New terminal");
+            },
+            .terminal_close => {
+                if (self.terminals.closeActive()) {
+                    try self.setStatus("Terminal closed");
+                }
+            },
+            .terminal_next => {
+                self.terminals.next();
+                self.syncTerminalSize();
+            },
+            .terminal_prev => {
+                self.terminals.prev();
+                self.syncTerminalSize();
+            },
+            .terminal_activate => |index| {
+                self.terminals.activate(index);
+                self.syncTerminalSize();
+            },
             .debug_toggle_breakpoint => try self.toggleBreakpointAtCursor(),
             .debug_clear_breakpoints => {
                 self.breakpoints.clear();
@@ -553,6 +589,8 @@ pub const Workbench = struct {
             .editor_go_to_definition => try self.goToDefinition(),
             .editor_find_references => try self.findReferences(),
             .editor_rename_symbol => try self.openRenameSymbol(),
+            .editor_split_right => try self.splitEditorRight(),
+            .editor_close_split => try self.closeEditorSplit(),
             .references_goto => |index| try self.gotoReference(index),
             .problems_goto => |index| try self.gotoProblem(index),
             .completion_accept => {
@@ -642,8 +680,44 @@ pub const Workbench = struct {
         try self.events.publish(.{ .status_message = self.status_message });
     }
 
+    pub fn activeTerminal(self: *Workbench) *terminal_session_mod.TerminalSession {
+        return self.terminals.activeSession();
+    }
+
+    pub fn paneWidth(self: *const Workbench, editor_w: f32) f32 {
+        if (!self.editor_split) return editor_w;
+        return (editor_w - 4) / 2;
+    }
+
+    pub fn paneOriginX(self: *const Workbench, editor_x: f32, editor_w: f32, pane: EditorPane) f32 {
+        if (!self.editor_split or pane == .primary) return editor_x;
+        return editor_x + self.paneWidth(editor_w) + 4;
+    }
+
+    pub fn paneAt(self: *const Workbench, editor_x: f32, editor_w: f32, x: f32) EditorPane {
+        if (!self.editor_split) return .primary;
+        if (x < editor_x + self.paneWidth(editor_w)) return .primary;
+        return .secondary;
+    }
+
+    pub fn docForPane(self: *Workbench, pane: EditorPane) ?*editor.Document {
+        if (self.tabs.tabs.items.len == 0) return null;
+        const idx = if (!self.editor_split or pane == .primary) self.tabs.active else self.split_tab_index;
+        if (idx >= self.tabs.tabs.items.len) return null;
+        return &self.tabs.tabs.items[idx];
+    }
+
+    pub fn focusedPane(self: *const Workbench) EditorPane {
+        if (!self.editor_split) return .primary;
+        return self.editor_pane_focus;
+    }
+
+    pub fn focusedDoc(self: *Workbench) ?*editor.Document {
+        return self.docForPane(self.focusedPane());
+    }
+
     pub fn activeBuffer(self: *Workbench) ?*editor.Buffer {
-        const doc = self.tabs.activeDoc() orelse return null;
+        const doc = self.focusedDoc() orelse return null;
         return &doc.buffer;
     }
 
@@ -664,21 +738,49 @@ pub const Workbench = struct {
 
     pub fn activeFilePath(self: *const Workbench) ?[]const u8 {
         if (self.tabs.tabs.items.len == 0) return null;
-        if (self.tabs.active >= self.tabs.tabs.items.len) return null;
-        return self.tabs.tabs.items[self.tabs.active].path;
+        const idx = if (!self.editor_split or self.editor_pane_focus == .primary) self.tabs.active else self.split_tab_index;
+        if (idx >= self.tabs.tabs.items.len) return null;
+        return self.tabs.tabs.items[idx].path;
+    }
+
+    pub fn splitEditorRight(self: *Workbench) !void {
+        if (self.tabs.tabs.items.len == 0) return;
+        self.editor_split = true;
+        self.split_tab_index = self.tabs.active;
+        self.editor_pane_focus = .primary;
+        try self.setStatus("Editor split");
+    }
+
+    pub fn closeEditorSplit(self: *Workbench) !void {
+        if (!self.editor_split) return;
+        self.editor_split = false;
+        self.editor_pane_focus = .primary;
+        try self.setStatus("Split closed");
     }
 
     pub fn clampEditorScroll(self: *Workbench, editor_w: f32, editor_h: f32) void {
         const scroll = @import("ui/editor_scroll.zig");
-        const buf = self.activeBuffer() orelse {
+        const pane_w = self.paneWidth(editor_w);
+        if (self.docForPane(.primary)) |doc| {
+            const max_line_len = scroll.longestLineLen(&doc.buffer);
+            const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&self.theme);
+            self.editor_scroll_y = scroll.clampScrollY(self.editor_scroll_y, doc.buffer.lineCount(), editor_h, &self.theme);
+            self.editor_scroll_x = scroll.clampScrollX(self.editor_scroll_x, content_w, pane_w, &self.theme);
+        } else {
             self.editor_scroll_y = 0;
             self.editor_scroll_x = 0;
-            return;
-        };
-        const max_line_len = scroll.longestLineLen(buf);
-        const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&self.theme);
-        self.editor_scroll_y = scroll.clampScrollY(self.editor_scroll_y, buf.lineCount(), editor_h, &self.theme);
-        self.editor_scroll_x = scroll.clampScrollX(self.editor_scroll_x, content_w, editor_w, &self.theme);
+        }
+        if (self.editor_split) {
+            if (self.docForPane(.secondary)) |doc| {
+                const max_line_len = scroll.longestLineLen(&doc.buffer);
+                const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&self.theme);
+                self.split_scroll_y = scroll.clampScrollY(self.split_scroll_y, doc.buffer.lineCount(), editor_h, &self.theme);
+                self.split_scroll_x = scroll.clampScrollX(self.split_scroll_x, content_w, pane_w, &self.theme);
+            } else {
+                self.split_scroll_y = 0;
+                self.split_scroll_x = 0;
+            }
+        }
     }
 
     pub fn clampExplorerScroll(self: *Workbench, window_h: f32) void {
@@ -730,8 +832,7 @@ pub const Workbench = struct {
             .output => self.task_output.lines.items.len,
             .problems => self.diagnostics.list.items.len,
             .terminal => blk: {
-                // const cast: only reading len under terminal mutex
-                const terminal: *terminal_session_mod.TerminalSession = @constCast(&self.terminal);
+                const terminal = self.activeTerminal();
                 terminal.lock();
                 defer terminal.unlock();
                 const partial: usize = if (terminal.local_input != null or terminal.isActive()) 1 else 0;
@@ -758,12 +859,13 @@ pub const Workbench = struct {
         const sel = self.terminal_selection orelse return;
         if (sel.isEmpty()) return;
 
-        self.terminal.lock();
-        const text = terminal_panel.extractText(self.allocator, self.terminal.lines.items, sel) catch {
-            self.terminal.unlock();
+        const terminal = self.activeTerminal();
+        terminal.lock();
+        const text = terminal_panel.extractText(self.allocator, terminal.lines.items, sel) catch {
+            terminal.unlock();
             return;
         };
-        self.terminal.unlock();
+        terminal.unlock();
         defer self.allocator.free(text);
 
         if (text.len == 0) return;
@@ -885,7 +987,7 @@ pub const Workbench = struct {
         var buf: [256]u8 = undefined;
         const git_ptr: ?*const git_status_mod.Status = if (self.git_status) |*status| status else null;
         const prompt = @import("ui/terminal_prompt.zig").format(self.workspace_path, git_ptr, &buf);
-        try self.terminal.setPromptLine(prompt);
+        try self.activeTerminal().setPromptLine(prompt);
     }
 
     pub fn handleSearchClick(self: *Workbench, hit: @import("ui/search_panel.zig").Hit) !void {
@@ -1078,7 +1180,16 @@ pub const Workbench = struct {
 
     pub fn closeTabAt(self: *Workbench, index: usize) !void {
         if (index >= self.tabs.tabs.items.len) return;
+        const path = self.tabs.tabs.items[index].path;
+        self.lsp_sync.onDocumentClosed(path);
         self.tabs.closeAt(index);
+        if (self.editor_split and self.split_tab_index >= self.tabs.tabs.items.len) {
+            if (self.tabs.tabs.items.len == 0) {
+                self.editor_split = false;
+            } else {
+                self.split_tab_index = @min(self.split_tab_index, self.tabs.tabs.items.len - 1);
+            }
+        }
         if (self.tabs.tabs.items.len > 0) {
             try self.explorer.select(self.tabs.tabs.items[self.tabs.active].path);
             self.focused_panel = .editor;
@@ -1175,17 +1286,21 @@ pub const Workbench = struct {
         var h: f32 = 0;
         renderer_mod.Renderer.getWindowSize(&w, &h);
         const geo = layout_mod.compute(self.shell_mode, w, h, self.explorer_panel_width, self.agent_panel_width, self.bottom_panel_height);
-        const buf = self.activeBuffer() orelse return;
+        const pane = self.focusedPane();
+        const doc = self.docForPane(pane) orelse return;
+        const pane_w = self.paneWidth(geo.editor_w);
+        const scroll_y: *f32 = if (pane == .secondary) &self.split_scroll_y else &self.editor_scroll_y;
+        const scroll_x: *f32 = if (pane == .secondary) &self.split_scroll_x else &self.editor_scroll_x;
         const scrolled = @import("ui/editor_scroll.zig").scrollToCursor(
-            self.editor_scroll_y,
-            self.editor_scroll_x,
-            buf,
-            geo.editor_w,
+            scroll_y.*,
+            scroll_x.*,
+            &doc.buffer,
+            pane_w,
             geo.editor_h,
             &self.theme,
         );
-        self.editor_scroll_y = scrolled.y;
-        self.editor_scroll_x = scrolled.x;
+        scroll_y.* = scrolled.y;
+        scroll_x.* = scrolled.x;
     }
 
     pub fn openEditorFind(self: *Workbench, replace_mode: bool) !void {
@@ -1245,21 +1360,8 @@ pub const Workbench = struct {
         }
     }
 
-    fn lspSyncDocument(self: *Workbench, doc: *editor.Document, config: lsp.ServerConfig) ![]const u8 {
-        const uri = try lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path);
-        errdefer self.allocator.free(uri);
-        const content = try doc.buffer.content();
-        errdefer self.allocator.free(content);
-        const did_open = try lsp.diagnostics.buildDidOpenNotification(
-            self.allocator,
-            uri,
-            config.language_id,
-            content,
-        );
-        defer self.allocator.free(did_open);
-        var notify_buf: [65536]u8 = undefined;
-        _ = self.lsp_proxy.request(config.language_id, did_open, &notify_buf, notify_buf.len) catch {};
-        return uri;
+    fn lspSyncDocument(self: *Workbench, doc: *editor.Document) ![]const u8 {
+        return self.lsp_sync.ensureSyncedBlocking(doc);
     }
 
     pub fn gotoLocation(self: *Workbench, loc: lsp.navigation.Location) !void {
@@ -1286,7 +1388,7 @@ pub const Workbench = struct {
         };
         defer lsp.Registry.freeConfig(self.allocator, config);
 
-        const uri = try self.lspSyncDocument(self, doc, config);
+        const uri = try self.lspSyncDocument(doc);
         defer self.allocator.free(uri);
 
         const line: u32 = @intCast(doc.buffer.cursor.row);
@@ -1343,7 +1445,7 @@ pub const Workbench = struct {
         };
         defer lsp.Registry.freeConfig(self.allocator, config);
 
-        const uri = try self.lspSyncDocument(self, doc, config);
+        const uri = try self.lspSyncDocument(doc);
         defer self.allocator.free(uri);
 
         const line: u32 = @intCast(doc.buffer.cursor.row);
@@ -1549,7 +1651,7 @@ pub const Workbench = struct {
 
         if (self.terminal_boot_pending) {
             self.terminal_boot_pending = false;
-            self.terminal.ensureStarted() catch {};
+            self.activeTerminal().ensureStarted() catch {};
             self.syncTerminalSize();
             self.refreshGitStatus() catch {};
             self.updateTerminalPrompt() catch {};
@@ -1564,10 +1666,12 @@ pub const Workbench = struct {
             }
             self.syncTerminalSize();
         }
+
+        self.lsp_sync.tick(dt, &self.tabs);
     }
 
     pub fn syncTerminalSize(self: *Workbench) void {
-        if (!self.terminal.isActive()) return;
+        if (!self.activeTerminal().isActive()) return;
         if (self.bottom_panel_mode != .terminal) return;
 
         const renderer_mod = @import("forge-renderer");
@@ -1586,11 +1690,11 @@ pub const Workbench = struct {
             self.agent_panel_width,
             self.bottom_panel_height,
         );
-        const viewport = panel_scroll.bottomViewportHeight(geo.task_panel_h);
+        const viewport = panel_scroll.bottomViewportHeight(geo.task_panel_h) - terminal_panel.session_tab_h;
         const char_w = @max(1.0, renderer_mod.Renderer.measureText("M", terminal_panel.font_size));
         const cols: u16 = @intFromFloat(@floor(@max(10.0, (geo.editor_w - terminal_panel.text_inset_x * 2) / char_w)));
         const rows: u16 = @intFromFloat(@floor(@max(3.0, viewport / panel_scroll.bottom_line_h)));
-        self.terminal.resize(cols, rows);
+        self.activeTerminal().resize(cols, rows);
     }
 
     pub fn showGitDiff(self: *Workbench, path: []const u8, untracked: bool) !void {
@@ -1612,22 +1716,8 @@ pub const Workbench = struct {
         };
         defer lsp.Registry.freeConfig(self.allocator, config);
 
-        const uri = try lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path);
+        const uri = try self.lspSyncDocument(doc);
         defer self.allocator.free(uri);
-
-        const content = try doc.buffer.content();
-        defer self.allocator.free(content);
-
-        const did_open = try lsp.diagnostics.buildDidOpenNotification(
-            self.allocator,
-            uri,
-            config.language_id,
-            content,
-        );
-        defer self.allocator.free(did_open);
-
-        var notify_buf: [65536]u8 = undefined;
-        _ = self.lsp_proxy.request(config.language_id, did_open, &notify_buf, notify_buf.len) catch {};
 
         const line: u32 = @intCast(doc.buffer.cursor.row);
         const character: u32 = @intCast(doc.buffer.cursor.col);

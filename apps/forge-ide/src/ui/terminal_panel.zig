@@ -7,6 +7,8 @@ const git_status = @import("../git/status.zig");
 
 pub const font_size: f32 = 12.0;
 pub const text_inset_x: f32 = 12.0;
+pub const session_tab_h: f32 = 20.0;
+pub const session_tab_w: f32 = 48.0;
 
 pub const Pos = struct {
     line: usize,
@@ -31,8 +33,25 @@ pub const Selection = struct {
     }
 };
 
-pub fn contentTop(panel_y: f32) f32 {
+pub fn sessionBarTop(panel_y: f32) f32 {
     return panel_y + panel_scroll.bottom_content_top;
+}
+
+pub fn contentTop(panel_y: f32) f32 {
+    return sessionBarTop(panel_y) + session_tab_h;
+}
+
+pub fn hitSessionTab(editor_x: f32, panel_y: f32, x: f32, y: f32, session_count: usize) ?union(enum) { new, activate: usize } {
+    const top = sessionBarTop(panel_y);
+    if (y < top or y >= top + session_tab_h) return null;
+    var tab_x = editor_x + 8;
+    var i: usize = 0;
+    while (i < session_count) : (i += 1) {
+        if (x >= tab_x and x < tab_x + session_tab_w) return .{ .activate = i };
+        tab_x += session_tab_w + 4;
+    }
+    if (x >= tab_x and x < tab_x + 28) return .new;
+    return null;
 }
 
 pub fn hitTest(

@@ -720,6 +720,125 @@ fn drawExplorerPanel(wb: *@import("../workbench.zig").Workbench, explorer_x: f32
     renderer.Renderer.clearClipRect();
 }
 
+fn drawEditorViewport(
+    wb: *@import("../workbench.zig").Workbench,
+    editor_buf: *@import("forge-editor").Buffer,
+    editor_x: f32,
+    editor_w: f32,
+    editor_h: f32,
+    scroll_y: f32,
+    scroll_x: f32,
+    file_path: []const u8,
+    pane_focused: bool,
+) void {
+    const theme = &wb.theme;
+    const editor_view_h = editor_scroll.viewportHeight(editor_h);
+    const gutter = editor_scroll.gutterWidth(theme);
+    const line_h = editor_scroll.lineHeight(theme);
+    const char_w = editor_scroll.charWidth(theme);
+    const font_size = theme.editor_font_size;
+    const text_x = editor_x + gutter - scroll_x;
+
+    if (pane_focused and wb.editor_split) {
+        renderer.Renderer.drawRect(editor_x, 65, editor_w, 2, c(theme.colors.tab_active_bg));
+    }
+
+    renderer.Renderer.drawRect(editor_x, 65, gutter, editor_view_h, c(theme.colors.sidebar_bg));
+    renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
+    const show_cursor = @mod(state.time, 1.0) < 0.5;
+    const show_editor_cursor = show_cursor and wb.focused_panel == .editor and pane_focused;
+
+    const line_count = editor_buf.lineCount();
+    const content_h = editor_scroll.contentHeight(line_count, theme);
+    const max_scroll_y = editor_scroll.maxScrollY(line_count, editor_h, theme);
+    const max_line_len = editor_scroll.longestLineLen(editor_buf);
+    const content_w = @as(f32, @floatFromInt(max_line_len)) * char_w;
+    const viewport_w = editor_scroll.viewportWidth(editor_w, theme);
+    const max_scroll_x = editor_scroll.maxScrollX(content_w, editor_w, theme);
+
+    const show_diags = blk: {
+        if (wb.diagnostics.active_path) |active_path| {
+            break :blk std.mem.eql(u8, active_path, file_path);
+        }
+        break :blk false;
+    };
+
+    var line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
+    const diag_store = @import("../workbench/diagnostics_store.zig");
+    for (0..line_count) |idx| {
+        if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+            if (wb.breakpoints.hasAt(file_path, idx)) {
+                renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, c(theme.colors.warning));
+            }
+            var num_buf: [16]u8 = undefined;
+            const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{idx + 1}) catch "";
+            renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, c(theme.colors.line_number));
+            if (show_diags and diag_store.worstSeverityOnLine(wb.diagnostics.list, idx)) |severity| {
+                const marker = switch (severity) {
+                    .err => "!",
+                    .warning => "~",
+                    else => "·",
+                };
+                const marker_color = switch (severity) {
+                    .err => c(theme.colors.warning),
+                    .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
+                    else => c(theme.colors.text_muted),
+                };
+                renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
+            }
+        }
+        line_num_y += line_h;
+    }
+
+    renderer.Renderer.setClipRect(editor_x + gutter, 65, editor_w - gutter, editor_view_h);
+    line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
+    for (0..line_count) |idx| {
+        if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+            drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
+            drawHighlightedLine(editor_buf.lineAt(idx), text_x, line_num_y, theme);
+            if (show_diags) {
+                for (wb.diagnostics.list.items) |diag| {
+                    if (diag.line != idx) continue;
+                    const line = editor_buf.lineAt(idx);
+                    const start_x = text_x + editor_scroll.cursorX(line, @min(diag.character, line.len), font_size);
+                    const end_col = @min(if (diag.end_line == idx) diag.end_character else line.len, line.len);
+                    const end_x = text_x + editor_scroll.cursorX(line, end_col, font_size);
+                    const underline_y = line_num_y + line_h - 3;
+                    const underline_color = switch (diag.severity) {
+                        .err => c(theme.colors.warning),
+                        .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
+                        else => c(theme.colors.text_muted),
+                    };
+                    renderer.Renderer.drawRect(start_x, underline_y, @max(4, end_x - start_x), 2, underline_color);
+                }
+            }
+            if (show_editor_cursor and idx == editor_buf.cursor.row) {
+                const line = editor_buf.lineAt(idx);
+                const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
+                renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, c(theme.colors.cursor));
+            }
+        }
+        line_num_y += line_h;
+    }
+
+    renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
+    if (max_scroll_y > 0) {
+        const scroll_ratio = scroll_y / max_scroll_y;
+        const scrollbar_h = @max(20.0, editor_view_h * (editor_view_h / content_h));
+        const scrollbar_y = 65.0 + scroll_ratio * (editor_view_h - scrollbar_h);
+        renderer.Renderer.drawRoundedRect(editor_x + editor_w - 12, scrollbar_y, 8, scrollbar_h, 4.0, .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 0.5 });
+    }
+
+    if (max_scroll_x > 0) {
+        const scroll_ratio = scroll_x / max_scroll_x;
+        const scrollbar_w = @max(20.0, viewport_w * (viewport_w / content_w));
+        const scrollbar_x = editor_x + gutter + scroll_ratio * (viewport_w - scrollbar_w);
+        const scrollbar_y = 65.0 + editor_view_h - 10;
+        renderer.Renderer.drawRoundedRect(scrollbar_x, scrollbar_y, scrollbar_w, 8, 4.0, .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 0.5 });
+    }
+    renderer.Renderer.clearClipRect();
+}
+
 fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@import("forge-editor").Buffer, editor_x: f32, editor_w: f32, editor_h: f32, _: f32) void {
     const theme = &wb.theme;
     const ui_size = theme.ui_font_size;
@@ -766,106 +885,48 @@ fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@im
 
     renderer.Renderer.clearClipRect();
 
-    const editor_view_h = editor_scroll.viewportHeight(editor_h);
-    const gutter = editor_scroll.gutterWidth(theme);
-    const line_h = editor_scroll.lineHeight(theme);
-    const char_w = editor_scroll.charWidth(theme);
-    const font_size = theme.editor_font_size;
-    const text_x = editor_x + gutter - wb.editor_scroll_x;
-
-    renderer.Renderer.drawRect(editor_x, 65, gutter, editor_view_h, c(theme.colors.sidebar_bg));
-    renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
-    const show_cursor = @mod(state.time, 1.0) < 0.5;
-    const show_editor_cursor = show_cursor and wb.focused_panel == .editor;
-
-    if (editor_buf) |buf| {
-        const line_count = buf.lineCount();
-        const content_h = editor_scroll.contentHeight(line_count, theme);
-        const max_scroll_y = editor_scroll.maxScrollY(line_count, editor_h, theme);
-        const max_line_len = editor_scroll.longestLineLen(buf);
-        const content_w = @as(f32, @floatFromInt(max_line_len)) * char_w;
-        const viewport_w = editor_scroll.viewportWidth(editor_w, theme);
-        const max_scroll_x = editor_scroll.maxScrollX(content_w, editor_w, theme);
-
-        const active_path = wb.activeFilePath();
-        var line_num_y = editor_scroll.firstLineY(theme) - wb.editor_scroll_y;
-        const diag_store = @import("../workbench/diagnostics_store.zig");
-        for (0..line_count) |idx| {
-            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
-                if (active_path) |path| {
-                    if (wb.breakpoints.hasAt(path, idx)) {
-                        renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, c(theme.colors.warning));
-                    }
-                }
-                var num_buf: [16]u8 = undefined;
-                const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{idx + 1}) catch "";
-                renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, c(theme.colors.line_number));
-                if (diag_store.worstSeverityOnLine(wb.diagnostics.list, idx)) |severity| {
-                    const marker = switch (severity) {
-                        .err => "!",
-                        .warning => "~",
-                        else => "·",
-                    };
-                    const marker_color = switch (severity) {
-                        .err => c(theme.colors.warning),
-                        .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
-                        else => c(theme.colors.text_muted),
-                    };
-                    renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
-                }
-            }
-            line_num_y += line_h;
+    const pane_w = wb.paneWidth(editor_w);
+    if (wb.editor_split) {
+        if (wb.docForPane(.primary)) |doc| {
+            drawEditorViewport(
+                wb,
+                &doc.buffer,
+                editor_x,
+                pane_w,
+                editor_h,
+                wb.editor_scroll_y,
+                wb.editor_scroll_x,
+                doc.path,
+                wb.editor_pane_focus == .primary,
+            );
         }
-
-        renderer.Renderer.setClipRect(editor_x + gutter, 65, editor_w - gutter, editor_view_h);
-        line_num_y = editor_scroll.firstLineY(theme) - wb.editor_scroll_y;
-        for (0..line_count) |idx| {
-            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
-                drawFindHighlights(wb, buf, idx, text_x, line_num_y, line_h, font_size);
-                drawHighlightedLine(buf.lineAt(idx), text_x, line_num_y, theme);
-                for (wb.diagnostics.list.items) |diag| {
-                    if (diag.line != idx) continue;
-                    const line = buf.lineAt(idx);
-                    const start_x = text_x + editor_scroll.cursorX(line, @min(diag.character, line.len), font_size);
-                    const end_col = @min(if (diag.end_line == idx) diag.end_character else line.len, line.len);
-                    const end_x = text_x + editor_scroll.cursorX(line, end_col, font_size);
-                    const underline_y = line_num_y + line_h - 3;
-                    const underline_color = switch (diag.severity) {
-                        .err => c(theme.colors.warning),
-                        .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
-                        else => c(theme.colors.text_muted),
-                    };
-                    renderer.Renderer.drawRect(start_x, underline_y, @max(4, end_x - start_x), 2, underline_color);
-                }
-                if (show_editor_cursor and idx == buf.cursor.row) {
-                    const line = buf.lineAt(idx);
-                    const cursor_x = text_x + editor_scroll.cursorX(line, buf.cursor.col, font_size);
-                    renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, c(theme.colors.cursor));
-                }
-            }
-            line_num_y += line_h;
+        const divider_x = editor_x + pane_w;
+        renderer.Renderer.drawRect(divider_x, 65, 4, editor_scroll.viewportHeight(editor_h), c(theme.colors.tab_bar_bg));
+        if (wb.docForPane(.secondary)) |doc| {
+            drawEditorViewport(
+                wb,
+                &doc.buffer,
+                divider_x + 4,
+                pane_w,
+                editor_h,
+                wb.split_scroll_y,
+                wb.split_scroll_x,
+                doc.path,
+                wb.editor_pane_focus == .secondary,
+            );
         }
-
-        renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
-        if (max_scroll_y > 0) {
-            const scroll_ratio = wb.editor_scroll_y / max_scroll_y;
-            const scrollbar_h = @max(20.0, editor_view_h * (editor_view_h / content_h));
-            const scrollbar_y = 65.0 + scroll_ratio * (editor_view_h - scrollbar_h);
-            renderer.Renderer.drawRoundedRect(editor_x + editor_w - 12, scrollbar_y, 8, scrollbar_h, 4.0, .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 0.5 });
-        }
-
-        if (max_scroll_x > 0) {
-            const scroll_ratio = wb.editor_scroll_x / max_scroll_x;
-            const scrollbar_w = @max(20.0, viewport_w * (viewport_w / content_w));
-            const scrollbar_x = editor_x + gutter + scroll_ratio * (viewport_w - scrollbar_w);
-            const scrollbar_y = 65.0 + editor_view_h - 10;
-            renderer.Renderer.drawRoundedRect(scrollbar_x, scrollbar_y, scrollbar_w, 8, 4.0, .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 0.5 });
-        }
+    } else if (editor_buf) |buf| {
+        const path = wb.activeFilePath() orelse "";
+        drawEditorViewport(wb, buf, editor_x, editor_w, editor_h, wb.editor_scroll_y, wb.editor_scroll_x, path, true);
     }
-    if (wb.completions.visible and wb.completions.list.items.len > 0) {
-        const popup_x = editor_x + gutter + 8;
+
+    if (wb.completions.visible and wb.completions.list.items.len > 0 and wb.focused_panel == .editor) {
+        const gutter = editor_scroll.gutterWidth(theme);
+        const focus_x = wb.paneOriginX(editor_x, editor_w, wb.focusedPane());
+        const focus_w = pane_w;
+        const popup_x = focus_x + gutter + 8;
         const popup_y: f32 = 90;
-        const popup_w = @min(editor_w - gutter - 16, 360);
+        const popup_w = @min(focus_w - gutter - 16, 360);
         const row_h: f32 = 16;
         const count = @min(wb.completions.list.items.len, 10);
         const popup_h = @as(f32, @floatFromInt(count)) * row_h + 8;
@@ -887,7 +948,9 @@ fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@im
     if (wb.find_bar.open or wb.goto_bar.open or wb.rename_bar.open) {
         drawEditorOverlay(wb, editor_x, editor_w);
     }
-    drawHoverTooltip(wb, editor_x, editor_w);
+    if (wb.focused_panel == .editor) {
+        drawHoverTooltip(wb, wb.paneOriginX(editor_x, editor_w, wb.focusedPane()), pane_w);
+    }
     renderer.Renderer.clearClipRect();
 }
 
@@ -1102,37 +1165,57 @@ fn drawTaskPanel(wb: *@import("../workbench.zig").Workbench, editor_x: f32, edit
         },
         .terminal => {
             const terminal_panel = @import("terminal_panel.zig");
-            wb.terminal.lock();
-            defer wb.terminal.unlock();
-            const content_top = panel_y + 34.0;
-            const content_h = panel_h - 34.0;
+            const terminal = wb.activeTerminal();
+            terminal.lock();
+            defer terminal.unlock();
+            const session_top = terminal_panel.sessionBarTop(panel_y);
+            var tab_x = editor_x + 8;
+            var i: usize = 0;
+            while (i < wb.terminals.sessions.items.len) : (i += 1) {
+                const selected = i == wb.terminals.active;
+                const bg = if (selected)
+                    renderer.Color{ .r = 0.22, .g = 0.25, .b = 0.3, .a = 1.0 }
+                else
+                    renderer.Color{ .r = 0.16, .g = 0.16, .b = 0.18, .a = 1.0 };
+                renderer.Renderer.drawRoundedRect(tab_x, session_top, terminal_panel.session_tab_w, terminal_panel.session_tab_h, 4, bg);
+                var label_buf: [8:0]u8 = undefined;
+                const label = std.fmt.bufPrint(&label_buf, "{d}", .{i + 1}) catch "1";
+                label_buf[label.len] = 0;
+                renderer.Renderer.drawText(@ptrCast(&label_buf), tab_x + 16, session_top + 4, 10.0, .{ .r = 0.75, .g = 0.75, .b = 0.75, .a = 1.0 });
+                tab_x += terminal_panel.session_tab_w + 4;
+            }
+            renderer.Renderer.drawRoundedRect(tab_x, session_top, 28, terminal_panel.session_tab_h, 4, .{ .r = 0.16, .g = 0.16, .b = 0.18, .a = 1.0 });
+            renderer.Renderer.drawText("+", tab_x + 10, session_top + 3, 12.0, .{ .r = 0.75, .g = 0.75, .b = 0.75, .a = 1.0 });
+
+            const content_top = terminal_panel.contentTop(panel_y);
+            const content_h = panel_h - (content_top - panel_y);
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             const git_ptr: ?*const @import("../git/status.zig").Status = if (wb.git_status) |*status| status else null;
             const show_cursor = @mod(state.time, 1.0) < 0.5;
             const show_terminal_cursor = show_cursor and wb.focused_panel == .terminal;
 
             if (wb.terminal_selection) |sel| {
-                terminal_panel.drawSelection(editor_x, panel_y, wb.task_scroll_y, wb.terminal.lines.items, sel);
+                terminal_panel.drawSelection(editor_x, panel_y, wb.task_scroll_y, terminal.lines.items, sel);
             }
             var line_y = content_top - wb.task_scroll_y;
-            for (wb.terminal.lines.items) |line| {
+            for (terminal.lines.items) |line| {
                 if (line_y + 14.0 >= content_top and line_y < content_top + content_h) {
                     terminal_panel.drawStyledLine(editor_x, line_y, line, wb.workspace_path, git_ptr);
                 }
                 line_y += 14.0;
             }
-            if (wb.terminal.local_input != null or wb.terminal.isActive()) {
+            if (terminal.local_input != null or terminal.isActive()) {
                 if (line_y + 14.0 >= content_top and line_y < content_top + content_h) {
                     var active_buf: [512]u8 = undefined;
-                    const active = wb.terminal.activeLine(&active_buf);
+                    const active = terminal.activeLine(&active_buf);
                     terminal_panel.drawStyledLine(editor_x, line_y, active, wb.workspace_path, git_ptr);
                     const col = active.len;
                     terminal_panel.drawInputCursor(editor_x, line_y, active, col, show_terminal_cursor);
                 }
-            } else if (wb.terminal.lines.items.len == 0) {
-                const hint = if (wb.terminal.isActive())
+            } else if (terminal.lines.items.len == 0) {
+                const hint = if (terminal.isActive())
                     "Shell running — type here."
-                else if (wb.terminal.exited)
+                else if (terminal.exited)
                     "Shell exited — click TERMINAL tab to restart."
                 else
                     "Starting terminal…";
