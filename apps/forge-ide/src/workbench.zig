@@ -28,6 +28,8 @@ const references_store_mod = @import("workbench/references_store.zig");
 const terminal_session_mod = @import("workbench/terminal_session.zig");
 const terminal_group_mod = @import("workbench/terminal_group.zig");
 const lsp_sync_mod = @import("workbench/lsp_sync.zig");
+const rename_preview_mod = @import("workbench/rename_preview.zig");
+const debug_session_mod = @import("workbench/debug_session.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
 const editor_find_mod = @import("workbench/editor_find.zig");
@@ -75,6 +77,7 @@ pub const Workbench = struct {
     completions: completion_store_mod.Store,
     hover: hover_store_mod.Store,
     references: references_store_mod.Store,
+    rename_preview: rename_preview_mod.Store,
     events: kernel.EventBus(Event),
     palette: palette_mod.Palette,
     task_output: task_output_mod.TaskOutput,
@@ -157,6 +160,7 @@ pub const Workbench = struct {
             .completions = undefined,
             .hover = undefined,
             .references = references_store_mod.Store.init(allocator),
+            .rename_preview = rename_preview_mod.Store.init(allocator),
         };
         errdefer self.deinit();
 
@@ -215,6 +219,7 @@ pub const Workbench = struct {
         self.completions.deinit();
         self.hover.deinit();
         self.references.deinit();
+        self.rename_preview.deinit();
         self.prompt_buffer.deinit();
         self.task_output.deinit();
         self.agent.deinit();
@@ -568,6 +573,8 @@ pub const Workbench = struct {
                 self.breakpoints.clear();
                 try self.debug_console.log("Breakpoints cleared");
             },
+            .rename_accept => try self.acceptRenamePreview(),
+            .rename_reject => self.rejectRenamePreview(),
             .debug_run_launch => |index| try self.runLaunchConfig(index),
             .debug_clear_console => self.debug_console.clear(),
             .editor_completion => {
@@ -829,7 +836,13 @@ pub const Workbench = struct {
 
     pub fn bottomPanelLineCount(self: *const Workbench) usize {
         return switch (self.bottom_panel_mode) {
-            .output => self.task_output.lines.items.len,
+            .output => blk: {
+                if (self.rename_preview.active) {
+                    break :blk self.rename_preview.lines.len + 1;
+                }
+                if (self.references.active) break :blk self.references.items.len;
+                break :blk self.task_output.lines.items.len;
+            },
             .problems => self.diagnostics.list.items.len,
             .terminal => blk: {
                 const terminal = self.activeTerminal();
@@ -921,6 +934,35 @@ pub const Workbench = struct {
         const panel = @import("ui/debug_panel.zig");
         if (index >= panel.default_launches.len) return;
         const launch = panel.default_launches[index];
+
+        if (std.mem.eql(u8, launch.task, "debug_current")) {
+            const path = self.activeFilePath() orelse {
+                try self.setStatus("No file open for debug");
+                return;
+            };
+            if (self.task_output.isRunning()) {
+                try self.setStatus("Task already running");
+                return;
+            }
+            self.task_output.clear();
+            self.task_output.setRunning(true);
+            self.debug_console.clear();
+            try self.debug_console.log("Starting lldb session…");
+            try debug_session_mod.spawnCurrentFile(
+                self.allocator,
+                self.workspace_path,
+                path,
+                &self.breakpoints,
+                Workbench.onDebugLine,
+                Workbench.onDebugFinished,
+                self,
+            );
+            self.bottom_panel_mode = .debug_console;
+            self.focused_panel = .run;
+            try self.setStatus("Debug session started");
+            return;
+        }
+
         var buf: [128]u8 = undefined;
         const msg = try std.fmt.bufPrint(&buf, "Launch: {s}", .{launch.label});
         try self.debug_console.log(msg);
@@ -941,6 +983,20 @@ pub const Workbench = struct {
         );
         self.bottom_panel_mode = .debug_console;
         self.focused_panel = .run;
+    }
+
+    fn onDebugLine(context: ?*anyopaque, line: []const u8) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.debug_console.log(line) catch {};
+    }
+
+    fn onDebugFinished(context: ?*anyopaque, exit_code: i32) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.task_output.setRunning(false);
+        var buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Debug finished (exit {d})", .{exit_code}) catch "Debug finished";
+        self.debug_console.log(msg) catch {};
+        self.setStatus(if (exit_code == 0) "Debug finished" else "Debug failed") catch {};
     }
 
     pub fn handleDebugClick(self: *Workbench, hit: @import("ui/debug_panel.zig").Hit) !void {
@@ -1345,8 +1401,61 @@ pub const Workbench = struct {
     pub fn commitRenameSymbol(self: *Workbench) !void {
         const name = self.rename_bar.name();
         if (name.len == 0) return;
-        try self.renameSymbol(name);
+        try self.previewRenameSymbol(name);
         self.closeEditorOverlay();
+    }
+
+    pub fn previewRenameSymbol(self: *Workbench, new_name: []const u8) !void {
+        const doc = self.tabs.activeDoc() orelse return;
+        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
+        const config = owned orelse {
+            try self.setStatus("No language server for this file");
+            return;
+        };
+        defer lsp.Registry.freeConfig(self.allocator, config);
+
+        const uri = try self.lspSyncDocument(doc);
+        defer self.allocator.free(uri);
+
+        const line: u32 = @intCast(doc.buffer.cursor.row);
+        const character: u32 = @intCast(doc.buffer.cursor.col);
+        const req = try lsp.rename.buildRenameRequest(self.allocator, 93, uri, line, character, new_name);
+        defer self.allocator.free(req);
+
+        var response_buf: [65536]u8 = undefined;
+        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
+            try self.setStatus("Rename failed");
+            return;
+        };
+
+        const edit = try lsp.rename.parseRenameResponse(self.allocator, response_buf[0..len]);
+        if (edit) |workspace_edit| {
+            try self.rename_preview.setPreview(self.workspace_path, &self.tabs, new_name, workspace_edit);
+            self.references.clear();
+            self.bottom_panel_mode = .output;
+            self.task_scroll_y = 0;
+            var status_buf: [96]u8 = undefined;
+            const msg = try std.fmt.bufPrint(&status_buf, "Rename preview: {d} change(s)", .{self.rename_preview.lines.len});
+            try self.setStatus(msg);
+            return;
+        }
+        try self.setStatus("Rename rejected by language server");
+    }
+
+    pub fn acceptRenamePreview(self: *Workbench) !void {
+        if (self.rename_preview.edit) |*edit| {
+            try self.applyWorkspaceEdit(edit);
+            self.rename_preview.clear();
+            try self.setStatus("Rename applied");
+            return;
+        }
+        try self.setStatus("No rename preview");
+    }
+
+    pub fn rejectRenamePreview(self: *Workbench) void {
+        if (!self.rename_preview.active) return;
+        self.rename_preview.clear();
+        self.setStatus("Rename cancelled") catch {};
     }
 
     pub fn gotoReference(self: *Workbench, index: usize) !void {
@@ -1429,6 +1538,7 @@ pub const Workbench = struct {
         }
 
         self.references.setItems(try items.toOwnedSlice(self.allocator));
+        self.rename_preview.clear();
         self.bottom_panel_mode = .output;
         self.task_scroll_y = 0;
         var status_buf: [64]u8 = undefined;
@@ -1437,36 +1547,8 @@ pub const Workbench = struct {
     }
 
     pub fn renameSymbol(self: *Workbench, new_name: []const u8) !void {
-        const doc = self.tabs.activeDoc() orelse return;
-        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
-        const config = owned orelse {
-            try self.setStatus("No language server for this file");
-            return;
-        };
-        defer lsp.Registry.freeConfig(self.allocator, config);
-
-        const uri = try self.lspSyncDocument(doc);
-        defer self.allocator.free(uri);
-
-        const line: u32 = @intCast(doc.buffer.cursor.row);
-        const character: u32 = @intCast(doc.buffer.cursor.col);
-        const req = try lsp.rename.buildRenameRequest(self.allocator, 93, uri, line, character, new_name);
-        defer self.allocator.free(req);
-
-        var response_buf: [65536]u8 = undefined;
-        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
-            try self.setStatus("Rename failed");
-            return;
-        };
-
-        var edit = try lsp.rename.parseRenameResponse(self.allocator, response_buf[0..len]);
-        if (edit) |*workspace_edit| {
-            defer workspace_edit.deinit(self.allocator);
-            try self.applyWorkspaceEdit(workspace_edit);
-            try self.setStatus("Rename applied");
-            return;
-        }
-        try self.setStatus("Rename rejected by language server");
+        try self.previewRenameSymbol(new_name);
+        if (self.rename_preview.active) try self.acceptRenamePreview();
     }
 
     fn applyWorkspaceEdit(self: *Workbench, edit: *const lsp.rename.WorkspaceEdit) !void {

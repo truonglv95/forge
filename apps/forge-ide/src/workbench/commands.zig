@@ -81,6 +81,8 @@ pub const Command = union(enum) {
     editor_rename_symbol: void,
     editor_split_right: void,
     editor_close_split: void,
+    rename_accept: void,
+    rename_reject: void,
     references_goto: usize,
     problems_goto: usize,
     completion_accept: void,

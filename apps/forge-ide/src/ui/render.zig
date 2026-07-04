@@ -1113,7 +1113,18 @@ fn drawTaskPanel(wb: *@import("../workbench.zig").Workbench, editor_x: f32, edit
             const content_h = panel_h - 34.0;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             var line_y = content_top - wb.task_scroll_y;
-            if (wb.references.active) {
+            if (wb.rename_preview.active) {
+                renderer.Renderer.drawText("Rename preview — Enter=Accept  Esc=Reject", editor_x + 20, line_y, 12.0, .{ .r = 0.95, .g = 0.85, .b = 0.45, .a = 1.0 });
+                line_y += 14.0;
+                for (wb.rename_preview.lines) |item| {
+                    var buf: [512:0]u8 = undefined;
+                    const clipped = if (item.label.len > 511) item.label[0..511] else item.label;
+                    @memcpy(buf[0..clipped.len], clipped);
+                    buf[clipped.len] = 0;
+                    renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.85, .g = 0.95, .b = 0.75, .a = 1.0 });
+                    line_y += 14.0;
+                }
+            } else if (wb.references.active) {
                 for (wb.references.items) |item| {
                     var buf: [512:0]u8 = undefined;
                     const clipped = if (item.label.len > 511) item.label[0..511] else item.label;

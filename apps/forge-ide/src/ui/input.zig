@@ -68,6 +68,17 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
+    if (wb.rename_preview.active and wb.bottom_panel_mode == .output) {
+        if (event.keycode == 53) {
+            wb.dispatch(.rename_reject) catch {};
+            return;
+        }
+        if (event.keycode == 36) {
+            wb.dispatch(.rename_accept) catch {};
+            return;
+        }
+    }
+
     if (wb.completions.visible and (event.keycode == 48 or event.keycode == 36)) {
         wb.dispatch(.completion_accept) catch {};
         return;
