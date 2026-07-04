@@ -38,6 +38,30 @@ pub const Store = struct {
     }
 
     pub fn onDocumentClosed(self: *Store, path: []const u8) void {
+        const owned = self.registry.copyMatchForPath(self.allocator, path) catch {
+            _ = self.entries.remove(path);
+            return;
+        };
+        const config = owned orelse {
+            _ = self.entries.remove(path);
+            return;
+        };
+        defer lsp.Registry.freeConfig(self.allocator, config);
+
+        const uri = lsp.diagnostics.fileUri(self.allocator, self.workspace_path, path) catch {
+            _ = self.entries.remove(path);
+            return;
+        };
+        defer self.allocator.free(uri);
+
+        const msg = lsp.sync.buildDidCloseNotification(self.allocator, uri) catch {
+            _ = self.entries.remove(path);
+            return;
+        };
+        defer self.allocator.free(msg);
+
+        var notify_buf: [4096]u8 = undefined;
+        _ = self.proxy.request(config.language_id, msg, &notify_buf, notify_buf.len) catch {};
         _ = self.entries.remove(path);
     }
 

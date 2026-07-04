@@ -82,6 +82,8 @@ pub const Palette = struct {
             .{ .id = "editor.rename", .title = "Rename Symbol", .category = "Edit", .command = .editor_rename_symbol },
             .{ .id = "editor.split", .title = "Split Editor Right", .category = "Edit", .command = .editor_split_right },
             .{ .id = "editor.close_split", .title = "Close Editor Split", .category = "Edit", .command = .editor_close_split },
+            .{ .id = "rename.accept", .title = "Rename: Accept Preview", .category = "Edit", .command = .rename_accept },
+            .{ .id = "rename.reject", .title = "Rename: Reject Preview", .category = "Edit", .command = .rename_reject },
             .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .command = .editor_redo },
             .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .command = .editor_undo },
             .{ .id = "session.save", .title = "Session: Save Open Tabs", .category = "View", .command = .save_session_state },

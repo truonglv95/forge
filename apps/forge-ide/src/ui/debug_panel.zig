@@ -12,6 +12,7 @@ pub const LaunchConfig = struct {
 };
 
 pub const default_launches = [_]LaunchConfig{
+    .{ .id = "debug_current", .label = "Debug: current file (lldb)", .task = "debug_current" },
     .{ .id = "test", .label = "zig build test", .task = "test" },
     .{ .id = "check", .label = "./scripts/check.sh", .task = "check" },
     .{ .id = "build", .label = "zig build", .task = "build" },
