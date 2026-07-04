@@ -37,6 +37,12 @@ pub const Store = struct {
         self.entries.deinit();
     }
 
+    pub fn resetEntries(self: *Store) void {
+        self.entries.clearRetainingCapacity();
+        self.pending.store(false, .release);
+        self.cooldown = 0;
+    }
+
     pub fn onDocumentClosed(self: *Store, path: []const u8) void {
         const owned = self.registry.copyMatchForPath(self.allocator, path) catch {
             _ = self.entries.remove(path);

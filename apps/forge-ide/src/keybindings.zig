@@ -64,6 +64,10 @@ pub const Registry = struct {
             .{ .key = "cmd+\\", .palette_id = "editor.split" },
             .{ .key = "ctrl+shift+`", .palette_id = "terminal.new" },
             .{ .key = "ctrl+shift+]", .palette_id = "terminal.next" },
+            .{ .key = "f5", .palette_id = "debug.continue" },
+            .{ .key = "f10", .palette_id = "debug.step_over" },
+            .{ .key = "f11", .palette_id = "debug.step_into" },
+            .{ .key = "shift+f11", .palette_id = "debug.step_out" },
         };
 
         for (builtins) |builtin| {
@@ -147,6 +151,15 @@ fn parseKey(raw: []const u8) ?ParsedKey {
     }
     if (std.ascii.eqlIgnoreCase(key, "f2")) {
         return .{ .modifiers = modifiers, .keycode = 120 };
+    }
+    if (std.ascii.eqlIgnoreCase(key, "f5")) {
+        return .{ .modifiers = modifiers, .keycode = 96 };
+    }
+    if (std.ascii.eqlIgnoreCase(key, "f10")) {
+        return .{ .modifiers = modifiers, .keycode = 109 };
+    }
+    if (std.ascii.eqlIgnoreCase(key, "f11")) {
+        return .{ .modifiers = modifiers, .keycode = 103 };
     }
     const keycode = keycodeForChar(key[0]) orelse return null;
     return .{ .modifiers = modifiers, .keycode = keycode };

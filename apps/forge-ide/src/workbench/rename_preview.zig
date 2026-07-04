@@ -112,7 +112,7 @@ fn findDoc(tabs: *editor.TabGroup, path: []const u8) ?*editor.Document {
 
 fn snippetFromDoc(doc: ?*editor.Document, edit: lsp.rename.TextEdit) []const u8 {
     if (doc == null) return "?";
-    if (edit.line != edit.end_line) return "?";
+    if (edit.line != edit.end_line) return "<multi-line>";
     const line = doc.?.buffer.lineAt(@intCast(edit.line));
     const start = @min(@as(usize, @intCast(edit.character)), line.len);
     const end = @min(@as(usize, @intCast(edit.end_character)), line.len);

@@ -29,7 +29,7 @@ const terminal_session_mod = @import("workbench/terminal_session.zig");
 const terminal_group_mod = @import("workbench/terminal_group.zig");
 const lsp_sync_mod = @import("workbench/lsp_sync.zig");
 const rename_preview_mod = @import("workbench/rename_preview.zig");
-const debug_session_mod = @import("workbench/debug_session.zig");
+const debug_lldb_session_mod = @import("workbench/debug_lldb_session.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
 const editor_find_mod = @import("workbench/editor_find.zig");
@@ -71,6 +71,7 @@ pub const Workbench = struct {
     run_scroll_y: f32 = 0,
     breakpoints: breakpoints_mod.Store,
     debug_console: debug_console_mod.DebugConsole,
+    debug_lldb: debug_lldb_session_mod.Session,
     terminals: terminal_group_mod.Group,
     lsp_sync: lsp_sync_mod.Store,
     diagnostics: diagnostics_store_mod.Store,
@@ -151,6 +152,7 @@ pub const Workbench = struct {
             .chat_history = .empty,
             .breakpoints = breakpoints_mod.Store.init(allocator),
             .debug_console = debug_console_mod.DebugConsole.init(allocator, io),
+            .debug_lldb = undefined,
             .find_bar = try editor_find_mod.FindBar.init(allocator),
             .goto_bar = try editor_find_mod.GotoBar.init(allocator),
             .rename_bar = try editor_find_mod.RenameBar.init(allocator),
@@ -198,6 +200,12 @@ pub const Workbench = struct {
             self.focused_panel = .recovery;
         }
         agent_workflow.refreshRunHistory(&self.agentHost()) catch {};
+        self.debug_lldb = .{
+            .allocator = allocator,
+            .on_line = onDebugLine,
+            .on_finished = onDebugLldbFinished,
+            .context = null,
+        };
     }
 
     pub fn deinit(self: *Workbench) void {
@@ -213,6 +221,7 @@ pub const Workbench = struct {
         if (self.git_status) |*status| status.deinit(self.allocator);
         self.breakpoints.deinit();
         self.debug_console.deinit();
+        self.debug_lldb.deinit();
         self.terminals.deinit();
         self.lsp_sync.deinit();
         self.diagnostics.deinit();
@@ -577,6 +586,11 @@ pub const Workbench = struct {
             .rename_reject => self.rejectRenamePreview(),
             .debug_run_launch => |index| try self.runLaunchConfig(index),
             .debug_clear_console => self.debug_console.clear(),
+            .debug_continue => try self.debugContinue(),
+            .debug_step_over => try self.debugStepOver(),
+            .debug_step_into => try self.debugStepInto(),
+            .debug_step_out => try self.debugStepOut(),
+            .debug_stop => self.debugStop(),
             .editor_completion => {
                 if (self.tabs.activeDoc()) |doc| self.completions.requestForDocument(doc);
             },
@@ -948,14 +962,14 @@ pub const Workbench = struct {
             self.task_output.clear();
             self.task_output.setRunning(true);
             self.debug_console.clear();
-            try self.debug_console.log("Starting lldb session…");
-            try debug_session_mod.spawnCurrentFile(
+            try self.debug_console.log("Starting interactive lldb session…");
+            try self.debug_lldb.start(
                 self.allocator,
                 self.workspace_path,
                 path,
                 &self.breakpoints,
-                Workbench.onDebugLine,
-                Workbench.onDebugFinished,
+                onDebugLine,
+                onDebugLldbFinished,
                 self,
             );
             self.bottom_panel_mode = .debug_console;
@@ -991,13 +1005,60 @@ pub const Workbench = struct {
         self.debug_console.log(line) catch {};
     }
 
-    fn onDebugFinished(context: ?*anyopaque, exit_code: i32) void {
+    fn onDebugLldbFinished(context: ?*anyopaque, exit_code: i32) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.task_output.setRunning(false);
         var buf: [64]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Debug finished (exit {d})", .{exit_code}) catch "Debug finished";
+        const msg = std.fmt.bufPrint(&buf, "Debug session ended (exit {d})", .{exit_code}) catch "Debug session ended";
         self.debug_console.log(msg) catch {};
-        self.setStatus(if (exit_code == 0) "Debug finished" else "Debug failed") catch {};
+        self.setStatus(if (exit_code == 0) "Debug session ended" else "Debug failed") catch {};
+    }
+
+    fn onDebugFinished(context: ?*anyopaque, exit_code: i32) void {
+        onDebugLldbFinished(context, exit_code);
+    }
+
+    pub fn debugContinue(self: *Workbench) !void {
+        if (!self.debug_lldb.isActive()) {
+            try self.setStatus("No active debug session");
+            return;
+        }
+        try self.debug_lldb.continueExecution();
+        try self.setStatus("Debug: continue");
+    }
+
+    pub fn debugStepOver(self: *Workbench) !void {
+        if (!self.debug_lldb.isActive()) {
+            try self.setStatus("No active debug session");
+            return;
+        }
+        try self.debug_lldb.stepOver();
+        try self.setStatus("Debug: step over");
+    }
+
+    pub fn debugStepInto(self: *Workbench) !void {
+        if (!self.debug_lldb.isActive()) {
+            try self.setStatus("No active debug session");
+            return;
+        }
+        try self.debug_lldb.stepInto();
+        try self.setStatus("Debug: step into");
+    }
+
+    pub fn debugStepOut(self: *Workbench) !void {
+        if (!self.debug_lldb.isActive()) {
+            try self.setStatus("No active debug session");
+            return;
+        }
+        try self.debug_lldb.stepOut();
+        try self.setStatus("Debug: step out");
+    }
+
+    pub fn debugStop(self: *Workbench) void {
+        if (!self.debug_lldb.isActive()) return;
+        self.debug_lldb.stop();
+        self.task_output.setRunning(false);
+        self.debug_console.log("Debug session stopped") catch {};
     }
 
     pub fn handleDebugClick(self: *Workbench, hit: @import("ui/debug_panel.zig").Hit) !void {
@@ -1563,19 +1624,13 @@ pub const Workbench = struct {
             while (index > 0) {
                 index -= 1;
                 const text_edit = file_edit.edits[index];
-                const start_row: usize = @intCast(text_edit.line);
-                const start_col: usize = @intCast(text_edit.character);
-                const end_row: usize = @intCast(text_edit.end_line);
-                const end_col: usize = @intCast(text_edit.end_character);
-                if (start_row != end_row) continue;
-                const line = doc.buffer.lineAt(start_row);
-                const delete_len = if (end_col > start_col and end_col <= line.len)
-                    end_col - start_col
-                else if (start_col < line.len)
-                    @min(1, line.len - start_col)
-                else
-                    0;
-                try doc.buffer.replaceRange(start_row, start_col, delete_len, text_edit.new_text);
+                try doc.buffer.applyLspTextEdit(
+                    @intCast(text_edit.line),
+                    @intCast(text_edit.character),
+                    @intCast(text_edit.end_line),
+                    @intCast(text_edit.end_character),
+                    text_edit.new_text,
+                );
             }
         }
     }
@@ -1633,12 +1688,30 @@ pub const Workbench = struct {
         defer session_restore_mod.freeLoadedTabs(self.allocator, loaded.paths);
         if (loaded.paths.len == 0) return;
 
+        self.closeAllTabsWithLsp();
+        self.lsp_sync.resetEntries();
+
         for (loaded.paths) |path| {
             self.openFile(path) catch {};
+        }
+        for (self.tabs.tabs.items) |*doc| {
+            _ = self.lsp_sync.ensureSyncedBlocking(doc) catch {};
         }
         if (loaded.active < self.tabs.tabs.items.len) {
             try self.activateTab(loaded.active);
         }
+        try self.setStatus("Session tabs restored");
+    }
+
+    fn closeAllTabsWithLsp(self: *Workbench) void {
+        while (self.tabs.tabs.items.len > 0) {
+            const idx = self.tabs.tabs.items.len - 1;
+            const path = self.tabs.tabs.items[idx].path;
+            self.lsp_sync.onDocumentClosed(path);
+            self.tabs.closeAt(idx);
+        }
+        self.editor_split = false;
+        self.tab_scroll_x = 0;
     }
 
     fn openFile(self: *Workbench, path: []const u8) !void {

@@ -335,6 +335,56 @@ pub const Buffer = struct {
         self.cursor = .{ .row = row, .col = col + text.len };
     }
 
+    pub fn applyLspTextEdit(
+        self: *Buffer,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
+        new_text: []const u8,
+    ) !void {
+        if (self.lines.items.len == 0) return;
+        const sr = @min(start_row, self.lines.items.len - 1);
+        const er = @min(end_row, self.lines.items.len - 1);
+
+        if (sr == er) {
+            const line_len = self.lines.items[sr].items.len;
+            const sc = @min(start_col, line_len);
+            const ec = @min(end_col, line_len);
+            const delete_len = if (ec > sc) ec - sc else 0;
+            try self.replaceRange(sr, sc, delete_len, new_text);
+            return;
+        }
+
+        const start_line = &self.lines.items[sr];
+        const end_line = &self.lines.items[er];
+        const sc = @min(start_col, start_line.items.len);
+        const ec = @min(end_col, end_line.items.len);
+
+        const prefix = try self.allocator.dupe(u8, start_line.items[0..sc]);
+        errdefer self.allocator.free(prefix);
+        const suffix = try self.allocator.dupe(u8, end_line.items[ec..]);
+        errdefer self.allocator.free(suffix);
+
+        var r = er;
+        while (r > sr) : (r -= 1) {
+            var removed = self.lines.orderedRemove(r);
+            removed.deinit(self.allocator);
+        }
+
+        start_line.deinit(self.allocator);
+        start_line.* = .empty;
+        try start_line.appendSlice(self.allocator, prefix);
+        self.allocator.free(prefix);
+
+        self.cursor = .{ .row = sr, .col = start_line.items.len };
+        try self.insertString(new_text);
+        if (suffix.len > 0) {
+            try self.insertTextInternal(self.cursor.row, self.cursor.col, suffix, true);
+        }
+        self.allocator.free(suffix);
+    }
+
     pub fn toDisplayString(self: *const Buffer, show_cursor: bool) ![]u8 {
         var result: std.ArrayList(u8) = .empty;
         errdefer result.deinit(self.allocator);
@@ -353,6 +403,18 @@ pub const Buffer = struct {
         return try result.toOwnedSlice(self.allocator);
     }
 };
+
+test "buffer applyLspTextEdit handles multi-line range" {
+    const allocator = std.testing.allocator;
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    try buffer.loadFromSlice("alpha\nbeta\ngamma\n");
+    try buffer.applyLspTextEdit(0, 2, 2, 0, "X\nY");
+    const content = try buffer.content();
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("alX\nYgamma\n", content);
+}
 
 test "buffer preserves Vietnamese UTF-8" {
     const allocator = std.testing.allocator;
