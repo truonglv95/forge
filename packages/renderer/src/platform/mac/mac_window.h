@@ -17,7 +17,7 @@ void forge_mac_create_window(const char* title, int width, int height);
 
 typedef void (*ForgeRenderCallback)(void);
 typedef void (*ForgeKeyCallback)(int keycode, const char* chars, bool isDown, int modifiers);
-typedef void (*ForgeMouseCallback)(float x, float y, int button, int action);
+typedef void (*ForgeMouseCallback)(float x, float y, int button, int action, int modifiers);
 
 void forge_mac_set_render_callback(ForgeRenderCallback callback);
 void forge_mac_set_key_callback(ForgeKeyCallback callback);

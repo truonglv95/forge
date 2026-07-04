@@ -484,6 +484,27 @@ fn submitAgentPrompt(wb: *@import("../workbench.zig").Workbench) void {
     state.prompt_buffer = &wb.prompt_buffer;
 }
 
+fn editorPosAt(
+    wb: *@import("../workbench.zig").Workbench,
+    editor_buf: *@import("forge-editor").Buffer,
+    geo: layout.Geometry,
+    x: f32,
+    y: f32,
+) ?struct { row: usize, col: usize } {
+    const click_y = y - editor_scroll.firstLineY(&wb.theme) + wb.editor_scroll_y;
+    const click_x = x - geo.editor_x - editor_scroll.gutterWidth(&wb.theme) + wb.editor_scroll_x;
+    if (click_y < 0) return null;
+    var row: usize = @intFromFloat(click_y / editor_scroll.lineHeight(&wb.theme));
+    if (row >= editor_buf.lineCount()) row = if (editor_buf.lineCount() > 0) editor_buf.lineCount() - 1 else 0;
+    const line = editor_buf.lineAt(row);
+    const col = editor_scroll.columnAtX(line, click_x, wb.theme.editor_font_size);
+    return .{ .row = row, .col = col };
+}
+
+fn isEditorContentArea(geo: layout.Geometry, x: f32, y: f32) bool {
+    return x >= geo.editor_x and x < geo.agent_splitter_x and y > 65.0 and y < geo.task_panel_y - 35;
+}
+
 pub fn onMouseEvent(event: renderer.MouseEvent) void {
     const wb = state.wb orelse return;
     const editor_buf = wb.activeBuffer();
@@ -511,6 +532,17 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             renderer.Renderer.setCursor(3);
         } else {
             renderer.Renderer.setCursor(0);
+        }
+        if (geo.shell_mode == .ide and isEditorContentArea(geo, event.x, event.y)) {
+            if (editor_buf != null) {
+                if (wb.tabs.activeDoc()) |doc| {
+                    if (editorPosAt(wb, editor_buf.?, geo, event.x, event.y)) |pos| {
+                        wb.requestEditorHover(doc.path, pos.row, pos.col, event.x, event.y);
+                    }
+                }
+            }
+        } else {
+            wb.hover.clear();
         }
     } else if (event.action == .down) {
         if (wb.palette.open) return;
@@ -606,19 +638,17 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 .activate => |index| wb.dispatch(.{ .activate_tab = index }) catch {},
                 .none => {},
             }
-        } else if (geo.shell_mode == .ide and event.x >= geo.editor_x and event.x < geo.agent_splitter_x and event.y > 65.0 and event.y < geo.task_panel_y - 35) {
+        } else if (geo.shell_mode == .ide and isEditorContentArea(geo, event.x, event.y)) {
             wb.focused_panel = .editor;
             if (editor_buf != null) {
-                const click_y = event.y - editor_scroll.firstLineY(&wb.theme) + wb.editor_scroll_y;
-                const click_x = event.x - geo.editor_x - editor_scroll.gutterWidth(&wb.theme) + wb.editor_scroll_x;
-                if (click_y >= 0) {
-                    var row: usize = @intFromFloat(click_y / editor_scroll.lineHeight(&wb.theme));
-                    if (row >= editor_buf.?.lineCount()) row = if (editor_buf.?.lineCount() > 0) editor_buf.?.lineCount() - 1 else 0;
-                    const line = editor_buf.?.lineAt(row);
-                    const col = editor_scroll.columnAtX(line, click_x, wb.theme.editor_font_size);
-                    editor_buf.?.cursor.row = row;
-                    editor_buf.?.cursor.col = col;
+                if (editorPosAt(wb, editor_buf.?, geo, event.x, event.y)) |pos| {
+                    editor_buf.?.cursor.row = pos.row;
+                    editor_buf.?.cursor.col = pos.col;
                     wb.scrollEditorToCursor();
+                    if (event.modifiers & cmd_mask != 0) {
+                        wb.goToDefinition() catch {};
+                        return;
+                    }
                 }
             }
         } else if (geo.shell_mode == .ide and event.y >= geo.task_panel_y) {

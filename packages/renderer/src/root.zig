@@ -38,6 +38,7 @@ pub const MouseEvent = struct {
     y: f32,
     button: i32,
     action: MouseAction,
+    modifiers: i32 = 0,
 };
 
 var app_render_callback: ?*const fn () void = null;
@@ -62,13 +63,14 @@ export fn internal_key_callback(keycode: c_int, chars: [*c]const u8, is_down: bo
     }
 }
 
-export fn internal_mouse_callback(x: f32, y: f32, button: c_int, action: c_int) void {
+export fn internal_mouse_callback(x: f32, y: f32, button: c_int, action: c_int, modifiers: c_int) void {
     if (app_mouse_callback) |cb| {
         cb(.{
             .x = x,
             .y = y,
             .button = @as(i32, @intCast(button)),
             .action = @as(MouseAction, @enumFromInt(action)),
+            .modifiers = @as(i32, @intCast(modifiers)),
         });
     }
 }
