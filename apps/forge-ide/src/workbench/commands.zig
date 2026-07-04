@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const BottomPanelMode = enum { output, problems, terminal, debug_console, debug_variables };
+pub const BottomPanelMode = enum { output, problems, terminal, debug_console, debug_variables, debug_callstack };
 
 pub const Command = union(enum) {
     open_file: []const u8,
@@ -96,8 +96,11 @@ pub const Command = union(enum) {
     save_session_state: void,
     restore_session_state: void,
     settings_reload: void,
+    settings_toggle_word_wrap: void,
     open_recent_workspace: usize,
     problem_quick_fix: void,
+    debug_stack_goto: usize,
+    debug_copy_variable: usize,
     palette_open: void,
     palette_close: void,
 };

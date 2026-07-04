@@ -1490,6 +1490,34 @@ fn drawTaskPanel(wb: *@import("../workbench.zig").Workbench, editor_x: f32, edit
             }
             if (wb.debug_variables.items.items.len == 0) {
                 renderer.Renderer.drawText("No variables — start debug session and step.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+            } else if (wb.task_scroll_y < 1) {
+                renderer.Renderer.drawText("Click a variable to copy its value.", editor_x + 20, panel_y + panel_h - 18, 11.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
+            }
+        },
+        .debug_callstack => {
+            const content_top = panel_y + 34.0;
+            const content_h = panel_h - 34.0;
+            renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
+            var line_y = content_top - wb.task_scroll_y;
+            if (line_y + 14 >= content_top and line_y < content_top + content_h) {
+                renderer.Renderer.drawText("CALL STACK", editor_x + 20, line_y, 10.0, .{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 });
+            }
+            line_y += 16;
+            for (wb.debug_callstack.items.items) |frame| {
+                if (line_y + 14 < content_top or line_y >= content_top + content_h) {
+                    line_y += 14;
+                    continue;
+                }
+                var buf: [512:0]u8 = undefined;
+                const label = std.fmt.bufPrint(&buf, "#{d} {s} — {s}:{d}", .{ frame.index, frame.label, frame.path, frame.line + 1 }) catch frame.label;
+                buf[label.len] = 0;
+                renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.75, .g = 0.85, .b = 1.0, .a = 1.0 });
+                line_y += 14;
+            }
+            if (wb.debug_callstack.items.items.len == 0) {
+                renderer.Renderer.drawText("No stack frames — start debug session and step.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+            } else if (wb.task_scroll_y < 1) {
+                renderer.Renderer.drawText("Click a frame to jump to source.", editor_x + 20, panel_y + panel_h - 18, 11.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
             }
         },
     }

@@ -176,6 +176,7 @@ fn bottomPanelName(mode: commands_mod.BottomPanelMode) []const u8 {
         .terminal => "terminal",
         .debug_console => "debug_console",
         .debug_variables => "debug_variables",
+        .debug_callstack => "debug_callstack",
     };
 }
 
@@ -184,6 +185,7 @@ fn parseBottomPanel(name: []const u8) commands_mod.BottomPanelMode {
     if (std.mem.eql(u8, name, "terminal")) return .terminal;
     if (std.mem.eql(u8, name, "debug_console")) return .debug_console;
     if (std.mem.eql(u8, name, "debug_variables")) return .debug_variables;
+    if (std.mem.eql(u8, name, "debug_callstack")) return .debug_callstack;
     return .output;
 }
 
