@@ -9,6 +9,15 @@ pub const View = view.View;
 pub const Rect = view.Rect;
 pub const Color = view.Color;
 
+pub const TextSpan = extern struct {
+    offset: usize,
+    length: usize,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+};
+
 pub const KeyEvent = struct {
     keycode: i32,
     chars: []const u8,
@@ -118,5 +127,58 @@ pub const Renderer = struct {
 
     pub fn drawText(text: []const u8, x: f32, y: f32, font_size: f32, color: Color) void {
         mac.forge_mac_draw_text(@ptrCast(text.ptr), x, y, font_size, color.r, color.g, color.b, color.a);
+    }
+
+    pub fn drawStyledText(text: []const u8, x: f32, y: f32, font_size: f32, spans: []const TextSpan) void {
+        if (text.len == 0) return;
+        if (spans.len == 0) {
+            drawText(text, x, y, font_size, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
+            return;
+        }
+        mac.forge_mac_draw_styled_text(@ptrCast(text.ptr), text.len, x, y, font_size, @ptrCast(spans.ptr), spans.len);
+    }
+
+    pub fn getResolvedFontName(buf: []u8) void {
+        if (buf.len == 0) return;
+        mac.forge_mac_get_resolved_font_name(@ptrCast(buf.ptr), buf.len);
+    }
+
+    pub const FontWeight = enum(c_int) {
+        regular = 0,
+        medium = 1,
+        semibold = 2,
+        bold = 3,
+    };
+
+    pub fn setTextStyle(font_family: []const u8, font_weight: FontWeight) void {
+        mac.forge_mac_set_text_style(@ptrCast(font_family.ptr), @intFromEnum(font_weight));
+    }
+
+    pub fn applyThemeFont(theme: anytype) void {
+        const weight: FontWeight = switch (theme.font_weight) {
+            .regular => .regular,
+            .medium => .medium,
+            .semibold => .semibold,
+            .bold => .bold,
+        };
+        setTextStyle(theme.font_family, weight);
+    }
+
+    pub fn setEditorTextMetrics(font_size: f32, line_height: f32, baseline: f32) void {
+        mac.forge_mac_set_editor_text_metrics(font_size, line_height, baseline);
+    }
+
+    pub fn getFontMetrics(font_size: f32, char_width: *f32, line_height: *f32, baseline: *f32) void {
+        mac.forge_mac_get_font_metrics(font_size, char_width, line_height, baseline);
+    }
+
+    pub fn measureText(text: []const u8, font_size: f32) f32 {
+        if (text.len == 0) return 0;
+        return mac.forge_mac_measure_text_width(@ptrCast(text.ptr), text.len, font_size);
+    }
+
+    pub fn setClipboardText(text: []const u8) void {
+        if (text.len == 0) return;
+        mac.forge_mac_set_clipboard_text(@ptrCast(text.ptr), text.len);
     }
 };

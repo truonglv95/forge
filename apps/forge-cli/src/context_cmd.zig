@@ -12,6 +12,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
     var ctx_builder = try ai.context_loader.build(allocator, io, opened.root, .{
         .intent = intent,
         .explicit_files = parsed.flags.files,
+        .max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else 1024 * 1024,
     });
     defer ctx_builder.deinit();
 

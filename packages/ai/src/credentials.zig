@@ -1,4 +1,5 @@
 const std = @import("std");
+const process_spawn = @import("forge-util").process_spawn;
 
 pub const gemini_env_vars = &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" };
 pub const keychain_service = "forge-gemini";
@@ -33,6 +34,7 @@ pub const Credentials = struct {
         io: std.Io,
         environ_map: ?*const std.process.Environ.Map,
     ) !Credentials {
+        _ = io;
         if (environ_map) |map| {
             for (gemini_env_vars) |env_var| {
                 if (loadFromEnvMap(allocator, map, env_var)) |creds| {
@@ -44,50 +46,34 @@ pub const Credentials = struct {
             }
         }
 
-        return loadFromKeychain(allocator, io, keychain_service, keychain_account);
+        return loadFromKeychain(allocator, keychain_service, keychain_account);
     }
 
     pub fn loadFromKeychain(
         allocator: std.mem.Allocator,
-        io: std.Io,
         service: []const u8,
         account: []const u8,
     ) !Credentials {
         if (@import("builtin").os.tag != .macos) return error.NotFound;
 
-        var child = try std.process.spawn(io, .{
-            .argv = &.{
-                "security",
-                "find-generic-password",
-                "-s",
-                service,
-                "-a",
-                account,
-                "-w",
-            },
-            .cwd = .inherit,
+        const result = process_spawn.runCapture(allocator, &.{
+            "security",
+            "find-generic-password",
+            "-s",
+            service,
+            "-a",
+            account,
+            "-w",
+        }, .{
             .stdin = .ignore,
             .stdout = .pipe,
             .stderr = .ignore,
-        });
-        errdefer child.kill(io);
+        }) catch return error.NotFound;
+        defer allocator.free(result.output);
 
-        const stdout = child.stdout orelse return error.NotFound;
-        var reader = stdout.reader(io, &.{});
-        var output = std.Io.Writer.Allocating.init(allocator);
-        defer output.deinit();
-        _ = reader.interface.streamRemaining(&output.writer) catch return error.NotFound;
+        if (result.exit_code != 0) return error.NotFound;
 
-        const term = try child.wait(io);
-        switch (term) {
-            .exited => |code| {
-                if (code != 0) return error.NotFound;
-            },
-            else => return error.NotFound,
-        }
-
-        const raw = output.writer.buffer[0..output.writer.end];
-        const trimmed = std.mem.trim(u8, raw, "\r\n");
+        const trimmed = std.mem.trim(u8, result.output, "\r\n");
         if (trimmed.len == 0) return error.NotFound;
 
         return Credentials{

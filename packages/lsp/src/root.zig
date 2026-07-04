@@ -11,7 +11,19 @@ pub const ServerState = enum {
     ready,
     stopping,
     crashed,
+    configured,
 };
+
+pub const registry = @import("registry.zig");
+pub const Registry = registry.Registry;
+pub const ServerConfig = registry.ServerConfig;
+pub const jsonrpc = @import("jsonrpc.zig");
+pub const session = @import("session.zig");
+pub const Session = session.Session;
+pub const proxy = @import("proxy.zig");
+pub const Proxy = proxy.Proxy;
+pub const diagnostics = @import("diagnostics.zig");
+pub const completion = @import("completion.zig");
 
 pub fn acceptsRequests(state: ServerState) bool {
     return state == .ready;

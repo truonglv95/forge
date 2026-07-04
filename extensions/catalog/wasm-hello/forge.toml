@@ -1,0 +1,12 @@
+[extension]
+id = "forge.samples.wasm-hello"
+name = "WASM Hello"
+version = "0.1.0"
+api_version = 1
+runtime = "wasm"
+entry = "main.wasm"
+wasm_max_memory = 1048576
+
+[[commands]]
+id = "hello.wasm"
+title = "Run WASM Hello"

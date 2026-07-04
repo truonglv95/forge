@@ -33,25 +33,5 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
         return 2;
     }
 
-    var service = workspace.TransactionService.init(allocator, io, opened.root);
-    const tx_id = try workspace.history.nextTransactionId(allocator, io, opened.root);
-
-    var record = workspace.TransactionRecord{
-        .id = tx_id,
-        .state = .approved,
-        .workspace_edit = workspace_edit,
-        .timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds(),
-    };
-    defer service.freeRecord(&record);
-
-    try service.apply(&record);
-    try workspace.history.persistApplied(allocator, io, opened.root, &record, parsed.positional[0]);
-
-    if (parsed.flags.json) {
-        try writer.print("{{\"status\":\"ok\",\"type\":\"apply\",\"transaction_id\":{d},\"state\":\"applied\"}}\n", .{tx_id});
-    } else {
-        try writer.print("Applied transaction {d}\n", .{tx_id});
-    }
-
-    return 0;
+    return workspace_cmd.applyProposal(allocator, io, opened, parsed.positional[0], writer, parsed.flags.json);
 }

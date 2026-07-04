@@ -1,6 +1,5 @@
 const std = @import("std");
 const core = @import("forge-core");
-const kernel = @import("forge-kernel");
 const workspace = @import("forge-workspace");
 
 const args_mod = @import("args.zig");
@@ -16,7 +15,10 @@ const check_cmd = @import("check.zig");
 const context_cmd = @import("context_cmd.zig");
 const ask_cmd = @import("ask.zig");
 const plan_cmd = @import("plan.zig");
+const doctor_cmd = @import("doctor_cmd.zig");
 const run_cmd = @import("run_cmd.zig");
+const agent_cmd = @import("agent_cmd.zig");
+const ext_cmd = @import("ext_cmd.zig");
 
 const Io = std.Io;
 
@@ -56,8 +58,7 @@ fn run(
             return 0;
         },
         .doctor => {
-            try printDoctor(writer);
-            return 0;
+            return doctor_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
         .inspect => {
             return inspect_cmd.run(allocator, io, parsed, writer) catch 2;
@@ -95,8 +96,18 @@ fn run(
         .run => {
             return run_cmd.run(allocator, io, parsed, writer) catch 2;
         },
+        .agent => {
+            return agent_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
         .plan => {
             return plan_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
+        .ext => {
+            if (parsed.positional.len == 0) {
+                try writer.print("usage: forge ext <list|install|uninstall> [id]\n", .{});
+                return 2;
+            }
+            return ext_cmd.run(allocator, io, &parsed, writer) catch 2;
         },
         .help => {
             try printHelp(writer);
@@ -108,27 +119,6 @@ fn run(
             return 2;
         },
     }
-}
-
-fn printDoctor(writer: *Io.Writer) Io.Writer.Error!void {
-    var lifecycle = kernel.Lifecycle{};
-    lifecycle.transition(.starting) catch unreachable;
-    lifecycle.transition(.running) catch unreachable;
-
-    const default_config = workspace.Config{};
-    try writer.print(
-        \\Forge doctor
-        \\  version: {s}
-        \\  kernel:  {s}
-        \\  config:  valid (tab_width={d}, ai_apply_mode={s})
-        \\  status:  ready for M0 development
-        \\
-    , .{
-        core.version,
-        @tagName(lifecycle.state),
-        default_config.tab_width,
-        @tagName(default_config.ai_apply_mode),
-    });
 }
 
 fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
@@ -153,7 +143,9 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  context    Preview AI context preparation
         \\  ask        Ask AI to propose a change (no auto-apply)
         \\  run        List or show AI run records (list|show)
+        \\  agent      Multi-step agent (run|resume|list)
         \\  plan       Plan a proposal using AI
+        \\  ext        Manage extensions (list|install|uninstall)
         \\  help       Show this help
         \\
         \\Options:
@@ -164,8 +156,11 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --file <path>        Include file in AI context (repeatable)
         \\  --provider <name>    AI provider: auto|fake|gemini (default: auto)
         \\  --model <name>       Gemini model id (default: gemini-2.0-flash)
+        \\  --budget-bytes <n>   Context byte budget for forge context (default: 1MiB)
+        \\  --capability <name>  Agent capability: read_only|propose|propose_and_task
         \\  --once               Single watch poll (for tests)
         \\  --max-polls <n>      Limit watch polling iterations
+        \\  --max-steps <n>      Limit agent steps (default: 8)
         \\
     );
 }

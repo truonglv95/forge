@@ -51,6 +51,15 @@ pub const HistoryEntryList = history.EntryList;
 pub const LoadedRecord = history.LoadedRecord;
 
 pub const runs = @import("runs.zig");
+pub const sessions = @import("sessions.zig");
+
+pub const theme = @import("theme.zig");
+pub const Theme = theme.Theme;
+pub const ThemeSettings = theme.ThemeSettings;
+pub const ThemePreset = theme.ThemePreset;
+pub const FontWeight = theme.FontWeight;
+pub const ThemeOverrides = theme.ThemeOverrides;
+pub const Rgba = theme.Rgba;
 
 pub const subsystem = core.Subsystem.workspace;
 
@@ -60,6 +69,7 @@ pub const Config = struct {
     name: []const u8 = "forge-workspace",
     tab_width: u8 = 4,
     ai_apply_mode: AiApplyMode = .review,
+    theme: theme_mod.ThemeSettings = .{},
 
     pub fn parse(source: []const u8) error{ InvalidSyntax, InvalidValue, UnknownKey }!Config {
         var config = Config{};
@@ -92,19 +102,48 @@ pub const Config = struct {
             } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "apply_mode")) {
                 const mode = try parseString(value);
                 config.ai_apply_mode = std.meta.stringToEnum(AiApplyMode, mode) orelse return error.InvalidValue;
+            } else if (std.mem.eql(u8, section, "theme")) {
+                try config.theme.applyKey(key, value);
             } else {
                 return error.UnknownKey;
             }
         }
         return config;
     }
+
+    pub fn buildTheme(self: Config, allocator: std.mem.Allocator) !theme_mod.Theme {
+        return theme_mod.Theme.fromSettings(allocator, self.tab_width, self.theme);
+    }
 };
+
+const theme_mod = @import("theme.zig");
 
 fn parseString(value: []const u8) error{InvalidValue}![]const u8 {
     if (value.len < 2 or value[0] != '"' or value[value.len - 1] != '"') {
         return error.InvalidValue;
     }
     return value[1 .. value.len - 1];
+}
+
+test "workspace config parses theme settings" {
+    const config = try Config.parse(
+        \\[project]
+        \\name = "forge"
+        \\[editor]
+        \\tab_width = 2
+        \\[theme]
+        \\preset = "light"
+        \\font_size = 16
+        \\font_weight = "medium"
+        \\line_height = 1.4
+        \\[ai]
+        \\apply_mode = "review"
+    );
+    try std.testing.expectEqualStrings("forge", config.name);
+    try std.testing.expectEqual(@as(u8, 2), config.tab_width);
+    try std.testing.expectEqual(ThemePreset.light, config.theme.preset);
+    try std.testing.expectEqual(@as(f32, 16), config.theme.font_size);
+    try std.testing.expectEqual(FontWeight.medium, config.theme.font_weight);
 }
 
 test "workspace config parses the supported schema" {

@@ -3,6 +3,7 @@ const edit = @import("edit.zig");
 const path_mod = @import("path.zig");
 const atomic = @import("atomic.zig");
 const recovery = @import("recovery.zig");
+const history = @import("history.zig");
 const snapshot = @import("snapshot.zig");
 
 pub const TransactionState = enum {
@@ -85,23 +86,29 @@ pub const TransactionService = struct {
             try captureBackup(self, &backups, wp);
         }
 
+        record.backups = try backups.toOwnedSlice(self.allocator);
+        try history.persistBackups(self.io, self.root, record);
+
         var applied_index: usize = 0;
-        errdefer rollbackApplied(self, backups.items[0..applied_index]) catch {};
+        errdefer rollbackApplied(self, record.backups[0..applied_index]) catch {};
 
         for (record.workspace_edit.files, 0..) |file_edit, index| {
             const wp = try path_mod.WorkspacePath.parse(file_edit.path);
-            const content = try record.workspace_edit.materializeContent(self.allocator, self.io, self.root, file_edit);
-            defer if (file_edit.operation != .delete) self.allocator.free(content);
-
             switch (file_edit.operation) {
-                .create => try atomic.createFile(self.io, self.root, wp, content),
-                .modify => try atomic.replaceFile(self.io, self.root, wp, content),
+                .create, .modify => {
+                    const content = try record.workspace_edit.materializeContent(self.allocator, self.io, self.root, file_edit);
+                    defer self.allocator.free(content);
+                    if (file_edit.operation == .create) {
+                        try atomic.createFile(self.io, self.root, wp, content);
+                    } else {
+                        try atomic.replaceFile(self.io, self.root, wp, content);
+                    }
+                },
                 .delete => try atomic.deleteFile(self.io, self.root, wp),
             }
             applied_index = index + 1;
         }
 
-        record.backups = try backups.toOwnedSlice(self.allocator);
         record.state = .applied;
         try recovery.writeRecord(self.io, self.root, record);
     }
@@ -321,6 +328,49 @@ test "multi-file apply rolls back when a later file fails" {
     var restored = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse(first_path));
     defer restored.deinit();
     try std.testing.expectEqualStrings("alpha", restored.content);
+}
+
+test "apply delete and undo restores deleted file" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+
+    const rel_path = "remove-me.txt";
+    {
+        var file = try tmp.dir.createFile(io, rel_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "gone soon");
+    }
+
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const files = [_]edit.FileEdit{.{
+        .path = rel_path,
+        .operation = .delete,
+        .expected_hash = edit.contentHash("gone soon"),
+        .edits = &.{},
+    }};
+
+    var service = TransactionService.init(allocator, io, root);
+    var record = TransactionRecord{
+        .id = 5,
+        .state = .approved,
+        .workspace_edit = .{ .files = &files },
+        .timestamp_ms = 0,
+    };
+    defer service.freeRecord(&record);
+
+    try service.apply(&record);
+    root.dir.access(io, rel_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+
+    try service.undo(&record);
+    var restored = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse(rel_path));
+    defer restored.deinit();
+    try std.testing.expectEqualStrings("gone soon", restored.content);
 }
 
 test "apply create and undo removes created file" {

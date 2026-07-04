@@ -140,6 +140,25 @@ pub fn appendEntry(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(history_file), buffer.items);
 }
 
+pub fn persistBackups(
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+    record: *const transaction.TransactionRecord,
+) !void {
+    try ensureLayout(io, root);
+
+    var backup_root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const backup_root_rel = try std.fmt.bufPrint(&backup_root_buf, "{s}/{d}", .{ backups_dir, record.id });
+    try root.dir.createDirPath(io, backup_root_rel);
+
+    for (record.backups) |backup| {
+        if (!backup.existed) continue;
+        var backup_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const backup_rel = try std.fmt.bufPrint(&backup_path_buf, "{s}/{s}", .{ backup_root_rel, backup.path });
+        try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(backup_rel), backup.content);
+    }
+}
+
 pub fn persistApplied(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -156,16 +175,7 @@ pub fn persistApplied(
     const proposal_rel = try std.fmt.bufPrint(&proposal_rel_buf, "{s}/{d}.json", .{ proposals_dir, record.id });
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(proposal_rel), proposal_src.content);
 
-    var backup_root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const backup_root_rel = try std.fmt.bufPrint(&backup_root_buf, "{s}/{d}", .{ backups_dir, record.id });
-    try root.dir.createDirPath(io, backup_root_rel);
-
-    for (record.backups) |backup| {
-        if (!backup.existed) continue;
-        var backup_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const backup_rel = try std.fmt.bufPrint(&backup_path_buf, "{s}/{s}", .{ backup_root_rel, backup.path });
-        try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(backup_rel), backup.content);
-    }
+    try persistBackups(io, root, record);
 
     try appendEntry(allocator, io, root, .{
         .id = record.id,

@@ -108,7 +108,13 @@ pub const GeminiProvider = struct {
             if (attempt > 0) {
                 const delay_ms = retry.nextDelay(policy, attempt, &prng);
                 if (delay_ms > 0) {
-                    std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(@intCast(delay_ms)), .real) catch {};
+                    var waited: u32 = 0;
+                    while (waited < delay_ms) {
+                        if (cancel_token.isCancelled()) return provider.ProviderError.NetworkError;
+                        const slice: u32 = @min(50, delay_ms - waited);
+                        std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(@intCast(slice)), .real) catch {};
+                        waited += slice;
+                    }
                 }
             }
 

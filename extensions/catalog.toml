@@ -1,0 +1,26 @@
+[catalog]
+version = 1
+
+[[entry]]
+id = "forge.theme.solarized"
+name = "Solarized"
+version = "0.1.0"
+description = "Solarized dark palette for Forge"
+publisher = "forge"
+source = "catalog/solarized"
+
+[[entry]]
+id = "forge.lsp.zig"
+name = "Zig Language Server"
+version = "0.1.0"
+description = "Declarative zls configuration for Zig files"
+publisher = "forge"
+source = "catalog/zig-lsp"
+
+[[entry]]
+id = "forge.samples.wasm-hello"
+name = "WASM Hello"
+version = "0.1.0"
+description = "Sample WebAssembly extension with host file and LSP lookup"
+publisher = "forge"
+source = "catalog/wasm-hello"

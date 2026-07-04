@@ -1,5 +1,6 @@
 const std = @import("std");
 const cancellation = @import("cancellation.zig");
+const process_spawn = @import("forge-util").process_spawn;
 
 pub const ProcessOptions = struct {
     argv: []const []const u8,
@@ -8,27 +9,25 @@ pub const ProcessOptions = struct {
 };
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, options: ProcessOptions) !std.process.Child.Term {
-    _ = allocator;
+    _ = io;
 
-    const cwd: std.process.Child.Cwd = if (options.cwd) |path| .{ .path = path } else .inherit;
-
-    var child = try std.process.spawn(io, .{
-        .argv = options.argv,
-        .cwd = cwd,
+    var child = try process_spawn.spawn(allocator, options.argv, .{
+        .cwd = options.cwd,
         .stdin = .ignore,
-        .stdout = .pipe,
-        .stderr = .pipe,
+        .stdout = .inherit,
+        .stderr = .inherit,
     });
-    defer child.kill(io);
+    defer child.deinit();
 
     if (options.token) |tok| {
         if (tok.isCancelled()) {
-            child.kill(io);
+            child.kill();
             return std.process.Child.Term{ .signal = std.posix.SIG.KILL };
         }
     }
 
-    return try child.wait(io);
+    const code = child.wait();
+    return std.process.Child.Term{ .exited = @intCast(code) };
 }
 
 test "Process runner struct compiles" {

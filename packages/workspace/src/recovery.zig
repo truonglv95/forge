@@ -53,3 +53,41 @@ test "recovery clears active marker when none exists" {
     const root = path_mod.WorkspaceRoot.init(tmp.dir);
     try recoverPending(std.testing.allocator, io, root);
 }
+
+test "recoverPending restores files from backup directory" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+
+    try history.ensureLayout(io, root);
+    {
+        var file = try tmp.dir.createFile(io, "src.txt", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "corrupted");
+    }
+    var backups = [_]transaction.FileBackup{
+        .{
+            .path = "src.txt",
+            .existed = true,
+            .content = "original",
+        },
+    };
+    try history.persistBackups(io, root, &.{
+        .id = 7,
+        .state = .applying,
+        .workspace_edit = .{ .files = &.{} },
+        .timestamp_ms = 0,
+        .backups = backups[0..],
+    });
+    try history.writeActiveMarker(io, root, 7);
+
+    try recoverPending(allocator, io, root);
+
+    var snap = try @import("snapshot.zig").FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse("src.txt"));
+    defer snap.deinit();
+    try std.testing.expectEqualStrings("original", snap.content);
+    try std.testing.expect((try history.readActiveMarker(io, root)) == null);
+}

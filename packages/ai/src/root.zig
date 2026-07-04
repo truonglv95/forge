@@ -10,12 +10,18 @@ pub const fake_provider = @import("fake_provider.zig");
 pub const gemini_provider = @import("gemini_provider.zig");
 pub const credentials = @import("credentials.zig");
 pub const provider_factory = @import("provider_factory.zig");
+pub const agent = @import("agent.zig");
+pub const tools = @import("tools.zig");
+pub const tool_executor = @import("tool_executor.zig");
+pub const progress = @import("progress.zig");
+pub const streaming = @import("streaming.zig");
 pub const retry = @import("retry.zig");
 pub const secret_scanner = @import("secret_scanner.zig");
 pub const context = @import("context.zig");
 pub const context_loader = @import("context_loader.zig");
 pub const planner = @import("planner.zig");
 pub const run_record = @import("run_record.zig");
+pub const proposal_workflow = @import("proposal_workflow.zig");
 
 pub const ProposalStatus = enum {
     draft,

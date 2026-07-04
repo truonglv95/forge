@@ -67,5 +67,5 @@ Failure/cancel: `failed`, `cancelled`
 
 - [x] Schema documented
 - [x] CLI writes run + index on `forge ask`
-- [ ] `forge run list/show` commands
+- [x] `forge run list/show` commands
 - [ ] IDE/agents window use same paths

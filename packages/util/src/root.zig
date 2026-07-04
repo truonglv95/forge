@@ -2,6 +2,9 @@
 
 const std = @import("std");
 
+pub const sync = @import("sync.zig");
+pub const process_spawn = @import("process_spawn.zig");
+
 pub fn eqlIgnoreAsciiCase(lhs: []const u8, rhs: []const u8) bool {
     return std.ascii.eqlIgnoreCase(lhs, rhs);
 }

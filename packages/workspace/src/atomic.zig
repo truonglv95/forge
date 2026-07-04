@@ -33,6 +33,11 @@ pub fn createFile(io: std.Io, root: path_mod.WorkspaceRoot, file_path: path_mod.
     file.close(io);
 }
 
+/// Creates a directory path relative to the workspace root.
+pub fn createDirPath(io: std.Io, root: path_mod.WorkspaceRoot, dir_path: []const u8) !void {
+    try root.dir.createDirPath(io, dir_path);
+}
+
 /// Deletes a file.
 pub fn deleteFile(io: std.Io, root: path_mod.WorkspaceRoot, file_path: path_mod.WorkspacePath) !void {
     try root.dir.deleteFile(io, file_path.raw);

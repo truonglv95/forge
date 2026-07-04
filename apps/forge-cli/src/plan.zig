@@ -2,6 +2,7 @@ const std = @import("std");
 const args_mod = @import("args.zig");
 const workspace_cmd = @import("workspace_cmd.zig");
 const ai_workflow = @import("ai_workflow.zig");
+const cancel_scope_mod = @import("cancel_scope.zig");
 
 pub fn run(
     allocator: std.mem.Allocator,
@@ -19,10 +20,16 @@ pub fn run(
     var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
     defer opened.close(io);
 
+    var scope = try cancel_scope_mod.Scope.init(allocator);
+    defer scope.deinit();
+    if (!parsed.flags.quiet and !parsed.flags.json) scope.installSigint();
+
     if (!parsed.flags.quiet and !parsed.flags.json) {
         try writer.print("Planning intent: '{s}'\n", .{intent});
-        try writer.writeAll("Building context...\nInvoking model...\n");
     }
+
+    const progress_writer: ?*std.Io.Writer = if (parsed.flags.quiet or parsed.flags.json) null else writer;
+    var cancel_token = scope.token();
 
     const generated = ai_workflow.generateAndPersist(
         allocator,
@@ -33,10 +40,19 @@ pub fn run(
         intent,
         parsed.flags.files,
         ai_workflow.providerOptionsFromFlags(.plan, parsed.flags),
+        .{
+            .cancel_token = &cancel_token,
+            .progress_writer = progress_writer,
+            .progress_json = parsed.flags.json,
+        },
     ) catch |err| switch (err) {
         error.MissingProviderCredentials => {
             try writer.writeAll("error: gemini provider requires GEMINI_API_KEY, GOOGLE_API_KEY, or macOS Keychain entry (service forge-gemini)\n");
             return 2;
+        },
+        error.Cancelled => {
+            try writer.writeAll("error: plan cancelled\n");
+            return 130;
         },
         error.ProviderFailed => {
             try writer.writeAll("error: AI provider failed\n");
