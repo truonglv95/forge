@@ -773,18 +773,20 @@ fn drawEditorViewport(
             var num_buf: [16]u8 = undefined;
             const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{idx + 1}) catch "";
             renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, c(theme.colors.line_number));
-            if (show_diags and diag_store.worstSeverityOnLine(wb.diagnostics.list, idx)) |severity| {
-                const marker = switch (severity) {
-                    .err => "!",
-                    .warning => "~",
-                    else => "·",
-                };
-                const marker_color = switch (severity) {
-                    .err => c(theme.colors.warning),
-                    .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
-                    else => c(theme.colors.text_muted),
-                };
-                renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
+            if (show_diags) {
+                if (diag_store.worstSeverityOnLine(wb.diagnostics.list, idx)) |severity| {
+                    const marker = switch (severity) {
+                        .err => "!",
+                        .warning => "~",
+                        else => "·",
+                    };
+                    const marker_color = switch (severity) {
+                        .err => c(theme.colors.warning),
+                        .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
+                        else => c(theme.colors.text_muted),
+                    };
+                    renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
+                }
             }
         }
         line_num_y += line_h;

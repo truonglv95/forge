@@ -150,7 +150,7 @@ pub const Store = struct {
     ) !void {
         const hash = workspace.edit.contentHash(content);
         const gop = try self.entries.getOrPut(path);
-        if (!gop.foundExisting) gop.value_ptr.* = .{};
+        if (!gop.found_existing) gop.value_ptr.* = .{};
 
         const state = gop.value_ptr;
         var notify_buf: [65536]u8 = undefined;
