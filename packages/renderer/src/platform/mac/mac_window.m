@@ -1032,3 +1032,19 @@ void forge_mac_set_clipboard_text(const char* text, size_t len) {
         [pasteboard setString:value forType:NSPasteboardTypeString];
     }
 }
+
+size_t forge_mac_get_clipboard_text(char* out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    @autoreleasepool {
+        NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+        NSString *value = [pasteboard stringForType:NSPasteboardTypeString];
+        if (!value) return 0;
+        const char *utf8 = [value UTF8String];
+        if (!utf8) return 0;
+        size_t len = strlen(utf8);
+        if (len >= cap) len = cap - 1;
+        memcpy(out, utf8, len);
+        out[len] = '\0';
+        return len;
+    }
+}

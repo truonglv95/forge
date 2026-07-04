@@ -183,4 +183,11 @@ pub const Renderer = struct {
         if (text.len == 0) return;
         mac.forge_mac_set_clipboard_text(@ptrCast(text.ptr), text.len);
     }
+
+    pub fn clipboardText(allocator: std.mem.Allocator) ![]u8 {
+        var buf: [16384]u8 = undefined;
+        const len = mac.forge_mac_get_clipboard_text(&buf, buf.len);
+        if (len == 0) return try allocator.dupe(u8, "");
+        return try allocator.dupe(u8, buf[0..len]);
+    }
 };

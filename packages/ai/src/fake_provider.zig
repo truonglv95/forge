@@ -7,8 +7,14 @@ pub const FakeProvider = struct {
     response: []const u8,
     simulated_usage: provider.TokenUsage,
     meta: provider.ModelMetadata,
+    stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
+    stream_context: ?*anyopaque = null,
 
-    pub fn init(response: []const u8) FakeProvider {
+    pub fn init(
+        response: []const u8,
+        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
+        stream_context: ?*anyopaque,
+    ) FakeProvider {
         return .{
             .response = response,
             .simulated_usage = .{ .prompt_tokens = 10, .completion_tokens = 20, .total_tokens = 30 },
@@ -17,6 +23,8 @@ pub const FakeProvider = struct {
                 .model_name = "fake-model-1",
                 .context_window = 4096,
             },
+            .stream_callback = stream_callback,
+            .stream_context = stream_context,
         };
     }
 
@@ -38,7 +46,10 @@ pub const FakeProvider = struct {
 
         if (cancel_token.isCancelled()) return provider.ProviderError.NetworkError;
 
-        try streaming.writeChunks(self.response, writer, cancel_token, .{});
+        try streaming.writeChunks(self.response, writer, cancel_token, .{
+            .on_chunk = self.stream_callback,
+            .on_chunk_context = self.stream_context,
+        });
     }
 
     fn metadataImpl(ptr: *const anyopaque) provider.ModelMetadata {
@@ -53,7 +64,7 @@ pub const FakeProvider = struct {
 };
 
 test "FakeProvider honours cancellation while streaming" {
-    var fake = FakeProvider.init("0123456789012345678901234567890");
+    var fake = FakeProvider.init("0123456789012345678901234567890", null, null);
     const p = fake.providerInterface();
 
     var buffer: [64]u8 = undefined;
@@ -71,7 +82,7 @@ test "FakeProvider honours cancellation while streaming" {
 }
 
 test "FakeProvider implements Provider interface correctly" {
-    var fake = FakeProvider.init("Hello, world!");
+    var fake = FakeProvider.init("Hello, world!", null, null);
     const p = fake.providerInterface();
 
     var buffer: [1024]u8 = undefined;

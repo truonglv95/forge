@@ -29,10 +29,22 @@ pub const ReviewActions = struct {
     reject: ButtonRect,
 };
 
+pub fn agentPromptTop(window_h: f32) f32 {
+    return window_h - @import("layout.zig").status_height - 100;
+}
+
+pub fn hitPromptInput(agent_x: f32, agent_w: f32, window_h: f32, x: f32, y: f32) bool {
+    const input_y = agentPromptTop(window_h);
+    const box_x = agent_x + 10;
+    const box_w = agent_w - 20;
+    const box_h: f32 = 80;
+    return x >= box_x and x < box_x + box_w and y >= input_y and y < input_y + box_h;
+}
+
 pub fn reviewActions(agent_x: f32, _: f32, window_h: f32) ReviewActions {
     const pad: f32 = 20;
     const inner_x = agent_x + pad;
-    const y = window_h - 145;
+    const y = agentPromptTop(window_h) - 36;
     return .{
         .apply = .{ .x = inner_x, .y = y, .w = 88, .h = 28 },
         .reject = .{ .x = inner_x + 96, .y = y, .w = 88, .h = 28 },

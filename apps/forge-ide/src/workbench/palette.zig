@@ -72,6 +72,7 @@ pub const Palette = struct {
             .{ .id = "agent.plan", .title = "Agent: Plan Mode", .category = "Agent", .command = .{ .agent_set_mode = .plan } },
             .{ .id = "agent.apply", .title = "Agent: Apply Proposal", .category = "Agent", .command = .agent_apply },
             .{ .id = "agent.reject", .title = "Agent: Reject Proposal", .category = "Agent", .command = .agent_reject },
+            .{ .id = "agent.review", .title = "Agent: Review Last Proposal", .category = "Agent", .command = .agent_show_review },
             .{ .id = "agent.runs", .title = "Agent: Refresh Run History", .category = "Agent", .command = .agent_refresh_runs },
             .{ .id = "file.close", .title = "Close Active Tab", .category = "File", .command = .close_active_tab },
             .{ .id = "file.close.all", .title = "Close All Tabs", .category = "File", .command = .close_all_tabs },

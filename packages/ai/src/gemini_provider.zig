@@ -3,6 +3,7 @@ const provider = @import("provider.zig");
 const credentials = @import("credentials.zig");
 const kernel = @import("forge-kernel");
 const retry = @import("retry.zig");
+const streaming = @import("streaming.zig");
 
 pub const default_model = "gemini-2.0-flash";
 pub const test_mode_prompt = "test_mode";
@@ -27,12 +28,16 @@ pub const GeminiProvider = struct {
     model_name: []const u8,
     meta: provider.ModelMetadata,
     latest_usage: provider.TokenUsage,
+    stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
+    stream_context: ?*anyopaque = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
         creds: credentials.Credentials,
         model_name: []const u8,
+        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
+        stream_context: ?*anyopaque,
     ) GeminiProvider {
         return .{
             .allocator = allocator,
@@ -45,6 +50,8 @@ pub const GeminiProvider = struct {
                 .context_window = 1_048_576,
             },
             .latest_usage = .{},
+            .stream_callback = stream_callback,
+            .stream_context = stream_context,
         };
     }
 
@@ -149,7 +156,10 @@ pub const GeminiProvider = struct {
             };
             defer allocator.free(normalized);
             self.latest_usage = extractUsage(allocator, response_text) catch .{};
-            writer.writeAll(normalized) catch return provider.ProviderError.NetworkError;
+            try streaming.writeChunks(normalized, writer, cancel_token, .{
+                .on_chunk = self.stream_callback,
+                .on_chunk_context = self.stream_context,
+            });
             return;
         }
     }
@@ -308,7 +318,7 @@ test "GeminiProvider test mode" {
     };
     defer creds.deinit();
 
-    var gemini = GeminiProvider.init(allocator, std.testing.io, creds, default_model);
+    var gemini = GeminiProvider.init(allocator, std.testing.io, creds, default_model, null, null);
     defer gemini.deinit();
     const p = gemini.providerInterface();
 

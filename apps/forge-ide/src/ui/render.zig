@@ -205,16 +205,26 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
     renderer.Renderer.setClipRect(agent_x, layout.header_height, agent_w, h - layout.header_height - layout.status_height);
 
     const snap = wb.agent.snapshot();
+    if (snap.worker_running) wb.clampChatScroll(h);
+
     var mode_buf: [32:0]u8 = undefined;
     const mode_label = std.fmt.bufPrint(&mode_buf, "AGENT — {s}", .{@tagName(snap.mode)}) catch "AGENT";
     mode_buf[mode_label.len] = 0;
     renderer.Renderer.drawText(@ptrCast(&mode_buf), inner_x, 45, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
 
     if (snap.status_line.len > 0) {
-        var status_buf: [256:0]u8 = undefined;
-        const clipped = if (snap.status_line.len > 255) snap.status_line[0..255] else snap.status_line;
-        @memcpy(status_buf[0..clipped.len], clipped);
-        status_buf[clipped.len] = 0;
+        var status_buf: [320:0]u8 = undefined;
+        const spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+        var prefix_len: usize = 0;
+        if (snap.worker_running) {
+            const frame_idx = @as(usize, @intFromFloat(@mod(state.time * 10.0, 10.0))) % spinner_frames.len;
+            prefix_len = 2;
+            status_buf[0] = spinner_frames[frame_idx];
+            status_buf[1] = ' ';
+        }
+        const clipped = if (snap.status_line.len > 319 - prefix_len) snap.status_line[0 .. 319 - prefix_len] else snap.status_line;
+        @memcpy(status_buf[prefix_len .. prefix_len + clipped.len], clipped);
+        status_buf[prefix_len + clipped.len] = 0;
         renderer.Renderer.drawText(@ptrCast(&status_buf), inner_x, 62, 11.0, .{ .r = 0.75, .g = 0.85, .b = 1.0, .a = 1.0 });
     }
 
@@ -295,13 +305,6 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
             review_y += 12.0;
         }
         wb.agent.unlock();
-
-        const agent_actions = @import("agent_panel.zig").reviewActions(agent_x, agent_w, h);
-        renderer.Renderer.drawRoundedRect(agent_actions.apply.x, agent_actions.apply.y, agent_actions.apply.w, agent_actions.apply.h, 6, .{ .r = 0.2, .g = 0.55, .b = 0.35, .a = 1.0 });
-        renderer.Renderer.drawText("Apply", agent_actions.apply.x + 22, agent_actions.apply.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-        renderer.Renderer.drawRoundedRect(agent_actions.reject.x, agent_actions.reject.y, agent_actions.reject.w, agent_actions.reject.h, 6, .{ .r = 0.45, .g = 0.2, .b = 0.2, .a = 1.0 });
-        renderer.Renderer.drawText("Reject", agent_actions.reject.x + 16, agent_actions.reject.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-        renderer.Renderer.drawText("Cmd+Enter apply  Esc reject  Up/Down scroll", inner_x, h - 120, 10.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
     } else {
         for (state.chat_history.?.items) |msg| {
             const lines = @as(f32, @floatFromInt(std.mem.count(u8, msg.content, "\n") + 1));
@@ -309,17 +312,38 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
             const bubble_x = agent_x + 10;
             if (msg.role == .user) {
                 renderer.Renderer.drawRoundedRect(bubble_x, content_y - 4, content_w, bubble_h, 8.0, .{ .r = 0.2, .g = 0.2, .b = 0.25, .a = 1.0 });
-                renderer.Renderer.drawText(msg.content, inner_x + 40, content_y, 14.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+                renderer.Renderer.drawText(msg.content, inner_x + 8, content_y, 14.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
             } else {
                 renderer.Renderer.drawRoundedRect(bubble_x, content_y - 4, content_w, bubble_h, 8.0, .{ .r = 0.15, .g = 0.25, .b = 0.15, .a = 1.0 });
-                renderer.Renderer.drawText(msg.content, inner_x + 50, content_y, 14.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+                renderer.Renderer.drawText(msg.content, inner_x + 8, content_y, 14.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
             }
             content_y += bubble_h + 10.0;
+        }
+
+        if (snap.worker_running and snap.stream_len > 0) {
+            wb.agent.lock();
+            const stream = wb.agent.stream_text.items;
+            const tail_start = if (stream.len > 512) stream.len - 512 else 0;
+            const shown = stream[tail_start..];
+            var stream_buf: [513:0]u8 = undefined;
+            @memcpy(stream_buf[0..shown.len], shown);
+            stream_buf[shown.len] = 0;
+            wb.agent.unlock();
+
+            const stream_lines = @as(f32, @floatFromInt(std.mem.count(u8, shown, "\n") + 1));
+            const stream_h = stream_lines * 16.0 + 10.0;
+            const bubble_x = agent_x + 10;
+            renderer.Renderer.drawRoundedRect(bubble_x, content_y - 4, content_w, stream_h, 8.0, .{ .r = 0.12, .g = 0.22, .b = 0.18, .a = 1.0 });
+            renderer.Renderer.drawText(@ptrCast(&stream_buf), inner_x + 8, content_y, 12.0, .{ .r = 0.75, .g = 0.95, .b = 0.8, .a = 1.0 });
         }
     }
 
     const input_y = h - layout.status_height - 100;
-    renderer.Renderer.drawRoundedRect(agent_x + 10, input_y, content_w, 80, 12.0, .{ .r = 0.2, .g = 0.2, .b = 0.2, .a = 1.0 });
+    const input_bg = if (snap.worker_running)
+        renderer.Color{ .r = 0.14, .g = 0.14, .b = 0.14, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.2, .g = 0.2, .b = 0.2, .a = 1.0 };
+    renderer.Renderer.drawRoundedRect(agent_x + 10, input_y, content_w, 80, 12.0, input_bg);
     const show_cursor = @mod(state.time, 1.0) < 0.5;
     const show_prompt_cursor = show_cursor and wb.focused_panel == .agent and !snap.show_review and !snap.worker_running;
     const prompt_str = wb.prompt_buffer.toDisplayString(show_prompt_cursor) catch return;
@@ -327,7 +351,20 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
     renderer.Renderer.drawText(prompt_str, inner_x, input_y + 10, 14.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
     if (!snap.show_review and !snap.worker_running) {
         renderer.Renderer.drawText("@ add scope file", inner_x, input_y + 58, 10.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
+    } else if (snap.worker_running) {
+        renderer.Renderer.drawText("Agent running — Cmd+C to cancel", inner_x, input_y + 58, 10.0, .{ .r = 0.55, .g = 0.65, .b = 0.55, .a = 1.0 });
     }
+
+    if (snap.show_review) {
+        const agent_actions = @import("agent_panel.zig").reviewActions(agent_x, agent_w, h);
+        renderer.Renderer.drawRoundedRect(agent_actions.apply.x, agent_actions.apply.y, agent_actions.apply.w, agent_actions.apply.h, 6, .{ .r = 0.2, .g = 0.55, .b = 0.35, .a = 1.0 });
+        renderer.Renderer.drawText("Apply", agent_actions.apply.x + 22, agent_actions.apply.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+        renderer.Renderer.drawRoundedRect(agent_actions.reject.x, agent_actions.reject.y, agent_actions.reject.w, agent_actions.reject.h, 6, .{ .r = 0.45, .g = 0.2, .b = 0.2, .a = 1.0 });
+        renderer.Renderer.drawText("Reject", agent_actions.reject.x + 16, agent_actions.reject.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+        const hint_y = agent_actions.apply.y - 14;
+        renderer.Renderer.drawText("Review proposal — Apply or Reject", inner_x, hint_y, 10.0, .{ .r = 0.65, .g = 0.65, .b = 0.65, .a = 1.0 });
+    }
+
     renderer.Renderer.clearClipRect();
 }
 

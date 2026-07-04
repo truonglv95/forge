@@ -4,6 +4,8 @@ const provider = @import("provider.zig");
 
 pub const Options = struct {
     chunk_size: usize = 32,
+    on_chunk: ?*const fn (?*anyopaque, []const u8) void = null,
+    on_chunk_context: ?*anyopaque = null,
 };
 
 /// Writes `content` to `writer` in chunks, checking cancellation between chunks.
@@ -19,6 +21,7 @@ pub fn writeChunks(
     while (offset < content.len) {
         if (cancel_token.isCancelled()) return provider.ProviderError.NetworkError;
         const end = @min(offset + options.chunk_size, content.len);
+        if (options.on_chunk) |callback| callback(options.on_chunk_context, content[offset..end]);
         writer.writeAll(content[offset..end]) catch return provider.ProviderError.NetworkError;
         offset = end;
     }

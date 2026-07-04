@@ -33,6 +33,7 @@ pub const Command = union(enum) {
     agent_cancel: void,
     agent_apply: void,
     agent_reject: void,
+    agent_show_review: void,
     agent_select_run: usize,
     agent_refresh_runs: void,
     agent_add_scope: []const u8,

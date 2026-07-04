@@ -9,6 +9,9 @@ pub const ChatRole = enum { user, agent };
 pub const Host = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    ai_provider: []const u8,
+    ai_model: ?[]const u8,
     workspace_root: workspace.WorkspaceRoot,
     agent: *session_mod.Session,
     agent_cancel_slot: *?*kernel.cancellation.CancellationTokenSource,
@@ -41,6 +44,7 @@ pub fn spawnGenerate(host: *const Host, intent: []const u8, scope_files: []const
     };
 
     host.agent.resetForNewRun();
+    host.agent.clearStreamText();
     host.agent.setPhase(.building_context, "Building context...") catch {};
     host.agent.lock();
     host.agent.worker_running = true;
@@ -139,6 +143,7 @@ pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
 
     host.agent.show_review = true;
     host.agent.phase = .reviewing;
+    host.agent.review_scroll_y = 0;
 }
 
 pub fn refreshRunHistory(host: *const Host) !void {
@@ -180,6 +185,16 @@ const GenerateContext = struct {
     }
 };
 
+fn providerOptions(host: *const Host, fake_response: []const u8) ai.provider_factory.Options {
+    return .{
+        .kind = ai.provider_factory.Kind.parse(host.ai_provider),
+        .model = host.ai_model,
+        .fake_response = fake_response,
+        .stream_callback = streamBridge,
+        .stream_context = @ptrCast(@constCast(host)),
+    };
+}
+
 fn generateWorker(ctx: *GenerateContext) void {
     defer ctx.deinit();
 
@@ -191,7 +206,7 @@ fn generateWorker(ctx: *GenerateContext) void {
         .plan => default_plan_response,
     };
 
-    generateInner(ctx, fake_response) catch |err| {
+    generateInner(ctx, providerOptions(&ctx.host, fake_response)) catch |err| {
         const msg = switch (err) {
             error.Cancelled => "Cancelled",
             error.MissingProviderCredentials => "Missing provider credentials",
@@ -207,18 +222,18 @@ fn generateWorker(ctx: *GenerateContext) void {
     };
 }
 
-fn generateInner(ctx: *GenerateContext, fake_response: []const u8) AgentError!void {
+fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Options) AgentError!void {
     const host = &ctx.host;
     const cancel_token = ctx.cancel_source.getToken();
 
     var result = ai.proposal_workflow.generateAndPersist(
         host.allocator,
         host.io,
-        null,
+        host.environ_map,
         host.workspace_root,
         ctx.intent,
         ctx.scope_files,
-        .{ .kind = .fake, .fake_response = fake_response },
+        provider_options,
         .{
             .surface = .ide,
             .mode = switch (host.agent.mode) {
@@ -228,6 +243,8 @@ fn generateInner(ctx: *GenerateContext, fake_response: []const u8) AgentError!vo
             .cancel_token = &cancel_token,
             .progress_callback = phaseBridge,
             .progress_context = host,
+            .stream_callback = streamBridge,
+            .stream_context = host,
         },
     ) catch |err| switch (err) {
         ai.proposal_workflow.WorkflowError.Cancelled => return error.Cancelled,
@@ -263,6 +280,7 @@ fn generateInner(ctx: *GenerateContext, fake_response: []const u8) AgentError!vo
 
 fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
     const host: *Host = @ptrCast(@alignCast(context.?));
+    if (phase == .sending) host.agent.clearStreamText();
     const mapped: session_mod.Phase = switch (phase) {
         .context_built => .building_context,
         .sending => .sending,
@@ -278,6 +296,11 @@ fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
         .proposal_ready => "Proposal ready for review",
     };
     host.agent.setPhase(mapped, label) catch {};
+}
+
+fn streamBridge(context: ?*anyopaque, chunk: []const u8) void {
+    const host: *Host = @ptrCast(@alignCast(context.?));
+    host.agent.appendStreamChunk(chunk) catch {};
 }
 
 fn captureContextManifest(host: *const Host, builder: *const ai.context.ContextBuilder) !void {
