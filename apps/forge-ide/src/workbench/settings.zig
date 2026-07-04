@@ -78,53 +78,52 @@ pub fn writeWordWrap(
 ) !void {
     const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
     const value = if (enabled) "true" else "false";
-    const existing = workspace.FileSnapshot.read(allocator, io, root, wp) catch blk: {
+
+    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch {
         const content = try std.fmt.allocPrint(allocator, "[editor]\nword_wrap = {s}\n", .{value});
         defer allocator.free(content);
         try workspace.atomic.replaceFile(io, root, wp, content);
-        break :blk null;
+        return;
     };
+    defer snap.deinit();
 
-    if (existing) |*snap| {
-        defer snap.deinit();
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(allocator);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
 
-        var in_editor = false;
-        var wrote = false;
-        var lines = std.mem.splitScalar(u8, snap.content, '\n');
-        while (lines.next()) |raw_line| {
-            const trimmed = std.mem.trim(u8, &std.ascii.whitespace, raw_line);
-            if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
-                const name = std.mem.trim(u8, &std.ascii.whitespace, trimmed[1 .. trimmed.len - 1]);
-                if (in_editor and !wrote) {
-                    try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "word_wrap = {s}\n", .{value}));
-                    wrote = true;
-                }
-                in_editor = std.mem.eql(u8, name, "editor");
-                try out.appendSlice(allocator, raw_line);
-                try out.append(allocator, '\n');
-                continue;
-            }
-            if (in_editor and std.mem.startsWith(u8, trimmed, "word_wrap")) {
+    var in_editor = false;
+    var wrote = false;
+    var lines = std.mem.splitScalar(u8, snap.content, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, &std.ascii.whitespace, raw_line);
+        if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+            const name = std.mem.trim(u8, &std.ascii.whitespace, trimmed[1 .. trimmed.len - 1]);
+            if (in_editor and !wrote) {
                 try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "word_wrap = {s}\n", .{value}));
                 wrote = true;
-                continue;
             }
+            in_editor = std.mem.eql(u8, name, "editor");
             try out.appendSlice(allocator, raw_line);
             try out.append(allocator, '\n');
+            continue;
         }
-
-        if (!wrote) {
-            if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') {
-                try out.append(allocator, '\n');
-            }
-            try out.appendSlice(allocator, "\n[editor]\n");
+        if (in_editor and std.mem.startsWith(u8, trimmed, "word_wrap")) {
             try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "word_wrap = {s}\n", .{value}));
+            wrote = true;
+            continue;
         }
-
-        try workspace.atomic.replaceFile(io, root, wp, out.items);
+        try out.appendSlice(allocator, raw_line);
+        try out.append(allocator, '\n');
     }
+
+    if (!wrote) {
+        if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') {
+            try out.append(allocator, '\n');
+        }
+        try out.appendSlice(allocator, "\n[editor]\n");
+        try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "word_wrap = {s}\n", .{value}));
+    }
+
+    try workspace.atomic.replaceFile(io, root, wp, out.items);
 }
 
 pub fn mergeExtensionTheme(allocator: std.mem.Allocator, existing: []const u8, qualified: []const u8) ![]u8 {

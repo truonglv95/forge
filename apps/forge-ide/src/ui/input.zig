@@ -539,13 +539,14 @@ fn editorPosAt(
         const visual_row: usize = @intFromFloat(click_y / editor_scroll.lineHeight(&wb.theme));
         const effective_x = click_x - scroll_x;
         if (effective_x < 0) return null;
-        return word_wrap.columnAtVisualRow(
+        const pos = word_wrap.columnAtVisualRow(
             editor_buf,
             visual_row,
             effective_x,
             viewport_w,
             wb.theme.editor_font_size,
-        );
+        ) orelse return null;
+        return .{ .row = pos.row, .col = pos.col };
     }
 
     var row: usize = @intFromFloat(click_y / editor_scroll.lineHeight(&wb.theme));
