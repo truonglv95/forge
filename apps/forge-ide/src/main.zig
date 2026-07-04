@@ -15,9 +15,13 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("Forge IDE starting for workspace: {s}\n", .{workspace_path});
 
-    var wb = try Workbench.Workbench.init(allocator, io, workspace_path);
-    defer wb.deinit();
-    state.wb = &wb;
+    const wb = try allocator.create(Workbench.Workbench);
+    try Workbench.Workbench.init(wb, allocator, io, workspace_path);
+    defer {
+        wb.deinit();
+        allocator.destroy(wb);
+    }
+    state.wb = wb;
     builtin_ext.bindStatus(&.{ .setStatus = state.StatusBridge.setStatus });
 
     state.prompt_buffer = &wb.prompt_buffer;

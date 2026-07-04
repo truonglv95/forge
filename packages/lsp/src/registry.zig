@@ -1,4 +1,5 @@
 const std = @import("std");
+const forge_util = @import("forge-util");
 const root = @import("root.zig");
 
 pub const ServerConfig = struct {
@@ -12,12 +13,19 @@ pub const ServerConfig = struct {
 
 pub const Registry = struct {
     servers: std.ArrayList(ServerConfig),
+    mutex: forge_util.sync.Mutex = .{},
 
     pub fn init(_: std.mem.Allocator) Registry {
         return .{ .servers = .empty };
     }
 
     pub fn deinit(self: *Registry, allocator: std.mem.Allocator) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.freeServers(allocator);
+    }
+
+    fn freeServers(self: *Registry, allocator: std.mem.Allocator) void {
         for (self.servers.items) |item| {
             allocator.free(item.language_id);
             allocator.free(item.server);
@@ -26,14 +34,18 @@ pub const Registry = struct {
             allocator.free(item.extension_id);
         }
         self.servers.deinit(allocator);
+        self.servers = .empty;
     }
 
     pub fn clear(self: *Registry, allocator: std.mem.Allocator) void {
-        self.deinit(allocator);
-        self.* = init(allocator);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.freeServers(allocator);
     }
 
     pub fn add(self: *Registry, allocator: std.mem.Allocator, config: ServerConfig) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         try self.servers.append(allocator, .{
             .language_id = try allocator.dupe(u8, config.language_id),
             .server = try allocator.dupe(u8, config.server),
@@ -44,7 +56,13 @@ pub const Registry = struct {
         });
     }
 
-    pub fn findForPath(self: *const Registry, path: []const u8) ?*const ServerConfig {
+    pub fn findForPath(self: *Registry, path: []const u8) ?*const ServerConfig {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.findForPathUnlocked(path);
+    }
+
+    pub fn findForPathUnlocked(self: *const Registry, path: []const u8) ?*const ServerConfig {
         var best: ?*const ServerConfig = null;
         for (self.servers.items) |*server| {
             if (matchesPattern(path, server.file_pattern)) {
@@ -54,11 +72,35 @@ pub const Registry = struct {
         return best;
     }
 
-    pub fn findByLanguageId(self: *const Registry, language_id: []const u8) ?ServerConfig {
+    pub fn findByLanguageId(self: *Registry, language_id: []const u8) ?ServerConfig {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         for (self.servers.items) |server| {
             if (std.mem.eql(u8, server.language_id, language_id)) return server;
         }
         return null;
+    }
+
+    pub fn copyMatchForPath(self: *Registry, allocator: std.mem.Allocator, path: []const u8) !?ServerConfig {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const match = self.findForPathUnlocked(path) orelse return null;
+        return .{
+            .language_id = try allocator.dupe(u8, match.language_id),
+            .server = try allocator.dupe(u8, match.server),
+            .args = try allocator.dupe(u8, match.args),
+            .file_pattern = try allocator.dupe(u8, match.file_pattern),
+            .extension_id = try allocator.dupe(u8, match.extension_id),
+            .state = match.state,
+        };
+    }
+
+    pub fn freeConfig(allocator: std.mem.Allocator, config: ServerConfig) void {
+        allocator.free(config.language_id);
+        allocator.free(config.server);
+        allocator.free(config.args);
+        allocator.free(config.file_pattern);
+        allocator.free(config.extension_id);
     }
 };
 

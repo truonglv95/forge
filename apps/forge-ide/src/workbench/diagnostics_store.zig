@@ -8,7 +8,7 @@ pub const Store = struct {
     workspace_path: []const u8,
     workspace_root: workspace.WorkspaceRoot,
     proxy: *lsp.Proxy,
-    registry: *const lsp.Registry,
+    registry: *lsp.Registry,
     active_path: ?[]const u8 = null,
     list: lsp.diagnostics.List = .{ .items = &.{} },
     pending: std.atomic.Value(bool) = .init(false),
@@ -20,7 +20,7 @@ pub const Store = struct {
         workspace_path: []const u8,
         workspace_root: workspace.WorkspaceRoot,
         proxy: *lsp.Proxy,
-        registry: *const lsp.Registry,
+        registry: *lsp.Registry,
     ) Store {
         return .{
             .allocator = allocator,
@@ -61,26 +61,38 @@ pub const Store = struct {
     }
 
     fn requestAsync(self: *Store, doc: *@import("forge-editor").Document) void {
-        const config = self.registry.findForPath(doc.path) orelse return;
+        const owned = self.registry.copyMatchForPath(self.allocator, doc.path) catch return;
+        const config = owned orelse return;
+        defer lsp.Registry.freeConfig(self.allocator, config);
+
         self.pending.store(true, .release);
 
+        const content = doc.buffer.content() catch {
+            self.pending.store(false, .release);
+            return;
+        };
+
         const ctx = self.allocator.create(FetchContext) catch {
+            self.allocator.free(content);
             self.pending.store(false, .release);
             return;
         };
         ctx.* = .{
             .store = self,
             .path = self.allocator.dupe(u8, doc.path) catch {
+                self.allocator.free(content);
                 self.allocator.destroy(ctx);
                 self.pending.store(false, .release);
                 return;
             },
             .language_id = self.allocator.dupe(u8, config.language_id) catch {
+                self.allocator.free(content);
                 self.allocator.free(ctx.path);
                 self.allocator.destroy(ctx);
                 self.pending.store(false, .release);
                 return;
             },
+            .content = content,
         };
 
         const thread = std.Thread.spawn(.{}, fetchThread, .{ctx}) catch {
@@ -106,10 +118,12 @@ const FetchContext = struct {
     store: *Store,
     path: []const u8,
     language_id: []const u8,
+    content: []const u8,
 
     fn deinit(self: *FetchContext, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
         allocator.free(self.language_id);
+        allocator.free(self.content);
         allocator.destroy(self);
     }
 };
@@ -128,13 +142,9 @@ fn fetchThread(ctx: *FetchContext) void {
         ctx.deinit(store.allocator);
         return;
     };
-    var snap = workspace.FileSnapshot.read(store.allocator, store.io, store.workspace_root, wp) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer snap.deinit();
+    _ = wp;
 
-    const did_open = lsp.diagnostics.buildDidOpenNotification(store.allocator, uri, ctx.language_id, snap.content) catch {
+    const did_open = lsp.diagnostics.buildDidOpenNotification(store.allocator, uri, ctx.language_id, ctx.content) catch {
         ctx.deinit(store.allocator);
         return;
     };

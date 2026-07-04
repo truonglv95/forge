@@ -102,7 +102,8 @@ test "tab width includes close button" {
 
 test "max scroll grows with many tabs" {
     const allocator = std.testing.allocator;
-    var wb = try Workbench.init(allocator, std.testing.io, ".");
+    var wb: Workbench = undefined;
+    try Workbench.init(&wb, allocator, std.testing.io, ".");
     defer wb.deinit();
     try wb.tabs.openOrActivate("a.zig");
     try wb.tabs.openOrActivate("b.zig");

@@ -20,13 +20,17 @@ const agent_workflow = @import("agent/workflow.zig");
 const agent_scope_picker = @import("agent/scope_picker.zig");
 const search_engine = @import("search/engine.zig");
 const git_status_mod = @import("git/status.zig");
+const git_diff_mod = @import("git/diff.zig");
 const diagnostics_store_mod = @import("workbench/diagnostics_store.zig");
 const completion_store_mod = @import("workbench/completion_store.zig");
 const terminal_session_mod = @import("workbench/terminal_session.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
+const editor_find_mod = @import("workbench/editor_find.zig");
+const settings_mod = @import("workbench/settings.zig");
+const session_restore_mod = @import("workbench/session_restore.zig");
 
-pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, terminal, palette, conflict, recovery };
+pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, terminal, palette, conflict, recovery, find, goto_line };
 pub const ChatRole = enum { user, agent };
 pub const ChatMessage = struct {
     role: ChatRole,
@@ -99,12 +103,15 @@ pub const Workbench = struct {
     terminal_boot_pending: bool = false,
     theme: workspace.Theme = workspace.Theme.darkDefault(),
     active_extension_theme: []const u8 = "",
+    find_bar: editor_find_mod.FindBar,
+    goto_bar: editor_find_mod.GotoBar,
+    user_settings: settings_mod.Settings = .{},
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8) !Workbench {
+    pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8) !void {
         var root = try workspace.WorkspaceRoot.open(io, workspace_path);
         errdefer root.close(io);
 
-        var wb = Workbench{
+        self.* = .{
             .allocator = allocator,
             .io = io,
             .workspace_path = try allocator.dupe(u8, workspace_path),
@@ -127,40 +134,49 @@ pub const Workbench = struct {
             .chat_history = .empty,
             .breakpoints = breakpoints_mod.Store.init(allocator),
             .debug_console = debug_console_mod.DebugConsole.init(allocator, io),
+            .find_bar = try editor_find_mod.FindBar.init(allocator),
+            .goto_bar = try editor_find_mod.GotoBar.init(allocator),
             .terminal = undefined,
             .diagnostics = undefined,
             .completions = undefined,
         };
-        errdefer wb.deinit();
+        errdefer self.deinit();
 
-        wb.terminal = try terminal_session_mod.TerminalSession.init(allocator, io, wb.workspace_path);
-        wb.diagnostics = diagnostics_store_mod.Store.init(allocator, io, wb.workspace_path, wb.workspace_root, &wb.lsp_proxy, &wb.lsp_registry);
-        wb.completions = completion_store_mod.Store.init(allocator, io, wb.workspace_path, wb.workspace_root, &wb.lsp_proxy, &wb.lsp_registry);
-        try wb.lsp_proxy.start();
-        workspace.recovery.recoverPending(allocator, io, wb.workspace_root) catch {};
+        self.terminal = try terminal_session_mod.TerminalSession.init(allocator, io, self.workspace_path);
+        self.diagnostics = diagnostics_store_mod.Store.init(allocator, io, self.workspace_path, self.workspace_root, &self.lsp_proxy, &self.lsp_registry);
+        self.completions = completion_store_mod.Store.init(allocator, io, self.workspace_path, self.workspace_root, &self.lsp_proxy, &self.lsp_registry);
+        try self.lsp_proxy.start();
+        workspace.recovery.recoverPending(allocator, io, self.workspace_root) catch {};
 
-        try wb.extension_host.registerBuiltin(&builtin_ext.hello_extension);
-        wb.extension_host.setHostCallbacks(wasm_bridge.hostCallbacks());
-        try wb.extension_host.discoverWorkspace(wb.workspace_root);
-        try wb.extension_host.activateAll();
-        wb.marketplace_catalog = plugin.marketplace.loadCatalog(allocator, io, root) catch null;
-        try wb.syncContributions();
-        try wb.palette.addExtensionCommands(&wb.extension_host);
+        try self.extension_host.registerBuiltin(&builtin_ext.hello_extension);
+        self.extension_host.setHostCallbacks(wasm_bridge.hostCallbacks());
+        try self.extension_host.discoverWorkspace(self.workspace_root);
+        try self.extension_host.activateAll();
+        self.marketplace_catalog = plugin.marketplace.loadCatalog(allocator, io, root) catch null;
+        try self.syncContributions();
+        try self.palette.addExtensionCommands(&self.extension_host);
 
-        wb.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &wb.extension_host);
+        self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
+        self.user_settings = settings_mod.load(allocator, io, root) catch .{};
+        settings_mod.applyToTheme(self.user_settings, &self.theme);
+        @import("theme_loader.zig").syncFontMetrics(&self.theme);
+        @import("theme_loader.zig").applyToRenderer(&self.theme);
 
-        try wb.explorer.rebuild(io, root);
-        try wb.dispatch(.{ .open_file = "apps/forge-ide/src/main.zig" });
-        wb.recovery_count = recovery_mod.countRecoveryFiles(allocator, io, root) catch 0;
-        if (wb.recovery_count > 0) {
-            wb.previous_focus = .editor;
-            wb.focused_panel = .recovery;
+        try self.explorer.rebuild(io, root);
+        try self.restoreSessionTabs();
+        if (self.tabs.tabs.items.len == 0) {
+            try self.dispatch(.{ .open_file = "apps/forge-ide/src/main.zig" });
         }
-        agent_workflow.refreshRunHistory(&wb.agentHost()) catch {};
-        return wb;
+        self.recovery_count = recovery_mod.countRecoveryFiles(allocator, io, root) catch 0;
+        if (self.recovery_count > 0) {
+            self.previous_focus = .editor;
+            self.focused_panel = .recovery;
+        }
+        agent_workflow.refreshRunHistory(&self.agentHost()) catch {};
     }
 
     pub fn deinit(self: *Workbench) void {
+        self.persistSessionState() catch {};
         recovery_mod.snapshotDirtyDocs(self.allocator, self.io, self.workspace_root, &self.tabs) catch {};
         if (self.conflict_path) |path| self.allocator.free(path);
         if (self.status_message.len > 0) self.allocator.free(self.status_message);
@@ -181,6 +197,9 @@ pub const Workbench = struct {
         self.clearScopePickerPaths();
         self.scope_picker_paths.deinit(self.allocator);
         self.scope_picker_filtered.deinit(self.allocator);
+        self.find_bar.deinit();
+        self.goto_bar.deinit();
+        self.user_settings.deinit(self.allocator);
         self.palette.deinit();
         self.theme.deinit();
         if (self.active_extension_theme.len > 0) self.allocator.free(self.active_extension_theme);
@@ -198,28 +217,8 @@ pub const Workbench = struct {
 
     pub fn dispatch(self: *Workbench, command: Command) !void {
         switch (command) {
-            .open_file => |path| {
-                const doc = try self.tabs.openOrActivate(path);
-                try workspace_io.loadDocument(self.io, self.workspace_root, doc);
-                try self.explorer.select(path);
-                self.focused_panel = .editor;
-                self.syncTabScroll();
-                self.warmLspForPath(path);
-                try self.diagnostics.setActivePath(path);
-                try self.events.publish(.{ .file_opened = path });
-            },
-            .activate_tab => |index| {
-                if (index < self.tabs.tabs.items.len) {
-                    self.tabs.active = index;
-                    const doc = &self.tabs.tabs.items[index];
-                    try self.explorer.select(doc.path);
-                    self.focused_panel = .editor;
-                    self.syncTabScroll();
-                    self.warmLspForPath(doc.path);
-                    try self.diagnostics.setActivePath(doc.path);
-                    if (doc.external_conflict) try self.openConflictDialog(doc.path);
-                }
-            },
+            .open_file => |path| try self.openFile(path),
+            .activate_tab => |index| try self.activateTab(index),
             .close_tab => |index| try self.closeTabAt(index),
             .close_active_tab => try self.closeTabAt(self.tabs.active),
             .close_all_tabs => {
@@ -524,6 +523,27 @@ pub const Workbench = struct {
             .editor_completion => {
                 if (self.tabs.activeDoc()) |doc| self.completions.requestForDocument(doc);
             },
+            .editor_find => try self.openEditorFind(false),
+            .editor_replace => try self.openEditorFind(true),
+            .editor_goto_line => try self.openGotoLine(),
+            .editor_find_next => try self.findNextMatch(),
+            .editor_find_prev => try self.findPrevMatch(),
+            .editor_find_close => self.closeEditorOverlay(),
+            .editor_redo => {
+                if (self.activeBuffer()) |buf| try buf.redo();
+            },
+            .editor_undo => {
+                if (self.activeBuffer()) |buf| try buf.undo();
+            },
+            .editor_scroll_to_cursor => self.scrollEditorToCursor(),
+            .editor_go_to_definition => try self.goToDefinition(),
+            .problems_goto => |index| try self.gotoProblem(index),
+            .completion_accept => {
+                if (self.tabs.activeDoc()) |doc| try self.completions.acceptSelected(doc);
+            },
+            .completion_dismiss => self.completions.dismiss(),
+            .save_session_state => try self.persistSessionState(),
+            .restore_session_state => try self.restoreSessionTabs(),
         }
     }
 
@@ -879,9 +899,13 @@ pub const Workbench = struct {
             .open_file => |index| {
                 const status = self.git_status orelse return;
                 if (index >= status.entries.len) return;
-                const path = try self.allocator.dupe(u8, status.entries[index].path);
+                const entry = status.entries[index];
+                const path = try self.allocator.dupe(u8, entry.path);
                 defer self.allocator.free(path);
-                try self.dispatch(.{ .open_file = path });
+                const untracked = entry.status[0] == '?' or entry.status[1] == '?';
+                try self.showGitDiff(path, untracked);
+                const open_path = try self.allocator.dupe(u8, path);
+                try self.dispatch(.{ .open_file = open_path });
             },
         }
     }
@@ -961,18 +985,26 @@ pub const Workbench = struct {
     }
 
     fn warmLspForPath(self: *Workbench, path: []const u8) void {
-        if (self.lsp_registry.findForPath(path)) |config| {
-            self.lsp_proxy.warmLanguage(config.*);
-        }
+        const owned = self.lsp_registry.copyMatchForPath(self.allocator, path) catch return;
+        const config = owned orelse return;
+        defer lsp.Registry.freeConfig(self.allocator, config);
+        self.lsp_proxy.warmLanguage(config);
     }
 
     fn persistExtensionTheme(self: *Workbench, qualified: []const u8) !void {
-        const content = try std.fmt.allocPrint(self.allocator,
-            \\[extension_theme]
-            \\active = "{s}"
-            \\
-        , .{qualified});
+        const existing = @import("theme_loader.zig").readUserSettings(self.allocator, self.io, self.workspace_root) catch null;
+        defer if (existing) |content| self.allocator.free(content);
+
+        const content = if (existing) |user_content|
+            try settings_mod.mergeExtensionTheme(self.allocator, user_content, qualified)
+        else
+            try std.fmt.allocPrint(self.allocator,
+                \\[extension_theme]
+                \\active = "{s}"
+                \\
+            , .{qualified});
         defer self.allocator.free(content);
+
         const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
         try workspace.atomic.replaceFile(self.io, self.workspace_root, wp, content);
     }
@@ -1094,6 +1126,136 @@ pub const Workbench = struct {
         self.setStatus(if (exit_code == 0) "Task finished" else "Task failed") catch {};
     }
 
+    pub fn scrollEditorToCursor(self: *Workbench) void {
+        const renderer_mod = @import("forge-renderer");
+        const layout_mod = @import("ui/layout.zig");
+        var w: f32 = 0;
+        var h: f32 = 0;
+        renderer_mod.Renderer.getWindowSize(&w, &h);
+        const geo = layout_mod.compute(self.shell_mode, w, h, self.explorer_panel_width, self.agent_panel_width, self.bottom_panel_height);
+        const buf = self.activeBuffer() orelse return;
+        const scrolled = @import("ui/editor_scroll.zig").scrollToCursor(
+            self.editor_scroll_y,
+            self.editor_scroll_x,
+            buf,
+            geo.editor_w,
+            geo.editor_h,
+            &self.theme,
+        );
+        self.editor_scroll_y = scrolled.y;
+        self.editor_scroll_x = scrolled.x;
+    }
+
+    pub fn openEditorFind(self: *Workbench, replace_mode: bool) !void {
+        self.previous_focus = self.focused_panel;
+        self.focused_panel = .find;
+        self.find_bar.openFind(replace_mode);
+        if (self.activeBuffer()) |buf| {
+            try self.find_bar.refreshMatches(buf);
+            self.scrollEditorToCursor();
+        }
+    }
+
+    pub fn openGotoLine(self: *Workbench) !void {
+        self.previous_focus = self.focused_panel;
+        self.focused_panel = .goto_line;
+        self.goto_bar.open = true;
+        try self.goto_bar.input.loadFromSlice("");
+    }
+
+    pub fn closeEditorOverlay(self: *Workbench) void {
+        self.find_bar.close();
+        self.goto_bar.open = false;
+        if (self.focused_panel == .find or self.focused_panel == .goto_line) {
+            self.focused_panel = self.previous_focus;
+        }
+        self.completions.dismiss();
+    }
+
+    pub fn findNextMatch(self: *Workbench) !void {
+        const buf = self.activeBuffer() orelse return;
+        if (self.find_bar.matches.len == 0) try self.find_bar.refreshMatches(buf);
+        self.find_bar.nextMatch(buf);
+        self.scrollEditorToCursor();
+    }
+
+    pub fn findPrevMatch(self: *Workbench) !void {
+        const buf = self.activeBuffer() orelse return;
+        if (self.find_bar.matches.len == 0) try self.find_bar.refreshMatches(buf);
+        self.find_bar.prevMatch(buf);
+        self.scrollEditorToCursor();
+    }
+
+    pub fn commitGotoLine(self: *Workbench) !void {
+        const line = self.goto_bar.parseLine() orelse return;
+        if (self.activeBuffer()) |buf| {
+            buf.goToLine(line);
+            self.scrollEditorToCursor();
+        }
+        self.closeEditorOverlay();
+    }
+
+    pub fn gotoProblem(self: *Workbench, index: usize) !void {
+        if (index >= self.diagnostics.list.items.len) return;
+        const diag = self.diagnostics.list.items[index];
+        if (self.activeBuffer()) |buf| {
+            buf.cursor.row = @intCast(@min(diag.line, buf.lineCount() - 1));
+            const line_len = buf.lineAt(buf.cursor.row).len;
+            buf.cursor.col = @intCast(@min(diag.character, line_len));
+            self.scrollEditorToCursor();
+            self.focused_panel = .editor;
+        }
+    }
+
+    pub fn handleProblemsClick(self: *Workbench, index: usize) !void {
+        try self.dispatch(.{ .problems_goto = index });
+    }
+
+    pub fn persistSessionState(self: *Workbench) !void {
+        var paths: std.ArrayList([]const u8) = .empty;
+        defer paths.deinit(self.allocator);
+        for (self.tabs.tabs.items) |doc| {
+            try paths.append(self.allocator, doc.path);
+        }
+        try session_restore_mod.saveOpenTabs(self.allocator, self.io, self.workspace_root, paths.items, self.tabs.active);
+    }
+
+    pub fn restoreSessionTabs(self: *Workbench) !void {
+        const loaded = try session_restore_mod.loadOpenTabs(self.allocator, self.io, self.workspace_root);
+        defer session_restore_mod.freeLoadedTabs(self.allocator, loaded.paths);
+        if (loaded.paths.len == 0) return;
+
+        for (loaded.paths) |path| {
+            self.openFile(path) catch {};
+        }
+        if (loaded.active < self.tabs.tabs.items.len) {
+            try self.activateTab(loaded.active);
+        }
+    }
+
+    fn openFile(self: *Workbench, path: []const u8) !void {
+        const doc = try self.tabs.openOrActivate(path);
+        try workspace_io.loadDocument(self.io, self.workspace_root, doc);
+        try self.explorer.select(path);
+        self.focused_panel = .editor;
+        self.syncTabScroll();
+        self.warmLspForPath(path);
+        try self.diagnostics.setActivePath(path);
+        try self.events.publish(.{ .file_opened = path });
+    }
+
+    fn activateTab(self: *Workbench, index: usize) !void {
+        if (index >= self.tabs.tabs.items.len) return;
+        self.tabs.active = index;
+        const doc = &self.tabs.tabs.items[index];
+        try self.explorer.select(doc.path);
+        self.focused_panel = .editor;
+        self.syncTabScroll();
+        self.warmLspForPath(doc.path);
+        try self.diagnostics.setActivePath(doc.path);
+        if (doc.external_conflict) try self.openConflictDialog(doc.path);
+    }
+
     pub fn agentHost(self: *Workbench) agent_workflow.Host {
         return .{
             .allocator = self.allocator,
@@ -1164,6 +1326,7 @@ pub const Workbench = struct {
         if (self.terminal_boot_pending) {
             self.terminal_boot_pending = false;
             self.terminal.ensureStarted() catch {};
+            self.syncTerminalSize();
             self.refreshGitStatus() catch {};
             self.updateTerminalPrompt() catch {};
         }
@@ -1175,7 +1338,109 @@ pub const Workbench = struct {
                 self.refreshGitStatus() catch {};
                 self.updateTerminalPrompt() catch {};
             }
+            self.syncTerminalSize();
         }
+    }
+
+    pub fn syncTerminalSize(self: *Workbench) void {
+        if (!self.terminal.isActive()) return;
+        if (self.bottom_panel_mode != .terminal) return;
+
+        const renderer_mod = @import("forge-renderer");
+        const layout_mod = @import("ui/layout.zig");
+        const panel_scroll = @import("ui/panel_scroll.zig");
+        const terminal_panel = @import("ui/terminal_panel.zig");
+
+        var w: f32 = 0;
+        var h: f32 = 0;
+        renderer_mod.Renderer.getWindowSize(&w, &h);
+        const geo = layout_mod.compute(
+            self.shell_mode,
+            w,
+            h,
+            self.explorer_panel_width,
+            self.agent_panel_width,
+            self.bottom_panel_height,
+        );
+        const viewport = panel_scroll.bottomViewportHeight(geo.task_panel_h);
+        const char_w = @max(1.0, renderer_mod.Renderer.measureText("M", terminal_panel.font_size));
+        const cols: u16 = @intFromFloat(@floor(@max(10.0, (geo.editor_w - terminal_panel.text_inset_x * 2) / char_w)));
+        const rows: u16 = @intFromFloat(@floor(@max(3.0, viewport / panel_scroll.bottom_line_h)));
+        self.terminal.resize(cols, rows);
+    }
+
+    pub fn showGitDiff(self: *Workbench, path: []const u8, untracked: bool) !void {
+        const diff = try git_diff_mod.fileDiff(self.allocator, self.workspace_path, path, untracked);
+        defer self.allocator.free(diff);
+        self.task_output.clear();
+        try self.task_output.appendChunk(diff);
+        self.bottom_panel_mode = .output;
+        self.task_scroll_y = 0;
+        try self.setStatus("Git diff");
+    }
+
+    pub fn goToDefinition(self: *Workbench) !void {
+        const doc = self.tabs.activeDoc() orelse return;
+        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
+        const config = owned orelse {
+            try self.setStatus("No language server for this file");
+            return;
+        };
+        defer lsp.Registry.freeConfig(self.allocator, config);
+
+        const uri = try lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path);
+        defer self.allocator.free(uri);
+
+        const content = try doc.buffer.content();
+        defer self.allocator.free(content);
+
+        const did_open = try lsp.diagnostics.buildDidOpenNotification(
+            self.allocator,
+            uri,
+            config.language_id,
+            content,
+        );
+        defer self.allocator.free(did_open);
+
+        var notify_buf: [65536]u8 = undefined;
+        _ = self.lsp_proxy.request(config.language_id, did_open, &notify_buf, notify_buf.len) catch {};
+
+        const line: u32 = @intCast(doc.buffer.cursor.row);
+        const character: u32 = @intCast(doc.buffer.cursor.col);
+        const def_req = try lsp.navigation.buildDefinitionRequest(
+            self.allocator,
+            88,
+            uri,
+            line,
+            character,
+        );
+        defer self.allocator.free(def_req);
+
+        var response_buf: [65536]u8 = undefined;
+        const len = self.lsp_proxy.request(config.language_id, def_req, &response_buf, response_buf.len) catch {
+            try self.setStatus("Go to definition failed");
+            return;
+        };
+
+        var location = try lsp.navigation.parseDefinitionResponse(self.allocator, response_buf[0..len]);
+        if (location) |*loc| {
+            defer loc.deinit(self.allocator);
+            const rel = try lsp.navigation.uriToRelativePath(self.allocator, self.workspace_path, loc.uri);
+            if (rel) |path| {
+                defer self.allocator.free(path);
+                try self.openFile(path);
+                if (self.activeBuffer()) |buf| {
+                    buf.goToLine(@intCast(loc.line + 1));
+                    buf.cursor.col = @intCast(loc.character);
+                    self.scrollEditorToCursor();
+                }
+                try self.setStatus("Go to definition");
+                return;
+            }
+            try self.setStatus("Definition outside workspace");
+            return;
+        }
+        try self.setStatus("No definition found");
     }
 
     fn restoreRecoverySnapshots(self: *Workbench) !void {
@@ -1216,7 +1481,8 @@ test "workbench opens workspace and loads extensions" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var wb = try Workbench.init(allocator, io, ".");
+    var wb: Workbench = undefined;
+    try Workbench.init(&wb, allocator, io, ".");
     defer wb.deinit();
 
     try std.testing.expect(wb.extension_host.extensionCount() >= 1);

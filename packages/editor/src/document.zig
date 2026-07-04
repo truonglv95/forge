@@ -76,6 +76,7 @@ pub const TabGroup = struct {
 
     pub fn activeDoc(self: *TabGroup) ?*Document {
         if (self.tabs.items.len == 0) return null;
+        if (self.active >= self.tabs.items.len) self.active = self.tabs.items.len - 1;
         return &self.tabs.items[self.active];
     }
 

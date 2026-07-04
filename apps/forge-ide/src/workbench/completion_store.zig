@@ -9,7 +9,7 @@ pub const Store = struct {
     workspace_path: []const u8,
     workspace_root: workspace.WorkspaceRoot,
     proxy: *lsp.Proxy,
-    registry: *const lsp.Registry,
+    registry: *lsp.Registry,
     list: lsp.completion.List = .{ .items = &.{} },
     pending: std.atomic.Value(bool) = .init(false),
     visible: bool = false,
@@ -22,7 +22,7 @@ pub const Store = struct {
         workspace_path: []const u8,
         workspace_root: workspace.WorkspaceRoot,
         proxy: *lsp.Proxy,
-        registry: *const lsp.Registry,
+        registry: *lsp.Registry,
     ) Store {
         return .{
             .allocator = allocator,
@@ -50,7 +50,9 @@ pub const Store = struct {
     }
 
     pub fn requestForDocument(self: *Store, doc: *editor.Document) void {
-        const config = self.registry.findForPath(doc.path) orelse return;
+        const owned = self.registry.copyMatchForPath(self.allocator, doc.path) catch return;
+        const config = owned orelse return;
+        defer lsp.Registry.freeConfig(self.allocator, config);
         if (self.pending.load(.acquire)) return;
 
         self.request_generation += 1;
@@ -77,6 +79,13 @@ pub const Store = struct {
             },
             .line = @intCast(doc.buffer.cursor.row),
             .character = @intCast(doc.buffer.cursor.col),
+            .content = doc.buffer.content() catch {
+                self.allocator.free(ctx.path);
+                self.allocator.free(ctx.language_id);
+                self.allocator.destroy(ctx);
+                self.pending.store(false, .release);
+                return;
+            },
         };
 
         const thread = std.Thread.spawn(.{}, fetchThread, .{ctx}) catch {
@@ -85,6 +94,23 @@ pub const Store = struct {
             return;
         };
         thread.detach();
+    }
+
+    pub fn moveSelection(self: *Store, delta: i32) void {
+        if (!self.visible or self.list.items.len == 0) return;
+        if (delta < 0) {
+            if (self.selected > 0) self.selected -= 1;
+        } else if (self.selected + 1 < self.list.items.len) {
+            self.selected += 1;
+        }
+    }
+
+    pub fn acceptSelected(self: *Store, doc: *editor.Document) !void {
+        if (!self.visible or self.list.items.len == 0) return;
+        if (self.selected >= self.list.items.len) return;
+        const item = self.list.items[self.selected];
+        try doc.buffer.insertString(item.label);
+        self.dismiss();
     }
 };
 
@@ -95,10 +121,12 @@ const FetchContext = struct {
     language_id: []const u8,
     line: u32,
     character: u32,
+    content: []const u8,
 
     fn deinit(self: *FetchContext, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
         allocator.free(self.language_id);
+        allocator.free(self.content);
         allocator.destroy(self);
     }
 };
@@ -117,13 +145,10 @@ fn fetchThread(ctx: *FetchContext) void {
         ctx.deinit(store.allocator);
         return;
     };
-    var snap = workspace.FileSnapshot.read(store.allocator, store.io, store.workspace_root, wp) catch {
-        ctx.deinit(store.allocator);
-        return;
-    };
-    defer snap.deinit();
+    _ = wp;
+    const snap_content = ctx.content;
 
-    const did_open = lsp.completion.buildDidOpenNotification(store.allocator, uri, ctx.language_id, snap.content) catch {
+    const did_open = lsp.completion.buildDidOpenNotification(store.allocator, uri, ctx.language_id, snap_content) catch {
         ctx.deinit(store.allocator);
         return;
     };

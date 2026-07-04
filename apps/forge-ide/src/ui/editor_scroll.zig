@@ -98,6 +98,37 @@ pub fn clampScrollX(scroll_x: f32, content_w: f32, editor_w: f32, theme: *const 
     return std.math.clamp(scroll_x, 0, maxScrollX(content_w, editor_w, theme));
 }
 
+pub fn scrollToCursor(
+    scroll_y: f32,
+    scroll_x: f32,
+    buf: *const editor.Buffer,
+    editor_w: f32,
+    editor_h: f32,
+    theme: *const workspace.Theme,
+) struct { y: f32, x: f32 } {
+    const line_h = lineHeight(theme);
+    const char_w = charWidth(theme);
+    const viewport_h = viewportHeight(editor_h);
+    const viewport_w = viewportWidth(editor_w, theme);
+    const cursor_y = @as(f32, @floatFromInt(buf.cursor.row)) * line_h;
+    const line = buf.lineAt(buf.cursor.row);
+    const cursor_x = cursorX(line, buf.cursor.col, theme.editor_font_size);
+
+    var y = scroll_y;
+    var x = scroll_x;
+    if (cursor_y < y) y = cursor_y;
+    if (cursor_y + line_h > y + viewport_h) y = cursor_y + line_h - viewport_h;
+
+    if (cursor_x < x) x = cursor_x;
+    if (cursor_x + char_w > x + viewport_w) x = cursor_x + char_w - viewport_w;
+
+    const max_line_len = longestLineLen(buf);
+    const content_w = @as(f32, @floatFromInt(max_line_len)) * char_w;
+    y = clampScrollY(y, buf.lineCount(), editor_h, theme);
+    x = clampScrollX(x, content_w, editor_w, theme);
+    return .{ .y = y, .x = x };
+}
+
 test "vertical scroll stops at last line" {
     const theme = workspace.Theme.darkDefault();
     try std.testing.expectEqual(@as(f32, 0), maxScrollY(10, 200, &theme));

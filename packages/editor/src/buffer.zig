@@ -318,6 +318,23 @@ pub const Buffer = struct {
         if (self.cursor.col > len) self.cursor.col = len;
     }
 
+    pub fn goToLine(self: *Buffer, line_one_based: usize) void {
+        if (line_one_based == 0) return;
+        const row = line_one_based - 1;
+        if (row >= self.lines.items.len) {
+            self.cursor.row = self.lines.items.len - 1;
+        } else {
+            self.cursor.row = row;
+        }
+        self.clampCursorCol();
+    }
+
+    pub fn replaceRange(self: *Buffer, row: usize, col: usize, len: usize, text: []const u8) !void {
+        try self.deleteRangeInternal(row, col, len, true);
+        try self.insertTextInternal(row, col, text, true);
+        self.cursor = .{ .row = row, .col = col + text.len };
+    }
+
     pub fn toDisplayString(self: *const Buffer, show_cursor: bool) ![]u8 {
         var result: std.ArrayList(u8) = .empty;
         errdefer result.deinit(self.allocator);

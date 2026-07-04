@@ -22,6 +22,8 @@ pub const TextRange = struct {
 pub const buffer = @import("buffer.zig");
 pub const Buffer = buffer.Buffer;
 pub const Cursor = buffer.Cursor;
+pub const search = @import("search.zig");
+pub const Match = search.Match;
 pub const document = @import("document.zig");
 pub const Document = document.Document;
 pub const TabGroup = document.TabGroup;
@@ -30,4 +32,5 @@ test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(buffer);
     std.testing.refAllDecls(document);
+    std.testing.refAllDecls(search);
 }

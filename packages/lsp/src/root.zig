@@ -24,6 +24,7 @@ pub const proxy = @import("proxy.zig");
 pub const Proxy = proxy.Proxy;
 pub const diagnostics = @import("diagnostics.zig");
 pub const completion = @import("completion.zig");
+pub const navigation = @import("navigation.zig");
 
 pub fn acceptsRequests(state: ServerState) bool {
     return state == .ready;

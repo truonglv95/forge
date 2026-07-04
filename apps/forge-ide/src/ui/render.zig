@@ -821,6 +821,7 @@ fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@im
         line_num_y = editor_scroll.firstLineY(theme) - wb.editor_scroll_y;
         for (0..line_count) |idx| {
             if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+                drawFindHighlights(wb, buf, idx, text_x, line_num_y, line_h, font_size);
                 drawHighlightedLine(buf.lineAt(idx), text_x, line_num_y, theme);
                 for (wb.diagnostics.list.items) |diag| {
                     if (diag.line != idx) continue;
@@ -883,7 +884,78 @@ fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@im
             renderer.Renderer.drawText(@ptrCast(&label_buf), popup_x + 8, row_y + 3, 11.0, .{ .r = 0.92, .g = 0.92, .b = 0.92, .a = 1.0 });
         }
     }
+    if (wb.find_bar.open or wb.goto_bar.open) {
+        drawEditorOverlay(wb, editor_x, editor_w);
+    }
     renderer.Renderer.clearClipRect();
+}
+
+fn drawFindHighlights(
+    wb: *@import("../workbench.zig").Workbench,
+    buf: *@import("forge-editor").Buffer,
+    row: usize,
+    text_x: f32,
+    line_y: f32,
+    line_h: f32,
+    font_size: f32,
+) void {
+    if (!wb.find_bar.open or wb.find_bar.matches.len == 0) return;
+    const line = buf.lineAt(row);
+    for (wb.find_bar.matches, 0..) |match, index| {
+        if (match.row != row) continue;
+        const start_x = text_x + editor_scroll.cursorX(line, match.col, font_size);
+        const end_x = text_x + editor_scroll.cursorX(line, @min(match.col + match.len, line.len), font_size);
+        const is_active = index == wb.find_bar.match_index;
+        const color = if (is_active)
+            renderer.Color{ .r = 0.95, .g = 0.75, .b = 0.2, .a = 0.45 }
+        else
+            renderer.Color{ .r = 0.55, .g = 0.65, .b = 0.85, .a = 0.35 };
+        renderer.Renderer.drawRect(start_x, line_y, @max(4, end_x - start_x), line_h - 2, color);
+    }
+}
+
+fn drawEditorOverlay(wb: *@import("../workbench.zig").Workbench, editor_x: f32, editor_w: f32) void {
+    const bar_h: f32 = if (wb.find_bar.open and wb.find_bar.replace_mode) 56 else 32;
+    const bar_y: f32 = tabs_ui.tab_bar_top + tabs_ui.tab_bar_height;
+    renderer.Renderer.drawRect(editor_x, bar_y, editor_w, bar_h, .{ .r = 0.12, .g = 0.14, .b = 0.18, .a = 0.98 });
+
+    if (wb.find_bar.open) {
+        var query_buf: [256:0]u8 = undefined;
+        const query = wb.find_bar.query.lineAt(0);
+        const clipped_q = if (query.len > 255) query[0..255] else query;
+        @memcpy(query_buf[0..clipped_q.len], clipped_q);
+        query_buf[clipped_q.len] = 0;
+        renderer.Renderer.drawText("Find:", editor_x + 12, bar_y + 8, 11.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+        renderer.Renderer.drawText(@ptrCast(&query_buf), editor_x + 56, bar_y + 8, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+
+        if (wb.find_bar.replace_mode) {
+            var replace_buf: [256:0]u8 = undefined;
+            const replacement = wb.find_bar.replace.lineAt(0);
+            const clipped_r = if (replacement.len > 255) replacement[0..255] else replacement;
+            @memcpy(replace_buf[0..clipped_r.len], clipped_r);
+            replace_buf[clipped_r.len] = 0;
+            renderer.Renderer.drawText("With:", editor_x + 12, bar_y + 30, 11.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+            renderer.Renderer.drawText(@ptrCast(&replace_buf), editor_x + 56, bar_y + 30, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+        }
+
+        var count_buf: [64:0]u8 = undefined;
+        const count_msg = if (wb.find_bar.matches.len > 0)
+            std.fmt.bufPrint(&count_buf, "{d}/{d}", .{ wb.find_bar.match_index + 1, wb.find_bar.matches.len }) catch ""
+        else
+            std.fmt.bufPrint(&count_buf, "0/0", .{}) catch "0/0";
+        count_buf[count_msg.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&count_buf), editor_x + editor_w - 80, bar_y + 8, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    }
+
+    if (wb.goto_bar.open) {
+        var line_buf: [64:0]u8 = undefined;
+        const input = wb.goto_bar.input.lineAt(0);
+        const clipped = if (input.len > 63) input[0..63] else input;
+        @memcpy(line_buf[0..clipped.len], clipped);
+        line_buf[clipped.len] = 0;
+        renderer.Renderer.drawText("Go to line:", editor_x + 12, bar_y + 8, 11.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+        renderer.Renderer.drawText(@ptrCast(&line_buf), editor_x + 96, bar_y + 8, 12.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+    }
 }
 
 fn drawTaskPanel(wb: *@import("../workbench.zig").Workbench, editor_x: f32, editor_w: f32, panel_y: f32, panel_h: f32) void {
@@ -1022,10 +1094,16 @@ fn drawStatusBar(wb: *@import("../workbench.zig").Workbench, w: f32, h: f32, she
     var font_name: [48:0]u8 = undefined;
     renderer.Renderer.getResolvedFontName(&font_name);
     const ext_count = wb.extension_host.activeExtensionCount();
-    const lsp_label: []const u8 = if (wb.activeFilePath()) |path|
-        if (wb.lsp_registry.findForPath(path)) |server| server.language_id else "-"
-    else
-        "-";
+    const lsp_label: []const u8 = blk: {
+        if (wb.activeFilePath()) |path| {
+            wb.lsp_registry.mutex.lock();
+            defer wb.lsp_registry.mutex.unlock();
+            if (wb.lsp_registry.findForPathUnlocked(path)) |server| {
+                break :blk server.language_id;
+            }
+        }
+        break :blk "-";
+    };
     const mode_label = switch (shell_mode) {
         .ide => "IDE",
         .agent_window => "Agent",
