@@ -121,3 +121,29 @@ pub const GotoBar = struct {
         return std.fmt.parseInt(usize, text, 10) catch null;
     }
 };
+
+pub const RenameBar = struct {
+    open: bool = false,
+    input: editor.Buffer,
+
+    pub fn init(allocator: std.mem.Allocator) !RenameBar {
+        return .{ .input = try editor.Buffer.init(allocator) };
+    }
+
+    pub fn deinit(self: *RenameBar) void {
+        self.input.deinit();
+    }
+
+    pub fn openRename(self: *RenameBar, current_name: []const u8) !void {
+        self.open = true;
+        try self.input.loadFromSlice(current_name);
+    }
+
+    pub fn close(self: *RenameBar) void {
+        self.open = false;
+    }
+
+    pub fn name(self: *const RenameBar) []const u8 {
+        return std.mem.trim(u8, self.input.lineAt(0), " \t\r");
+    }
+};

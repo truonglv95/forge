@@ -78,6 +78,8 @@ pub const Palette = struct {
             .{ .id = "editor.replace", .title = "Replace in File", .category = "Edit", .command = .editor_replace },
             .{ .id = "editor.goto", .title = "Go to Line", .category = "Edit", .command = .editor_goto_line },
             .{ .id = "editor.definition", .title = "Go to Definition", .category = "Edit", .command = .editor_go_to_definition },
+            .{ .id = "editor.references", .title = "Find All References", .category = "Edit", .command = .editor_find_references },
+            .{ .id = "editor.rename", .title = "Rename Symbol", .category = "Edit", .command = .editor_rename_symbol },
             .{ .id = "editor.redo", .title = "Redo", .category = "Edit", .command = .editor_redo },
             .{ .id = "editor.undo", .title = "Undo", .category = "Edit", .command = .editor_undo },
             .{ .id = "session.save", .title = "Session: Save Open Tabs", .category = "View", .command = .save_session_state },
