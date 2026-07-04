@@ -80,6 +80,7 @@ pub const Palette = struct {
             .{ .id = "editor.definition", .title = "Go to Definition", .category = "Edit", .command = .editor_go_to_definition },
             .{ .id = "editor.references", .title = "Find All References", .category = "Edit", .command = .editor_find_references },
             .{ .id = "editor.rename", .title = "Rename Symbol", .category = "Edit", .command = .editor_rename_symbol },
+            .{ .id = "editor.format", .title = "Format Document", .category = "Edit", .command = .editor_format_document },
             .{ .id = "editor.split", .title = "Split Editor Right", .category = "Edit", .command = .editor_split_right },
             .{ .id = "editor.close_split", .title = "Close Editor Split", .category = "Edit", .command = .editor_close_split },
             .{ .id = "rename.accept", .title = "Rename: Accept Preview", .category = "Edit", .command = .rename_accept },

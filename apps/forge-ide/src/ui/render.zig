@@ -465,6 +465,7 @@ fn drawGitPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_
 
 fn drawDebugPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const theme = &wb.theme;
+    const debug_active = wb.debug_lldb.isActive();
     renderer.Renderer.setClipRect(panel_x, 30, panel_w, h - 52);
     renderer.Renderer.drawText("RUN AND DEBUG", panel_x + 20, 45, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
 
@@ -479,6 +480,23 @@ fn drawDebugPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, pane
         renderer.Renderer.drawText("Clear all breakpoints", panel_x + 20, y + 3, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
     }
     y += 34;
+
+    if (debug_active) {
+        if (y + 14 >= 65 and y < h - layout.status_height) {
+            renderer.Renderer.drawText("DEBUG CONTROLS", panel_x + 16, y, 10.0, .{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 });
+        }
+        y += 14;
+        if (y + debug_panel.control_row_h >= 65 and y < h - layout.status_height) {
+            const btn_w = (panel_w - 24) / @as(f32, @floatFromInt(debug_panel.controls.len));
+            for (debug_panel.controls, 0..) |control, index| {
+                const bx = panel_x + 12 + @as(f32, @floatFromInt(index)) * btn_w;
+                renderer.Renderer.drawRoundedRect(bx, y, btn_w - 4, debug_panel.control_row_h - 4, 4, c(theme.colors.selection));
+                renderer.Renderer.drawText(control.label, bx + 6, y + 4, 10.0, .{ .r = 0.92, .g = 0.92, .b = 0.92, .a = 1.0 });
+            }
+        }
+        y += debug_panel.controls_block_h;
+    }
+
     if (y + 14 >= 65 and y < h - layout.status_height) {
         renderer.Renderer.drawText("LAUNCH CONFIGURATIONS", panel_x + 16, y, 10.0, .{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 });
     }
@@ -770,6 +788,17 @@ fn drawEditorViewport(
             if (wb.breakpoints.hasAt(file_path, idx)) {
                 renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, c(theme.colors.warning));
             }
+            const debug_here = blk: {
+                if (wb.debug_stop_path) |stop_path| {
+                    if (wb.debug_stop_line) |stop_line| {
+                        break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == idx;
+                    }
+                }
+                break :blk false;
+            };
+            if (debug_here) {
+                renderer.Renderer.drawText("→", editor_x + 2, line_num_y, font_size, c(theme.colors.accent));
+            }
             var num_buf: [16]u8 = undefined;
             const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{idx + 1}) catch "";
             renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, c(theme.colors.line_number));
@@ -796,6 +825,17 @@ fn drawEditorViewport(
     line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
     for (0..line_count) |idx| {
         if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+            const debug_here = blk: {
+                if (wb.debug_stop_path) |stop_path| {
+                    if (wb.debug_stop_line) |stop_line| {
+                        break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == idx;
+                    }
+                }
+                break :blk false;
+            };
+            if (debug_here) {
+                renderer.Renderer.drawRect(text_x - 4, line_num_y, content_w + 8, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
+            }
             drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
             drawHighlightedLine(editor_buf.lineAt(idx), text_x, line_num_y, theme);
             if (show_diags) {
@@ -964,20 +1004,37 @@ fn drawHoverTooltip(wb: *@import("../workbench.zig").Workbench, editor_x: f32, e
     const line_h: f32 = 14.0;
     const padding: f32 = 8.0;
     const max_w: f32 = @min(420, editor_w - 24);
-    const max_lines: usize = 8;
+    const max_lines: usize = 12;
+    const max_chars_per_line: usize = 64;
 
     var lines: [max_lines][]const u8 = undefined;
+    var line_is_code: [max_lines]bool = undefined;
     var line_count: usize = 0;
+    var in_code_block = false;
     var line_start: usize = 0;
     var i: usize = 0;
     while (i <= text.len and line_count < max_lines) : (i += 1) {
         if (i == text.len or text[i] == '\n') {
             var slice = text[line_start..i];
-            if (std.mem.startsWith(u8, slice, "```")) slice = "";
+            if (std.mem.startsWith(u8, slice, "```")) {
+                in_code_block = !in_code_block;
+                line_start = i + 1;
+                continue;
+            }
             slice = std.mem.trim(u8, slice, " \t\r");
-            if (slice.len > 0) {
-                lines[line_count] = slice;
+            if (slice.len == 0) {
+                line_start = i + 1;
+                continue;
+            }
+            const is_code = in_code_block or (slice.len >= 2 and slice[0] == '`' and slice[slice.len - 1] == '`');
+            var chunk_start: usize = 0;
+            while (chunk_start < slice.len and line_count < max_lines) {
+                const chunk_end = @min(chunk_start + max_chars_per_line, slice.len);
+                lines[line_count] = slice[chunk_start..chunk_end];
+                line_is_code[line_count] = is_code;
                 line_count += 1;
+                if (chunk_end >= slice.len) break;
+                chunk_start = chunk_end;
             }
             line_start = i + 1;
         }
@@ -998,12 +1055,20 @@ fn drawHoverTooltip(wb: *@import("../workbench.zig").Workbench, editor_x: f32, e
 
     renderer.Renderer.drawRect(box_x, box_y, box_w, box_h, .{ .r = 0.14, .g = 0.16, .b = 0.2, .a = 0.98 });
     var y = box_y + padding;
-    for (lines[0..line_count]) |line| {
+    for (lines[0..line_count], line_is_code[0..line_count]) |line, is_code| {
         var buf: [256:0]u8 = undefined;
-        const clipped = if (line.len > 255) line[0..255] else line;
-        @memcpy(buf[0..clipped.len], clipped);
-        buf[clipped.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&buf), box_x + padding, y, font_size, .{ .r = 0.92, .g = 0.92, .b = 0.92, .a = 1.0 });
+        var clipped = line;
+        if (is_code and clipped.len >= 2 and clipped[0] == '`' and clipped[clipped.len - 1] == '`') {
+            clipped = clipped[1 .. clipped.len - 1];
+        }
+        const copy_len = @min(clipped.len, 255);
+        @memcpy(buf[0..copy_len], clipped[0..copy_len]);
+        buf[copy_len] = 0;
+        const color = if (is_code)
+            renderer.Color{ .r = 0.75, .g = 0.9, .b = 1.0, .a = 1.0 }
+        else
+            renderer.Color{ .r = 0.92, .g = 0.92, .b = 0.92, .a = 1.0 };
+        renderer.Renderer.drawText(@ptrCast(&buf), box_x + padding, y, font_size, color);
         y += line_h;
     }
 }

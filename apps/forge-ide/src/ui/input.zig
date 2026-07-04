@@ -648,6 +648,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 event.y,
                 wb.run_scroll_y,
                 wb.breakpoints.items.items.len,
+                wb.debug_lldb.isActive(),
             )) |hit| {
                 wb.handleDebugClick(hit) catch {};
             }

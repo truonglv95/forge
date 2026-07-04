@@ -28,6 +28,7 @@ pub const navigation = @import("navigation.zig");
 pub const hover = @import("hover.zig");
 pub const references = @import("references.zig");
 pub const rename = @import("rename.zig");
+pub const format = @import("format.zig");
 pub const sync = @import("sync.zig");
 
 pub fn acceptsRequests(state: ServerState) bool {
