@@ -63,6 +63,7 @@ pub const AgentStep = struct {
     child_count: usize = 0,
     is_thought: bool = false,
     content: ?[]const u8 = null,
+    running: bool = false,
 };
 
 pub const Session = struct {
@@ -226,6 +227,22 @@ pub const Session = struct {
         self.agent_steps.clearRetainingCapacity();
     }
 
+    pub fn beginAgentStep(self: *Session, index: u32, kind: []const u8, label: []const u8) !void {
+        const owned_kind = try self.allocator.dupe(u8, kind);
+        errdefer self.allocator.free(owned_kind);
+        const owned_label = try self.allocator.dupe(u8, label);
+        errdefer self.allocator.free(owned_label);
+
+        self.lock();
+        defer self.unlock();
+        try self.agent_steps.append(self.allocator, .{
+            .index = index,
+            .kind = owned_kind,
+            .summary = owned_label,
+            .running = true,
+        });
+    }
+
     pub fn appendAgentStep(self: *Session, index: u32, kind: []const u8, summary: []const u8) !void {
         self.lock();
 
@@ -254,12 +271,23 @@ pub const Session = struct {
         self.lock();
         defer self.unlock();
 
+        for (self.agent_steps.items) |*step| {
+            if (step.running and step.index == index and step.parent_index == null) {
+                self.allocator.free(step.kind);
+                self.allocator.free(step.summary);
+                step.kind = owned_kind;
+                step.summary = owned_summary;
+                step.running = false;
+                return;
+            }
+        }
+
         var parent_idx: ?usize = null;
         if (self.agent_steps.items.len > 0) {
             var i = self.agent_steps.items.len;
             while (i > 0) : (i -= 1) {
                 const step = &self.agent_steps.items[i - 1];
-                if (step.parent_index == null and !step.is_thought) {
+                if (step.parent_index == null and !step.is_thought and !step.running) {
                     if (std.mem.eql(u8, step.kind, kind)) {
                         parent_idx = i - 1;
                     }

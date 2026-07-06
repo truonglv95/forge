@@ -36,6 +36,10 @@ pub const Config = struct {
     progress_context: ?*anyopaque = null,
     step_callback: ?*const fn (?*anyopaque, Step) void = null,
     step_context: ?*anyopaque = null,
+    step_begin_callback: ?*const fn (?*anyopaque, StepBegin) void = null,
+    step_begin_context: ?*anyopaque = null,
+    turn_callback: ?*const fn (?*anyopaque, u32) void = null,
+    turn_context: ?*anyopaque = null,
     edit_callback: ?*const fn (?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void = null,
     edit_context: ?*anyopaque = null,
     use_inline_edits: bool = false,
@@ -46,6 +50,11 @@ pub const Step = struct {
     kind: []const u8,
     summary: []const u8,
     run_id: ?[]const u8 = null,
+};
+
+pub const StepBegin = struct {
+    index: u32,
+    tool_name: []const u8,
 };
 
 pub const Result = struct {
@@ -379,9 +388,32 @@ fn runExploreLoop(
     on_step: agent_loop.StepCallback,
     on_step_ctx: ?*anyopaque,
 ) AgentError!void {
+    const LoopBridge = struct {
+        config: Config,
+
+        fn onTurn(ctx: ?*anyopaque, index: u32) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            if (self.config.turn_callback) |callback| {
+                callback(self.config.turn_context, index);
+            }
+        }
+
+        fn onStepBegin(ctx: ?*anyopaque, index: u32, tool_name: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            if (self.config.step_begin_callback) |callback| {
+                callback(self.config.step_begin_context, .{ .index = index, .tool_name = tool_name });
+            }
+        }
+    };
+    var loop_bridge = LoopBridge{ .config = config };
+
     agent_loop.run(allocator, transport, declarations, intent, ctx_builder, tool_ctx, mcp, .{
         .max_tool_steps = config.max_steps,
         .cancel_token = config.cancel_token,
+        .turn_callback = if (config.turn_callback != null) LoopBridge.onTurn else null,
+        .turn_context = &loop_bridge,
+        .step_begin_callback = if (config.step_begin_callback != null) LoopBridge.onStepBegin else null,
+        .step_begin_context = &loop_bridge,
         .step_callback = on_step,
         .step_context = on_step_ctx,
     }) catch |err| switch (err) {
