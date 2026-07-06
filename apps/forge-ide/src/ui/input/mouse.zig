@@ -246,11 +246,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
 
             wb.agent.lock();
             const post_apply = wb.agent.post_apply_visible;
+            const validation_failed = wb.agent.phase == .failed and post_apply;
+            const validation_count = wb.agent.validation_results.items.len;
             const resume_offer = wb.agent.resume_offer_visible;
             wb.agent.unlock();
             if (post_apply) {
                 const banner_y = agent_panel.chat_content_top + 8 - wb.chat_scroll_y;
-                if (agent_panel.hitApplyBanner(geo.agent_x, banner_y, event.x, event.y)) |action| {
+                if (agent_panel.hitApplyBanner(geo.agent_x, banner_y, event.x, event.y, validation_failed, validation_count)) |action| {
                     switch (action) {
                         .keep => wb.dispatch(.agent_dismiss_apply) catch {},
                         .undo => wb.dispatch(.agent_rollback) catch {},
@@ -260,10 +262,12 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
             if (resume_offer) {
                 var banner_y = agent_panel.chat_content_top + 8 - wb.chat_scroll_y;
-                if (post_apply) banner_y += agent_panel.apply_banner_h + 4;
+                if (post_apply) {
+                    banner_y += agent_panel.applyBannerHeight(validation_failed, validation_count) + 4;
+                }
                 if (agent_panel.hitResumeBanner(geo.agent_x, banner_y, event.x, event.y)) |action| {
                     switch (action) {
-                        .continue_run => wb.dispatch(.agent_continue_session) catch {},
+                        .primary => wb.dispatch(.agent_continue_session) catch {},
                         .dismiss => wb.dispatch(.agent_dismiss_resume) catch {},
                     }
                     return;

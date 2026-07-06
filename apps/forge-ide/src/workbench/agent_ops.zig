@@ -356,7 +356,7 @@ pub fn scrollChatToEnd(wb: anytype, agent_h: f32) void {
             content_w,
         );
         const tool_step_card_mod = @import("../ui/agent/tool_step_card.zig");
-        const steps_h = tool_step_card_mod.totalStepsHeight(wb.agent.agent_steps.items, content_w);
+        const steps_h = tool_step_card_mod.totalStepsHeight(wb.agent.agent_steps.items, content_w, wb.agent.mode);
         estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
     }
     const entry_count = wb.agent.context_entries.items.len;
@@ -692,12 +692,16 @@ pub fn flushAgentUi(wb: anytype) !void {
                 if (wb.agent.run_id) |old| wb.allocator.free(old);
                 if (wb.agent.proposal_rel) |old| wb.allocator.free(old);
                 wb.agent.run_id = try wb.allocator.dupe(u8, payload.run_id);
-                wb.agent.proposal_rel = try wb.allocator.dupe(u8, payload.proposal_rel);
+                if (wb.agent.mode == .ask or payload.proposal_rel.len == 0) {
+                    wb.agent.proposal_rel = null;
+                } else {
+                    wb.agent.proposal_rel = try wb.allocator.dupe(u8, payload.proposal_rel);
+                }
                 wb.agent.worker_running = false;
                 wb.agent.unlock();
 
                 try agent_workflow.applyManifestText(&host, payload.manifest_text);
-                if (payload.proposal_rel.len > 0) {
+                if (payload.proposal_rel.len > 0 and wb.agent.mode != .ask) {
                     try agent_workflow.loadProposalPreview(&host, payload.proposal_rel);
                     openProposalReview(
                         wb,

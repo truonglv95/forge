@@ -163,7 +163,7 @@ pub fn clampChatScroll(wb: anytype, agent_h: f32) void {
             content_w,
         );
         const tool_step_card_mod = @import("../ui/agent/tool_step_card.zig");
-        const steps_h = tool_step_card_mod.totalStepsHeight(wb.agent.agent_steps.items, content_w);
+        const steps_h = tool_step_card_mod.totalStepsHeight(wb.agent.agent_steps.items, content_w, wb.agent.mode);
         estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
     }
     const entry_count = wb.agent.context_entries.items.len;

@@ -148,16 +148,56 @@ pub fn spawnGenerate(host: *const Host, intent: []const u8, scope_files: []const
 
 pub fn scanResumableSession(host: *const Host) void {
     if (host.agent.worker_running) return;
-    const offer_opt = workspace.sessions.findLatestResumable(host.allocator, host.io, host.workspace_root) catch return;
-    if (offer_opt) |value| {
+    const interrupted_opt = workspace.sessions.findLatestResumable(host.allocator, host.io, host.workspace_root) catch return;
+    if (interrupted_opt) |value| {
         var owned = value;
         defer workspace.sessions.deinitResumable(host.allocator, &owned);
-        host.agent.setResumeOffer(owned.session_id, owned.intent, owned.execution_state) catch {};
+        host.agent.setResumeOffer(.continue_run, owned.session_id, owned.intent, owned.execution_state, null) catch {};
+        return;
+    }
+    const proposal_opt = workspace.sessions.findLatestProposalReady(host.allocator, host.io, host.workspace_root) catch return;
+    if (proposal_opt) |value| {
+        var owned = value;
+        defer workspace.sessions.deinitProposalReady(host.allocator, &owned);
+        host.agent.setResumeOffer(.review_proposal, owned.session_id, owned.intent, "proposal_ready", owned.proposal_path) catch {};
     }
 }
 
 pub fn dismissResumeOffer(host: *const Host) void {
     host.agent.clearResumeOffer();
+}
+
+pub fn openStoredProposal(host: *const Host, session_id: []const u8) AgentError!void {
+    var doc = workspace.sessions.loadSession(host.allocator, host.io, host.workspace_root, session_id) catch return error.ProviderFailed;
+    defer workspace.sessions.deinitSession(host.allocator, &doc);
+    if (!workspace.sessions.isProposalReadyExecutionState(doc.execution_state)) return error.InvalidProposal;
+    if (doc.proposal_path.len == 0) return error.NoProposal;
+
+    host.agent.clearResumeOffer();
+
+    const run_id = if (doc.run_ids.len > 0) doc.run_ids[doc.run_ids.len - 1] else "";
+
+    host.agent.lock();
+    if (host.agent.run_id) |old| host.allocator.free(old);
+    host.agent.run_id = host.allocator.dupe(u8, run_id) catch {
+        host.agent.unlock();
+        return error.ProviderFailed;
+    };
+    if (host.agent.proposal_rel) |old| host.allocator.free(old);
+    host.agent.proposal_rel = host.allocator.dupe(u8, doc.proposal_path) catch {
+        host.agent.unlock();
+        return error.ProviderFailed;
+    };
+    if (host.agent.intent) |old| host.allocator.free(old);
+    host.agent.intent = host.allocator.dupe(u8, doc.intent) catch {
+        host.agent.unlock();
+        return error.ProviderFailed;
+    };
+    host.agent.unlock();
+
+    loadProposalPreview(host, doc.proposal_path) catch return error.ProviderFailed;
+    host.agent.setPhase(.proposal_ready, "Proposal ready for review") catch return error.ProviderFailed;
+    host.set_status(host.context, "Proposal ready for review");
 }
 
 pub fn spawnResumeSession(host: *const Host, session_id: []const u8) AgentError!void {
