@@ -339,6 +339,21 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             wb.agent.resolveToolApproval(false);
             try wb.setStatus("Tool rejected");
         },
+        .agent_continue_session => {
+            wb.agent.lock();
+            const session_id = if (wb.agent.resume_session_id) |id| try wb.allocator.dupe(u8, id) else null;
+            wb.agent.unlock();
+            if (session_id) |id| {
+                defer wb.allocator.free(id);
+                agent_workflow.spawnResumeSession(&wb.agentHost(), id) catch |err| {
+                    try wb.setStatus(agent_workflow.agentFailureMessage(err));
+                };
+            }
+        },
+        .agent_dismiss_resume => {
+            agent_workflow.dismissResumeOffer(&wb.agentHost());
+            try wb.setStatus("Resume offer dismissed");
+        },
         .agent_reject => {
             agent_workflow.rejectCurrentProposal(&wb.agentHost());
             wb.closeProposalReview();

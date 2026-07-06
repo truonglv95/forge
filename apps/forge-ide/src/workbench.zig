@@ -253,6 +253,7 @@ pub const Workbench = struct {
             self.focused_panel = .recovery;
         }
         agent_workflow.refreshRunHistory(&self.agentHost()) catch {};
+        agent_workflow.scanResumableSession(&self.agentHost());
         try self.restoreChatHistory();
         self.debug_lldb = .{
             .allocator = allocator,

@@ -92,9 +92,17 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         content_y += agent_panel.apply_banner_h + 4;
     }
 
+    if (snap.resume_offer_visible) {
+        const intent = snap.resume_intent orelse "previous run";
+        const resume_state = snap.resume_state orelse "interrupted";
+        agent_panel.drawResumeBanner(agent_x, agent_w, content_y, intent, resume_state);
+        content_y += agent_panel.resume_banner_h + 4;
+    }
+
     if (snap.approval_pending) {
+        const title = if (snap.approval_kind == .review) "EDIT REVIEW REQUIRED" else "TOOL APPROVAL REQUIRED";
         renderer.Renderer.drawRoundedRect(inner_x, content_y, content_w, 72, 8, .{ .r = 0.28, .g = 0.2, .b = 0.08, .a = 1.0 });
-        renderer.Renderer.drawText("TOOL APPROVAL REQUIRED", inner_x + 10, content_y + 8, 11.0, .{ .r = 1.0, .g = 0.78, .b = 0.35, .a = 1.0 });
+        renderer.Renderer.drawText(title, inner_x + 10, content_y + 8, 11.0, .{ .r = 1.0, .g = 0.78, .b = 0.35, .a = 1.0 });
         wb.agent.lock();
         var approval_buf: [384:0]u8 = undefined;
         const approval_line = std.fmt.bufPrint(&approval_buf, "{s} · risk: {s}", .{

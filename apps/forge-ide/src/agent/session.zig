@@ -1,6 +1,7 @@
 const std = @import("std");
 const forge_util = @import("forge-util");
 const review_store = @import("review_store.zig");
+const ai = @import("forge-ai");
 
 pub const Mode = enum { ask, plan, agent };
 
@@ -121,6 +122,11 @@ pub const Session = struct {
     approval_tool: ?[]const u8 = null,
     approval_args: ?[]const u8 = null,
     approval_risk: ?[]const u8 = null,
+    approval_kind: ?ai.tool_registry.Approval = null,
+    resume_offer_visible: bool = false,
+    resume_session_id: ?[]const u8 = null,
+    resume_intent: ?[]const u8 = null,
+    resume_state: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Session {
         return .{
@@ -170,6 +176,9 @@ pub const Session = struct {
         if (self.approval_tool) |text| self.allocator.free(text);
         if (self.approval_args) |text| self.allocator.free(text);
         if (self.approval_risk) |text| self.allocator.free(text);
+        if (self.resume_session_id) |text| self.allocator.free(text);
+        if (self.resume_intent) |text| self.allocator.free(text);
+        if (self.resume_state) |text| self.allocator.free(text);
         self.clearAgentStepsUnlocked();
         self.agent_steps.deinit(self.allocator);
         if (self.status_line.len > 0) self.allocator.free(self.status_line);
@@ -445,7 +454,44 @@ pub const Session = struct {
         self.post_apply_visible = false;
     }
 
-    pub fn requestToolApproval(self: *Session, tool: []const u8, args: []const u8, risk: []const u8) bool {
+    pub fn setResumeOffer(self: *Session, session_id: []const u8, intent: []const u8, state: []const u8) !void {
+        const id_owned = try self.allocator.dupe(u8, session_id);
+        errdefer self.allocator.free(id_owned);
+        const intent_owned = try self.allocator.dupe(u8, intent);
+        errdefer self.allocator.free(intent_owned);
+        const state_owned = try self.allocator.dupe(u8, state);
+        errdefer self.allocator.free(state_owned);
+
+        self.lock();
+        defer self.unlock();
+        if (self.resume_session_id) |old| self.allocator.free(old);
+        if (self.resume_intent) |old| self.allocator.free(old);
+        if (self.resume_state) |old| self.allocator.free(old);
+        self.resume_session_id = id_owned;
+        self.resume_intent = intent_owned;
+        self.resume_state = state_owned;
+        self.resume_offer_visible = true;
+    }
+
+    pub fn clearResumeOffer(self: *Session) void {
+        self.lock();
+        defer self.unlock();
+        if (self.resume_session_id) |text| self.allocator.free(text);
+        if (self.resume_intent) |text| self.allocator.free(text);
+        if (self.resume_state) |text| self.allocator.free(text);
+        self.resume_session_id = null;
+        self.resume_intent = null;
+        self.resume_state = null;
+        self.resume_offer_visible = false;
+    }
+
+    pub fn requestToolApproval(
+        self: *Session,
+        tool: []const u8,
+        args: []const u8,
+        risk: []const u8,
+        kind: ai.tool_registry.Approval,
+    ) bool {
         const tool_copy = self.allocator.dupe(u8, tool) catch return false;
         const args_copy = self.allocator.dupe(u8, args) catch {
             self.allocator.free(tool_copy);
@@ -464,6 +510,7 @@ pub const Session = struct {
         self.approval_tool = tool_copy;
         self.approval_args = args_copy;
         self.approval_risk = risk_copy;
+        self.approval_kind = kind;
         self.approval_decision = .pending;
         self.phase = .waiting_approval;
         while (self.approval_decision == .pending) self.approval_condition.wait(&self.mutex);
@@ -472,6 +519,7 @@ pub const Session = struct {
         self.approval_tool = null;
         self.approval_args = null;
         self.approval_risk = null;
+        self.approval_kind = null;
         self.allocator.free(tool_copy);
         self.allocator.free(args_copy);
         self.allocator.free(risk_copy);
@@ -607,6 +655,10 @@ pub const Session = struct {
         spec_pending: bool,
         last_checkpoint_id: ?u64,
         approval_pending: bool,
+        approval_kind: ?ai.tool_registry.Approval,
+        resume_offer_visible: bool,
+        resume_intent: ?[]const u8,
+        resume_state: ?[]const u8,
     } {
         self.lock();
         defer self.unlock();
@@ -640,6 +692,10 @@ pub const Session = struct {
             .spec_pending = self.spec_pending,
             .last_checkpoint_id = self.last_checkpoint_id,
             .approval_pending = self.approval_decision == .pending,
+            .approval_kind = self.approval_kind,
+            .resume_offer_visible = self.resume_offer_visible,
+            .resume_intent = self.resume_intent,
+            .resume_state = self.resume_state,
         };
     }
 };

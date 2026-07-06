@@ -9,6 +9,13 @@ pub const chat_content_top: f32 = 68.0;
 
 pub const apply_banner_h: f32 = 34;
 
+pub const resume_banner_h: f32 = 52;
+
+pub const ResumeBanner = struct {
+    continue_run: ButtonRect,
+    dismiss: ButtonRect,
+};
+
 pub const ApplyBanner = struct {
     keep: ButtonRect,
     undo: ButtonRect,
@@ -37,6 +44,36 @@ pub fn drawApplyBanner(agent_x: f32, agent_w: f32, y: f32) void {
     renderer.Renderer.drawText("Keep", banner.keep.x + 18, banner.keep.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
     renderer.Renderer.drawRoundedRect(banner.undo.x, banner.undo.y, banner.undo.w, banner.undo.h, 5, .{ .r = 0.45, .g = 0.22, .b = 0.22, .a = 1.0 });
     renderer.Renderer.drawText("Undo", banner.undo.x + 18, banner.undo.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+}
+
+pub fn resumeBannerLayout(agent_x: f32, y: f32) ResumeBanner {
+    const inner_x = agent_x + 20;
+    return .{
+        .continue_run = .{ .x = inner_x, .y = y + 24, .w = 96, .h = 24 },
+        .dismiss = .{ .x = inner_x + 104, .y = y + 24, .w = 72, .h = 24 },
+    };
+}
+
+pub fn hitResumeBanner(agent_x: f32, y: f32, px: f32, py: f32) ?enum { continue_run, dismiss } {
+    const banner = resumeBannerLayout(agent_x, y);
+    if (banner.continue_run.contains(px, py)) return .continue_run;
+    if (banner.dismiss.contains(px, py)) return .dismiss;
+    return null;
+}
+
+pub fn drawResumeBanner(agent_x: f32, agent_w: f32, y: f32, intent: []const u8, state: []const u8) void {
+    const banner = resumeBannerLayout(agent_x, y);
+    renderer.Renderer.drawRoundedRect(agent_x + 10, y - 4, agent_w - 20, resume_banner_h, 8, .{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 });
+    renderer.Renderer.drawText("Interrupted agent run", agent_x + 20, y + 2, 11.0, .{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 });
+    var detail_buf: [256:0]u8 = undefined;
+    const clipped_intent = intent[0..@min(intent.len, 120)];
+    const detail = std.fmt.bufPrint(&detail_buf, "{s} · {s}", .{ clipped_intent, state }) catch clipped_intent;
+    detail_buf[@min(detail.len, detail_buf.len - 1)] = 0;
+    renderer.Renderer.drawText(@ptrCast(&detail_buf), agent_x + 20, y + 16, 10.0, .{ .r = 0.68, .g = 0.74, .b = 0.82, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(banner.continue_run.x, banner.continue_run.y, banner.continue_run.w, banner.continue_run.h, 5, .{ .r = 0.2, .g = 0.45, .b = 0.62, .a = 1.0 });
+    renderer.Renderer.drawText("Continue", banner.continue_run.x + 16, banner.continue_run.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(banner.dismiss.x, banner.dismiss.y, banner.dismiss.w, banner.dismiss.h, 5, .{ .r = 0.35, .g = 0.35, .b = 0.4, .a = 1.0 });
+    renderer.Renderer.drawText("Dismiss", banner.dismiss.x + 10, banner.dismiss.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
 }
 
 pub const ButtonRect = struct {

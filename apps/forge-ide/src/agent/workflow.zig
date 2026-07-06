@@ -146,6 +146,74 @@ pub fn spawnGenerate(host: *const Host, intent: []const u8, scope_files: []const
     thread.detach();
 }
 
+pub fn scanResumableSession(host: *const Host) void {
+    if (host.agent.worker_running) return;
+    const offer_opt = workspace.sessions.findLatestResumable(host.allocator, host.io, host.workspace_root) catch return;
+    if (offer_opt) |value| {
+        var owned = value;
+        defer workspace.sessions.deinitResumable(host.allocator, &owned);
+        host.agent.setResumeOffer(owned.session_id, owned.intent, owned.execution_state) catch {};
+    }
+}
+
+pub fn dismissResumeOffer(host: *const Host) void {
+    host.agent.clearResumeOffer();
+}
+
+pub fn spawnResumeSession(host: *const Host, session_id: []const u8) AgentError!void {
+    if (host.agent.worker_running) return error.AgentBusy;
+
+    var doc = workspace.sessions.loadSession(host.allocator, host.io, host.workspace_root, session_id) catch return error.ProviderFailed;
+    defer workspace.sessions.deinitSession(host.allocator, &doc);
+    if (!workspace.sessions.isResumableExecutionState(doc.execution_state)) return error.InvalidProposal;
+
+    const capability: ai.tools.CapabilityProfile = blk: {
+        if (std.mem.eql(u8, doc.capability_profile, "read_only")) break :blk .read_only;
+        if (std.mem.eql(u8, doc.capability_profile, "propose_and_task")) break :blk .propose_and_task;
+        break :blk .propose;
+    };
+
+    const ctx = host.allocator.create(ResumeContext) catch return error.ProviderFailed;
+    const session_owned = host.allocator.dupe(u8, session_id) catch {
+        host.allocator.destroy(ctx);
+        return error.ProviderFailed;
+    };
+    const intent_owned = host.allocator.dupe(u8, doc.intent) catch {
+        host.allocator.free(session_owned);
+        host.allocator.destroy(ctx);
+        return error.ProviderFailed;
+    };
+
+    ctx.* = .{
+        .host = host.*,
+        .session_id = session_owned,
+        .intent = intent_owned,
+        .capability_profile = capability,
+        .cancel_source = kernel.cancellation.CancellationTokenSource.init(host.allocator) catch {
+            host.allocator.free(intent_owned);
+            host.allocator.free(session_owned);
+            host.allocator.destroy(ctx);
+            return error.ProviderFailed;
+        },
+    };
+
+    host.agent.clearResumeOffer();
+    host.agent.resetForNewRun();
+    host.agent.setPhase(.building_context, "Resuming interrupted agent run...") catch {};
+    host.set_status(host.context, "Resuming interrupted agent run...");
+    host.agent.lock();
+    host.agent.worker_running = true;
+    if (host.agent.intent) |old| host.allocator.free(old);
+    host.agent.intent = host.allocator.dupe(u8, doc.intent) catch "";
+    host.agent.unlock();
+
+    const thread = std.Thread.spawn(.{}, resumeWorker, .{ctx}) catch {
+        ctx.deinit();
+        return error.ProviderFailed;
+    };
+    thread.detach();
+}
+
 pub fn cancel(host: *const Host) void {
     if (host.agent_cancel_slot.*) |source| source.cancel();
     host.agent.resolveToolApproval(false);
@@ -396,6 +464,21 @@ const GenerateContext = struct {
     }
 };
 
+const ResumeContext = struct {
+    host: Host,
+    session_id: []const u8,
+    intent: []const u8,
+    capability_profile: ai.tools.CapabilityProfile,
+    cancel_source: kernel.cancellation.CancellationTokenSource,
+
+    fn deinit(self: *ResumeContext) void {
+        self.host.allocator.free(self.session_id);
+        self.host.allocator.free(self.intent);
+        self.cancel_source.deinit();
+        self.host.allocator.destroy(self);
+    }
+};
+
 fn providerOptions(host: *const Host, fake_response: []const u8, fake_plan: ?[]const u8, for_agent: bool) ai.provider_factory.Options {
     return .{
         .kind = ai.provider_factory.Kind.parse(host.ai_provider),
@@ -442,7 +525,94 @@ fn generateWorker(ctx: *GenerateContext) void {
     };
 }
 
-fn agentFailureMessage(err: anyerror) []const u8 {
+fn resumeWorker(ctx: *ResumeContext) void {
+    defer ctx.deinit();
+
+    ctx.host.agent_cancel_slot.* = &ctx.cancel_source;
+    defer ctx.host.agent_cancel_slot.* = null;
+
+    const host = &ctx.host;
+    const cancel_token = ctx.cancel_source.getToken();
+    const provider_options = providerOptions(host, default_ask_response, null, ctx.capability_profile == .propose_and_task);
+
+    const attachments = collectAttachmentInputs(host) catch {
+        enqueueRunFailed(host, error.ProviderFailed);
+        return;
+    };
+    defer freeAttachmentInputs(host.allocator, attachments);
+    const recent_files = collectRecentFiles(host) catch &.{};
+    defer if (recent_files.len > 0) host.free_recent_files_snapshot(host.context, host.allocator, recent_files);
+
+    var result = ai.agent.resumeSession(
+        host.allocator,
+        host.io,
+        host.environ_map,
+        host.workspace_root,
+        ctx.session_id,
+        .{
+            .max_steps = 8,
+            .provider_options = provider_options,
+            .capability_profile = ctx.capability_profile,
+            .surface = .ide,
+            .cancel_token = &cancel_token,
+            .progress_callback = phaseBridge,
+            .progress_context = host,
+            .step_callback = stepBridge,
+            .step_context = host,
+            .step_begin_callback = stepBeginBridge,
+            .step_begin_context = host,
+            .turn_callback = turnBridge,
+            .turn_context = host,
+            .approval_callback = approvalBridge,
+            .approval_context = host,
+            .edit_callback = null,
+            .edit_context = null,
+            .use_inline_edits = false,
+            .workspace_cwd = host.workspace_path,
+            .mcp_enabled = host.ai_mcp_enabled,
+            .recent_files = recent_files,
+            .max_repair_attempts = if (ctx.capability_profile == .read_only or provider_options.kind == .fake) 0 else 2,
+        },
+    ) catch |err| {
+        enqueueRunFailed(host, err);
+        return;
+    };
+    defer ai.agent.deinitResult(host.allocator, &result);
+
+    const run_id = result.final_run_id orelse "inline_run";
+    const proposal_rel = result.proposal_rel orelse "";
+
+    const manifest_owned = buildManifestText(host, ctx.intent, &.{}, null, attachments) catch {
+        enqueueRunFailed(host, error.ProviderFailed);
+        return;
+    };
+    defer host.allocator.free(manifest_owned);
+
+    var chat_buf: [512]u8 = undefined;
+    const chat_line = result.response_text orelse (std.fmt.bufPrint(&chat_buf, "Agent resumed", .{}) catch "Agent resumed");
+    const chat_owned = host.allocator.dupe(u8, chat_line) catch {
+        enqueueRunFailed(host, error.ProviderFailed);
+        return;
+    };
+
+    enqueueRunFinished(host, run_id, proposal_rel, chat_owned, manifest_owned, null) catch {
+        host.allocator.free(chat_owned);
+        enqueueRunFailed(host, error.ProviderFailed);
+    };
+}
+
+fn enqueueRunFailed(host: *const Host, err: anyerror) void {
+    const msg = agentFailureMessage(err);
+    const owned = host.allocator.dupe(u8, msg) catch return;
+    host.enqueue_ui(host.context, .{
+        .run_failed = .{
+            .phase = if (err == error.Cancelled) .cancelled else .failed,
+            .message = owned,
+        },
+    });
+}
+
+pub fn agentFailureMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.Cancelled => "Cancelled",
         error.MissingProviderCredentials => "Missing Gemini API key — export GEMINI_API_KEY, use Ollama (provider=ollama), or set provider=fake",
@@ -783,7 +953,7 @@ fn turnBridge(context: ?*anyopaque, index: u32) void {
 
 fn approvalBridge(context: ?*anyopaque, tool_name: []const u8, args_json: []const u8, policy: ai.tool_registry.Policy) bool {
     const host: *Host = @ptrCast(@alignCast(context.?));
-    return host.agent.requestToolApproval(tool_name, args_json, @tagName(policy.risk));
+    return host.agent.requestToolApproval(tool_name, args_json, @tagName(policy.risk), policy.approval);
 }
 
 fn editBridge(context: ?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void {
