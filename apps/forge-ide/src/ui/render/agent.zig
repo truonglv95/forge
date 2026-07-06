@@ -11,20 +11,29 @@ const agent_panel = @import("../agent/agent_panel.zig");
 const agent_scope_picker_mod = @import("../../agent/scope_picker.zig");
 const ai = @import("forge-ai");
 const render_theme = @import("theme.zig");
+const diff_line_style = @import("../diff_line_style.zig");
 
 const Workbench = @import("../../workbench.zig").Workbench;
+const chat_layout = @import("../../workbench/chat_layout.zig");
+const chat_message_lines = @import("../agent/chat_message_lines.zig");
 
 pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     const pad: f32 = 20;
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
-    renderer.Renderer.setClipRect(agent_x, layout.header_height, agent_w, h - layout.header_height - layout.status_height);
-    defer renderer.Renderer.clearClipRect();
+    renderer.Renderer.pushClipRect(agent_x, layout.header_height, agent_w, h - layout.header_height - layout.status_height);
+    defer renderer.Renderer.popClipRect();
 
     var status_copy: [320]u8 = undefined;
     var provider_copy: [128]u8 = undefined;
     const snap = wb.agent.snapshot(&status_copy, &provider_copy);
-    if (snap.worker_running) wb.clampChatScroll(h);
+    chat_layout.ensure(wb, h);
+    if (wb.chat_scroll_to_end_on_ready) {
+        wb.chat_scroll_to_end_on_ready = false;
+        wb.chat_scroll_y = wb.chat_layout.max_scroll;
+    } else if (wb.chat_scroll_y > wb.chat_layout.max_scroll) {
+        wb.chat_scroll_y = wb.chat_layout.max_scroll;
+    }
 
     const chat_tab_x = agent_x;
     const chat_tab_w = 120;
@@ -85,132 +94,61 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     const chat_bottom = strip_top - 4;
 
     const chat_top = agent_panel.chat_content_top + 8.0;
+    const chat_viewport_h = @max(0, chat_bottom - chat_top);
     var content_y: f32 = chat_top - wb.chat_scroll_y;
 
-    if (snap.post_apply_visible) {
-        wb.agent.lock();
-        const validation_results = wb.agent.validation_results.items;
-        const banner_h = agent_panel.applyBannerHeight(snap.validation_failed, validation_results.len);
-        agent_panel.drawApplyBanner(agent_x, agent_w, content_y, snap.validation_failed, validation_results);
-        wb.agent.unlock();
-        content_y += banner_h + 4;
-    }
+    {
+        renderer.Renderer.pushClipRect(agent_x, chat_top, agent_w, chat_viewport_h);
+        defer renderer.Renderer.popClipRect();
 
-    if (snap.resume_offer_visible) {
-        const intent = snap.resume_intent orelse "previous run";
-        const resume_state = snap.resume_state orelse "interrupted";
-        agent_panel.drawResumeBanner(agent_x, agent_w, content_y, snap.resume_offer_kind, intent, resume_state);
-        content_y += agent_panel.resume_banner_h + 4;
-    }
-
-    if (snap.approval_pending) {
-        const title = if (snap.approval_kind == .review) "EDIT REVIEW REQUIRED" else "TOOL APPROVAL REQUIRED";
-        renderer.Renderer.drawRoundedRect(inner_x, content_y, content_w, 72, 8, .{ .r = 0.28, .g = 0.2, .b = 0.08, .a = 1.0 });
-        renderer.Renderer.drawText(title, inner_x + 10, content_y + 8, 11.0, .{ .r = 1.0, .g = 0.78, .b = 0.35, .a = 1.0 });
-        wb.agent.lock();
-        var approval_buf: [384:0]u8 = undefined;
-        const approval_line = std.fmt.bufPrint(&approval_buf, "{s} · risk: {s}", .{
-            wb.agent.approval_tool orelse "unknown tool",
-            wb.agent.approval_risk orelse "unknown",
-        }) catch "Tool details unavailable";
-        approval_buf[approval_line.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&approval_buf), inner_x + 10, content_y + 27, 11.0, .{ .r = 0.95, .g = 0.9, .b = 0.78, .a = 1.0 });
-        var args_buf: [384:0]u8 = undefined;
-        const args_src = wb.agent.approval_args orelse "{}";
-        const clipped_args = args_src[0..@min(args_src.len, 360)];
-        const args_line = std.fmt.bufPrint(&args_buf, "Args: {s}", .{clipped_args}) catch "Args unavailable";
-        args_buf[args_line.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&args_buf), inner_x + 10, content_y + 46, 9.5, .{ .r = 0.78, .g = 0.75, .b = 0.68, .a = 1.0 });
-        wb.agent.unlock();
-        content_y += 80;
-    }
-
-    if (snap.show_review and wb.proposal_review_open) {
-        renderer.Renderer.drawRoundedRect(agent_x + 10, content_y, agent_w - 20, 48, 8, .{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 });
-        renderer.Renderer.drawText("Proposal review open in editor panel", inner_x, content_y + 10, 12.0, .{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 });
-        renderer.Renderer.drawText("Toggle hunks and apply from the editor view", inner_x, content_y + 26, 10.0, .{ .r = 0.6, .g = 0.68, .b = 0.78, .a = 1.0 });
-        content_y += 56;
-    } else if (snap.show_review) {
-        renderer.Renderer.drawText("REVIEW", inner_x, content_y, 11.0, .{ .r = 1.0, .g = 0.7, .b = 0.4, .a = 1.0 });
-        content_y += 16.0;
-        if (snap.summary) |summary| {
-            var summary_buf: [384:0]u8 = undefined;
-            const clipped = if (summary.len > 383) summary[0..383] else summary;
-            @memcpy(summary_buf[0..clipped.len], clipped);
-            summary_buf[clipped.len] = 0;
-            renderer.Renderer.drawText(@ptrCast(&summary_buf), inner_x, content_y, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
-            content_y += 18.0;
+        if (snap.post_apply_visible) {
+            wb.agent.lock();
+            const validation_results = wb.agent.validation_results.items;
+            const banner_h = agent_panel.applyBannerHeight(snap.validation_failed, validation_results.len);
+            agent_panel.drawApplyBanner(agent_x, agent_w, content_y, snap.validation_failed, validation_results);
+            wb.agent.unlock();
+            content_y += banner_h + 4;
         }
 
-        var review_y = content_y - wb.agent.review_scroll_y;
-        renderer.Renderer.drawText("CONTEXT", inner_x, review_y, 10.0, .{ .r = 0.55, .g = 0.75, .b = 1.0, .a = 1.0 });
-        review_y += 14.0;
-        wb.agent.lock();
-        for (wb.agent.context_lines.items) |line| {
-            if (review_y > chat_bottom) break;
-            var ctx_buf: [512:0]u8 = undefined;
-            const clipped = if (line.len > 511) line[0..511] else line;
-            @memcpy(ctx_buf[0..clipped.len], clipped);
-            ctx_buf[clipped.len] = 0;
-            renderer.Renderer.drawText(@ptrCast(&ctx_buf), inner_x + 6, review_y, 9.5, .{ .r = 0.7, .g = 0.78, .b = 0.9, .a = 1.0 });
-            review_y += 11.0;
+        if (snap.resume_offer_visible) {
+            const intent = snap.resume_intent orelse "previous run";
+            const resume_state = snap.resume_state orelse "interrupted";
+            agent_panel.drawResumeBanner(agent_x, agent_w, content_y, snap.resume_offer_kind, intent, resume_state);
+            content_y += agent_panel.resume_banner_h + 4;
         }
-        review_y += 6.0;
-        renderer.Renderer.drawText("CHANGES (click to toggle)", inner_x, review_y, 10.0, .{ .r = 0.55, .g = 0.75, .b = 1.0, .a = 1.0 });
-        review_y += 14.0;
-        for (wb.agent.review.hunks) |hunk| {
-            if (review_y > chat_bottom) break;
-            const block_h = @import("../../agent/review_store.zig").Store.hunkBlockHeight(hunk);
-            const accepted = hunk.accepted;
-            const header_bg = if (accepted)
-                renderer.Color{ .r = 0.14, .g = 0.22, .b = 0.16, .a = 1.0 }
-            else
-                renderer.Color{ .r = 0.18, .g = 0.14, .b = 0.14, .a = 1.0 };
-            renderer.Renderer.drawRoundedRect(inner_x, review_y - 2, content_w - 8, block_h + 4, 4, header_bg);
-            var header_buf: [384:0]u8 = undefined;
-            const marker = if (accepted) "[x] " else "[ ] ";
-            const header = std.fmt.bufPrint(&header_buf, "{s}{s}", .{ marker, hunk.label }) catch hunk.label;
-            header_buf[header.len] = 0;
-            const header_color = if (accepted)
-                renderer.Color{ .r = 0.75, .g = 0.95, .b = 0.75, .a = 1.0 }
-            else
-                renderer.Color{ .r = 0.65, .g = 0.55, .b = 0.55, .a = 1.0 };
-            renderer.Renderer.drawText(@ptrCast(&header_buf), inner_x + 6, review_y, 10.0, header_color);
-            var line_y = review_y + 14.0;
-            for (hunk.diff_lines) |line| {
-                if (line_y > chat_bottom) break;
-                var line_buf: [512:0]u8 = undefined;
-                const clipped = if (line.len > 511) line[0..511] else line;
-                @memcpy(line_buf[0..clipped.len], clipped);
-                line_buf[clipped.len] = 0;
-                var color = renderer.Color{ .r = 0.75, .g = 0.75, .b = 0.75, .a = if (accepted) 1.0 else 0.45 };
-                if (line.len > 0 and line[0] == '+') color = .{ .r = 0.5, .g = 0.9, .b = 0.5, .a = if (accepted) 1.0 else 0.45 };
-                if (line.len > 0 and line[0] == '-') color = .{ .r = 0.95, .g = 0.45, .b = 0.45, .a = if (accepted) 1.0 else 0.45 };
-                if (line.len > 3 and std.mem.startsWith(u8, line, "---")) color = .{ .r = 0.95, .g = 0.85, .b = 0.45, .a = if (accepted) 1.0 else 0.45 };
-                if (line.len > 3 and std.mem.startsWith(u8, line, "+++")) color = .{ .r = 0.55, .g = 0.85, .b = 0.95, .a = if (accepted) 1.0 else 0.45 };
-                renderer.Renderer.drawText(@ptrCast(&line_buf), inner_x + 10, line_y, 9.5, color);
-                line_y += 12.0;
-            }
-            review_y += block_h + 6.0;
-        }
-        wb.agent.unlock();
-    } else {
+
         const user_style = chat_bubble.BubbleStyle{
             .bg = .{ .r = 0.2, .g = 0.2, .b = 0.25, .a = 1.0 },
             .fg = .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 },
         };
-        for (state.chat_history.?.items) |msg| {
+        const history_prefix = content_y - (chat_top - wb.chat_scroll_y);
+        const history_count = state.chat_history.?.items.len;
+        const start_i = chat_layout.firstVisibleIndex(&wb.chat_layout, wb.chat_scroll_y, history_prefix);
+        const base_y = chat_top - wb.chat_scroll_y + history_prefix;
+        const end_i = chat_layout.lastVisibleIndex(&wb.chat_layout, wb.chat_scroll_y, history_prefix, chat_viewport_h);
+        var msg_i = start_i;
+        while (msg_i < history_count and msg_i < end_i) : (msg_i += 1) {
+            const msg = state.chat_history.?.items[msg_i];
             if (!agent_panel.chatHasVisibleContent(msg.content)) continue;
-            const msg_h = chat_bubble.historyMessageHeight(msg.role == .user, msg.content, content_w);
-            if (content_y + msg_h > chat_bottom and content_y > chat_top) break;
-            const drawn = if (msg.role == .user)
-                chat_bubble.drawBubble(wb.allocator, agent_x, inner_x, content_w, content_y, null, msg.content, user_style)
+            if (msg_i >= wb.chat_layout.message_heights.items.len) break;
+            const msg_h = wb.chat_layout.message_heights.items[msg_i];
+            if (msg_h <= 0) continue;
+            const msg_y = base_y + chat_layout.historyYOffset(&wb.chat_layout, msg_i);
+            if (msg_y + msg_h < chat_top) continue;
+            if (msg_y > chat_bottom) break;
+            const line_cache = if (msg_i < wb.chat_layout.message_lines.items.len)
+                &wb.chat_layout.message_lines.items[msg_i]
             else
-                chat_bubble.drawPlainMessage(wb.allocator, inner_x, content_w, content_y, msg.content, chat_bubble.agent_text_style);
-            content_y += drawn;
+                @as(?*const chat_message_lines.Entry, null);
+            _ = if (msg.role == .user)
+                chat_bubble.drawBubbleWithCache(wb.allocator, agent_x, inner_x, content_w, msg_y, null, msg.content, user_style, line_cache)
+            else
+                chat_bubble.drawPlainMessageWithCache(wb.allocator, inner_x, content_w, msg_y, msg.content, chat_bubble.agent_text_style, line_cache);
         }
+        content_y = base_y + wb.chat_layout.history_content_h;
 
-        if (snap.worker_running) {
+        const show_live_run = snap.worker_running or wb.agent.agent_steps.items.len > 0;
+        if (show_live_run) {
             wb.agent.lock();
             defer wb.agent.unlock();
 
@@ -234,9 +172,9 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
             const thinking_src = wb.agent.thinking_text.items;
             const stream_src = wb.agent.stream_text.items;
 
-            if (thinking_src.len > 0) {
+            if (snap.worker_running and thinking_src.len > 0 and content_y <= chat_bottom) {
                 content_y += chat_bubble.drawThinkingLine(inner_x, content_y, thinking_src);
-            } else if (stream_src.len == 0) {
+            } else if (snap.worker_running and stream_src.len == 0 and content_y <= chat_bottom) {
                 var has_running_step = false;
                 for (wb.agent.agent_steps.items) |step| {
                     if (step.running and step.parent_index == null) {
@@ -255,17 +193,102 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                 }
             }
 
-            if (stream_src.len > 0) {
-                content_y += chat_bubble.drawPlainMessage(
+            if (stream_src.len > 0 and snap.worker_running and content_y <= chat_bottom) {
+                content_y += chat_bubble.drawPlainMessageWithCache(
                     wb.allocator,
                     inner_x,
                     content_w,
                     content_y,
                     stream_src,
                     chat_bubble.agent_text_style,
+                    &wb.chat_layout.stream_entry,
                 );
             }
         }
+
+        if (snap.show_review and wb.proposal_review_open) {
+            renderer.Renderer.drawRoundedRect(agent_x + 10, content_y, agent_w - 20, 48, 8, .{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 });
+            renderer.Renderer.drawText("Proposal review open in editor panel", inner_x, content_y + 10, 12.0, .{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 });
+            renderer.Renderer.drawText("Toggle hunks and apply from the editor view", inner_x, content_y + 26, 10.0, .{ .r = 0.6, .g = 0.68, .b = 0.78, .a = 1.0 });
+            content_y += 56;
+        } else if (snap.show_review) {
+            renderer.Renderer.drawText("REVIEW", inner_x, content_y, 11.0, .{ .r = 1.0, .g = 0.7, .b = 0.4, .a = 1.0 });
+            content_y += 16.0;
+            if (snap.summary) |summary| {
+                var summary_buf: [384:0]u8 = undefined;
+                const clipped = if (summary.len > 383) summary[0..383] else summary;
+                @memcpy(summary_buf[0..clipped.len], clipped);
+                summary_buf[clipped.len] = 0;
+                renderer.Renderer.drawText(@ptrCast(&summary_buf), inner_x, content_y, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+                content_y += 18.0;
+            }
+
+            var review_y = content_y;
+            renderer.Renderer.drawText("CONTEXT", inner_x, review_y, 10.0, .{ .r = 0.55, .g = 0.75, .b = 1.0, .a = 1.0 });
+            review_y += 14.0;
+            wb.agent.lock();
+            for (wb.agent.context_lines.items) |line| {
+                if (review_y > chat_bottom) break;
+                var ctx_buf: [512:0]u8 = undefined;
+                const clipped = if (line.len > 511) line[0..511] else line;
+                @memcpy(ctx_buf[0..clipped.len], clipped);
+                ctx_buf[clipped.len] = 0;
+                renderer.Renderer.drawText(@ptrCast(&ctx_buf), inner_x + 6, review_y, 9.5, .{ .r = 0.7, .g = 0.78, .b = 0.9, .a = 1.0 });
+                review_y += 11.0;
+            }
+            review_y += 6.0;
+            renderer.Renderer.drawText("CHANGES (click to toggle)", inner_x, review_y, 10.0, .{ .r = 0.55, .g = 0.75, .b = 1.0, .a = 1.0 });
+            review_y += 14.0;
+            for (wb.agent.review.hunks) |hunk| {
+                if (review_y > chat_bottom) break;
+                const block_h = @import("../../agent/review_store.zig").Store.hunkBlockHeight(hunk);
+                const accepted = hunk.accepted;
+                const header_bg = if (accepted)
+                    renderer.Color{ .r = 0.14, .g = 0.22, .b = 0.16, .a = 1.0 }
+                else
+                    renderer.Color{ .r = 0.18, .g = 0.14, .b = 0.14, .a = 1.0 };
+                renderer.Renderer.drawRoundedRect(inner_x, review_y - 2, content_w - 8, block_h + 4, 4, header_bg);
+                var header_buf: [384:0]u8 = undefined;
+                const marker = if (accepted) "[x] " else "[ ] ";
+                const header = std.fmt.bufPrint(&header_buf, "{s}{s}", .{ marker, hunk.label }) catch hunk.label;
+                header_buf[header.len] = 0;
+                const header_color = if (accepted)
+                    renderer.Color{ .r = 0.75, .g = 0.95, .b = 0.75, .a = 1.0 }
+                else
+                    renderer.Color{ .r = 0.65, .g = 0.55, .b = 0.55, .a = 1.0 };
+                renderer.Renderer.drawText(@ptrCast(&header_buf), inner_x + 6, review_y, 10.0, header_color);
+                var line_y = review_y + 14.0;
+                for (hunk.diff_lines) |line| {
+                    if (line_y > chat_bottom) break;
+                    const default_fg = renderer.Color{ .r = 0.75, .g = 0.75, .b = 0.75, .a = if (accepted) 1.0 else 0.45 };
+                    diff_line_style.drawLine(line, inner_x + 6, line_y, content_w - 16, 12.0, 9.5, accepted, default_fg);
+                    line_y += 12.0;
+                }
+                review_y += block_h + 6.0;
+            }
+            wb.agent.unlock();
+            content_y = review_y;
+        }
+    }
+
+    if (snap.approval_pending) {
+        wb.agent.lock();
+        const tool = wb.agent.approval_tool orelse "unknown tool";
+        const risk = wb.agent.approval_risk orelse "unknown";
+        const args = wb.agent.approval_args orelse "{}";
+        const is_review = snap.approval_kind == .review;
+        wb.agent.unlock();
+        agent_panel.drawApprovalOverlay(
+            agent_x,
+            agent_w,
+            h,
+            snap.attachment_count,
+            &wb.prompt_buffer,
+            tool,
+            risk,
+            args,
+            is_review,
+        );
     }
 
     if (snap.approval_pending) {
@@ -274,47 +297,11 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         renderer.Renderer.drawText("Approve once", actions.approve.x + 10, actions.approve.y + 6, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
         renderer.Renderer.drawRoundedRect(actions.reject.x, actions.reject.y, actions.reject.w, actions.reject.h, 6, .{ .r = 0.5, .g = 0.2, .b = 0.2, .a = 1.0 });
         renderer.Renderer.drawText("Reject", actions.reject.x + 30, actions.reject.y + 6, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
-    } else if (snap.show_review and !wb.proposal_review_open) {
-        wb.agent.lock();
-        const review_content = agent_panel.reviewContentHeight(&wb.agent);
-        wb.agent.unlock();
-        const review_top = chat_top;
-        const review_viewport = @max(0, chat_bottom - review_top);
-        const review_max = @max(0, review_content - review_viewport);
-        const show_review_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, review_top, agent_w, review_viewport);
-        scrollbar.drawVertical(
-            agent_x + agent_w - scrollbar.track_w - 4,
-            review_top,
-            review_viewport,
-            wb.agent.review_scroll_y,
-            review_max,
-            review_content,
-            review_viewport,
-            show_review_scroll,
-        );
     } else {
-        var chat_lines: usize = 0;
-        for (state.chat_history.?.items) |msg| {
-            if (!agent_panel.chatHasVisibleContent(msg.content)) continue;
-            chat_lines += chat_bubble.visualLineCount(msg.content, content_w) + 1;
-            if (msg.role == .user) chat_lines += 1;
-        }
-        if (snap.worker_running) {
-            wb.agent.lock();
-            chat_lines += chat_bubble.estimateLiveLines(
-                wb.agent.thinking_text.items,
-                wb.agent.stream_text.items,
-                true,
-                content_w,
-            );
-            const steps_h = tool_step_card.totalStepsHeight(wb.agent.agent_steps.items, content_w, snap.mode);
-            chat_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble.line_h)));
-            wb.agent.unlock();
-        }
         const chat_top_scroll = chat_top;
         const chat_viewport = @max(0, chat_bottom - chat_top_scroll);
-        const chat_content = @as(f32, @floatFromInt(@max(1, chat_lines))) * chat_bubble.line_h;
-        const chat_max = @max(0, chat_content - chat_viewport);
+        const chat_content = wb.chat_layout.content_h;
+        const chat_max = wb.chat_layout.max_scroll;
         const show_chat_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, chat_top_scroll, agent_w, chat_viewport);
         scrollbar.drawVertical(
             agent_x + agent_w - scrollbar.track_w - 4,

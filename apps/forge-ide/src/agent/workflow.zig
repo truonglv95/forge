@@ -628,7 +628,7 @@ fn resumeWorker(ctx: *ResumeContext) void {
         enqueueRunFailed(host, error.ProviderFailed);
         return;
     };
-    defer host.allocator.free(manifest_owned);
+    errdefer host.allocator.free(manifest_owned);
 
     var chat_buf: [512]u8 = undefined;
     const chat_line = result.response_text orelse (std.fmt.bufPrint(&chat_buf, "Agent resumed", .{}) catch "Agent resumed");
@@ -636,9 +636,9 @@ fn resumeWorker(ctx: *ResumeContext) void {
         enqueueRunFailed(host, error.ProviderFailed);
         return;
     };
+    errdefer host.allocator.free(chat_owned);
 
     enqueueRunFinished(host, run_id, proposal_rel, chat_owned, manifest_owned, null) catch {
-        host.allocator.free(chat_owned);
         enqueueRunFailed(host, error.ProviderFailed);
     };
 }
@@ -740,7 +740,7 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     host.agent.unlock();
 
     const manifest_owned = try buildManifestText(host, ctx.intent, ctx.scope_files, ctx.active_file, attachments);
-    defer host.allocator.free(manifest_owned);
+    errdefer host.allocator.free(manifest_owned);
 
     const plan_owned = if (result.plan_body) |plan| host.allocator.dupe(u8, plan) catch return error.ProviderFailed else null;
     errdefer if (plan_owned) |text| host.allocator.free(text);
@@ -859,7 +859,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     const proposal_rel = result.proposal_rel orelse "";
 
     const manifest_owned = try buildManifestText(host, ctx.intent, ctx.scope_files, ctx.active_file, attachments);
-    defer host.allocator.free(manifest_owned);
+    errdefer host.allocator.free(manifest_owned);
 
     var chat_buf: [512]u8 = undefined;
     const chat_line = result.response_text orelse (std.fmt.bufPrint(&chat_buf, "Agent finished", .{}) catch "Agent finished");
@@ -893,6 +893,7 @@ fn enqueueRunFinished(
     manifest_owned: []const u8,
     plan_owned: ?[]const u8,
 ) AgentError!void {
+    // `chat_owned`, `manifest_owned`, and `plan_owned` transfer ownership to the UI queue.
     const run_id_owned = host.allocator.dupe(u8, run_id) catch return error.ProviderFailed;
     errdefer host.allocator.free(run_id_owned);
     const proposal_rel_owned = host.allocator.dupe(u8, proposal_rel) catch return error.ProviderFailed;
@@ -911,9 +912,8 @@ fn enqueueRunFinished(
 
 fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
     const host: *Host = @ptrCast(@alignCast(context.?));
-    if (phase == .context_built) {
-        host.enqueue_ui(host.context, .refresh_context_preview);
-    }
+    // Context manifest is built on the worker thread; refreshing it here would
+    // block the UI thread during flushAgentUi and stall tool approval/steps.
     const mapped: session_mod.Phase = switch (phase) {
         .context_built => .building_context,
         .planning => .building_context,
@@ -1026,6 +1026,16 @@ fn turnBridge(context: ?*anyopaque, index: u32) void {
 
 fn approvalBridge(context: ?*anyopaque, tool_name: []const u8, args_json: []const u8, policy: ai.tool_registry.Policy) bool {
     const host: *Host = @ptrCast(@alignCast(context.?));
+    if (policy.approval == .automatic) return true;
+    host.agent.lock();
+    const agent_mode = host.agent.mode == .agent;
+    host.agent.unlock();
+    // In agent mode, review-gated edit tools only record proposals — auto-approve
+    // so the explore loop can continue without freezing the UI thread.
+    if (agent_mode and policy.approval == .review) return true;
+    // In agent mode, auto-run observation tools (search, read_file, remember, …).
+    // Only high-risk execution tools (run_command) still require explicit approval.
+    if (agent_mode and policy.approval == .every_time and policy.risk != .high) return true;
     return host.agent.requestToolApproval(tool_name, args_json, @tagName(policy.risk), policy.approval);
 }
 

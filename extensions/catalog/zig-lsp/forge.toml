@@ -6,6 +6,6 @@ api_version = 1
 
 [[languages]]
 id = "zig"
-server = "zig"
-args = "language-server"
+server = "zls"
+args = ""
 file_pattern = "*.zig"

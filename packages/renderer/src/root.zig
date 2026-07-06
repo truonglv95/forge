@@ -46,6 +46,35 @@ var app_render_callback: ?*const fn () void = null;
 var app_key_callback: ?*const fn (event: KeyEvent) void = null;
 var app_mouse_callback: ?*const fn (event: MouseEvent) void = null;
 
+const ClipRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+var clip_stack: [12]ClipRect = undefined;
+var clip_stack_len: usize = 0;
+var active_clip: ?ClipRect = null;
+
+fn applyClipRect(rect: ClipRect) void {
+    mac.forge_mac_set_clip_rect(rect.x, rect.y, rect.w, rect.h);
+    active_clip = rect;
+}
+
+fn intersectClip(outer: ClipRect, inner: ClipRect) ClipRect {
+    const x = @max(outer.x, inner.x);
+    const y = @max(outer.y, inner.y);
+    const right = @min(outer.x + outer.w, inner.x + inner.w);
+    const bottom = @min(outer.y + outer.h, inner.y + inner.h);
+    return .{
+        .x = x,
+        .y = y,
+        .w = @max(0, right - x),
+        .h = @max(0, bottom - y),
+    };
+}
+
 export fn internal_render_callback() void {
     if (app_render_callback) |cb| {
         cb();
@@ -113,11 +142,38 @@ pub const Renderer = struct {
     }
 
     pub fn setClipRect(x: f32, y: f32, w: f32, h: f32) void {
-        mac.forge_mac_set_clip_rect(x, y, w, h);
+        applyClipRect(.{ .x = x, .y = y, .w = w, .h = h });
+    }
+
+    pub fn pushClipRect(x: f32, y: f32, w: f32, h: f32) void {
+        const next = ClipRect{ .x = x, .y = y, .w = w, .h = h };
+        const clipped = if (active_clip) |current| intersectClip(current, next) else next;
+        if (clip_stack_len < clip_stack.len) {
+            if (active_clip) |current| {
+                clip_stack[clip_stack_len] = current;
+                clip_stack_len += 1;
+            }
+        }
+        applyClipRect(clipped);
+    }
+
+    pub fn popClipRect() void {
+        if (clip_stack_len == 0) {
+            clearClipRect();
+            return;
+        }
+        clip_stack_len -= 1;
+        applyClipRect(clip_stack[clip_stack_len]);
     }
 
     pub fn clearClipRect() void {
         mac.forge_mac_clear_clip_rect();
+        active_clip = null;
+        clip_stack_len = 0;
+    }
+
+    pub fn flushBatch() void {
+        mac.forge_mac_flush_batch();
     }
 
     pub fn drawRect(x: f32, y: f32, w: f32, h: f32, color: Color) void {
@@ -130,6 +186,7 @@ pub const Renderer = struct {
 
     pub fn drawText(text: []const u8, x: f32, y: f32, font_size: f32, color: Color) void {
         if (text.len == 0) return;
+        // Many UI call sites pass stack [:0] buffers via @ptrCast; truncate at first NUL.
         const len = std.mem.indexOfScalar(u8, text, 0) orelse text.len;
         if (len == 0) return;
         mac.forge_mac_draw_text_len(@ptrCast(text.ptr), len, x, y, font_size, color.r, color.g, color.b, color.a);

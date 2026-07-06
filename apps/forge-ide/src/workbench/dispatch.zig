@@ -237,7 +237,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             wb.focused_panel = .agent;
 
             try wb.appendChat(.user, owned_prompt);
-            wb.scrollChatToEnd(768);
+            wb.chat_follow_stream = true;
             const active = wb.tabs.activeDoc();
             const active_path = if (active) |doc| doc.path else null;
             const scope = wb.agent.effectiveScope(active_path);
@@ -288,7 +288,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             wb.agent.unlock();
 
             try wb.appendChat(.user, intent);
-            wb.scrollChatToEnd(768);
+            wb.chat_follow_stream = true;
 
             const scope = try wb.allocator.alloc([]const u8, 1);
             defer wb.allocator.free(scope);

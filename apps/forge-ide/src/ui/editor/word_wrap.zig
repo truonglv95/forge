@@ -88,21 +88,27 @@ pub fn maxScrollY(buf: *const editor.Buffer, editor_h: f32, viewport_w: f32, fon
 
 pub fn breakAt(line: []const u8, start: usize, max_w: f32, font_size: f32) usize {
     if (start >= line.len) return start;
-    var last_space: ?usize = null;
-    var i = start;
-    while (i < line.len) {
-        const w = editor_scroll.textWidth(line[start .. i + 1], font_size);
-        if (w > max_w) {
-            if (last_space) |sp| {
-                if (sp > start) return sp;
-            }
-            if (i == start) return start + 1;
-            return i;
+    const rest = line[start..];
+    if (editor_scroll.textWidth(rest, font_size) <= max_w) return line.len;
+
+    var lo: usize = start + 1;
+    var hi: usize = line.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo + 1) / 2;
+        if (editor_scroll.textWidth(line[start..mid], font_size) <= max_w) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
         }
-        if (line[i] == ' ') last_space = i + 1;
-        i += 1;
     }
-    return line.len;
+    var end = lo;
+    if (end < line.len and end > start) {
+        if (std.mem.lastIndexOfScalar(u8, line[start..end], ' ')) |rel| {
+            const sp = start + rel + 1;
+            if (sp > start) end = sp;
+        }
+    }
+    return if (end > start) end else start + 1;
 }
 
 pub fn columnAtVisualRow(

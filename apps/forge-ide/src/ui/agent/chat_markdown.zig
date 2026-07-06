@@ -1,6 +1,7 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
 const word_wrap = @import("../editor/word_wrap.zig");
+const diff_line_style = @import("../diff_line_style.zig");
 
 pub const body_font_size: f32 = 14.0;
 pub const body_line_h: f32 = 16.0;
@@ -34,17 +35,27 @@ fn findFence(text: []const u8, from: usize) ?struct { open_end: usize, close_sta
     return .{ .open_end = line_end, .close_start = close };
 }
 
-fn codeBlockLineCount(code: []const u8) usize {
-    if (code.len == 0) return 1;
-    var count: usize = 1;
-    for (code) |ch| {
-        if (ch == '\n') count += 1;
-    }
-    return count;
+fn codeBlockInnerWidth(content_w: f32) f32 {
+    return @max(20.0, content_w - code_pad * 2);
 }
 
-fn codeBlockHeight(code: []const u8) f32 {
-    const lines = codeBlockLineCount(code);
+fn codeLineVisualCount(line: []const u8, content_w: f32) usize {
+    if (line.len == 0) return 1;
+    return word_wrap.segmentCount(line, codeBlockInnerWidth(content_w), code_font_size);
+}
+
+fn codeBlockVisualLineCount(code: []const u8, content_w: f32) usize {
+    if (code.len == 0) return 1;
+    var count: usize = 0;
+    var lines = std.mem.splitScalar(u8, code, '\n');
+    while (lines.next()) |line| {
+        count += codeLineVisualCount(line, content_w);
+    }
+    return @max(1, count);
+}
+
+fn codeBlockHeight(code: []const u8, content_w: f32) f32 {
+    const lines = codeBlockVisualLineCount(code, content_w);
     return code_pad * 2 + @as(f32, @floatFromInt(lines)) * code_line_h + code_gap;
 }
 
@@ -76,7 +87,7 @@ pub fn contentHeight(text: []const u8, content_w: f32) f32 {
                 }
             }
             const code = text[fence.open_end..fence.close_start];
-            total += codeBlockHeight(code);
+            total += codeBlockHeight(code, content_w);
             cursor = fence.close_start + 3;
             if (cursor < text.len and text[cursor] == '\n') cursor += 1;
             continue;
@@ -162,19 +173,16 @@ fn lineHasInlineMarkup(line: []const u8) bool {
 }
 
 fn drawPlainWrappedLine(line: []const u8, x: f32, y: f32, max_w: f32, fg: renderer.Color) f32 {
-    var cursor_x = x;
     var line_y = y;
     var start: usize = 0;
     while (start < line.len) {
-        const end = word_wrap.breakAt(line, start, max_w - (cursor_x - x), body_font_size);
+        const end = word_wrap.breakAt(line, start, max_w, body_font_size);
         const part = line[start..end];
         if (part.len > 0) {
-            renderer.Renderer.drawText(part, cursor_x, line_y, body_font_size, fg);
-            cursor_x += renderer.Renderer.measureText(part, body_font_size);
+            renderer.Renderer.drawText(part, x, line_y, body_font_size, fg);
         }
         if (end >= line.len) break;
         line_y += body_line_h;
-        cursor_x = x;
         start = end;
         while (start < line.len and line[start] == ' ') start += 1;
     }
@@ -265,18 +273,52 @@ fn drawParagraph(
     return line_y - y;
 }
 
+fn drawCodeBlockLine(
+    line: []const u8,
+    x: f32,
+    y: f32,
+    content_w: f32,
+    style: Style,
+) f32 {
+    const kind = diff_line_style.classify(line);
+    const inner_w = codeBlockInnerWidth(content_w);
+    const default_fg = style.code_block_fg;
+    const fg = diff_line_style.foreground(kind, line, true, default_fg);
+    var line_y = y;
+    var start: usize = 0;
+    if (line.len == 0) return code_line_h;
+
+    while (start < line.len) {
+        const end = word_wrap.breakAt(line, start, inner_w, code_font_size);
+        if (diff_line_style.background(kind, true)) |bg| {
+            renderer.Renderer.drawRect(x, line_y - 1, content_w, code_line_h, bg);
+        }
+        const part = line[start..end];
+        if (part.len > 0) {
+            renderer.Renderer.drawText(part, x + code_pad, line_y, code_font_size, fg);
+        }
+        if (end >= line.len) break;
+        line_y += code_line_h;
+        start = end;
+        while (start < line.len and line[start] == ' ') start += 1;
+    }
+    return line_y + code_line_h - y;
+}
+
 fn drawCodeBlock(code: []const u8, x: f32, y: f32, content_w: f32, style: Style) f32 {
-    const h = codeBlockHeight(code);
+    const h = codeBlockHeight(code, content_w);
     renderer.Renderer.drawRoundedRect(x, y, content_w, h - code_gap, 6, style.code_block_bg);
     var line_y = y + code_pad;
     var lines = std.mem.splitScalar(u8, code, '\n');
     while (lines.next()) |line| {
-        if (line.len > 0) {
-            renderer.Renderer.drawText(line, x + code_pad, line_y, code_font_size, style.code_block_fg);
-        }
-        line_y += code_line_h;
+        const drawn = drawCodeBlockLine(line, x, line_y, content_w, style);
+        line_y += if (drawn > 0) drawn else code_line_h;
     }
     return h;
+}
+
+pub fn drawSimpleContent(text: []const u8, x: f32, y: f32, content_w: f32, fg: renderer.Color) f32 {
+    return drawPlainWrappedLine(text, x, y, word_wrap.maxWidth(content_w), fg);
 }
 
 pub fn drawContent(

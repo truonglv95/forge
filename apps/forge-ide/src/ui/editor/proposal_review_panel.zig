@@ -5,6 +5,7 @@ const tabs_ui = @import("tabs.zig");
 const scrollbar = @import("../core/scrollbar.zig");
 const review_store = @import("../../agent/review_store.zig");
 const agent_session = @import("../../agent/session.zig");
+const diff_line_style = @import("../diff_line_style.zig");
 
 pub const tab_label = "Proposal Review";
 pub const file_col_w: f32 = 200;
@@ -250,14 +251,7 @@ pub fn draw(
             var line_y = diff_y + hunk_header_h;
             for (hunk.diff_lines) |line| {
                 if (line_y > top + view_h) break;
-                var line_buf: [512:0]u8 = undefined;
-                const clipped = if (line.len > 511) line[0..511] else line;
-                @memcpy(line_buf[0..clipped.len], clipped);
-                line_buf[clipped.len] = 0;
-                var line_color = text_muted;
-                if (line.len > 0 and line[0] == '+') line_color = .{ .r = 0.5, .g = 0.9, .b = 0.5, .a = if (accepted) 1.0 else 0.45 };
-                if (line.len > 0 and line[0] == '-') line_color = .{ .r = 0.95, .g = 0.45, .b = 0.45, .a = if (accepted) 1.0 else 0.45 };
-                renderer.Renderer.drawText(@ptrCast(&line_buf), diff_x + 4, line_y, 10.0, line_color);
+                diff_line_style.drawLine(line, diff_x, line_y, diff_w, diff_line_h, 10.0, accepted, text_muted);
                 line_y += diff_line_h;
             }
             diff_y += block_h + hunk_gap;

@@ -394,7 +394,10 @@ pub const Proxy = struct {
         if (job.request_json.len > job.max_request_bytes) return error.RequestTooLarge;
         const config = self.state.registry.findByLanguageId(job.language_id) orelse return error.LanguageNotConfigured;
         const session = try ensureSession(self.state, config);
-        return session.sendRawRequest(job.request_json, job.response_out) catch error.SessionFailed;
+        return session.sendRawRequest(job.request_json, job.response_out) catch |err| {
+            removeSession(self.state, job.language_id);
+            return if (err == error.OutOfMemory) error.OutOfMemory else error.SessionFailed;
+        };
     }
 
     fn applyRegistrySnapshot(self: *Proxy, snapshot: []registry.ServerConfig) void {
@@ -435,6 +438,13 @@ pub const Proxy = struct {
         return owned;
     }
 };
+
+fn removeSession(state: *WorkerState, language_id: []const u8) void {
+    const existing = state.sessions.fetchRemove(language_id) orelse return;
+    existing.value.deinit(state.io);
+    state.allocator.destroy(existing.value);
+    state.allocator.free(existing.key);
+}
 
 fn cloneRegistryEntries(allocator: std.mem.Allocator, source: *registry.Registry) ![]registry.ServerConfig {
     source.mutex.lock();

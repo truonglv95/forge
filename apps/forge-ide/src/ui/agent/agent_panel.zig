@@ -326,6 +326,39 @@ pub fn hitReviewAction(
 
 pub const ApprovalActions = struct { approve: ButtonRect, reject: ButtonRect };
 
+pub fn approvalOverlayTop(window_h: f32, attachment_count: usize, agent_w: f32, prompt: *const editor.Buffer) f32 {
+    return agent_composer.composerTop(window_h, attachment_count, agent_w, prompt) - 112;
+}
+
+pub fn drawApprovalOverlay(
+    agent_x: f32,
+    agent_w: f32,
+    window_h: f32,
+    attachment_count: usize,
+    prompt: *const editor.Buffer,
+    tool: []const u8,
+    risk: []const u8,
+    args: []const u8,
+    is_review: bool,
+) void {
+    const pad: f32 = 20;
+    const inner_x = agent_x + pad;
+    const content_w = agent_w - pad * 2;
+    const y = approvalOverlayTop(window_h, attachment_count, agent_w, prompt);
+    const title = if (is_review) "EDIT REVIEW REQUIRED" else "TOOL APPROVAL REQUIRED";
+    renderer.Renderer.drawRoundedRect(inner_x, y, content_w, 72, 8, .{ .r = 0.28, .g = 0.2, .b = 0.08, .a = 1.0 });
+    renderer.Renderer.drawText(title, inner_x + 10, y + 8, 11.0, .{ .r = 1.0, .g = 0.78, .b = 0.35, .a = 1.0 });
+    var approval_buf: [384:0]u8 = undefined;
+    const approval_line = std.fmt.bufPrint(&approval_buf, "{s} · risk: {s}", .{ tool, risk }) catch "Tool details unavailable";
+    approval_buf[approval_line.len] = 0;
+    renderer.Renderer.drawText(@ptrCast(&approval_buf), inner_x + 10, y + 27, 11.0, .{ .r = 0.95, .g = 0.9, .b = 0.78, .a = 1.0 });
+    var args_buf: [384:0]u8 = undefined;
+    const clipped_args = args[0..@min(args.len, 360)];
+    const args_line = std.fmt.bufPrint(&args_buf, "Args: {s}", .{clipped_args}) catch "Args unavailable";
+    args_buf[args_line.len] = 0;
+    renderer.Renderer.drawText(@ptrCast(&args_buf), inner_x + 10, y + 46, 9.5, .{ .r = 0.78, .g = 0.75, .b = 0.68, .a = 1.0 });
+}
+
 pub fn approvalActions(agent_x: f32, agent_w: f32, window_h: f32, attachment_count: usize, prompt: *const editor.Buffer) ApprovalActions {
     const y = agent_composer.composerTop(window_h, attachment_count, agent_w, prompt) - 36;
     const x = agent_x + 20;

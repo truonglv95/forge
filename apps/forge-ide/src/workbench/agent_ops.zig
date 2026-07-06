@@ -285,6 +285,11 @@ pub fn ensurePromptCursorVisible(wb: anytype) void {
 }
 
 pub fn refreshAgentContextPreview(wb: anytype) void {
+    wb.agent.lock();
+    const worker_running = wb.agent.worker_running;
+    wb.agent.unlock();
+    if (worker_running) return;
+
     const host = agentHost(wb);
     const active = wb.tabs.activeDoc();
     const active_path = if (active) |doc| doc.path else null;
@@ -335,40 +340,15 @@ pub fn selectScopePickerEntry(wb: anytype) !void {
     try wb.setStatus("Added to agent scope");
 }
 
-pub fn scrollChatToEnd(wb: anytype, agent_h: f32) void {
-    const layout_mod = @import("../ui/core/layout.zig");
-    const context_inspector_mod = @import("../ui/agent/context_inspector.zig");
-    const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
-    const chat_bubble_mod = @import("../ui/agent/chat_bubble.zig");
-    const content_w = @max(40, wb.agent_panel_width - 40);
-    var estimated_lines: usize = 0;
-    for (wb.chat_history.items) |msg| {
-        if (!agent_panel_mod.chatHasVisibleContent(msg.content)) continue;
-        const msg_h = chat_bubble_mod.historyMessageHeight(msg.role == .user, msg.content, content_w);
-        estimated_lines += @max(1, @as(usize, @intFromFloat(std.math.ceil(msg_h / chat_bubble_mod.line_h))));
-    }
-    wb.agent.lock();
-    if (wb.agent.worker_running) {
-        estimated_lines += chat_bubble_mod.estimateLiveLines(
-            wb.agent.thinking_text.items,
-            wb.agent.stream_text.items,
-            true,
-            content_w,
-        );
-        const tool_step_card_mod = @import("../ui/agent/tool_step_card.zig");
-        const steps_h = tool_step_card_mod.totalStepsHeight(wb.agent.agent_steps.items, content_w, wb.agent.mode);
-        estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
-    }
-    const entry_count = wb.agent.context_entries.items.len;
-    const expanded = wb.agent.context_inspector_expanded;
-    const has_detail = wb.agent.context_selected_index != null and expanded;
-    const attachment_count = wb.agent.attachments.items.len;
-    wb.agent.unlock();
-    const has_routing = wb.agent.hasRoutingPreview();
-    const bottom = agent_panel_mod.bottomReserved(attachment_count, wb.agent_panel_width, &wb.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail, has_routing);
-    const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
-    const content_h = @as(f32, @floatFromInt(estimated_lines)) * chat_bubble_mod.line_h;
-    wb.chat_scroll_y = @max(0, content_h - viewport);
+pub fn scrollChatToEnd(wb: anytype) void {
+    var win_w: f32 = 0;
+    var win_h: f32 = 0;
+    renderer.Renderer.getWindowSize(&win_w, &win_h);
+    @import("chat_layout.zig").scrollToEnd(wb, win_h);
+}
+
+fn scrollChatToEndWithHeight(wb: anytype, agent_h: f32) void {
+    @import("chat_layout.zig").scrollToEnd(wb, agent_h);
 }
 
 pub fn showAgentReview(wb: anytype) !void {
@@ -667,13 +647,14 @@ pub fn bridgeEnqueueAgentUi(context: ?*anyopaque, op: agent_ui_queue_mod.Op) voi
 }
 
 pub fn flushAgentUi(wb: anytype) !void {
-    const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
     const ops = try wb.agent_ui_queue.takeAll(wb.allocator);
     defer wb.allocator.free(ops);
     const host = agentHost(wb);
+    var pending_context_refresh = false;
     for (ops) |*op| {
         defer op.deinit(wb.allocator);
         switch (op.*) {
+            .refresh_context_preview => pending_context_refresh = true,
             .append_chat => |payload| {
                 const mapped: ChatRole = if (payload.role == .user) .user else .agent;
                 try wb.appendChat(mapped, payload.text);
@@ -681,19 +662,19 @@ pub fn flushAgentUi(wb: anytype) !void {
             .set_status => |text| try wb.setStatus(text),
             .append_thinking => |text| {
                 try wb.agent.appendThinkingChunk(text);
-                wb.scrollChatToEnd(768);
+                wb.chat_follow_stream = true;
             },
             .append_stream => |text| {
                 try wb.agent.appendStreamChunk(text);
-                wb.scrollChatToEnd(768);
+                wb.chat_follow_stream = true;
             },
             .begin_step => |payload| {
                 try wb.agent.beginAgentStep(payload.index, payload.kind, payload.label);
-                wb.scrollChatToEnd(768);
+                wb.chat_follow_stream = true;
             },
             .append_step => |payload| {
                 try wb.agent.appendAgentStep(payload.index, payload.kind, payload.summary);
-                wb.scrollChatToEnd(768);
+                wb.chat_follow_stream = true;
             },
             .set_phase => |payload| {
                 if (payload.phase == .sending) {
@@ -707,6 +688,17 @@ pub fn flushAgentUi(wb: anytype) !void {
             },
             .run_finished => |payload| {
                 wb.agent.lock();
+                const stream_snapshot = wb.allocator.dupe(u8, wb.agent.stream_text.items) catch {
+                    wb.agent.unlock();
+                    return;
+                };
+                errdefer wb.allocator.free(stream_snapshot);
+                const thinking_snapshot = wb.allocator.dupe(u8, wb.agent.thinking_text.items) catch {
+                    wb.agent.unlock();
+                    wb.allocator.free(stream_snapshot);
+                    return;
+                };
+                errdefer wb.allocator.free(thinking_snapshot);
                 if (wb.agent.run_id) |old| wb.allocator.free(old);
                 if (wb.agent.proposal_rel) |old| wb.allocator.free(old);
                 wb.agent.run_id = try wb.allocator.dupe(u8, payload.run_id);
@@ -715,39 +707,37 @@ pub fn flushAgentUi(wb: anytype) !void {
                 } else {
                     wb.agent.proposal_rel = try wb.allocator.dupe(u8, payload.proposal_rel);
                 }
+                wb.agent.stream_text.clearRetainingCapacity();
+                wb.agent.thinking_text.clearRetainingCapacity();
+                wb.agent.stream_live = false;
                 wb.agent.worker_running = false;
                 wb.agent.unlock();
 
-                try agent_workflow.applyManifestText(&host, payload.manifest_text);
+                agent_workflow.applyManifestText(&host, payload.manifest_text) catch {};
                 if (payload.proposal_rel.len > 0 and wb.agent.mode != .ask) {
-                    try agent_workflow.loadProposalPreview(&host, payload.proposal_rel);
-                    openProposalReview(
-                        wb,
-                    );
-                    try wb.agent.setPhase(.proposal_ready, "Proposal ready for review");
-                    try wb.setStatus("Proposal ready for review");
+                    if (agent_workflow.loadProposalPreview(&host, payload.proposal_rel)) {
+                        openProposalReview(wb);
+                        try wb.agent.setPhase(.proposal_ready, "Proposal ready for review");
+                        try wb.setStatus("Proposal ready for review");
+                    } else |_| {
+                        try wb.agent.setPhase(.idle, "Proposal preview unavailable");
+                        try wb.setStatus("Proposal preview unavailable");
+                    }
+                } else if (wb.agent.mode == .ask) {
+                    try wb.agent.setPhase(.idle, "Answer ready");
+                    try wb.setStatus("Answer ready");
+                } else if (wb.agent.mode == .agent) {
+                    try wb.agent.setPhase(.idle, "Agent finished without a proposal");
+                    try wb.setStatus("Agent finished without a proposal");
                 } else {
-                    if (wb.agent.mode == .ask) {
-                        try wb.agent.setPhase(.idle, "Answer ready");
-                        try wb.setStatus("Answer ready");
-                    } else if (wb.agent.mode == .agent) {
-                        try wb.agent.setPhase(.idle, "Agent finished without a proposal");
-                        try wb.setStatus("Agent finished without a proposal");
-                    } else {
-                        try wb.agent.setPhase(.idle, "Spec ready — approve to continue");
-                        try wb.setStatus("Spec ready — approve to continue");
-                    }
+                    try wb.agent.setPhase(.idle, "Spec ready — approve to continue");
+                    try wb.setStatus("Spec ready — approve to continue");
                 }
-                try agent_workflow.refreshRunHistory(&host);
-                if (payload.plan_text) |plan| {
-                    if (agent_panel_mod.chatHasVisibleContent(plan)) {
-                        try wb.appendChat(.agent, plan);
-                    }
-                }
-                if (agent_panel_mod.chatHasVisibleContent(payload.chat_text)) {
-                    try wb.appendChat(.agent, payload.chat_text);
-                }
-                wb.scrollChatToEnd(768);
+                agent_workflow.refreshRunHistory(&host) catch {};
+                try appendAgentRunChat(wb, payload.chat_text, payload.plan_text, stream_snapshot, thinking_snapshot);
+                wb.allocator.free(stream_snapshot);
+                wb.allocator.free(thinking_snapshot);
+                wb.chat_follow_stream = true;
             },
             .run_failed => |payload| {
                 wb.agent.lock();
@@ -757,9 +747,6 @@ pub fn flushAgentUi(wb: anytype) !void {
                 try wb.appendChat(.agent, payload.message);
                 try wb.setStatus(payload.message);
             },
-            .refresh_context_preview => refreshAgentContextPreview(
-                wb,
-            ),
             .propose_edit => {
                 // Legacy queue event retained for schema compatibility. Model
                 // edits are rendered only from a persisted proposal review.
@@ -767,6 +754,7 @@ pub fn flushAgentUi(wb: anytype) !void {
             },
         }
     }
+    if (pending_context_refresh) refreshAgentContextPreview(wb);
 }
 
 pub fn appendChat(wb: anytype, role: ChatRole, content: []const u8) !void {
@@ -774,7 +762,40 @@ pub fn appendChat(wb: anytype, role: ChatRole, content: []const u8) !void {
     if (!agent_panel_mod.chatHasVisibleContent(content)) return;
     const owned = try wb.allocator.dupeZ(u8, content);
     try wb.chat_history.append(wb.allocator, .{ .role = role, .content = owned });
+    wb.chat_history_revision += 1;
+    wb.chat_follow_stream = true;
     wb.persistChatHistory() catch {};
+}
+
+fn appendAgentRunChat(
+    wb: anytype,
+    chat_text: []const u8,
+    plan_text: ?[]const u8,
+    stream_snapshot: []const u8,
+    thinking_snapshot: []const u8,
+) !void {
+    const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
+
+    if (plan_text) |plan| {
+        if (agent_panel_mod.chatHasVisibleContent(plan)) {
+            try appendChat(wb, .agent, plan);
+        }
+    }
+
+    var appended_agent = false;
+    if (agent_panel_mod.chatHasVisibleContent(stream_snapshot)) {
+        try appendChat(wb, .agent, stream_snapshot);
+        appended_agent = true;
+    } else if (agent_panel_mod.chatHasVisibleContent(thinking_snapshot)) {
+        try appendChat(wb, .agent, thinking_snapshot);
+        appended_agent = true;
+    }
+
+    if (agent_panel_mod.chatHasVisibleContent(chat_text)) {
+        if (!appended_agent or !std.mem.eql(u8, chat_text, stream_snapshot)) {
+            try appendChat(wb, .agent, chat_text);
+        }
+    }
 }
 
 pub fn bridgeRefreshExplorer(context: ?*anyopaque) void {

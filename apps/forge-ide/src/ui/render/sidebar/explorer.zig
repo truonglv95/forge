@@ -24,7 +24,7 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
 
     // Draw chevron for workspace
     renderer.Renderer.drawSvg(renderer.icons.chevron_down, explorer_x + 8, panel_y + 14, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
-    renderer.Renderer.drawText(@ptrCast(&ws_name_buf), explorer_x + 22, panel_y + 15, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
+    renderer.Renderer.drawText(ws_name_buf[0..name_len], explorer_x + 22, panel_y + 15, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
 
     const icon_c = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
     const hover_c = renderer.Color{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 };
@@ -143,7 +143,7 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
                     }
                 }
 
-                renderer.Renderer.drawText(@ptrCast(&label_buf), label_x, file_y, 13.0, color);
+                renderer.Renderer.drawText(label_buf[0..max_name], label_x, file_y, 13.0, color);
 
                 // Draw git status indicator on the far right
                 if (row.kind == .file) {

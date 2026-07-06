@@ -136,6 +136,10 @@ pub const Workbench = struct {
     sidebar_view: @import("ui/sidebar/sidebar_view.zig").SidebarView = .explorer,
     selected_extension_index: ?usize = null,
     chat_scroll_y: f32 = 0,
+    chat_follow_stream: bool = false,
+    chat_scroll_to_end_on_ready: bool = false,
+    chat_history_revision: u32 = 0,
+    chat_layout: @import("workbench/chat_layout.zig").Cache = .{},
     prompt_scroll_y: f32 = 0,
     task_scroll_y: f32 = 0,
     status_message: []const u8 = "",
@@ -270,6 +274,7 @@ pub const Workbench = struct {
         if (self.status_message.len > 0) self.allocator.free(self.status_message);
         for (self.chat_history.items) |msg| self.allocator.free(msg.content);
         self.chat_history.deinit(self.allocator);
+        self.chat_layout.deinit(self.allocator);
         self.rename_buffer.deinit();
         self.search_buffer.deinit();
         self.git_commit_msg.deinit();
@@ -695,11 +700,20 @@ pub const Workbench = struct {
     }
 
     pub fn clampChatScroll(self: *Workbench, agent_h: f32) void {
-        @import("workbench/scroll.zig").clampChatScroll(self, agent_h);
+        _ = agent_h;
+        self.chat_follow_stream = false;
+        self.chat_scroll_y = std.math.clamp(self.chat_scroll_y, 0, self.chat_layout.max_scroll);
     }
 
-    pub fn scrollChatToEnd(self: *Workbench, agent_h: f32) void {
-        @import("workbench/agent_ops.zig").scrollChatToEnd(self, agent_h);
+    pub fn invalidateChatLayout(self: *Workbench) void {
+        @import("workbench/chat_layout.zig").invalidate(self);
+    }
+
+    pub fn scrollChatToEnd(self: *Workbench) void {
+        var win_w: f32 = 0;
+        var win_h: f32 = 0;
+        renderer.Renderer.getWindowSize(&win_w, &win_h);
+        @import("workbench/chat_layout.zig").scrollToEnd(self, win_h);
     }
 
     pub fn clampReviewScroll(self: *Workbench, agent_h: f32) void {
@@ -1224,7 +1238,10 @@ pub const Workbench = struct {
         if (self.chat_history.items.len != loaded.len) {
             self.persistChatHistory() catch {};
         }
-        self.scrollChatToEnd(768);
+        self.chat_history_revision += 1;
+        self.invalidateChatLayout();
+        self.chat_scroll_to_end_on_ready = true;
+        self.chat_follow_stream = false;
     }
 
     pub fn restoreSessionTabs(self: *Workbench) !void {
@@ -1405,7 +1422,14 @@ pub const Workbench = struct {
         try self.flushAgentUi();
 
         if (self.agent.worker_running) {
-            self.scrollChatToEnd(768);
+            var win_w: f32 = 0;
+            var win_h: f32 = 0;
+            renderer.Renderer.getWindowSize(&win_w, &win_h);
+            const near_end = self.chat_scroll_y >= self.chat_layout.max_scroll - 48;
+            @import("workbench/chat_layout.zig").ensure(self, win_h);
+            if (self.chat_follow_stream or near_end) {
+                self.chat_scroll_y = self.chat_layout.max_scroll;
+            }
         }
 
         self.conflict_check_cooldown -= dt;

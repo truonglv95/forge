@@ -1,6 +1,7 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
 const chat_markdown = @import("chat_markdown.zig");
+const chat_message_lines = @import("chat_message_lines.zig");
 
 pub const font_size: f32 = chat_markdown.body_font_size;
 pub const line_h: f32 = chat_markdown.body_line_h;
@@ -49,11 +50,45 @@ pub fn drawBubble(
     text: []const u8,
     style: BubbleStyle,
 ) f32 {
+    return drawBubbleWithCache(allocator, agent_x, inner_x, content_w, y, title, text, style, null);
+}
+
+fn cacheIsDrawable(cache: *const chat_message_lines.Entry) bool {
+    if (cache.markdown_runtime) return false;
+    return cache.ranges.len > 0 or cache.blocks.len > 0;
+}
+
+fn drawCachedBody(
+    text: []const u8,
+    cache: *const chat_message_lines.Entry,
+    x: f32,
+    y: f32,
+    draw_w: f32,
+    style: chat_markdown.Style,
+) void {
+    _ = chat_message_lines.drawCached(text, cache, x, y, draw_w, style);
+}
+
+pub fn drawBubbleWithCache(
+    allocator: std.mem.Allocator,
+    agent_x: f32,
+    inner_x: f32,
+    content_w: f32,
+    y: f32,
+    title: ?[]const u8,
+    text: []const u8,
+    style: BubbleStyle,
+    line_cache: ?*const chat_message_lines.Entry,
+) f32 {
     if (text.len == 0 and (title == null or title.?.len == 0)) return 0;
     const with_title = title != null and title.?.len > 0;
-    const height = bubbleHeight(text, content_w, with_title);
+    const text_w = textMaxWidth(content_w);
+    const body_h = if (line_cache) |cache| cache.height else chat_markdown.contentHeight(text, text_w);
+    const height = body_h + bubble_pad_y * 2 + (if (with_title) title_h else 0);
     const bubble_x = agent_x + 10;
     renderer.Renderer.drawRoundedRect(bubble_x, y - 4, content_w, height, 8.0, style.bg);
+    renderer.Renderer.pushClipRect(bubble_x, y - 4, content_w, height);
+    defer renderer.Renderer.popClipRect();
 
     var text_y = y + bubble_pad_y;
     if (with_title) {
@@ -62,21 +97,62 @@ pub fn drawBubble(
         const n = @min(title_text.len, title_buf.len - 1);
         @memcpy(title_buf[0..n], title_text[0..n]);
         title_buf[n] = 0;
-        renderer.Renderer.drawText(@ptrCast(&title_buf), inner_x + bubble_pad_x, text_y, 11.0, style.title_fg);
+        renderer.Renderer.drawText(title_buf[0..n], inner_x + bubble_pad_x, text_y, 11.0, style.title_fg);
         text_y += title_h;
     }
 
     if (text.len > 0) {
+        const md_style = markdownStyle(style);
+        if (line_cache) |cache| {
+            if (cacheIsDrawable(cache)) {
+                drawCachedBody(text, cache, inner_x + bubble_pad_x, text_y, text_w, md_style);
+            } else {
+                drawBubbleBody(allocator, text, inner_x, text_y, text_w, style);
+            }
+        } else {
+            drawBubbleBody(allocator, text, inner_x, text_y, text_w, style);
+        }
+    }
+    return height + bubble_gap;
+}
+
+fn drawBubbleBody(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    inner_x: f32,
+    text_y: f32,
+    text_w: f32,
+    style: BubbleStyle,
+) void {
+    const use_markdown = std.mem.indexOf(u8, text, "```") != null or std.mem.indexOf(u8, text, "**") != null;
+    if (use_markdown) {
         _ = chat_markdown.drawContent(
             allocator,
             text,
             inner_x + bubble_pad_x,
             text_y,
-            textMaxWidth(content_w),
+            text_w,
             markdownStyle(style),
-        ) catch {};
+        ) catch {
+            renderer.Renderer.flushBatch();
+            _ = chat_markdown.drawSimpleContent(
+                text,
+                inner_x + bubble_pad_x,
+                text_y,
+                text_w,
+                style.fg,
+            );
+        };
+    } else {
+        renderer.Renderer.flushBatch();
+        _ = chat_markdown.drawSimpleContent(
+            text,
+            inner_x + bubble_pad_x,
+            text_y,
+            text_w,
+            style.fg,
+        );
     }
-    return height + bubble_gap;
 }
 
 pub fn plainMessageHeight(text: []const u8, content_w: f32) f32 {
@@ -92,9 +168,39 @@ pub fn drawPlainMessage(
     text: []const u8,
     style: chat_markdown.Style,
 ) f32 {
+    return drawPlainMessageWithCache(allocator, inner_x, content_w, y, text, style, null);
+}
+
+pub fn drawPlainMessageWithCache(
+    allocator: std.mem.Allocator,
+    inner_x: f32,
+    content_w: f32,
+    y: f32,
+    text: []const u8,
+    style: chat_markdown.Style,
+    line_cache: ?*const chat_message_lines.Entry,
+) f32 {
     if (text.len == 0) return 0;
-    const drawn = chat_markdown.drawContent(allocator, text, inner_x, y, content_w, style) catch 0;
-    return drawn + bubble_gap;
+    const body_h = if (line_cache) |cache| cache.height else chat_markdown.contentHeight(text, content_w);
+
+    if (line_cache) |cache| {
+        if (cacheIsDrawable(cache)) {
+            renderer.Renderer.pushClipRect(inner_x, y, content_w, body_h);
+            defer renderer.Renderer.popClipRect();
+            drawCachedBody(text, cache, inner_x, y, content_w, style);
+            return body_h + bubble_gap;
+        }
+    }
+
+    renderer.Renderer.pushClipRect(inner_x, y, content_w, body_h);
+    defer renderer.Renderer.popClipRect();
+    const use_markdown = std.mem.indexOf(u8, text, "```") != null or std.mem.indexOf(u8, text, "**") != null;
+    _ = if (use_markdown)
+        chat_markdown.drawContent(allocator, text, inner_x, y, content_w, style) catch
+            chat_markdown.drawSimpleContent(text, inner_x, y, content_w, style.fg)
+    else
+        chat_markdown.drawSimpleContent(text, inner_x, y, content_w, style.fg);
+    return body_h + bubble_gap;
 }
 
 pub const agent_text_style = chat_markdown.Style{
@@ -118,7 +224,7 @@ pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8) f32 {
     const clipped = if (text.len > 280) text[0..280] else text;
     const line = std.fmt.bufPrint(&label_buf, "Thinking: {s}", .{clipped}) catch clipped;
     label_buf[@min(line.len, label_buf.len - 1)] = 0;
-    renderer.Renderer.drawText(@ptrCast(&label_buf), inner_x, y, 11.0, thinking_text_style.fg);
+    renderer.Renderer.drawText(line[0..line.len], inner_x, y, 11.0, thinking_text_style.fg);
     return line_h + bubble_gap;
 }
 
@@ -128,7 +234,7 @@ pub fn drawStatusLine(inner_x: f32, y: f32, text: []const u8) f32 {
     const n = @min(text.len, buf.len - 1);
     @memcpy(buf[0..n], text[0..n]);
     buf[n] = 0;
-    renderer.Renderer.drawText(@ptrCast(&buf), inner_x, y, 11.0, thinking_text_style.fg);
+    renderer.Renderer.drawText(buf[0..n], inner_x, y, 11.0, thinking_text_style.fg);
     return line_h + bubble_gap;
 }
 

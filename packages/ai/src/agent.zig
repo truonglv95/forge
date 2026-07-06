@@ -235,11 +235,7 @@ pub fn run(
                 allocator,
                 raw_declarations,
                 config.capability_profile,
-                routing.classify(.{
-                    .mode = config.mode,
-                    .intent = intent,
-                    .has_active_file = config.active_file != null,
-                }),
+                route.intent,
                 intent,
             ) catch return error.ProviderFailed;
             defer allocator.free(declarations);
