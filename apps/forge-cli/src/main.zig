@@ -143,7 +143,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  context    Preview AI context preparation
         \\  ask        Ask AI to propose a change (no auto-apply)
         \\  run        List or show AI run records (list|show)
-        \\  agent      Multi-step agent (run|resume|list)
+        \\  agent      Multi-step agent (interactive, or run|resume|list)
         \\  plan       Plan a proposal using AI
         \\  ext        Manage extensions (list|install|uninstall)
         \\  help       Show this help
