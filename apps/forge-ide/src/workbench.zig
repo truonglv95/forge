@@ -68,7 +68,7 @@ pub const Workbench = struct {
     lsp_registry: lsp.Registry,
     lsp_proxy: lsp.Proxy,
     marketplace_catalog: ?plugin.MarketplaceCatalog = null,
-    extensions_panel_mode: @import("ui/extensions_panel.zig").PanelMode = .installed,
+    extensions_panel_mode: @import("ui/sidebar/extensions_panel.zig").PanelMode = .installed,
     extensions_filter: [128]u8 = undefined,
     extensions_filter_len: usize = 0,
     extensions_detail_index: ?usize = null,
@@ -110,13 +110,13 @@ pub const Workbench = struct {
     renaming: bool = false,
     agent_panel_width: f32 = 380.0,
     explorer_panel_width: f32 = 250.0,
-    bottom_panel_height: f32 = @import("ui/layout.zig").task_panel_height,
+    bottom_panel_height: f32 = @import("ui/core/layout.zig").task_panel_height,
     sidebar_visible: bool = true,
     bottom_panel_visible: bool = true,
     agent_panel_visible: bool = true,
     nav_history: navigation_history_mod.History = undefined,
-    terminal_selection: ?@import("ui/terminal_panel.zig").Selection = null,
-    shell_mode: @import("ui/layout.zig").ShellMode = .ide,
+    terminal_selection: ?@import("ui/panel/terminal_panel.zig").Selection = null,
+    shell_mode: @import("ui/core/layout.zig").ShellMode = .ide,
     editor_scroll_y: f32 = 0,
     editor_scroll_x: f32 = 0,
     split_scroll_y: f32 = 0,
@@ -133,7 +133,7 @@ pub const Workbench = struct {
     proposal_review_scroll_y: f32 = 0,
     proposal_review_file_index: usize = 0,
     ai_mcp_status: ?[]const u8 = null,
-    sidebar_view: @import("ui/sidebar_view.zig").SidebarView = .explorer,
+    sidebar_view: @import("ui/sidebar/sidebar_view.zig").SidebarView = .explorer,
     selected_extension_index: ?usize = null,
     chat_scroll_y: f32 = 0,
     prompt_scroll_y: f32 = 0,
@@ -319,8 +319,8 @@ pub const Workbench = struct {
         self.allocator.free(self.workspace_path);
     }
 
-    pub fn layoutGeometry(self: *const Workbench, window_w: f32, window_h: f32) @import("ui/layout.zig").Geometry {
-        return @import("ui/layout.zig").compute(
+    pub fn layoutGeometry(self: *const Workbench, window_w: f32, window_h: f32) @import("ui/core/layout.zig").Geometry {
+        return @import("ui/core/layout.zig").compute(
             self.shell_mode,
             window_w,
             window_h,
@@ -333,7 +333,7 @@ pub const Workbench = struct {
         );
     }
 
-    pub fn headerToolbarState(self: *const Workbench) @import("ui/header_toolbar.zig").ToolbarState {
+    pub fn headerToolbarState(self: *const Workbench) @import("ui/chrome/header_toolbar.zig").ToolbarState {
         return .{
             .shell_mode = self.shell_mode,
             .sidebar_visible = self.sidebar_visible,
@@ -344,7 +344,7 @@ pub const Workbench = struct {
         };
     }
 
-    pub fn handleHeaderAction(self: *Workbench, action: @import("ui/header_toolbar.zig").Action) !void {
+    pub fn handleHeaderAction(self: *Workbench, action: @import("ui/chrome/header_toolbar.zig").Action) !void {
         switch (action) {
             .toggle_sidebar => {
                 self.sidebar_visible = !self.sidebar_visible;
@@ -943,7 +943,7 @@ pub const Workbench = struct {
     }
 
     pub fn setAgentModelIndex(self: *Workbench, index: usize) !void {
-        const agent_composer = @import("ui/agent_composer.zig");
+        const agent_composer = @import("ui/agent/agent_composer.zig");
         if (index >= agent_composer.models.len) return;
         const option = agent_composer.models[index];
         if (self.ai_model) |old| self.allocator.free(old);
@@ -1058,7 +1058,7 @@ pub const Workbench = struct {
         }
     }
 
-    pub fn handleProposalReviewClick(self: *Workbench, hit: @import("ui/proposal_review_panel.zig").Hit) !void {
+    pub fn handleProposalReviewClick(self: *Workbench, hit: @import("ui/editor/proposal_review_panel.zig").Hit) !void {
         switch (hit) {
             .close_tab => self.closeProposalReview(),
             .select_file => |index| {
@@ -1081,7 +1081,7 @@ pub const Workbench = struct {
         const hunks = self.agent.review.hunks;
         const file_index = self.proposal_review_file_index;
         self.agent.unlock();
-        const panel = @import("ui/proposal_review_panel.zig");
+        const panel = @import("ui/editor/proposal_review_panel.zig");
         var files = panel.collectFiles(self.allocator, hunks) catch return;
         defer files.deinit(self.allocator);
         self.proposal_review_scroll_y = panel.clampScrollY(
@@ -1093,7 +1093,7 @@ pub const Workbench = struct {
         );
     }
 
-    pub fn handleAiSettingsClick(self: *Workbench, hit: @import("ui/ai_settings_panel.zig").Hit) !void {
+    pub fn handleAiSettingsClick(self: *Workbench, hit: @import("ui/agent/ai_settings_panel.zig").Hit) !void {
         switch (hit) {
             .toggle_mcp => try self.toggleAiMcp(),
             .open_forge_toml => {
@@ -1163,7 +1163,7 @@ pub const Workbench = struct {
     }
 
     fn composerInputHeight(self: *Workbench, agent_w: f32) f32 {
-        const ac = @import("ui/agent_composer.zig");
+        const ac = @import("ui/agent/agent_composer.zig");
         self.agent.lock();
         const attachment_count = self.agent.attachments.items.len;
         self.agent.unlock();
@@ -1174,7 +1174,7 @@ pub const Workbench = struct {
     }
 
     pub fn clampPromptScroll(self: *Workbench, agent_w: f32) void {
-        const ac = @import("ui/agent_composer.zig");
+        const ac = @import("ui/agent/agent_composer.zig");
         const visual_lines = ac.visualLineCount(&self.prompt_buffer, agent_w);
         const input_h = self.composerInputHeight(agent_w);
         self.prompt_scroll_y = ac.clampPromptScroll(self.prompt_scroll_y, visual_lines, input_h);
@@ -1185,7 +1185,7 @@ pub const Workbench = struct {
         var h: f32 = 0;
         renderer.Renderer.getWindowSize(&w, &h);
         const geo = self.layoutGeometry(w, h);
-        const ac = @import("ui/agent_composer.zig");
+        const ac = @import("ui/agent/agent_composer.zig");
         const max_w = ac.promptMaxWidth(geo.agent_w);
         const input_h = self.composerInputHeight(geo.agent_w);
         self.prompt_scroll_y = ac.ensureCursorVisible(self.prompt_scroll_y, &self.prompt_buffer, max_w, input_h);
@@ -1366,8 +1366,8 @@ pub const Workbench = struct {
     }
 
     pub fn clampEditorScroll(self: *Workbench, editor_w: f32, editor_h: f32) void {
-        const scroll = @import("ui/editor_scroll.zig");
-        const word_wrap = @import("ui/word_wrap.zig");
+        const scroll = @import("ui/editor/editor_scroll.zig");
+        const word_wrap = @import("ui/editor/word_wrap.zig");
         const pane_w = self.paneWidth(editor_w);
         const viewport_w = scroll.viewportWidth(pane_w, &self.theme);
         const wrap = self.user_settings.word_wrap;
@@ -1413,7 +1413,7 @@ pub const Workbench = struct {
     }
 
     pub fn clampExplorerScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/explorer_scroll.zig");
+        const scroll = @import("ui/sidebar/explorer_scroll.zig");
         self.explorer_scroll_y = scroll.clampScrollY(
             self.explorer_scroll_y,
             self.explorer.entries.len,
@@ -1422,7 +1422,7 @@ pub const Workbench = struct {
     }
 
     pub fn clampExtensionsScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/extensions_panel.zig");
+        const scroll = @import("ui/sidebar/extensions_panel.zig");
         const catalog_ptr: ?*const plugin.MarketplaceCatalog = if (self.marketplace_catalog) |*catalog| catalog else null;
         self.extensions_scroll_y = scroll.clampScrollY(
             self.extensions_scroll_y,
@@ -1436,7 +1436,7 @@ pub const Workbench = struct {
     }
 
     pub fn clampAiSettingsScroll(self: *Workbench, editor_h: f32) void {
-        const panel = @import("ui/ai_settings_panel.zig");
+        const panel = @import("ui/agent/ai_settings_panel.zig");
         const lines = blk: {
             const status = self.ai_mcp_status orelse break :blk @as(usize, 1);
             if (status.len == 0) break :blk @as(usize, 1);
@@ -1454,19 +1454,19 @@ pub const Workbench = struct {
     }
 
     pub fn clampSearchScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/search_panel.zig");
+        const scroll = @import("ui/sidebar/search_panel.zig");
         const count = if (self.search_results) |results| results.matches.len else 0;
         self.search_scroll_y = scroll.clampScrollY(self.search_scroll_y, count, window_h);
     }
 
     pub fn clampGitScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/git_panel.zig");
+        const scroll = @import("ui/sidebar/git_panel.zig");
         const count = if (self.git_status) |status| status.entries.len else 0;
         self.git_scroll_y = scroll.clampScrollY(self.git_scroll_y, count, window_h);
     }
 
     pub fn clampRunScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/debug_panel.zig");
+        const scroll = @import("ui/sidebar/debug_panel.zig");
         const debug_active = self.debug_lldb.isActive();
         self.run_scroll_y = scroll.clampScrollY(self.run_scroll_y, self.breakpoints.items.items.len, window_h, debug_active);
     }
@@ -1496,7 +1496,7 @@ pub const Workbench = struct {
     }
 
     pub fn clampBottomPanelScroll(self: *Workbench, panel_h: f32) void {
-        const panel_scroll = @import("ui/panel_scroll.zig");
+        const panel_scroll = @import("ui/core/panel_scroll.zig");
         const viewport = panel_scroll.bottomViewportHeight(panel_h);
         self.task_scroll_y = panel_scroll.clampScrollY(
             self.task_scroll_y,
@@ -1507,7 +1507,7 @@ pub const Workbench = struct {
     }
 
     pub fn copyTerminalSelection(self: *Workbench) !void {
-        const terminal_panel = @import("ui/terminal_panel.zig");
+        const terminal_panel = @import("ui/panel/terminal_panel.zig");
         const sel = self.terminal_selection orelse return;
         if (sel.isEmpty()) return;
 
@@ -1526,11 +1526,11 @@ pub const Workbench = struct {
     }
 
     pub fn clampChatScroll(self: *Workbench, agent_h: f32) void {
-        const panel_scroll = @import("ui/panel_scroll.zig");
-        const layout_mod = @import("ui/layout.zig");
-        const context_inspector_mod = @import("ui/context_inspector.zig");
-        const agent_panel_mod = @import("ui/agent_panel.zig");
-        const chat_bubble_mod = @import("ui/chat_bubble.zig");
+        const panel_scroll = @import("ui/core/panel_scroll.zig");
+        const layout_mod = @import("ui/core/layout.zig");
+        const context_inspector_mod = @import("ui/agent/context_inspector.zig");
+        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
+        const chat_bubble_mod = @import("ui/agent/chat_bubble.zig");
         const content_w = @max(40, self.agent_panel_width - 40);
         var estimated_lines: usize = 0;
         for (self.chat_history.items) |msg| {
@@ -1546,7 +1546,7 @@ pub const Workbench = struct {
                 true,
                 content_w,
             );
-            const tool_step_card_mod = @import("ui/tool_step_card.zig");
+            const tool_step_card_mod = @import("ui/agent/tool_step_card.zig");
             const steps_h = tool_step_card_mod.totalStepsHeight(self.agent.agent_steps.items, content_w);
             estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
         }
@@ -1566,10 +1566,10 @@ pub const Workbench = struct {
     }
 
     pub fn scrollChatToEnd(self: *Workbench, agent_h: f32) void {
-        const layout_mod = @import("ui/layout.zig");
-        const context_inspector_mod = @import("ui/context_inspector.zig");
-        const agent_panel_mod = @import("ui/agent_panel.zig");
-        const chat_bubble_mod = @import("ui/chat_bubble.zig");
+        const layout_mod = @import("ui/core/layout.zig");
+        const context_inspector_mod = @import("ui/agent/context_inspector.zig");
+        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
+        const chat_bubble_mod = @import("ui/agent/chat_bubble.zig");
         const content_w = @max(40, self.agent_panel_width - 40);
         var estimated_lines: usize = 0;
         for (self.chat_history.items) |msg| {
@@ -1585,7 +1585,7 @@ pub const Workbench = struct {
                 true,
                 content_w,
             );
-            const tool_step_card_mod = @import("ui/tool_step_card.zig");
+            const tool_step_card_mod = @import("ui/agent/tool_step_card.zig");
             const steps_h = tool_step_card_mod.totalStepsHeight(self.agent.agent_steps.items, content_w);
             estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
         }
@@ -1601,9 +1601,9 @@ pub const Workbench = struct {
     }
 
     pub fn clampReviewScroll(self: *Workbench, agent_h: f32) void {
-        const panel_scroll = @import("ui/panel_scroll.zig");
-        const layout_mod = @import("ui/layout.zig");
-        const agent_panel_mod = @import("ui/agent_panel.zig");
+        const panel_scroll = @import("ui/core/panel_scroll.zig");
+        const layout_mod = @import("ui/core/layout.zig");
+        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
         self.agent.lock();
         const content_h = agent_panel_mod.reviewContentHeight(&self.agent);
         self.agent.unlock();
@@ -1631,7 +1631,7 @@ pub const Workbench = struct {
     }
 
     pub fn runLaunchConfig(self: *Workbench, index: usize) !void {
-        const panel = @import("ui/debug_panel.zig");
+        const panel = @import("ui/sidebar/debug_panel.zig");
         if (index >= panel.default_launches.len) return;
         const launch = panel.default_launches[index];
 
@@ -1805,7 +1805,7 @@ pub const Workbench = struct {
         self.debug_console.log("Debug session stopped") catch {};
     }
 
-    pub fn handleDebugClick(self: *Workbench, hit: @import("ui/debug_panel.zig").Hit) !void {
+    pub fn handleDebugClick(self: *Workbench, hit: @import("ui/sidebar/debug_panel.zig").Hit) !void {
         switch (hit) {
             .run_launch => |index| try self.dispatch(.{ .debug_run_launch = index }),
             .toggle_breakpoint => try self.dispatch(.debug_toggle_breakpoint),
@@ -1855,11 +1855,11 @@ pub const Workbench = struct {
     pub fn updateTerminalPrompt(self: *Workbench) !void {
         var buf: [256]u8 = undefined;
         const git_ptr: ?*const git_status_mod.Status = if (self.git_status) |*status| status else null;
-        const prompt = @import("ui/terminal_prompt.zig").format(self.workspace_path, git_ptr, &buf);
+        const prompt = @import("ui/panel/terminal_prompt.zig").format(self.workspace_path, git_ptr, &buf);
         try self.activeTerminal().setPromptLine(prompt);
     }
 
-    pub fn handleSearchClick(self: *Workbench, hit: @import("ui/search_panel.zig").Hit) !void {
+    pub fn handleSearchClick(self: *Workbench, hit: @import("ui/sidebar/search_panel.zig").Hit) !void {
         switch (hit) {
             .run_search => try self.dispatch(.search_run),
             .open_result => |index| {
@@ -1881,7 +1881,7 @@ pub const Workbench = struct {
         }
     }
 
-    pub fn handleGitClick(self: *Workbench, hit: @import("ui/git_panel.zig").Hit) !void {
+    pub fn handleGitClick(self: *Workbench, hit: @import("ui/sidebar/git_panel.zig").Hit) !void {
         switch (hit) {
             .refresh => try self.dispatch(.git_refresh),
             .commit => try self.commitStagedChanges(),
@@ -1947,7 +1947,7 @@ pub const Workbench = struct {
         return std.mem.startsWith(u8, ext.root_path, ".forge/extensions/");
     }
 
-    pub fn handleExtensionsClick(self: *Workbench, hit: @import("ui/extensions_panel.zig").Hit) !void {
+    pub fn handleExtensionsClick(self: *Workbench, hit: @import("ui/sidebar/extensions_panel.zig").Hit) !void {
         switch (hit) {
             .reload => try self.dispatch(.reload_extensions),
             .open_workspace_dir => try self.dispatch(.{ .open_file = "extensions/README.md" }),
@@ -2220,13 +2220,13 @@ pub const Workbench = struct {
     }
 
     pub fn clampTabScroll(self: *Workbench, editor_w: f32) void {
-        const tabs_ui = @import("ui/tabs.zig");
+        const tabs_ui = @import("ui/editor/tabs.zig");
         self.tab_scroll_x = tabs_ui.clampScroll(self.tab_scroll_x, self, editor_w);
     }
 
     pub fn syncTabScroll(self: *Workbench) void {
         const renderer_mod = @import("forge-renderer");
-        const tabs_ui = @import("ui/tabs.zig");
+        const tabs_ui = @import("ui/editor/tabs.zig");
         var w: f32 = 0;
         var h: f32 = 0;
         renderer_mod.Renderer.getWindowSize(&w, &h);
@@ -2350,12 +2350,12 @@ pub const Workbench = struct {
         const scroll_y: *f32 = if (pane == .secondary) &self.split_scroll_y else &self.editor_scroll_y;
         const scroll_x: *f32 = if (pane == .secondary) &self.split_scroll_x else &self.editor_scroll_x;
         if (self.user_settings.word_wrap) {
-            const word_wrap = @import("ui/word_wrap.zig");
-            const viewport_w = @import("ui/editor_scroll.zig").viewportWidth(pane_w, &self.theme);
+            const word_wrap = @import("ui/editor/word_wrap.zig");
+            const viewport_w = @import("ui/editor/editor_scroll.zig").viewportWidth(pane_w, &self.theme);
             scroll_y.* = word_wrap.scrollToCursor(scroll_y.*, &doc.buffer, geo.editor_h, viewport_w, self.theme.editor_font_size, &self.theme);
             scroll_x.* = 0;
         } else {
-            const scrolled = @import("ui/editor_scroll.zig").scrollToCursor(
+            const scrolled = @import("ui/editor/editor_scroll.zig").scrollToCursor(
                 scroll_y.*,
                 scroll_x.*,
                 &doc.buffer,
@@ -2721,7 +2721,7 @@ pub const Workbench = struct {
         defer chat_persistence_mod.freeLoadedMessages(self.allocator, loaded);
         if (loaded.len == 0) return;
 
-        const agent_panel_mod = @import("ui/agent_panel.zig");
+        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
 
         for (self.chat_history.items) |msg| self.allocator.free(msg.content);
         self.chat_history.clearRetainingCapacity();
@@ -3078,7 +3078,7 @@ pub const Workbench = struct {
     }
 
     pub fn flushAgentUi(self: *Workbench) !void {
-        const agent_panel_mod = @import("ui/agent_panel.zig");
+        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
         const ops = try self.agent_ui_queue.takeAll(self.allocator);
         defer self.allocator.free(ops);
         const host = self.agentHost();
@@ -3177,7 +3177,7 @@ pub const Workbench = struct {
     }
 
     pub fn appendChat(self: *Workbench, role: ChatRole, content: []const u8) !void {
-        const agent_panel_mod = @import("ui/agent_panel.zig");
+        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
         if (!agent_panel_mod.chatHasVisibleContent(content)) return;
         const owned = try self.allocator.dupeZ(u8, content);
         try self.chat_history.append(self.allocator, .{ .role = role, .content = owned });
@@ -3254,8 +3254,8 @@ pub const Workbench = struct {
         if (self.bottom_panel_mode != .terminal) return;
 
         const renderer_mod = @import("forge-renderer");
-        const panel_scroll = @import("ui/panel_scroll.zig");
-        const terminal_panel = @import("ui/terminal_panel.zig");
+        const panel_scroll = @import("ui/core/panel_scroll.zig");
+        const terminal_panel = @import("ui/panel/terminal_panel.zig");
 
         var w: f32 = 0;
         var h: f32 = 0;

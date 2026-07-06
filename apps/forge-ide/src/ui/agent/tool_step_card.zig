@@ -1,6 +1,6 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const agent_session = @import("../agent/session.zig");
+const agent_session = @import("../../agent/session.zig");
 const chat_markdown = @import("chat_markdown.zig");
 
 pub const card_h: f32 = 28;

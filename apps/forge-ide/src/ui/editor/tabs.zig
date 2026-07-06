@@ -1,5 +1,5 @@
 const std = @import("std");
-const Workbench = @import("../workbench.zig").Workbench;
+const Workbench = @import("../../workbench.zig").Workbench;
 
 pub const tab_gap: f32 = 0;
 pub const tab_padding_start: f32 = 10;

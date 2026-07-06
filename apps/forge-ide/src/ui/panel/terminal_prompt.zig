@@ -1,5 +1,5 @@
 const std = @import("std");
-const git_status = @import("../git/status.zig");
+const git_status = @import("../../git/status.zig");
 
 pub const SegmentKind = enum {
     folder,

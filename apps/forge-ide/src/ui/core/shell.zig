@@ -40,9 +40,9 @@ pub fn initShell(allocator: std.mem.Allocator) !void {
 
 pub fn runRenderer() void {
     renderer.Renderer.init();
-    renderer.Renderer.setRenderCallback(@import("render.zig").onRenderFrame);
-    renderer.Renderer.setKeyCallback(@import("input.zig").onKeyEvent);
-    renderer.Renderer.setMouseCallback(@import("input.zig").onMouseEvent);
+    renderer.Renderer.setRenderCallback(@import("../render/frame.zig").onRenderFrame);
+    renderer.Renderer.setKeyCallback(@import("../input/input.zig").onKeyEvent);
+    renderer.Renderer.setMouseCallback(@import("../input/input.zig").onMouseEvent);
     renderer.Renderer.createWindow("Forge", 1024, 768);
     renderer.Renderer.run();
 }

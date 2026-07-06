@@ -1,9 +1,9 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const panel_scroll = @import("panel_scroll.zig");
-const editor_scroll = @import("editor_scroll.zig");
+const panel_scroll = @import("../core/panel_scroll.zig");
+const editor_scroll = @import("../editor/editor_scroll.zig");
 const terminal_prompt = @import("terminal_prompt.zig");
-const git_status = @import("../git/status.zig");
+const git_status = @import("../../git/status.zig");
 
 pub const font_size: f32 = 12.0;
 pub const text_inset_x: f32 = 12.0;

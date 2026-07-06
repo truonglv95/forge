@@ -1,6 +1,6 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const word_wrap = @import("word_wrap.zig");
+const word_wrap = @import("../editor/word_wrap.zig");
 
 pub const body_font_size: f32 = 14.0;
 pub const body_line_h: f32 = 16.0;

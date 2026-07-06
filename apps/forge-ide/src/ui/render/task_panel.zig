@@ -1,12 +1,12 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const state = @import("../state.zig");
-const panel_scroll = @import("../panel_scroll.zig");
-const scrollbar = @import("../scrollbar.zig");
+const state = @import("../core/state.zig");
+const panel_scroll = @import("../core/panel_scroll.zig");
+const scrollbar = @import("../core/scrollbar.zig");
 const Workbench = @import("../../workbench.zig").Workbench;
 
 pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32, panel_h: f32) void {
-    const bottom_panel = @import("../bottom_panel.zig");
+    const bottom_panel = @import("../panel/bottom_panel.zig");
     renderer.Renderer.setClipRect(editor_x, panel_y, editor_w, panel_h);
     const tab_y = bottom_panel.tabBarTop(panel_y);
     for (bottom_panel.tabs) |tab| {
@@ -118,7 +118,7 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             }
         },
         .terminal => {
-            const terminal_panel = @import("../terminal_panel.zig");
+            const terminal_panel = @import("../panel/terminal_panel.zig");
             const terminal = wb.activeTerminal();
             terminal.lock();
             defer terminal.unlock();

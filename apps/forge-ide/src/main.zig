@@ -2,8 +2,8 @@ const std = @import("std");
 const kernel = @import("forge-kernel");
 const Workbench = @import("workbench.zig");
 const builtin_ext = @import("extensions/builtin.zig");
-const state = @import("ui/state.zig");
-const shell = @import("ui/shell.zig");
+const state = @import("ui/core/state.zig");
+const shell = @import("ui/core/shell.zig");
 
 pub fn main(init: std.process.Init) !void {
     state.gpa = std.heap.page_allocator;

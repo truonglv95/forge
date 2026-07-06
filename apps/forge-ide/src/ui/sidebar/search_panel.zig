@@ -1,6 +1,6 @@
 const std = @import("std");
-const layout = @import("layout.zig");
-const search_engine = @import("../search/engine.zig");
+const layout = @import("../core/layout.zig");
+const search_engine = @import("../../search/engine.zig");
 
 pub const list_top: f32 = 131;
 pub const query_box_h: f32 = 28;

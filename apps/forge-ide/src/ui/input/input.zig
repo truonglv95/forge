@@ -1,25 +1,25 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const state = @import("state.zig");
-const layout = @import("layout.zig");
-const editor_scroll = @import("editor_scroll.zig");
-const word_wrap = @import("word_wrap.zig");
-const activity_bar = @import("activity_bar.zig");
-const search_panel = @import("search_panel.zig");
-const debug_panel = @import("debug_panel.zig");
-const git_panel = @import("git_panel.zig");
-const extensions_panel = @import("extensions_panel.zig");
-const ai_settings_panel = @import("ai_settings_panel.zig");
-const proposal_review_panel = @import("proposal_review_panel.zig");
-const header_toolbar = @import("header_toolbar.zig");
+const state = @import("../core/state.zig");
+const layout = @import("../core/layout.zig");
+const editor_scroll = @import("../editor/editor_scroll.zig");
+const word_wrap = @import("../editor/word_wrap.zig");
+const activity_bar = @import("../sidebar/activity_bar.zig");
+const search_panel = @import("../sidebar/search_panel.zig");
+const debug_panel = @import("../sidebar/debug_panel.zig");
+const git_panel = @import("../sidebar/git_panel.zig");
+const extensions_panel = @import("../sidebar/extensions_panel.zig");
+const ai_settings_panel = @import("../agent/ai_settings_panel.zig");
+const proposal_review_panel = @import("../editor/proposal_review_panel.zig");
+const header_toolbar = @import("../chrome/header_toolbar.zig");
 const plugin = @import("forge-plugin");
-const explorer_scroll = @import("explorer_scroll.zig");
-const tabs_ui = @import("tabs.zig");
-const keybindings_mod = @import("../keybindings.zig");
-const terminal_session_mod = @import("../workbench/terminal_session.zig");
-const terminal_panel = @import("terminal_panel.zig");
-const bottom_panel = @import("bottom_panel.zig");
-const scroll_axis = @import("scroll_axis.zig");
+const explorer_scroll = @import("../sidebar/explorer_scroll.zig");
+const tabs_ui = @import("../editor/tabs.zig");
+const keybindings_mod = @import("../../keybindings.zig");
+const terminal_session_mod = @import("../../workbench/terminal_session.zig");
+const terminal_panel = @import("../panel/terminal_panel.zig");
+const bottom_panel = @import("../panel/bottom_panel.zig");
+const scroll_axis = @import("../core/scroll_axis.zig");
 
 const cmd_mask: i32 = 0x08;
 const shift_mask: i32 = 0x02;
@@ -30,7 +30,7 @@ fn canUninstallExtensionIndex(ext_index: usize) bool {
     return wb.canUninstallExtension(&wb.extension_host.extensions.items[ext_index]);
 }
 
-fn dispatchWorkbenchCommand(command: @import("../workbench/commands.zig").Command) anyerror!void {
+fn dispatchWorkbenchCommand(command: @import("../../workbench/commands.zig").Command) anyerror!void {
     const wb = state.wb orelse return;
     try wb.dispatch(command);
 }
@@ -306,8 +306,8 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     }
 }
 
-fn handleScopePickerKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
-    const scope_picker_mod = @import("../agent/scope_picker.zig");
+fn handleScopePickerKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+    const scope_picker_mod = @import("../../agent/scope_picker.zig");
     if (event.keycode == 53) {
         wb.dispatch(.agent_scope_picker_close) catch {};
         return;
@@ -353,7 +353,7 @@ fn handleScopePickerKeys(wb: *@import("../workbench.zig").Workbench, event: rend
     }
 }
 
-fn handleConflictKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handleConflictKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 36) {
         wb.dispatch(.reload_active_from_disk) catch {};
         return;
@@ -363,7 +363,7 @@ fn handleConflictKeys(wb: *@import("../workbench.zig").Workbench, event: rendere
     }
 }
 
-fn handleRecoveryKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handleRecoveryKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 36) {
         wb.dispatch(.restore_recovery_snapshots) catch {};
         return;
@@ -373,7 +373,7 @@ fn handleRecoveryKeys(wb: *@import("../workbench.zig").Workbench, event: rendere
     }
 }
 
-fn handlePaletteKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handlePaletteKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
         wb.dispatch(.palette_close) catch {};
         return;
@@ -399,7 +399,7 @@ fn handlePaletteKeys(wb: *@import("../workbench.zig").Workbench, event: renderer
     }
 }
 
-fn handleTerminalKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handleTerminalKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 8 and event.modifiers & cmd_mask != 0) {
         wb.copyTerminalSelection() catch {};
         return;
@@ -417,7 +417,7 @@ fn handleTerminalKeys(wb: *@import("../workbench.zig").Workbench, event: rendere
     }
 }
 
-fn handleSearchKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handleSearchKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 36) {
         wb.dispatch(.search_run) catch {};
         return;
@@ -431,7 +431,7 @@ fn handleSearchKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.
     }
 }
 
-fn handleExtensionsFilterKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handleExtensionsFilterKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 51) {
         if (wb.extensions_filter_len > 0) wb.extensions_filter_len -= 1;
         return;
@@ -442,7 +442,7 @@ fn handleExtensionsFilterKeys(wb: *@import("../workbench.zig").Workbench, event:
     }
 }
 
-fn handleFindKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handleFindKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
         wb.closeEditorOverlay();
         return;
@@ -489,7 +489,7 @@ fn handleFindKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.Ke
     }
 }
 
-fn handleGotoKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handleGotoKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
         wb.closeEditorOverlay();
         return;
@@ -508,7 +508,7 @@ fn handleGotoKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.Ke
     }
 }
 
-fn handleSymbolRenameKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handleSymbolRenameKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
         wb.closeEditorOverlay();
         return;
@@ -527,7 +527,7 @@ fn handleSymbolRenameKeys(wb: *@import("../workbench.zig").Workbench, event: ren
     }
 }
 
-fn handleRenameKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.KeyEvent) void {
+fn handleRenameKeys(wb: *@import("../../workbench.zig").Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
         wb.cancelRename();
         return;
@@ -545,7 +545,7 @@ fn handleRenameKeys(wb: *@import("../workbench.zig").Workbench, event: renderer.
     }
 }
 
-fn pasteIntoActiveBuffer(wb: *@import("../workbench.zig").Workbench) void {
+fn pasteIntoActiveBuffer(wb: *@import("../../workbench.zig").Workbench) void {
     if (wb.focused_panel == .agent) {
         wb.pasteIntoAgent() catch {};
         return;
@@ -576,7 +576,7 @@ fn pasteIntoActiveBuffer(wb: *@import("../workbench.zig").Workbench) void {
     buffer.insertString(text) catch {};
 }
 
-fn submitAgentPrompt(wb: *@import("../workbench.zig").Workbench) void {
+fn submitAgentPrompt(wb: *@import("../../workbench.zig").Workbench) void {
     if (wb.agent.worker_running) {
         wb.setStatus("Agent is already running") catch {};
         return;
@@ -592,7 +592,7 @@ fn submitAgentPrompt(wb: *@import("../workbench.zig").Workbench) void {
 }
 
 fn editorPosAt(
-    wb: *@import("../workbench.zig").Workbench,
+    wb: *@import("../../workbench.zig").Workbench,
     editor_buf: *@import("forge-editor").Buffer,
     pane_x: f32,
     pane_w: f32,
@@ -769,9 +769,9 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
         } else if (geo.shell_mode == .ide and event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
-            const agent_panel = @import("agent_panel.zig");
-            const context_inspector_mod = @import("context_inspector.zig");
-            const agent_composer_mod = @import("agent_composer.zig");
+            const agent_panel = @import("../agent/agent_panel.zig");
+            const context_inspector_mod = @import("../agent/context_inspector.zig");
+            const agent_composer_mod = @import("../agent/agent_composer.zig");
             wb.agent.lock();
             const entry_count = wb.agent.context_entries.items.len;
             const expanded = wb.agent.context_inspector_expanded;
@@ -1007,7 +1007,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 }
             } else if (bottom_panel.inContentArea(geo.task_panel_y, event.y)) {
                 if (wb.bottom_panel_mode == .output and wb.references.active) {
-                    const references_panel = @import("../workbench/references_store.zig");
+                    const references_panel = @import("../../workbench/references_store.zig");
                     if (references_panel.Store.hitTest(
                         geo.editor_x,
                         geo.task_panel_y,
@@ -1020,7 +1020,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         wb.dispatch(.{ .references_goto = index }) catch {};
                     }
                 } else if (wb.bottom_panel_mode == .problems) {
-                    const problems_panel = @import("problems_panel.zig");
+                    const problems_panel = @import("../panel/problems_panel.zig");
                     if (problems_panel.hitTest(
                         geo.editor_x,
                         geo.task_panel_y,
@@ -1033,7 +1033,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         wb.handleProblemsClick(index) catch {};
                     }
                 } else if (wb.bottom_panel_mode == .debug_variables) {
-                    const debug_variables = @import("../workbench/debug_variables.zig");
+                    const debug_variables = @import("../../workbench/debug_variables.zig");
                     if (debug_variables.hitTest(
                         geo.editor_x,
                         geo.task_panel_y,
@@ -1046,7 +1046,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         wb.dispatch(.{ .debug_copy_variable = index }) catch {};
                     }
                 } else if (wb.bottom_panel_mode == .debug_callstack) {
-                    const debug_callstack = @import("../workbench/debug_callstack.zig");
+                    const debug_callstack = @import("../../workbench/debug_callstack.zig");
                     if (debug_callstack.hitTest(
                         geo.editor_x,
                         geo.task_panel_y,
@@ -1173,7 +1173,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.agent.lock();
                 const attachment_count = wb.agent.attachments.items.len;
                 wb.agent.unlock();
-                const agent_panel = @import("agent_panel.zig");
+                const agent_panel = @import("../agent/agent_panel.zig");
                 const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer);
                 if (composer_layout.scroll_max > 0 and agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, mx, my)) {
                     wb.prompt_scroll_y += scroll_delta_y;

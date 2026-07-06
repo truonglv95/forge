@@ -1,6 +1,6 @@
 const std = @import("std");
 const plugin = @import("forge-plugin");
-const state = @import("../ui/state.zig");
+const state = @import("../ui/core/state.zig");
 
 pub fn hostCallbacks() plugin.wasm_runtime.HostCallbacks {
     return .{

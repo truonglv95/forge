@@ -1,7 +1,7 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const layout = @import("layout.zig");
-const agent_session = @import("../agent/session.zig");
+const layout = @import("../core/layout.zig");
+const agent_session = @import("../../agent/session.zig");
 
 const agent_composer = @import("agent_composer.zig");
 const ai = @import("forge-ai");
