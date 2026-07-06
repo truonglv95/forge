@@ -167,7 +167,7 @@ examples.
 Enable project hooks once per clone:
 
 ```bash
-chmod +x scripts/check.sh scripts/validate-commit-msg.sh .githooks/*
+chmod +x scripts/check.sh scripts/validate-commit-msg.sh scripts/strip-cursor-coauthor.sh .githooks/*
 git config core.hooksPath .githooks
 ```
 

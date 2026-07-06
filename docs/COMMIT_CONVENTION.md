@@ -123,10 +123,11 @@ BREAKING CHANGE: WorkspaceEdit.validate now returns DuplicatePath for repeats.
 
 ## Local enforcement
 
-The `commit-msg` hook validates the header when hooks are enabled:
+The `commit-msg` hook validates the header when hooks are enabled.
+`prepare-commit-msg` strips `Co-authored-by: Cursor <cursoragent@cursor.com>` trailers.
 
 ```bash
-chmod +x scripts/check.sh scripts/validate-commit-msg.sh .githooks/*
+chmod +x scripts/check.sh scripts/validate-commit-msg.sh scripts/strip-cursor-coauthor.sh .githooks/*
 git config core.hooksPath .githooks
 ```
 
