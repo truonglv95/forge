@@ -5,6 +5,7 @@ const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
 const kernel = @import("forge-kernel");
+const ollama_ndjson = @import("../../ollama_ndjson.zig");
 
 pub const OllamaTransport = struct {
     ollama: *ollama_provider.OllamaProvider,
@@ -41,12 +42,33 @@ pub const OllamaTransport = struct {
         if (cancel_token) |token| {
             if (token.isCancelled()) return error.Cancelled;
         }
-        const response_body = fetchChat(self.ollama, allocator, self.io, conversation_json, tool_declarations_json, cancel_token) catch |err| switch (err) {
+
+        var bridge = StreamBridge{ .ollama = self.ollama };
+        var parser = ollama_ndjson.Parser.init(allocator, .{
+            .on_chunk = StreamBridge.onChunk,
+            .context = &bridge,
+        });
+        defer parser.deinit();
+
+        fetchStreamChatInto(self.ollama, allocator, self.io, conversation_json, tool_declarations_json, cancel_token, &parser) catch |err| switch (err) {
             error.Cancelled => return error.Cancelled,
             else => return error.ProviderFailed,
         };
-        defer allocator.free(response_body);
-        return try parseCompletion(allocator, response_body);
+        parser.finish() catch return error.MalformedResponse;
+        if (parser.terminal_error) |_| return error.ProviderFailed;
+
+        self.ollama.latest_usage = parser.latest_usage;
+
+        if (parser.takeToolCall()) |call| {
+            return .{ .tool_call = .{
+                .name = call.name,
+                .args_json = call.args_json,
+            } };
+        }
+
+        const text = parser.assembledText();
+        if (text.len == 0) return error.MalformedResponse;
+        return .{ .text = try allocator.dupe(u8, text) };
     }
 
     fn appendUserTurn(
@@ -99,20 +121,32 @@ pub const OllamaTransport = struct {
     }
 };
 
+const StreamBridge = struct {
+    ollama: *ollama_provider.OllamaProvider,
+
+    fn onChunk(context: ?*anyopaque, chunk: []const u8) void {
+        const bridge: *StreamBridge = @ptrCast(@alignCast(context.?));
+        if (bridge.ollama.stream_callback) |callback| {
+            callback(bridge.ollama.stream_context, chunk);
+        }
+    }
+};
+
 fn trimTrailingSlash(url: []const u8) []const u8 {
     var end = url.len;
     while (end > 0 and url[end - 1] == '/') end -= 1;
     return url[0..end];
 }
 
-fn fetchChat(
+fn fetchStreamChatInto(
     ollama: *ollama_provider.OllamaProvider,
     allocator: std.mem.Allocator,
     io: std.Io,
     messages_body: []const u8,
     tools_json: []const u8,
     cancel_token: ?*const kernel.cancellation.CancellationToken,
-) ![]u8 {
+    parser: *ollama_ndjson.Parser,
+) !void {
     if (cancel_token) |token| {
         if (token.isCancelled()) return error.Cancelled;
     }
@@ -122,58 +156,24 @@ fn fetchChat(
     defer allocator.free(endpoint);
 
     const payload = try std.fmt.allocPrint(allocator,
-        \\{{"model":"{s}","messages":[{s}],"tools":{s},"stream":false}}
+        \\{{"model":"{s}","messages":[{s}],"tools":{s},"stream":true}}
     , .{ ollama.model_name, messages_body, tools_json });
     defer allocator.free(payload);
 
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
-    var response_alloc = std.Io.Writer.Allocating.init(allocator);
-    defer response_alloc.deinit();
-
     const result = client.fetch(.{
         .location = .{ .url = endpoint },
         .method = .POST,
         .payload = payload,
         .headers = .{ .content_type = .{ .override = "application/json" } },
-        .response_writer = &response_alloc.writer,
+        .response_writer = parser.ioWriter(),
     }) catch return error.ProviderFailed;
 
+    parser.releaseWriter();
+
     if (result.status != .ok) return error.ProviderFailed;
-    return try allocator.dupe(u8, response_alloc.writer.buffer[0..response_alloc.writer.end]);
-}
-
-fn parseCompletion(allocator: std.mem.Allocator, body: []const u8) turn.TransportError!turn.Completion {
-    const Root = struct {
-        message: ?struct {
-            content: ?[]const u8 = null,
-            tool_calls: ?[]struct {
-                function: struct {
-                    name: []const u8,
-                    arguments: std.json.Value,
-                },
-            } = null,
-        } = null,
-    };
-
-    var parsed = std.json.parseFromSlice(Root, allocator, body, .{ .ignore_unknown_fields = true }) catch return error.MalformedResponse;
-    defer parsed.deinit();
-
-    const message = parsed.value.message orelse return error.MalformedResponse;
-
-    if (message.tool_calls) |calls| {
-        if (calls.len == 0) return error.MalformedResponse;
-        const first = calls[0];
-        const args_owned = std.json.Stringify.valueAlloc(allocator, first.function.arguments, .{}) catch return error.MalformedResponse;
-        return .{ .tool_call = .{
-            .name = try allocator.dupe(u8, first.function.name),
-            .args_json = args_owned,
-        } };
-    }
-
-    const content = message.content orelse return error.MalformedResponse;
-    return .{ .text = try allocator.dupe(u8, content) };
 }
 
 fn jsonString(allocator: std.mem.Allocator, text: []const u8) ![]u8 {

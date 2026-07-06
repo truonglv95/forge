@@ -5,6 +5,9 @@ const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
 const kernel = @import("forge-kernel");
+const gemini_sse = @import("../../gemini_sse.zig");
+
+const stream_endpoint_base = "https://generativelanguage.googleapis.com/v1beta/models/";
 
 pub const GeminiTransport = struct {
     gemini: *gemini_provider.GeminiProvider,
@@ -39,12 +42,33 @@ pub const GeminiTransport = struct {
         if (cancel_token) |token| {
             if (token.isCancelled()) return error.Cancelled;
         }
-        const response_body = fetchGenerateContent(self.gemini, allocator, self.io, conversation_json, tool_declarations_json, cancel_token) catch |err| switch (err) {
+
+        var bridge = SseBridge{ .gemini = self.gemini };
+        var parser = gemini_sse.Parser.init(allocator, .{
+            .on_chunk = SseBridge.onChunk,
+            .context = &bridge,
+        });
+        defer parser.deinit();
+
+        fetchStreamGenerateContentInto(self.gemini, allocator, self.io, conversation_json, tool_declarations_json, cancel_token, &parser) catch |err| switch (err) {
             error.Cancelled => return error.Cancelled,
             else => return error.ProviderFailed,
         };
-        defer allocator.free(response_body);
-        return try parseCompletion(allocator, response_body);
+        parser.finish() catch return error.MalformedResponse;
+        if (parser.terminal_error) |_| return error.ProviderFailed;
+
+        self.gemini.latest_usage = parser.latest_usage;
+
+        if (parser.takeToolCall()) |call| {
+            return .{ .tool_call = .{
+                .name = call.name,
+                .args_json = call.args_json,
+            } };
+        }
+
+        const text = parser.assembledText();
+        if (text.len == 0) return error.MalformedResponse;
+        return .{ .text = try allocator.dupe(u8, text) };
     }
 
     fn appendUserTurn(
@@ -92,23 +116,40 @@ pub const GeminiTransport = struct {
     }
 };
 
-fn fetchGenerateContent(
+const SseBridge = struct {
+    gemini: *gemini_provider.GeminiProvider,
+
+    fn onChunk(context: ?*anyopaque, kind: gemini_sse.ChunkKind, chunk: []const u8) void {
+        const bridge: *SseBridge = @ptrCast(@alignCast(context.?));
+        switch (kind) {
+            .thought => if (bridge.gemini.thinking_callback) |callback| {
+                callback(bridge.gemini.thinking_context, chunk);
+            },
+            .text => if (bridge.gemini.stream_callback) |callback| {
+                callback(bridge.gemini.stream_context, chunk);
+            },
+        }
+    }
+};
+
+fn fetchStreamGenerateContentInto(
     gemini: *gemini_provider.GeminiProvider,
     allocator: std.mem.Allocator,
     io: std.Io,
     contents_body: []const u8,
     declarations_json: []const u8,
     cancel_token: ?*const kernel.cancellation.CancellationToken,
-) ![]u8 {
+    parser: *gemini_sse.Parser,
+) !void {
     if (cancel_token) |token| {
         if (token.isCancelled()) return error.Cancelled;
     }
 
-    const endpoint = try std.fmt.allocPrint(allocator, "https://generativelanguage.googleapis.com/v1beta/models/{s}:generateContent", .{gemini.model_name});
+    const endpoint = try std.fmt.allocPrint(allocator, "{s}{s}:streamGenerateContent?alt=sse", .{ stream_endpoint_base, gemini.model_name });
     defer allocator.free(endpoint);
 
     const payload = try std.fmt.allocPrint(allocator,
-        \\{{"contents":[{s}],"tools":[{{"functionDeclarations":{s}}}],"generationConfig":{{"temperature":0.2}}}}
+        \\{{"contents":[{s}],"tools":[{{"functionDeclarations":{s}}}],"generationConfig":{{"temperature":0.2,"thinkingConfig":{{"includeThoughts":true}}}}}}
     , .{ contents_body, declarations_json });
     defer allocator.free(payload);
 
@@ -120,66 +161,18 @@ fn fetchGenerateContent(
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
-    var response_alloc = std.Io.Writer.Allocating.init(allocator);
-    defer response_alloc.deinit();
-
     const result = client.fetch(.{
         .location = .{ .url = endpoint },
         .method = .POST,
         .payload = payload,
         .headers = .{ .content_type = .{ .override = "application/json" } },
         .extra_headers = &api_headers,
-        .response_writer = &response_alloc.writer,
+        .response_writer = parser.ioWriter(),
     }) catch return error.ProviderFailed;
 
+    parser.releaseWriter();
+
     if (result.status != .ok) return error.ProviderFailed;
-    return try allocator.dupe(u8, response_alloc.writer.buffer[0..response_alloc.writer.end]);
-}
-
-fn parseCompletion(allocator: std.mem.Allocator, body: []const u8) turn.TransportError!turn.Completion {
-    const Root = struct {
-        candidates: ?[]struct {
-            content: ?struct {
-                parts: ?[]struct {
-                    text: ?[]const u8 = null,
-                    functionCall: ?struct {
-                        name: ?[]const u8 = null,
-                        args: ?std.json.Value = null,
-                    } = null,
-                } = null,
-            } = null,
-        } = null,
-    };
-
-    var parsed = std.json.parseFromSlice(Root, allocator, body, .{ .ignore_unknown_fields = true }) catch return error.MalformedResponse;
-    defer parsed.deinit();
-
-    const candidates = parsed.value.candidates orelse return error.MalformedResponse;
-    if (candidates.len == 0) return error.MalformedResponse;
-    const content = candidates[0].content orelse return error.MalformedResponse;
-    const parts = content.parts orelse return error.MalformedResponse;
-    if (parts.len == 0) return error.MalformedResponse;
-
-    for (parts) |part| {
-        if (part.functionCall) |fc| {
-            const name = fc.name orelse return error.MalformedResponse;
-            const args_owned = if (fc.args) |args_val|
-                std.json.Stringify.valueAlloc(allocator, args_val, .{}) catch return error.MalformedResponse
-            else
-                allocator.dupe(u8, "{}") catch return error.MalformedResponse;
-            return .{ .tool_call = .{
-                .name = try allocator.dupe(u8, name),
-                .args_json = args_owned,
-            } };
-        }
-    }
-
-    for (parts) |part| {
-        if (part.text) |text| {
-            return .{ .text = try allocator.dupe(u8, text) };
-        }
-    }
-    return error.MalformedResponse;
 }
 
 fn jsonString(allocator: std.mem.Allocator, text: []const u8) ![]u8 {

@@ -4,10 +4,13 @@ const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
+const streaming = @import("../../streaming.zig");
 
 pub const FakeTransport = struct {
     mcp: ?*mcp_registry.Registry,
     short_script: bool = false,
+    stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
+    stream_context: ?*anyopaque = null,
 
     pub fn transport(self: *FakeTransport) turn.Transport {
         return .{
@@ -46,7 +49,7 @@ pub const FakeTransport = struct {
                     .name = try allocator.dupe(u8, "search"),
                     .args_json = try allocator.dupe(u8, "{\"term\":\"sample\"}"),
                 } },
-                else => .{ .text = try allocator.dupe(u8, "Exploration complete.") },
+                else => return try emitTextCompletion(allocator, "Exploration complete.", cancel_token, self),
             };
         }
 
@@ -59,8 +62,27 @@ pub const FakeTransport = struct {
                 .name = try allocator.dupe(u8, "list_tree"),
                 .args_json = try allocator.dupe(u8, "{}"),
             } },
-            else => .{ .text = try allocator.dupe(u8, "Exploration complete.") },
+            else => return try emitTextCompletion(allocator, "Exploration complete.", cancel_token, self),
         };
+    }
+
+    fn emitTextCompletion(
+        allocator: std.mem.Allocator,
+        text: []const u8,
+        cancel_token: ?*const kernel.cancellation.CancellationToken,
+        self: *const FakeTransport,
+    ) turn.TransportError!turn.Completion {
+        if (cancel_token) |token| {
+            if (self.stream_callback) |callback| {
+                streaming.emitChunks(text, token, .{
+                    .on_chunk = callback,
+                    .on_chunk_context = self.stream_context,
+                }) catch return error.ProviderFailed;
+            }
+        } else if (self.stream_callback) |callback| {
+            callback(self.stream_context, text);
+        }
+        return .{ .text = try allocator.dupe(u8, text) };
     }
 
     fn appendUserTurn(
