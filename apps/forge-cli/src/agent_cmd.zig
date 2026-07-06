@@ -120,6 +120,7 @@ fn runAgent(
     const agent_config = ai.agent.Config{
         .max_steps = max_steps,
         .provider_options = provider_opts,
+        .mode = modeFromCapability(capabilityFromFlags(parsed.flags)),
         .capability_profile = capabilityFromFlags(parsed.flags),
         .workspace_cwd = opened.path,
         .cancel_token = &cancel_token,
@@ -209,4 +210,11 @@ fn capabilityFromFlags(flags: args_mod.GlobalFlags) ai.tools.CapabilityProfile {
     if (std.mem.eql(u8, value, "read_only")) return .read_only;
     if (std.mem.eql(u8, value, "propose_and_task")) return .propose_and_task;
     return .propose;
+}
+
+fn modeFromCapability(profile: ai.tools.CapabilityProfile) ai.tools.Mode {
+    return switch (profile) {
+        .read_only => .ask,
+        .propose, .propose_and_task => .agent,
+    };
 }

@@ -81,7 +81,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     const ctx_scroll = wb.agent.context_inspector_scroll_y;
     const ctx_has_detail = ctx_selected != null and snap.context_inspector_expanded;
     wb.agent.unlock();
-    const strip_top = context_inspector.stripTop(h, snap.context_inspector_expanded, visible_entries, snap.attachment_count, agent_w, &wb.prompt_buffer, ctx_has_detail);
+    const strip_top = context_inspector.stripTop(h, snap.context_inspector_expanded, visible_entries, snap.attachment_count, agent_w, &wb.prompt_buffer, ctx_has_detail, snap.has_routing_preview);
     const chat_bottom = strip_top - 4;
 
     const chat_top = agent_panel.chat_content_top + 8.0;

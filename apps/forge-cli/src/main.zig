@@ -158,6 +158,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --model <name>       Model id (default: gemini-2.5-flash or qwen2.5-coder:7b for ollama)
         \\  --budget-bytes <n>   Context byte budget for forge context (default: 1MiB)
         \\  --capability <name>  Agent capability: read_only|propose|propose_and_task
+        \\  --mode <name>        Routing mode for forge context: ask|plan|agent
         \\  --once               Single watch poll (for tests)
         \\  --max-polls <n>      Limit watch polling iterations
         \\  --max-steps <n>      Limit agent steps (default: 8)

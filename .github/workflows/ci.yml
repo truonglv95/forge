@@ -36,6 +36,12 @@ jobs:
           zig build
           ./scripts/eval_reliability.sh --provider fake --min-success-rate 0.66
 
+      - name: Routing policy eval
+        run: |
+          zig build
+          chmod +x ./scripts/eval_routing.sh
+          ./scripts/eval_routing.sh
+
       - name: Smoke test CLI
         run: |
           zig build run -- version

@@ -3,6 +3,8 @@ const workspace = @import("forge-workspace");
 const kernel = @import("forge-kernel");
 const provider_factory = @import("provider_factory.zig");
 const context_loader = @import("context_loader.zig");
+const routing = @import("routing.zig");
+const tools = @import("tools.zig");
 const planner = @import("planner.zig");
 const multimodal = @import("multimodal.zig");
 const progress = @import("progress.zig");
@@ -97,7 +99,14 @@ pub fn generateAndPersist(
     };
     defer provider_handle.deinit();
 
-    var ctx_builder = context_loader.build(allocator, io, root, .{
+    const route = routing.plan(.{
+        .mode = switch (options.mode) {
+            .ask => tools.Mode.ask,
+            .plan => tools.Mode.plan,
+        },
+        .intent = intent,
+        .has_active_file = options.active_file != null,
+    }, .{
         .intent = intent,
         .explicit_files = files,
         .include_project_rules = options.include_project_rules,
@@ -105,8 +114,21 @@ pub fn generateAndPersist(
         .attachments = options.attachments,
         .workspace_cwd = options.workspace_cwd,
         .recent_files = options.recent_files,
-    }) catch return error.ProviderFailed;
+    });
+    var ctx_builder = context_loader.build(allocator, io, root, route.context) catch return error.ProviderFailed;
     defer ctx_builder.deinit();
+    {
+        var routing_buf: [128]u8 = undefined;
+        const summary = routing.formatRoutingSummary(&routing_buf, .{
+            .mode = switch (options.mode) {
+                .ask => tools.Mode.ask,
+                .plan => tools.Mode.plan,
+            },
+            .intent = intent,
+            .has_active_file = options.active_file != null,
+        }, route);
+        ctx_builder.addBlock(.intent, "routing", summary) catch {};
+    }
     emitProgress(options, .context_built);
 
     const timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();

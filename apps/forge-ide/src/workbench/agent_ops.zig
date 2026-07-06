@@ -364,7 +364,8 @@ pub fn scrollChatToEnd(wb: anytype, agent_h: f32) void {
     const has_detail = wb.agent.context_selected_index != null and expanded;
     const attachment_count = wb.agent.attachments.items.len;
     wb.agent.unlock();
-    const bottom = agent_panel_mod.bottomReserved(attachment_count, wb.agent_panel_width, &wb.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail);
+    const has_routing = wb.agent.hasRoutingPreview();
+    const bottom = agent_panel_mod.bottomReserved(attachment_count, wb.agent_panel_width, &wb.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail, has_routing);
     const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
     const content_h = @as(f32, @floatFromInt(estimated_lines)) * chat_bubble_mod.line_h;
     wb.chat_scroll_y = @max(0, content_h - viewport);

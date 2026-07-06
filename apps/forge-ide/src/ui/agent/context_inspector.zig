@@ -34,8 +34,9 @@ pub fn stripTop(
     agent_w: f32,
     prompt: *const @import("forge-editor").Buffer,
     has_detail: bool,
+    has_routing: bool,
 ) f32 {
-    return composerTop(window_h, attachment_count, agent_w, prompt) - stripHeight(expanded, entry_count, has_detail) - strip_gap;
+    return composerTop(window_h, attachment_count, agent_w, prompt) - stripHeight(expanded, entry_count, has_detail, has_routing) - strip_gap;
 }
 
 pub const ToggleRect = struct {
@@ -49,11 +50,19 @@ pub const ToggleRect = struct {
     }
 };
 
-pub fn stripHeight(expanded: bool, entry_count: usize, has_detail: bool) f32 {
-    if (entry_count == 0) return header_h;
-    if (!expanded) return header_h + pill_h + 6;
+pub const routing_row_h: f32 = 14;
+
+pub fn stripHeight(expanded: bool, entry_count: usize, has_detail: bool, has_routing: bool) f32 {
+    if (entry_count == 0 and !has_routing) return header_h;
+    if (entry_count == 0) return header_h + routing_row_h + 4;
+    if (!expanded) {
+        var h = header_h + pill_h + 6;
+        if (has_routing) h += routing_row_h + 2;
+        return h;
+    }
     const rows = @min(entry_count, max_visible_rows);
     var h = header_h + pill_h + 6 + @as(f32, @floatFromInt(rows)) * row_h + 8;
+    if (has_routing) h += routing_row_h + 2;
     if (has_detail) h += detail_h + 4;
     return h;
 }
@@ -66,7 +75,7 @@ pub fn toggleRect(
     attachment_count: usize,
     prompt: *const @import("forge-editor").Buffer,
 ) ToggleRect {
-    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false);
+    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false, false);
     return .{
         .x = agent_x + 10,
         .y = top,
@@ -86,7 +95,7 @@ pub fn hitToggle(
     x: f32,
     y: f32,
 ) bool {
-    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, has_detail);
+    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, has_detail, false);
     return x >= agent_x + 10 and x < agent_x + agent_w - 10 and y >= top and y < top + header_h;
 }
 
@@ -104,7 +113,7 @@ pub fn hitEntryRow(
     if (entry_count == 0) return null;
     const pad: f32 = 10;
     const inner_x = agent_x + pad + 10;
-    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false);
+    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false, false);
     const list_top = top + header_h + pill_h + 8 - scroll_y;
     if (x < inner_x or x > agent_x + agent_w - pad) return null;
     const rel = y - list_top;
@@ -182,14 +191,18 @@ pub fn draw(
     agent.lock();
     const has_scope = agent.scope_files.items.len > 0;
     const has_detail = selected_index != null and expanded;
+    const has_routing = agent.routing_task_intent.len > 0;
+    const routing_task = agent.routing_task_intent;
+    const routing_profile = agent.routing_profile;
+    const routing_tools = agent.routing_tools;
     agent.unlock();
-    if (entry_count == 0 and used_bytes == 0 and !has_scope) return;
+    if (entry_count == 0 and used_bytes == 0 and !has_scope and !has_routing) return;
 
     const pad: f32 = 10;
     const inner_x = agent_x + pad + 10;
     const content_w = agent_w - pad * 2 - 20;
-    const top = stripTop(window_h, expanded, entry_count, attachment_count, agent_w, prompt, has_detail);
-    const height = stripHeight(expanded, entry_count, has_detail);
+    const top = stripTop(window_h, expanded, entry_count, attachment_count, agent_w, prompt, has_detail, has_routing);
+    const height = stripHeight(expanded, entry_count, has_detail, has_routing);
 
     renderer.Renderer.drawRoundedRect(agent_x + pad, top, agent_w - pad * 2, height, 8, .{
         .r = 0.11,
@@ -236,8 +249,24 @@ pub fn draw(
         });
     }
 
+    if (has_routing) {
+        var route_buf: [384:0]u8 = undefined;
+        const route_line = std.fmt.bufPrint(&route_buf, "Route: {s} · {s} · tools: {s}", .{
+            routing_task,
+            routing_profile,
+            routing_tools,
+        }) catch "Route unavailable";
+        route_buf[route_line.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&route_buf), inner_x, top + header_h + 2, 9.5, .{
+            .r = 0.62,
+            .g = 0.82,
+            .b = 0.72,
+            .a = 1.0,
+        });
+    }
+
     var pill_x = inner_x;
-    const pill_y = top + header_h + 2;
+    const pill_y = top + header_h + 2 + if (has_routing) routing_row_h + 2 else 0;
     agent.lock();
     defer agent.unlock();
 

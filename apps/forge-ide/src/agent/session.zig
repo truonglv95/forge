@@ -132,6 +132,10 @@ pub const Session = struct {
     resume_state: ?[]const u8 = null,
     resume_proposal_path: ?[]const u8 = null,
 
+    routing_task_intent: []const u8 = "",
+    routing_profile: []const u8 = "",
+    routing_tools: []const u8 = "",
+
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Session {
         return .{
             .allocator = allocator,
@@ -188,6 +192,7 @@ pub const Session = struct {
         self.agent_steps.deinit(self.allocator);
         if (self.status_line.len > 0) self.allocator.free(self.status_line);
         if (self.provider_label.len > 0) self.allocator.free(self.provider_label);
+        self.clearRoutingPreviewUnlocked();
         self.unlock();
         self.approval_condition.deinit();
         self.mutex.deinit();
@@ -422,6 +427,42 @@ pub const Session = struct {
         self.context_used_bytes = used_bytes;
         self.context_max_bytes = max_bytes;
         self.context_entries = entries;
+    }
+
+    fn clearRoutingPreviewUnlocked(self: *Session) void {
+        if (self.routing_task_intent.len > 0) self.allocator.free(self.routing_task_intent);
+        if (self.routing_profile.len > 0) self.allocator.free(self.routing_profile);
+        if (self.routing_tools.len > 0) self.allocator.free(self.routing_tools);
+        self.routing_task_intent = "";
+        self.routing_profile = "";
+        self.routing_tools = "";
+    }
+
+    pub fn setRoutingPreview(
+        self: *Session,
+        task_intent: []const u8,
+        profile: []const u8,
+        tools_summary: []const u8,
+    ) !void {
+        const task_owned = try self.allocator.dupe(u8, task_intent);
+        errdefer self.allocator.free(task_owned);
+        const profile_owned = try self.allocator.dupe(u8, profile);
+        errdefer self.allocator.free(profile_owned);
+        const tools_owned = try self.allocator.dupe(u8, tools_summary);
+        errdefer self.allocator.free(tools_owned);
+
+        self.lock();
+        defer self.unlock();
+        self.clearRoutingPreviewUnlocked();
+        self.routing_task_intent = task_owned;
+        self.routing_profile = profile_owned;
+        self.routing_tools = tools_owned;
+    }
+
+    pub fn hasRoutingPreview(self: *Session) bool {
+        self.lock();
+        defer self.unlock();
+        return self.routing_task_intent.len > 0;
     }
 
     pub fn toggleContextInspector(self: *Session) void {
@@ -681,6 +722,10 @@ pub const Session = struct {
         resume_intent: ?[]const u8,
         resume_state: ?[]const u8,
         validation_failed: bool,
+        routing_task_intent: []const u8,
+        routing_profile: []const u8,
+        routing_tools: []const u8,
+        has_routing_preview: bool,
     } {
         self.lock();
         defer self.unlock();
@@ -720,6 +765,10 @@ pub const Session = struct {
             .resume_intent = self.resume_intent,
             .resume_state = self.resume_state,
             .validation_failed = self.phase == .failed and self.post_apply_visible,
+            .routing_task_intent = self.routing_task_intent,
+            .routing_profile = self.routing_profile,
+            .routing_tools = self.routing_tools,
+            .has_routing_preview = self.routing_task_intent.len > 0,
         };
     }
 };
