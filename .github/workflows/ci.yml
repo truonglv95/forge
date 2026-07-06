@@ -34,7 +34,7 @@ jobs:
       - name: Agent reliability eval (fake)
         run: |
           zig build
-          ./scripts/eval_reliability.sh --provider fake --min-success-rate 0.66
+          ./scripts/eval_reliability.sh --provider fake --min-success-rate 1.0
 
       - name: Routing policy eval
         run: |

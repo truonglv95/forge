@@ -29,6 +29,7 @@ pub const Config = struct {
     mcp_enabled: bool = true,
     explicit_files: []const []const u8 = &.{},
     active_file: ?[]const u8 = null,
+    has_selection: bool = false,
     attachments: []const context_loader.AttachmentInput = &.{},
     conversation: []const conversation.Turn = &.{},
     recent_files: []const []const u8 = &.{},
@@ -128,6 +129,7 @@ pub fn run(
         .mode = config.mode,
         .intent = intent,
         .has_active_file = config.active_file != null,
+        .has_selection = config.has_selection,
     }, .{
         .intent = intent,
         .explicit_files = config.explicit_files,
@@ -146,6 +148,7 @@ pub fn run(
             .mode = config.mode,
             .intent = intent,
             .has_active_file = config.active_file != null,
+            .has_selection = config.has_selection,
         }, route);
         ctx_builder.addBlock(.intent, "routing", summary) catch {};
     }
