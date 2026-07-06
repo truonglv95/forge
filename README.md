@@ -8,9 +8,11 @@ reviewing diffs, and running validation—but the developer always makes the fin
 decision.
 
 > [!IMPORTANT]
-> Forge is currently in the foundation stage (pre-alpha). The repository has a
-> working monorepo build, tested package boundaries, and an initial CLI; there is
-> no usable IDE or AI workflow yet.
+> Forge is an active pre-alpha with a native IDE, headless CLI, workspace
+> transactions, AI proposal workflows, LSP, terminal/debug tooling, MCP, and an
+> experimental extension runtime. Feature breadth is ahead of verification; see
+> the [Capability Matrix](docs/CAPABILITY_MATRIX.md) before treating a subsystem
+> as dogfood-ready.
 
 ## North star
 
@@ -29,13 +31,13 @@ editor buffer or filesystem.
 
 | Milestone | Goal | Status |
 |---|---|---|
-| M0 | Foundation and renderer decision | In progress |
-| M1 | Safe shared workspace and execution engine | Not started |
-| M2 | Deterministic headless CLI vertical slice | Not started |
-| M3 | AI-assisted CLI proof | Not started |
-| M4 | Native IDE editing foundation | Not started |
-| M5 | AI-first IDE vertical slice | Not started |
-| M6 | Language intelligence and dogfood alpha | Not started |
+| M0 | Foundation and renderer decision | Implemented; audit pending |
+| M1 | Safe shared workspace and execution engine | Implemented; hardening |
+| M2 | Deterministic headless CLI vertical slice | Implemented; verification |
+| M3 | AI-assisted CLI proof | Implemented; evaluation pending |
+| M4 | Native IDE editing foundation | Implemented; hardening |
+| M5 | AI-first IDE vertical slice | Implemented; parity pending |
+| M6 | Language intelligence and dogfood alpha | In progress |
 | M7 | Beta hardening and extensibility decision | Not started |
 
 See the [Project Roadmap](docs/roadmap/ROADMAP.md) for detailed checklists and
@@ -85,11 +87,9 @@ zig build test
 zig build run
 ```
 
-The CLI currently provides the foundation commands:
+The CLI exposes workspace, transaction, AI, agent, and extension commands:
 
 ```bash
-zig build run -- version
-zig build run -- doctor
 zig build run -- help
 ```
 
@@ -115,6 +115,7 @@ To verify the complete local foundation in one command, run:
 - [Commit convention](docs/COMMIT_CONVENTION.md)
 - [Project vision](docs/PROJECT_VISION.md)
 - [Delivery roadmap](docs/roadmap/ROADMAP.md)
+- [Capability matrix](docs/CAPABILITY_MATRIX.md)
 - [RFC-0001: project structure](docs/rfc/RFC-0001-project-structure.md)
 - [RFC-0002: runtime ownership](docs/rfc/RFC-0002-runtime-ownership.md)
 - [RFC-0003: commands, events, and workspace edits](docs/rfc/RFC-0003-commands-events-workspace-edits.md)

@@ -171,19 +171,13 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
         .label = "pre-apply",
     }) catch return error.ProviderFailed;
 
-    var service = workspace.TransactionService.init(host.allocator, host.io, host.workspace_root);
-    const tx_id = workspace.history.nextTransactionId(host.allocator, host.io, host.workspace_root) catch return error.ProviderFailed;
-
-    var record = workspace.TransactionRecord{
-        .id = tx_id,
-        .state = .approved,
-        .workspace_edit = workspace_edit,
-        .timestamp_ms = std.Io.Timestamp.now(host.io, .real).toMilliseconds(),
-    };
-    defer service.freeRecord(&record);
-
-    service.apply(&record) catch return error.ProviderFailed;
-    workspace.history.persistApplied(host.allocator, host.io, host.workspace_root, &record, proposal_rel) catch return error.ProviderFailed;
+    const tx_id = workspace.execution.applyApproved(
+        host.allocator,
+        host.io,
+        host.workspace_root,
+        workspace_edit,
+        proposal_rel,
+    ) catch return error.ProviderFailed;
     workspace.checkpoint.linkTransaction(host.io, host.workspace_root, checkpoint_id, tx_id) catch {};
 
     if (host.agent.run_id) |run_id| {
@@ -197,6 +191,7 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
     host.agent.phase = .done;
     if (host.agent.status_line.len > 0) host.allocator.free(host.agent.status_line);
     host.agent.status_line = host.allocator.dupe(u8, "Applied successfully") catch "";
+    host.agent.showPostApplyBanner();
     host.agent.unlock();
 
     host.refresh_explorer(host.context);
@@ -249,8 +244,10 @@ pub fn rollbackLastCheckpoint(host: *const Host) AgentError!void {
 
     host.agent.lock();
     host.agent.phase = .done;
+    host.agent.post_apply_visible = false;
     if (host.agent.status_line.len > 0) host.allocator.free(host.agent.status_line);
     host.agent.status_line = host.allocator.dupe(u8, "Checkpoint restored") catch "";
+    host.agent.last_checkpoint_id = null;
     host.agent.unlock();
 
     host.refresh_explorer(host.context);
@@ -301,8 +298,18 @@ pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
     }
 
     const validation = ai.validation_runner.runTasks(host.allocator, host.workspace_path, proposal.metadata.validation_tasks) catch null;
+    host.agent.clearValidationResultsUnlocked();
     if (validation) |results| {
         defer ai.validation_runner.freeResults(host.allocator, results);
+        for (results) |item| {
+            try host.agent.validation_results.append(host.allocator, .{
+                .task = try host.allocator.dupe(u8, item.task),
+                .exit_code = item.exit_code,
+                .output = try host.allocator.dupe(u8, item.output),
+                .skipped = item.skipped,
+            });
+        }
+
         if (ai.validation_runner.formatLines(host.allocator, results)) |report| {
             defer host.allocator.free(report);
             var line_it = std.mem.splitScalar(u8, report, '\n');
@@ -318,6 +325,7 @@ pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
     host.agent.show_review = true;
     host.agent.phase = .reviewing;
     host.agent.review_scroll_y = 0;
+    host.agent.post_apply_visible = false;
 
     if (host.agent.run_id) |run_id| {
         workspace.runs.updateRunState(host.allocator, host.io, host.workspace_root, run_id, "reviewing", null) catch {};

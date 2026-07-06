@@ -186,6 +186,7 @@ test "resolve expands folder scope" {
     defer tmp.cleanup();
     const root = workspace.WorkspaceRoot.init(tmp.dir);
 
+    try tmp.dir.createDirPath(io, "src");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/a.zig"), "a");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/b.zig"), "b");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("other.zig"), "c");
@@ -205,6 +206,7 @@ test "resolve folder scope then explicit file reuses seen safely" {
     defer tmp.cleanup();
     const root = workspace.WorkspaceRoot.init(tmp.dir);
 
+    try tmp.dir.createDirPath(io, "src");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/a.zig"), "a");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/b.zig"), "b");
 

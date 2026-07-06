@@ -49,6 +49,7 @@ pub fn drawBubble(
     text: []const u8,
     style: BubbleStyle,
 ) f32 {
+    if (text.len == 0 and (title == null or title.?.len == 0)) return 0;
     const with_title = title != null and title.?.len > 0;
     const height = bubbleHeight(text, content_w, with_title);
     const bubble_x = agent_x + 10;
@@ -78,18 +79,74 @@ pub fn drawBubble(
     return height + bubble_gap;
 }
 
+pub fn plainMessageHeight(text: []const u8, content_w: f32) f32 {
+    if (text.len == 0) return 0;
+    return chat_markdown.contentHeight(text, content_w) + bubble_gap;
+}
+
+pub fn drawPlainMessage(
+    allocator: std.mem.Allocator,
+    inner_x: f32,
+    content_w: f32,
+    y: f32,
+    text: []const u8,
+    style: chat_markdown.Style,
+) f32 {
+    if (text.len == 0) return 0;
+    const drawn = chat_markdown.drawContent(allocator, text, inner_x, y, content_w, style) catch 0;
+    return drawn + bubble_gap;
+}
+
+pub const agent_text_style = chat_markdown.Style{
+    .fg = .{ .r = 0.86, .g = 0.88, .b = 0.92, .a = 1.0 },
+    .bold_fg = .{ .r = 0.95, .g = 0.96, .b = 0.98, .a = 1.0 },
+    .inline_code_fg = .{ .r = 0.82, .g = 0.9, .b = 0.98, .a = 1.0 },
+    .code_block_fg = .{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 },
+};
+
+pub const thinking_text_style = chat_markdown.Style{
+    .fg = .{ .r = 0.58, .g = 0.62, .b = 0.7, .a = 1.0 },
+    .bold_fg = .{ .r = 0.68, .g = 0.72, .b = 0.8, .a = 1.0 },
+    .inline_code_fg = .{ .r = 0.65, .g = 0.72, .b = 0.82, .a = 1.0 },
+    .code_block_fg = .{ .r = 0.7, .g = 0.74, .b = 0.8, .a = 1.0 },
+    .code_block_bg = .{ .r = 0.12, .g = 0.13, .b = 0.16, .a = 1.0 },
+};
+
+pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8) f32 {
+    if (text.len == 0) return 0;
+    var label_buf: [320:0]u8 = undefined;
+    const clipped = if (text.len > 280) text[0..280] else text;
+    const line = std.fmt.bufPrint(&label_buf, "Thinking: {s}", .{clipped}) catch clipped;
+    label_buf[@min(line.len, label_buf.len - 1)] = 0;
+    renderer.Renderer.drawText(@ptrCast(&label_buf), inner_x, y, 11.0, thinking_text_style.fg);
+    return line_h + bubble_gap;
+}
+
+pub fn drawStatusLine(inner_x: f32, y: f32, text: []const u8) f32 {
+    if (text.len == 0) return 0;
+    var buf: [256:0]u8 = undefined;
+    const n = @min(text.len, buf.len - 1);
+    @memcpy(buf[0..n], text[0..n]);
+    buf[n] = 0;
+    renderer.Renderer.drawText(@ptrCast(&buf), inner_x, y, 11.0, thinking_text_style.fg);
+    return line_h + bubble_gap;
+}
+
+pub fn historyMessageHeight(is_user: bool, text: []const u8, content_w: f32) f32 {
+    if (text.len == 0) return 0;
+    if (is_user) return bubbleHeight(text, content_w, false) + bubble_gap;
+    return plainMessageHeight(text, content_w);
+}
+
 pub fn estimateLiveLines(thinking: []const u8, stream: []const u8, worker_running: bool, content_w: f32) usize {
     var total: usize = 0;
-    const inner_w = textMaxWidth(content_w);
     if (thinking.len > 0) {
-        total += visualLineCount(thinking, content_w) + 2;
-    } else if (stream.len == 0 and worker_running) {
         total += 2;
+    } else if (stream.len == 0 and worker_running) {
+        total += 1;
     }
     if (stream.len > 0) {
-        total += @max(1, @as(usize, @intFromFloat(std.math.ceil(
-            chat_markdown.contentHeight(stream, inner_w) / line_h,
-        )))) + 2;
+        total += visualLineCount(stream, content_w) + 1;
     }
     return total;
 }

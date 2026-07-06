@@ -47,6 +47,13 @@ pub const ContextEntry = struct {
     reason: ?[]const u8 = null,
 };
 
+pub const ValidationResult = struct {
+    task: []const u8,
+    exit_code: i32,
+    output: []const u8,
+    skipped: bool = false,
+};
+
 pub const AgentStep = struct {
     index: u32,
     kind: []const u8,
@@ -75,6 +82,10 @@ pub const Session = struct {
     context_used_bytes: usize = 0,
     context_max_bytes: usize = 1024 * 1024,
     context_inspector_expanded: bool = true,
+    context_inspector_scroll_y: f32 = 0,
+    context_selected_index: ?usize = null,
+    validation_results: std.ArrayList(ValidationResult),
+    post_apply_visible: bool = false,
     diff_lines: std.ArrayList([]const u8),
     review: review_store.Store = .{},
     run_history: std.ArrayList(RunEntry),
@@ -107,6 +118,7 @@ pub const Session = struct {
             .io = io,
             .context_lines = .empty,
             .context_entries = .empty,
+            .validation_results = .empty,
             .diff_lines = .empty,
             .run_history = .empty,
             .scope_files = .empty,
@@ -129,7 +141,9 @@ pub const Session = struct {
         self.clearProposalStateUnlocked();
         self.freeLinesUnlocked(&self.context_lines);
         self.clearContextEntriesUnlocked();
+        self.clearValidationResultsUnlocked();
         self.context_entries.deinit(self.allocator);
+        self.validation_results.deinit(self.allocator);
         self.freeLinesUnlocked(&self.diff_lines);
         self.context_lines.deinit(self.allocator);
         self.diff_lines.deinit(self.allocator);
@@ -359,6 +373,41 @@ pub const Session = struct {
         self.lock();
         defer self.unlock();
         self.context_inspector_expanded = !self.context_inspector_expanded;
+        if (!self.context_inspector_expanded) self.context_selected_index = null;
+    }
+
+    pub fn clearValidationResultsUnlocked(self: *Session) void {
+        for (self.validation_results.items) |item| {
+            self.allocator.free(item.task);
+            self.allocator.free(item.output);
+        }
+        self.validation_results.clearRetainingCapacity();
+    }
+
+    pub fn setValidationResults(self: *Session, results: []ValidationResult) !void {
+        self.lock();
+        defer self.unlock();
+        self.clearValidationResultsUnlocked();
+        for (results) |item| {
+            try self.validation_results.append(self.allocator, .{
+                .task = try self.allocator.dupe(u8, item.task),
+                .exit_code = item.exit_code,
+                .output = try self.allocator.dupe(u8, item.output),
+                .skipped = item.skipped,
+            });
+        }
+    }
+
+    pub fn dismissPostApplyBanner(self: *Session) void {
+        self.lock();
+        defer self.unlock();
+        self.post_apply_visible = false;
+    }
+
+    pub fn showPostApplyBanner(self: *Session) void {
+        self.lock();
+        defer self.unlock();
+        self.post_apply_visible = true;
     }
 
     fn freeLinesUnlocked(self: *Session, list: *std.ArrayList([]const u8)) void {
@@ -379,12 +428,14 @@ pub const Session = struct {
         self.run_active_file = null;
         self.show_review = false;
         self.review_scroll_y = 0;
+        self.post_apply_visible = false;
         self.last_transaction_id = null;
         self.stream_text.clearRetainingCapacity();
         self.thinking_text.clearRetainingCapacity();
         self.stream_live = false;
         self.clearAgentStepsUnlocked();
         self.freeLinesUnlocked(&self.diff_lines);
+        self.clearValidationResultsUnlocked();
         self.review.clear(self.allocator);
     }
 
@@ -468,6 +519,8 @@ pub const Session = struct {
         context_used_bytes: usize,
         context_max_bytes: usize,
         context_inspector_expanded: bool,
+        post_apply_visible: bool,
+        validation_count: usize,
         spec_pending: bool,
         last_checkpoint_id: ?u64,
     } {
@@ -498,6 +551,8 @@ pub const Session = struct {
             .context_used_bytes = self.context_used_bytes,
             .context_max_bytes = self.context_max_bytes,
             .context_inspector_expanded = self.context_inspector_expanded,
+            .post_apply_visible = self.post_apply_visible,
+            .validation_count = self.validation_results.items.len,
             .spec_pending = self.spec_pending,
             .last_checkpoint_id = self.last_checkpoint_id,
         };

@@ -2,7 +2,6 @@ const std = @import("std");
 const workspace = @import("forge-workspace");
 const kernel = @import("forge-kernel");
 const tools = @import("tools.zig");
-const builtin = @import("builtin");
 const codebase_search = @import("codebase_search.zig");
 const context_rerank = @import("context_rerank.zig");
 const context_retrieval = @import("context_retrieval.zig");
@@ -198,17 +197,7 @@ pub fn readFile(ctx: Context, rel_path: []const u8) AgentToolError!Outcome {
 pub fn runCommand(ctx: Context, command: []const u8) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .run_command);
-    if (!isAllowedCommand(command)) return error.NotAllowed;
-
-    var shell_argv: [3][]const u8 = undefined;
-    const argv = blk: {
-        if (builtin.os.tag == .windows) {
-            shell_argv = .{ "cmd", "/c", command };
-        } else {
-            shell_argv = .{ "sh", "-c", command };
-        }
-        break :blk &shell_argv;
-    };
+    const argv = allowedCommandArgv(command) orelse return error.NotAllowed;
 
     const captured = kernel.process.runCapture(ctx.allocator, .{
         .argv = argv,
@@ -238,25 +227,20 @@ pub fn replaceFileContent(ctx: Context, path: []const u8, start_line: usize, end
     return .{ .summary = summary };
 }
 
-fn isAllowedCommand(command: []const u8) bool {
-    const allowed_prefixes = [_][]const u8{
-        "zig build",
-        "zig fmt",
-        "git status",
-        "git diff",
-        "git log",
-        "ls",
-        "pwd",
-        "cat ",
-        "head ",
-        "tail ",
-        "wc ",
-        "find ",
-    };
-    for (allowed_prefixes) |prefix| {
-        if (std.mem.startsWith(u8, command, prefix)) return true;
-    }
-    return false;
+/// Maps a deliberately small set of read-only or validation commands to argv.
+/// Never pass model text through a shell: prefix checks do not prevent command
+/// separators, substitutions, redirects, or path traversal.
+fn allowedCommandArgv(command: []const u8) ?[]const []const u8 {
+    if (std.mem.eql(u8, command, "zig build")) return &.{ "zig", "build" };
+    if (std.mem.eql(u8, command, "zig build test")) return &.{ "zig", "build", "test" };
+    if (std.mem.eql(u8, command, "zig fmt --check .")) return &.{ "zig", "fmt", "--check", "." };
+    if (std.mem.eql(u8, command, "git status")) return &.{ "git", "status" };
+    if (std.mem.eql(u8, command, "git status --short")) return &.{ "git", "status", "--short" };
+    if (std.mem.eql(u8, command, "git diff")) return &.{ "git", "--no-pager", "diff", "--no-ext-diff" };
+    if (std.mem.eql(u8, command, "git diff --stat")) return &.{ "git", "--no-pager", "diff", "--no-ext-diff", "--stat" };
+    if (std.mem.eql(u8, command, "git log --oneline")) return &.{ "git", "--no-pager", "log", "--oneline" };
+    if (std.mem.eql(u8, command, "pwd")) return &.{"pwd"};
+    return null;
 }
 
 pub fn runTask(ctx: Context, task_name: []const u8) AgentToolError!Outcome {
@@ -338,4 +322,19 @@ test "tool executor codebase_search returns semantic hits" {
 
     try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "reranked hits") != null);
     try std.testing.expect(outcome.formatted != null);
+}
+
+test "run command allowlist produces argv without a shell" {
+    const argv = allowedCommandArgv("git diff --stat").?;
+    try std.testing.expectEqualStrings("git", argv[0]);
+    try std.testing.expectEqualStrings("--no-pager", argv[1]);
+    for (argv) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "sh"));
+}
+
+test "run command rejects shell injection and path-reading commands" {
+    try std.testing.expect(allowedCommandArgv("git status; rm -rf .") == null);
+    try std.testing.expect(allowedCommandArgv("git status && echo exposed") == null);
+    try std.testing.expect(allowedCommandArgv("git diff $(touch owned)") == null);
+    try std.testing.expect(allowedCommandArgv("cat ../../.ssh/id_rsa") == null);
+    try std.testing.expect(allowedCommandArgv("find . -exec sh {} ;") == null);
 }

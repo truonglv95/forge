@@ -46,7 +46,7 @@ const session_restore_mod = @import("workbench/session_restore.zig");
 const chat_persistence_mod = @import("workbench/chat_persistence.zig");
 const agent_ui_queue_mod = @import("workbench/agent_ui_queue.zig");
 
-pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, ai_settings, terminal, palette, conflict, recovery, find, goto_line, rename };
+pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, ai_settings, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename };
 pub const EditorPane = enum { primary, secondary };
 pub const ChatRole = enum { user, agent };
 pub const ChatMessage = struct {
@@ -129,6 +129,9 @@ pub const Workbench = struct {
     extensions_scroll_y: f32 = 0,
     ai_settings_scroll_y: f32 = 0,
     ai_settings_open: bool = false,
+    proposal_review_open: bool = false,
+    proposal_review_scroll_y: f32 = 0,
+    proposal_review_file_index: usize = 0,
     ai_mcp_status: ?[]const u8 = null,
     sidebar_view: @import("ui/sidebar_view.zig").SidebarView = .explorer,
     selected_extension_index: ?usize = null,
@@ -688,6 +691,7 @@ pub const Workbench = struct {
             },
             .agent_apply => {
                 const tx_id = try agent_workflow.applyCurrentProposal(&self.agentHost());
+                self.closeProposalReview();
                 var buf: [64]u8 = undefined;
                 const msg = try std.fmt.bufPrint(&buf, "Applied transaction {d}", .{tx_id});
                 try self.setStatus(msg);
@@ -695,8 +699,13 @@ pub const Workbench = struct {
             },
             .agent_rollback => {
                 try agent_workflow.rollbackLastCheckpoint(&self.agentHost());
+                self.closeProposalReview();
                 try self.appendChat(.agent, "Rolled back to pre-apply checkpoint.");
                 try self.setStatus("Checkpoint restored");
+            },
+            .agent_dismiss_apply => {
+                self.agent.dismissPostApplyBanner();
+                try self.setStatus("Changes kept");
             },
             .agent_approve_spec => {
                 try agent_workflow.approveSpecAndGenerate(&self.agentHost());
@@ -704,6 +713,7 @@ pub const Workbench = struct {
             },
             .agent_reject => {
                 agent_workflow.rejectCurrentProposal(&self.agentHost());
+                self.closeProposalReview();
                 try self.appendChat(.agent, "Proposal rejected.");
                 try self.setStatus("Proposal rejected");
             },
@@ -731,6 +741,7 @@ pub const Workbench = struct {
                 self.agent.unlock();
                 if (self.agent.proposal_rel) |rel| {
                     agent_workflow.loadProposalPreview(&self.agentHost(), rel) catch {};
+                    self.openProposalReview();
                 }
             },
             .agent_refresh_runs => try agent_workflow.refreshRunHistory(&self.agentHost()),
@@ -902,6 +913,7 @@ pub const Workbench = struct {
             .nav_forward => try self.navForward(),
             .open_ai_settings => try self.openAiSettings(),
             .close_ai_settings => self.closeAiSettings(),
+            .close_proposal_review => self.closeProposalReview(),
         }
     }
 
@@ -1027,6 +1039,58 @@ pub const Workbench = struct {
             self.focused_panel = if (self.previous_focus == .ai_settings) .editor else self.previous_focus;
         }
         if (self.sidebar_view == .ai) self.sidebar_view = .explorer;
+    }
+
+    pub fn openProposalReview(self: *Workbench) void {
+        if (!self.proposal_review_open) {
+            self.previous_focus = self.focused_panel;
+        }
+        self.proposal_review_open = true;
+        self.proposal_review_scroll_y = 0;
+        self.proposal_review_file_index = 0;
+        self.focused_panel = .proposal_review;
+    }
+
+    pub fn closeProposalReview(self: *Workbench) void {
+        self.proposal_review_open = false;
+        if (self.focused_panel == .proposal_review) {
+            self.focused_panel = if (self.previous_focus == .proposal_review) .agent else self.previous_focus;
+        }
+    }
+
+    pub fn handleProposalReviewClick(self: *Workbench, hit: @import("ui/proposal_review_panel.zig").Hit) !void {
+        switch (hit) {
+            .close_tab => self.closeProposalReview(),
+            .select_file => |index| {
+                self.proposal_review_file_index = index;
+                self.proposal_review_scroll_y = 0;
+            },
+            .toggle_hunk => |index| {
+                self.agent.lock();
+                self.agent.review.toggle(index);
+                self.agent.unlock();
+            },
+            .apply => try self.dispatch(.agent_apply),
+            .reject => try self.dispatch(.agent_reject),
+        }
+    }
+
+    pub fn clampProposalReviewScroll(self: *Workbench, editor_h: f32) void {
+        if (!self.proposal_review_open) return;
+        self.agent.lock();
+        const hunks = self.agent.review.hunks;
+        const file_index = self.proposal_review_file_index;
+        self.agent.unlock();
+        const panel = @import("ui/proposal_review_panel.zig");
+        var files = panel.collectFiles(self.allocator, hunks) catch return;
+        defer files.deinit(self.allocator);
+        self.proposal_review_scroll_y = panel.clampScrollY(
+            self.proposal_review_scroll_y,
+            editor_h,
+            hunks,
+            file_index,
+            files.items,
+        );
     }
 
     pub fn handleAiSettingsClick(self: *Workbench, hit: @import("ui/ai_settings_panel.zig").Hit) !void {
@@ -1470,7 +1534,9 @@ pub const Workbench = struct {
         const content_w = @max(40, self.agent_panel_width - 40);
         var estimated_lines: usize = 0;
         for (self.chat_history.items) |msg| {
-            estimated_lines += chat_bubble_mod.visualLineCount(msg.content, content_w) + 1;
+            if (!agent_panel_mod.chatHasVisibleContent(msg.content)) continue;
+            const msg_h = chat_bubble_mod.historyMessageHeight(msg.role == .user, msg.content, content_w);
+            estimated_lines += @max(1, @as(usize, @intFromFloat(std.math.ceil(msg_h / chat_bubble_mod.line_h))));
         }
         self.agent.lock();
         if (self.agent.worker_running) {
@@ -1486,9 +1552,10 @@ pub const Workbench = struct {
         }
         const entry_count = self.agent.context_entries.items.len;
         const expanded = self.agent.context_inspector_expanded;
+        const has_detail = self.agent.context_selected_index != null and expanded;
         const attachment_count = self.agent.attachments.items.len;
         self.agent.unlock();
-        const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count);
+        const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail);
         const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
         self.chat_scroll_y = panel_scroll.clampScrollY(
             self.chat_scroll_y,
@@ -1506,7 +1573,9 @@ pub const Workbench = struct {
         const content_w = @max(40, self.agent_panel_width - 40);
         var estimated_lines: usize = 0;
         for (self.chat_history.items) |msg| {
-            estimated_lines += chat_bubble_mod.visualLineCount(msg.content, content_w) + 1;
+            if (!agent_panel_mod.chatHasVisibleContent(msg.content)) continue;
+            const msg_h = chat_bubble_mod.historyMessageHeight(msg.role == .user, msg.content, content_w);
+            estimated_lines += @max(1, @as(usize, @intFromFloat(std.math.ceil(msg_h / chat_bubble_mod.line_h))));
         }
         self.agent.lock();
         if (self.agent.worker_running) {
@@ -1522,9 +1591,10 @@ pub const Workbench = struct {
         }
         const entry_count = self.agent.context_entries.items.len;
         const expanded = self.agent.context_inspector_expanded;
+        const has_detail = self.agent.context_selected_index != null and expanded;
         const attachment_count = self.agent.attachments.items.len;
         self.agent.unlock();
-        const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count);
+        const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail);
         const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
         const content_h = @as(f32, @floatFromInt(estimated_lines)) * chat_bubble_mod.line_h;
         self.chat_scroll_y = @max(0, content_h - viewport);
@@ -2046,7 +2116,8 @@ pub const Workbench = struct {
 
         if (proposal_rel) |rel| {
             try agent_workflow.loadProposalPreview(&self.agentHost(), rel);
-            self.focused_panel = .agent;
+            self.openProposalReview();
+            self.focused_panel = .proposal_review;
             try self.setStatus("Proposal review opened");
             return;
         }
@@ -2640,18 +2711,30 @@ pub const Workbench = struct {
         try chat_persistence_mod.saveMessages(self.allocator, self.io, self.workspace_root, stored.items);
     }
 
+    fn isNoiseChatMessage(content: []const u8) bool {
+        return std.mem.eql(u8, content, "Forge workbench ready.") or
+            std.mem.eql(u8, content, "Try Cmd+Shift+P for command palette.");
+    }
+
     pub fn restoreChatHistory(self: *Workbench) !void {
         const loaded = try chat_persistence_mod.loadMessages(self.allocator, self.io, self.workspace_root);
         defer chat_persistence_mod.freeLoadedMessages(self.allocator, loaded);
         if (loaded.len == 0) return;
 
+        const agent_panel_mod = @import("ui/agent_panel.zig");
+
         for (self.chat_history.items) |msg| self.allocator.free(msg.content);
         self.chat_history.clearRetainingCapacity();
 
         for (loaded) |msg| {
+            if (!agent_panel_mod.chatHasVisibleContent(msg.content)) continue;
+            if (isNoiseChatMessage(msg.content)) continue;
             const role: ChatRole = if (std.mem.eql(u8, msg.role, "user")) .user else .agent;
             const owned = try self.allocator.dupeZ(u8, msg.content);
             try self.chat_history.append(self.allocator, .{ .role = role, .content = owned });
+        }
+        if (self.chat_history.items.len != loaded.len) {
+            self.persistChatHistory() catch {};
         }
         self.scrollChatToEnd(768);
     }
@@ -2995,6 +3078,7 @@ pub const Workbench = struct {
     }
 
     pub fn flushAgentUi(self: *Workbench) !void {
+        const agent_panel_mod = @import("ui/agent_panel.zig");
         const ops = try self.agent_ui_queue.takeAll(self.allocator);
         defer self.allocator.free(ops);
         const host = self.agentHost();
@@ -3037,6 +3121,7 @@ pub const Workbench = struct {
                     try agent_workflow.applyManifestText(&host, payload.manifest_text);
                     if (payload.proposal_rel.len > 0) {
                         try agent_workflow.loadProposalPreview(&host, payload.proposal_rel);
+                        self.openProposalReview();
                         try self.agent.setPhase(.proposal_ready, "Proposal ready for review");
                         try self.setStatus("Proposal ready for review");
                     } else {
@@ -3050,9 +3135,13 @@ pub const Workbench = struct {
                     }
                     try agent_workflow.refreshRunHistory(&host);
                     if (payload.plan_text) |plan| {
-                        try self.appendChat(.agent, plan);
+                        if (agent_panel_mod.chatHasVisibleContent(plan)) {
+                            try self.appendChat(.agent, plan);
+                        }
                     }
-                    try self.appendChat(.agent, payload.chat_text);
+                    if (agent_panel_mod.chatHasVisibleContent(payload.chat_text)) {
+                        try self.appendChat(.agent, payload.chat_text);
+                    }
                     self.scrollChatToEnd(768);
                 },
                 .run_failed => |payload| {
@@ -3088,6 +3177,8 @@ pub const Workbench = struct {
     }
 
     pub fn appendChat(self: *Workbench, role: ChatRole, content: []const u8) !void {
+        const agent_panel_mod = @import("ui/agent_panel.zig");
+        if (!agent_panel_mod.chatHasVisibleContent(content)) return;
         const owned = try self.allocator.dupeZ(u8, content);
         try self.chat_history.append(self.allocator, .{ .role = role, .content = owned });
         self.persistChatHistory() catch {};

@@ -81,7 +81,7 @@ pub fn run(
 
     const timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
     const session_id = workspace.sessions.makeSessionId(allocator, timestamp_ms) catch return error.WorkspaceFailed;
-    errdefer allocator.free(session_id);
+    defer allocator.free(session_id);
 
     var ctx_builder = context_loader.build(allocator, io, root, .{
         .intent = intent,
@@ -141,7 +141,7 @@ pub fn run(
         next_index = @as(u32, @intCast(steps.items.len)) + 1;
     } else {
         var first_match_path: ?[]const u8 = null;
-        errdefer if (first_match_path) |path| allocator.free(path);
+        defer if (first_match_path) |path| allocator.free(path);
 
         var search_term_buf: [128]u8 = undefined;
         const search_term = firstToken(intent, &search_term_buf);
@@ -208,7 +208,7 @@ pub fn run(
     emitProgress(config, .parsing);
 
     const run_id = run_record.makeRunId(allocator, timestamp_ms + 1) catch return error.WorkspaceFailed;
-    errdefer allocator.free(run_id);
+    defer allocator.free(run_id);
 
     const proposal_body = response.writer.buffer[0..response.writer.end];
     proposal_workflow.validateProposalBody(allocator, proposal_body) catch return error.InvalidProposal;
@@ -241,6 +241,7 @@ pub fn run(
     workspace.runs.appendIndex(allocator, io, root, index_line) catch return error.WorkspaceFailed;
 
     const propose_summary = std.fmt.allocPrint(allocator, "proposal at {s}", .{proposal_rel}) catch return error.WorkspaceFailed;
+    defer allocator.free(propose_summary);
     try appendStep(allocator, &steps, next_index, "propose", propose_summary, run_id, config);
     emitProgress(config, .proposal_ready);
 

@@ -10,6 +10,7 @@ const debug_panel = @import("debug_panel.zig");
 const git_panel = @import("git_panel.zig");
 const extensions_panel = @import("extensions_panel.zig");
 const ai_settings_panel = @import("ai_settings_panel.zig");
+const proposal_review_panel = @import("proposal_review_panel.zig");
 const header_toolbar = @import("header_toolbar.zig");
 const plugin = @import("forge-plugin");
 const explorer_scroll = @import("explorer_scroll.zig");
@@ -773,11 +774,26 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             const agent_composer_mod = @import("agent_composer.zig");
             wb.agent.lock();
             const entry_count = wb.agent.context_entries.items.len;
+            const expanded = wb.agent.context_inspector_expanded;
+            const has_detail = wb.agent.context_selected_index != null and expanded;
             const attachment_count = wb.agent.attachments.items.len;
+            const ctx_scroll = wb.agent.context_inspector_scroll_y;
             wb.agent.unlock();
-            if (context_inspector_mod.hitToggle(geo.agent_x, geo.agent_w, h, entry_count, attachment_count, &wb.prompt_buffer, event.x, event.y)) {
+            if (context_inspector_mod.hitToggle(geo.agent_x, geo.agent_w, h, entry_count, attachment_count, &wb.prompt_buffer, has_detail, event.x, event.y)) {
                 wb.dispatch(.agent_toggle_context_inspector) catch {};
                 return;
+            }
+            if (expanded) {
+                if (context_inspector_mod.hitEntryRow(geo.agent_x, geo.agent_w, h, entry_count, attachment_count, &wb.prompt_buffer, ctx_scroll, event.x, event.y)) |row| {
+                    wb.agent.lock();
+                    if (wb.agent.context_selected_index) |sel| {
+                        wb.agent.context_selected_index = if (sel == row) null else row;
+                    } else {
+                        wb.agent.context_selected_index = row;
+                    }
+                    wb.agent.unlock();
+                    return;
+                }
             }
             const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer);
             if (agent_composer_mod.hitAttachmentRemove(&wb.agent, composer_layout, event.x, event.y)) |index| {
@@ -827,7 +843,22 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             const show_approve_spec = wb.agent.spec_pending;
             const show_review = wb.agent.show_review;
             wb.agent.unlock();
-            if (show_review or show_approve_spec or show_rollback) {
+
+            wb.agent.lock();
+            const post_apply = wb.agent.post_apply_visible;
+            wb.agent.unlock();
+            if (post_apply) {
+                const banner_y = agent_panel.chat_content_top + 8 - wb.chat_scroll_y;
+                if (agent_panel.hitApplyBanner(geo.agent_x, banner_y, event.x, event.y)) |action| {
+                    switch (action) {
+                        .keep => wb.dispatch(.agent_dismiss_apply) catch {},
+                        .undo => wb.dispatch(.agent_rollback) catch {},
+                    }
+                    return;
+                }
+            }
+
+            if ((show_review and !wb.proposal_review_open) or show_approve_spec or show_rollback) {
                 if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, show_rollback, show_approve_spec, event.x, event.y)) |action| {
                     switch (action) {
                         .apply => wb.dispatch(.agent_apply) catch {},
@@ -847,15 +878,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 return;
             }
 
-            if (show_review) {
+            if (show_review and !wb.proposal_review_open) {
                 wb.agent.lock();
-                const run_count = @min(wb.agent.run_history.items.len, agent_panel.max_visible_runs);
                 const has_summary = wb.agent.summary != null;
                 const review_scroll = wb.agent.review_scroll_y;
                 wb.agent.unlock();
                 if (agent_panel.hitReviewHunk(
                     &wb.agent,
-                    run_count,
                     wb.chat_scroll_y,
                     review_scroll,
                     has_summary,
@@ -870,16 +899,15 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     return;
                 }
             }
-            wb.agent.lock();
-            const run_count = wb.agent.run_history.items.len;
-            wb.agent.unlock();
-            if (agent_panel.hitTestRun(geo.agent_x, 20, event.y, run_count)) |index| {
-                wb.dispatch(.{ .agent_select_run = index }) catch {};
-            }
         } else if (event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
         } else if (geo.shell_mode == .ide and event.x >= geo.editor_x and event.x < geo.agent_splitter_x and event.y >= tabs_ui.tab_bar_top and event.y < tabs_ui.tab_bar_top + tabs_ui.tab_bar_height) {
-            if (wb.ai_settings_open) {
+            if (wb.proposal_review_open) {
+                wb.focused_panel = .proposal_review;
+                if (proposal_review_panel.hitCloseTab(geo.editor_x, event.x, event.y)) {
+                    wb.dispatch(.close_proposal_review) catch {};
+                }
+            } else if (wb.ai_settings_open) {
                 wb.focused_panel = .ai_settings;
                 if (ai_settings_panel.hitCloseTab(geo.editor_x, event.x, event.y)) {
                     wb.dispatch(.close_ai_settings) catch {};
@@ -896,6 +924,25 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 }
             }
         } else if (geo.shell_mode == .ide and isEditorContentArea(geo, event.x, event.y)) {
+            if (wb.proposal_review_open) {
+                wb.focused_panel = .proposal_review;
+                wb.agent.lock();
+                const hunks = wb.agent.review.hunks;
+                wb.agent.unlock();
+                if (proposal_review_panel.hitTest(
+                    wb.allocator,
+                    geo.editor_x,
+                    geo.editor_h,
+                    wb.proposal_review_scroll_y,
+                    hunks,
+                    wb.proposal_review_file_index,
+                    event.x,
+                    event.y,
+                ) catch null) |hit| {
+                    wb.handleProposalReviewClick(hit) catch {};
+                }
+                return;
+            }
             if (wb.ai_settings_open) {
                 wb.focused_panel = .ai_settings;
                 if (ai_settings_panel.hitTestPoint(
@@ -1088,7 +1135,10 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         const scroll_delta_y = raw.y;
         const scroll_delta_x = raw.x;
 
-        if (geo.shell_mode == .ide and wb.ai_settings_open and mx >= geo.editor_x and mx < geo.agent_splitter_x and my >= ai_settings_panel.contentTop()) {
+        if (geo.shell_mode == .ide and wb.proposal_review_open and mx >= geo.editor_x and mx < geo.agent_splitter_x and my >= proposal_review_panel.contentTop()) {
+            wb.proposal_review_scroll_y += scroll_delta_y;
+            wb.clampProposalReviewScroll(geo.editor_h);
+        } else if (geo.shell_mode == .ide and wb.ai_settings_open and mx >= geo.editor_x and mx < geo.agent_splitter_x and my >= ai_settings_panel.contentTop()) {
             wb.ai_settings_scroll_y += scroll_delta_y;
             wb.clampAiSettingsScroll(geo.editor_h);
         } else if (geo.shell_mode == .ide and mx >= geo.explorer_x and mx < geo.explorer_splitter_x and my >= layout.header_height) {
@@ -1116,7 +1166,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 },
             }
         } else if (mx >= geo.agent_x) {
-            if (wb.agent.show_review) {
+            if (wb.agent.show_review and !wb.proposal_review_open) {
                 wb.agent.review_scroll_y += scroll_delta_y;
                 wb.clampReviewScroll(h);
             } else {

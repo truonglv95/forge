@@ -103,7 +103,13 @@ pub fn drawStep(
     const card_x = agent_x + 8;
     const card_w = content_w;
     renderer.Renderer.drawRoundedRect(card_x, y, card_w, card_h, 6, .{ .r = 0.16, .g = 0.18, .b = 0.22, .a = 1.0 });
-    renderer.Renderer.drawRoundedRect(card_x + 6, y + 8, 4, 12, 2, accent);
+    renderer.Renderer.drawRect(card_x + 2, y + 4, 2, card_h - 4, .{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 0.35 });
+    renderer.Renderer.drawRoundedRect(card_x + 6, y + 6, 14, 14, 7, accent);
+    var idx_buf: [8:0]u8 = undefined;
+    const idx_text = std.fmt.bufPrint(&idx_buf, "{d}", .{step.index + 1}) catch "?";
+    idx_buf[idx_text.len] = 0;
+    renderer.Renderer.drawText(@ptrCast(&idx_buf), card_x + 9, y + 8, 9.0, .{ .r = 0.1, .g = 0.12, .b = 0.14, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(card_x + 24, y + 8, 4, 12, 2, accent);
 
     const is_parent = step.child_count > 0 or step.is_thought;
     if (is_parent) {
@@ -114,7 +120,7 @@ pub fn drawStep(
     var title_buf: [384:0]u8 = undefined;
     const title = formatTitle(step, steps, step_i, &title_buf);
     title_buf[@min(title.len, title_buf.len - 1)] = 0;
-    renderer.Renderer.drawText(title, inner_x + 22, y + 7, 12.0, .{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 });
+    renderer.Renderer.drawText(title, inner_x + 30, y + 7, 12.0, .{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 });
 
     var content_y = y + card_h + card_gap;
 

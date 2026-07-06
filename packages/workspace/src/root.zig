@@ -54,6 +54,8 @@ pub const HistoryEntry = history.Entry;
 pub const HistoryEntryList = history.EntryList;
 pub const LoadedRecord = history.LoadedRecord;
 
+pub const execution = @import("execution.zig");
+
 pub const checkpoint = @import("checkpoint.zig");
 pub const hooks = @import("hooks.zig");
 

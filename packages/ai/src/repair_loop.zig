@@ -76,6 +76,6 @@ test "hasFailures detects non-zero exit" {
         .{ .task = "zig build test", .exit_code = 0, .output = "" },
         .{ .task = "zig build", .exit_code = 1, .output = "error" },
     };
-    try std.testing.expect(hasFailures(&results));
-    try std.testing.expect(!hasFailures(&results[0..1]));
+    try std.testing.expect(hasFailures(results[0..]));
+    try std.testing.expect(!hasFailures(results[0..1]));
 }

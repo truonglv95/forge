@@ -43,9 +43,9 @@ pub fn collectNeighborPaths(
     var hop: u32 = 0;
     while (hop < options.max_hops and frontier.items.len > 0) : (hop += 1) {
         var next: std.ArrayList([]const u8) = .empty;
+        defer next.deinit(allocator);
         errdefer {
             for (next.items) |path| allocator.free(path);
-            next.deinit(allocator);
         }
 
         for (frontier.items) |path| {
@@ -259,13 +259,15 @@ test "extract zig imports" {
     defer tmp.cleanup();
 
     const root = workspace.WorkspaceRoot.init(tmp.dir);
-    try tmp.dir.writeFile(io, "lib/util.zig", "pub fn util() void {}\n");
-    try tmp.dir.writeFile(io, "apps/main.zig",
+    try tmp.dir.createDirPath(io, "lib");
+    try tmp.dir.createDirPath(io, "apps");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("lib/util.zig"), "pub fn util() void {}\n");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("apps/main.zig"),
         \\const std = @import("std");
-        \\const util = @import("../../lib/util.zig");
+        \\const util = @import("../lib/util.zig");
     );
 
-    const content = try tmp.dir.readFileAlloc(io, "apps/main.zig", allocator, std.math.maxInt(usize));
+    const content = try tmp.dir.readFileAlloc(io, "apps/main.zig", allocator, .unlimited);
     defer allocator.free(content);
 
     const imports = try extractImports(allocator, io, root, "apps/main.zig", content);
@@ -280,11 +282,13 @@ test "collectNeighborPaths does not use freed import keys in seen set" {
     defer tmp.cleanup();
 
     const root = workspace.WorkspaceRoot.init(tmp.dir);
-    try tmp.dir.writeFile(io, "lib/util.zig", "pub fn util() void {}\n");
-    try tmp.dir.writeFile(io, "lib/helper.zig",
+    try tmp.dir.createDirPath(io, "lib");
+    try tmp.dir.createDirPath(io, "apps");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("lib/util.zig"), "pub fn util() void {}\n");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("lib/helper.zig"),
         \\const util = @import("util.zig");
     );
-    try tmp.dir.writeFile(io, "apps/main.zig",
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("apps/main.zig"),
         \\const helper = @import("../lib/helper.zig");
     );
 

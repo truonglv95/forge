@@ -38,6 +38,7 @@ pub const TransactionError = error{
     PathAlreadyExists,
     FileNotFound,
     ApplyFailed,
+    UndoConflict,
 } || edit.WorkspaceEdit.ValidationError || path_mod.WorkspacePath.ValidationError || snapshot.FileSnapshot.ReadError || std.Io.File.OpenError;
 
 pub const TransactionService = struct {
@@ -116,6 +117,10 @@ pub const TransactionService = struct {
     pub fn undo(self: *TransactionService, record: *TransactionRecord) !void {
         if (record.state != .applied) return error.InvalidState;
 
+        // Validate the complete post-apply state before restoring any backup.
+        // Undo must never overwrite edits made after this transaction.
+        try self.validateUndoPreconditions(record);
+
         var reverse_index = record.backups.len;
 
         while (reverse_index > 0) {
@@ -135,6 +140,37 @@ pub const TransactionService = struct {
 
         record.state = .undone;
         try recovery.writeRecord(self.io, self.root, record);
+    }
+
+    fn validateUndoPreconditions(self: *TransactionService, record: *const TransactionRecord) !void {
+        if (record.backups.len != record.workspace_edit.files.len) return error.UndoConflict;
+
+        for (record.workspace_edit.files, record.backups) |file_edit, backup| {
+            if (!std.mem.eql(u8, file_edit.path, backup.path)) return error.UndoConflict;
+            const wp = try path_mod.WorkspacePath.parse(file_edit.path);
+
+            switch (file_edit.operation) {
+                .delete => {
+                    self.root.dir.access(self.io, wp.raw, .{}) catch |err| switch (err) {
+                        error.FileNotFound => continue,
+                        else => return err,
+                    };
+                    return error.UndoConflict;
+                },
+                .create, .modify => {
+                    var current = snapshot.FileSnapshot.read(self.allocator, self.io, self.root, wp) catch |err| switch (err) {
+                        error.FileNotFound => return error.UndoConflict,
+                        else => return err,
+                    };
+                    defer current.deinit();
+
+                    const base = if (backup.existed) backup.content else "";
+                    const expected_content = edit.applyTextEdits(self.allocator, base, file_edit.edits) catch return error.UndoConflict;
+                    defer self.allocator.free(expected_content);
+                    if (current.hash != edit.contentHash(expected_content)) return error.UndoConflict;
+                },
+            }
+        }
     }
 
     pub fn freeRecord(self: *TransactionService, record: *TransactionRecord) void {
@@ -407,4 +443,62 @@ test "apply create and undo removes created file" {
         error.FileNotFound => {},
         else => return err,
     };
+}
+
+test "undo rejects a modified file changed after apply without partial restore" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("a.txt"), "before-a");
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("b.txt"), "before-b");
+
+    const edits_a = [_]edit.TextEdit{.{ .start = 0, .end = 8, .replacement = "after-a" }};
+    const edits_b = [_]edit.TextEdit{.{ .start = 0, .end = 8, .replacement = "after-b" }};
+    const files = [_]edit.FileEdit{
+        .{ .path = "a.txt", .operation = .modify, .expected_hash = edit.contentHash("before-a"), .edits = &edits_a },
+        .{ .path = "b.txt", .operation = .modify, .expected_hash = edit.contentHash("before-b"), .edits = &edits_b },
+    };
+
+    var service = TransactionService.init(allocator, io, root);
+    var record = TransactionRecord{ .id = 6, .state = .approved, .workspace_edit = .{ .files = &files }, .timestamp_ms = 0 };
+    defer service.freeRecord(&record);
+    try service.apply(&record);
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("b.txt"), "user-change");
+
+    try std.testing.expectError(error.UndoConflict, service.undo(&record));
+    try std.testing.expectEqual(TransactionState.applied, record.state);
+
+    var first = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse("a.txt"));
+    defer first.deinit();
+    try std.testing.expectEqualStrings("after-a", first.content);
+}
+
+test "undo rejects recreation of a file deleted by the transaction" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("deleted.txt"), "original");
+
+    const files = [_]edit.FileEdit{.{
+        .path = "deleted.txt",
+        .operation = .delete,
+        .expected_hash = edit.contentHash("original"),
+        .edits = &.{},
+    }};
+    var service = TransactionService.init(allocator, io, root);
+    var record = TransactionRecord{ .id = 7, .state = .approved, .workspace_edit = .{ .files = &files }, .timestamp_ms = 0 };
+    defer service.freeRecord(&record);
+    try service.apply(&record);
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("deleted.txt"), "new-user-file");
+
+    try std.testing.expectError(error.UndoConflict, service.undo(&record));
+    var current = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse("deleted.txt"));
+    defer current.deinit();
+    try std.testing.expectEqualStrings("new-user-file", current.content);
 }

@@ -121,7 +121,8 @@ fn contentTermOverlap(content: []const u8, terms: []const []const u8) f32 {
     var hits: usize = 0;
     for (terms) |term| {
         if (term.len < 3) continue;
-        if (std.ascii.indexOfIgnoreCase(content, term) != null) hits += 1;
+        const stem = if (term.len > 6) term[0..6] else term;
+        if (std.ascii.findIgnoreCase(content, term) != null or std.ascii.findIgnoreCase(content, stem) != null) hits += 1;
     }
     return @as(f32, @floatFromInt(hits)) / @as(f32, @floatFromInt(terms.len));
 }

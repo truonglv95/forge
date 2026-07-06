@@ -105,8 +105,12 @@ pub fn loadAll(
 
     var it = merged.iterator();
     while (it.next()) |entry| {
-        if (entry.value_ptr.disabled) continue;
-        try list.append(allocator, entry.value_ptr.*);
+        if (entry.value_ptr.disabled) {
+            freeServerSpec(allocator, entry.value_ptr.*);
+        } else {
+            try list.append(allocator, entry.value_ptr.*);
+        }
+        allocator.free(entry.key_ptr.*);
     }
 
     merged.deinit();
@@ -331,7 +335,9 @@ pub fn expandTemplate(allocator: std.mem.Allocator, text: []const u8, ctx: LoadC
     };
     for (replacements) |item| {
         const value = item.value orelse continue;
-        out = try replaceAll(allocator, out, item.needle, value);
+        const new_out = try replaceAll(allocator, out, item.needle, value);
+        allocator.free(out);
+        out = new_out;
     }
 
     while (std.mem.indexOf(u8, out, "${env:")) |start| {
@@ -418,7 +424,10 @@ pub fn parseJson(allocator: std.mem.Allocator, source: []const u8, workspace_cwd
         list.deinit(allocator);
     }
     var it = merged.iterator();
-    while (it.next()) |entry| try list.append(allocator, entry.value_ptr.*);
+    while (it.next()) |entry| {
+        try list.append(allocator, entry.value_ptr.*);
+        allocator.free(entry.key_ptr.*);
+    }
     merged.deinit();
     return Config{
         .allocator = allocator,

@@ -1,21 +1,42 @@
+const std = @import("std");
 const editor = @import("forge-editor");
+const renderer = @import("forge-renderer");
 const context_inspector = @import("context_inspector.zig");
 const agent_composer = @import("agent_composer.zig");
 const agent_session = @import("../agent/session.zig");
 
-pub const run_list_top: f32 = 52.0;
-pub const run_row_h: f32 = 14.0;
-pub const max_visible_runs: usize = 3;
+pub const chat_content_top: f32 = 68.0;
 
-pub fn hitTestRun(agent_x: f32, inner_pad: f32, y: f32, run_count: usize) ?usize {
-    const inner_x = agent_x + inner_pad;
-    if (y < run_list_top or y >= run_list_top + @as(f32, @floatFromInt(@min(run_count, max_visible_runs))) * run_row_h) {
-        return null;
-    }
-    _ = inner_x;
-    const row = @as(usize, @intFromFloat((y - run_list_top) / run_row_h));
-    if (row >= run_count or row >= max_visible_runs) return null;
-    return row;
+pub const apply_banner_h: f32 = 34;
+
+pub const ApplyBanner = struct {
+    keep: ButtonRect,
+    undo: ButtonRect,
+};
+
+pub fn applyBannerLayout(agent_x: f32, y: f32) ApplyBanner {
+    const inner_x = agent_x + 20;
+    return .{
+        .keep = .{ .x = inner_x, .y = y, .w = 72, .h = 24 },
+        .undo = .{ .x = inner_x + 80, .y = y, .w = 72, .h = 24 },
+    };
+}
+
+pub fn hitApplyBanner(agent_x: f32, y: f32, px: f32, py: f32) ?enum { keep, undo } {
+    const banner = applyBannerLayout(agent_x, y);
+    if (banner.keep.contains(px, py)) return .keep;
+    if (banner.undo.contains(px, py)) return .undo;
+    return null;
+}
+
+pub fn drawApplyBanner(agent_x: f32, agent_w: f32, y: f32) void {
+    const banner = applyBannerLayout(agent_x, y);
+    renderer.Renderer.drawRoundedRect(agent_x + 10, y - 4, agent_w - 20, apply_banner_h, 8, .{ .r = 0.14, .g = 0.24, .b = 0.18, .a = 1.0 });
+    renderer.Renderer.drawText("Applied — keep changes?", agent_x + 20, y + 2, 11.0, .{ .r = 0.75, .g = 0.95, .b = 0.8, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(banner.keep.x, banner.keep.y, banner.keep.w, banner.keep.h, 5, .{ .r = 0.2, .g = 0.5, .b = 0.35, .a = 1.0 });
+    renderer.Renderer.drawText("Keep", banner.keep.x + 18, banner.keep.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(banner.undo.x, banner.undo.y, banner.undo.w, banner.undo.h, 5, .{ .r = 0.45, .g = 0.22, .b = 0.22, .a = 1.0 });
+    renderer.Renderer.drawText("Undo", banner.undo.x + 18, banner.undo.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
 }
 
 pub const ButtonRect = struct {
@@ -64,14 +85,12 @@ pub fn reviewContentHeight(agent: *agent_session.Session) f32 {
 }
 
 pub fn reviewHunksScreenTop(
-    run_row_count: usize,
     chat_scroll_y: f32,
     review_scroll_y: f32,
     agent: *agent_session.Session,
     has_summary: bool,
 ) f32 {
-    const run_y: f32 = run_list_top + @as(f32, @floatFromInt(@min(run_row_count, max_visible_runs))) * run_row_h;
-    var y = run_y + 8.0 - chat_scroll_y + 16.0;
+    var y = chat_content_top + 8.0 - chat_scroll_y + 16.0;
     if (has_summary) y += 18.0;
     y -= review_scroll_y;
     y += 14.0;
@@ -87,9 +106,7 @@ pub fn hitTestSteps(wb: *@import("../workbench.zig").Workbench, agent_x: f32, ag
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
 
-    // Simulate content_y calculation
-    var content_y: f32 = run_list_top + @as(f32, @floatFromInt(@min(wb.agent.run_history.items.len, max_visible_runs))) * run_row_h;
-    content_y += 8.0 - wb.chat_scroll_y + 16.0;
+    var content_y: f32 = chat_content_top + 8.0 - wb.chat_scroll_y;
 
     if (x < inner_x or x > inner_x + content_w) return null;
 
@@ -99,7 +116,11 @@ pub fn hitTestSteps(wb: *@import("../workbench.zig").Workbench, agent_x: f32, ag
     const state = @import("state.zig");
     if (state.chat_history) |history| {
         for (history.items) |msg| {
-            const drawn = chat_bubble.bubbleHeight(msg.content, content_w, false) + chat_bubble.bubble_gap;
+            if (!chatHasVisibleContent(msg.content)) continue;
+            const drawn = if (msg.role == .user)
+                chat_bubble.bubbleHeight(msg.content, content_w, false) + chat_bubble.bubble_gap
+            else
+                chat_bubble.plainMessageHeight(msg.content, content_w);
             content_y += drawn;
         }
     }
@@ -125,7 +146,6 @@ pub fn hitTestSteps(wb: *@import("../workbench.zig").Workbench, agent_x: f32, ag
 
 pub fn hitReviewHunk(
     agent: *agent_session.Session,
-    run_row_count: usize,
     chat_scroll_y: f32,
     review_scroll_y: f32,
     has_summary: bool,
@@ -136,10 +156,14 @@ pub fn hitReviewHunk(
 ) ?usize {
     const inner_x = agent_x + inner_pad;
     if (x < inner_x) return null;
-    const hunks_top = reviewHunksScreenTop(run_row_count, chat_scroll_y, review_scroll_y, agent, has_summary);
+    const hunks_top = reviewHunksScreenTop(chat_scroll_y, review_scroll_y, agent, has_summary);
     agent.lock();
     defer agent.unlock();
     return agent.review.hitTestHunk(y, hunks_top, 0);
+}
+
+pub fn chatHasVisibleContent(content: []const u8) bool {
+    return std.mem.trim(u8, &std.ascii.whitespace, content).len > 0;
 }
 
 pub fn reviewActions(

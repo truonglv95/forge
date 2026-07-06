@@ -396,13 +396,13 @@ test "GeminiProvider test mode" {
     const dummy_key = try allocator.alloc(u8, 4);
     std.mem.copyForwards(u8, dummy_key, "test");
 
-    var creds = credentials.Credentials{
+    const creds = credentials.Credentials{
         .allocator = allocator,
         .api_key = dummy_key,
         .source = .environment,
     };
-    defer creds.deinit();
 
+    // GeminiProvider takes ownership of credentials.
     var gemini = GeminiProvider.init(allocator, std.testing.io, creds, default_model, null, null, null, null);
     defer gemini.deinit();
     const p = gemini.providerInterface();

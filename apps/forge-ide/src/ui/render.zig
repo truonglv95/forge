@@ -14,6 +14,7 @@ const search_panel = @import("search_panel.zig");
 const debug_panel = @import("debug_panel.zig");
 const git_panel = @import("git_panel.zig");
 const ai_settings_panel = @import("ai_settings_panel.zig");
+const proposal_review_panel = @import("proposal_review_panel.zig");
 const header_toolbar = @import("header_toolbar.zig");
 const explorer_scroll = @import("explorer_scroll.zig");
 const tabs_ui = @import("tabs.zig");
@@ -197,6 +198,7 @@ pub fn onRenderFrame() void {
     wb.clampGitScroll(h);
     wb.clampRunScroll(h);
     if (wb.ai_settings_open) wb.clampAiSettingsScroll(geo.editor_h);
+    if (wb.proposal_review_open) wb.clampProposalReviewScroll(geo.editor_h);
     const side_h = geo.content_h;
 
     if (state.root_view) |rv| {
@@ -312,34 +314,31 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
     }
     renderer.Renderer.drawSvg(renderer.icons.plus, rx - 8, 27, 16, 16, icon_c);
 
-    var run_y: f32 = 60.0;
-    wb.agent.lock();
-    const run_count = wb.agent.run_history.items.len;
-    const selected_run = wb.agent.selected_run_index;
-    for (wb.agent.run_history.items, 0..) |entry, index| {
-        if (index >= 3) break;
-        var run_buf: [128:0]u8 = undefined;
-        const run_line = std.fmt.bufPrint(&run_buf, "{s} {s}", .{ entry.run_id, entry.state }) catch entry.run_id;
-        run_buf[run_line.len] = 0;
-        const color = if (index == selected_run)
-            renderer.Color{ .r = 1.0, .g = 1.0, .b = 0.7, .a = 1.0 }
-        else
-            renderer.Color{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 };
-        renderer.Renderer.drawText(@ptrCast(&run_buf), inner_x, run_y, 10.0, color);
-        run_y += 14.0;
-    }
-    wb.agent.unlock();
-    _ = run_count;
-
     const composer_layout = agent_composer.computeLayout(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer);
     wb.clampPromptScroll(agent_w);
     const visible_entries = context_inspector.effectiveEntryCount(&wb.agent, snap.context_entry_count);
-    const strip_top = context_inspector.stripTop(h, snap.context_inspector_expanded, visible_entries, snap.attachment_count, agent_w, &wb.prompt_buffer);
+    wb.agent.lock();
+    const ctx_selected = wb.agent.context_selected_index;
+    const ctx_scroll = wb.agent.context_inspector_scroll_y;
+    const ctx_has_detail = ctx_selected != null and snap.context_inspector_expanded;
+    wb.agent.unlock();
+    const strip_top = context_inspector.stripTop(h, snap.context_inspector_expanded, visible_entries, snap.attachment_count, agent_w, &wb.prompt_buffer, ctx_has_detail);
     const chat_bottom = strip_top - 4;
 
-    var content_y: f32 = run_y + 8.0 - wb.chat_scroll_y;
+    const chat_top = agent_panel.chat_content_top + 8.0;
+    var content_y: f32 = chat_top - wb.chat_scroll_y;
 
-    if (snap.show_review) {
+    if (snap.post_apply_visible) {
+        agent_panel.drawApplyBanner(agent_x, agent_w, content_y);
+        content_y += agent_panel.apply_banner_h + 4;
+    }
+
+    if (snap.show_review and wb.proposal_review_open) {
+        renderer.Renderer.drawRoundedRect(agent_x + 10, content_y, agent_w - 20, 48, 8, .{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 });
+        renderer.Renderer.drawText("Proposal review open in editor panel", inner_x, content_y + 10, 12.0, .{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 });
+        renderer.Renderer.drawText("Toggle hunks and apply from the editor view", inner_x, content_y + 26, 10.0, .{ .r = 0.6, .g = 0.68, .b = 0.78, .a = 1.0 });
+        content_y += 56;
+    } else if (snap.show_review) {
         renderer.Renderer.drawText("REVIEW", inner_x, content_y, 11.0, .{ .r = 1.0, .g = 0.7, .b = 0.4, .a = 1.0 });
         content_y += 16.0;
         if (snap.summary) |summary| {
@@ -408,15 +407,14 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
             .bg = .{ .r = 0.2, .g = 0.2, .b = 0.25, .a = 1.0 },
             .fg = .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 },
         };
-        const agent_style = chat_bubble.BubbleStyle{
-            .bg = .{ .r = 0.15, .g = 0.25, .b = 0.15, .a = 1.0 },
-            .fg = .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 },
-        };
         for (state.chat_history.?.items) |msg| {
-            const bubble_h = chat_bubble.bubbleHeight(msg.content, content_w, false);
-            if (content_y + bubble_h > chat_bottom and content_y > run_y + 8) break;
-            const style = if (msg.role == .user) user_style else agent_style;
-            const drawn = chat_bubble.drawBubble(wb.allocator, agent_x, inner_x, content_w, content_y, null, msg.content, style);
+            if (!agent_panel.chatHasVisibleContent(msg.content)) continue;
+            const msg_h = chat_bubble.historyMessageHeight(msg.role == .user, msg.content, content_w);
+            if (content_y + msg_h > chat_bottom and content_y > chat_top) break;
+            const drawn = if (msg.role == .user)
+                chat_bubble.drawBubble(wb.allocator, agent_x, inner_x, content_w, content_y, null, msg.content, user_style)
+            else
+                chat_bubble.drawPlainMessage(wb.allocator, inner_x, content_w, content_y, msg.content, chat_bubble.agent_text_style);
             content_y += drawn;
         }
 
@@ -443,20 +441,7 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
             const stream_src = wb.agent.stream_text.items;
 
             if (thinking_src.len > 0) {
-                const drawn = chat_bubble.drawBubble(
-                    wb.allocator,
-                    agent_x,
-                    inner_x,
-                    content_w,
-                    content_y,
-                    "Thinking",
-                    thinking_src,
-                    .{
-                        .bg = .{ .r = 0.14, .g = 0.18, .b = 0.28, .a = 1.0 },
-                        .fg = .{ .r = 0.75, .g = 0.82, .b = 0.95, .a = 1.0 },
-                    },
-                );
-                content_y += drawn;
+                content_y += chat_bubble.drawThinkingLine(inner_x, content_y, thinking_src);
             } else if (stream_src.len == 0) {
                 var live_buf: [256:0]u8 = undefined;
                 const live_text = if (snap.status_line.len > 0)
@@ -464,45 +449,27 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
                 else
                     std.fmt.bufPrint(&live_buf, "Working...", .{}) catch "Working...";
                 live_buf[live_text.len] = 0;
-                const drawn = chat_bubble.drawBubble(
-                    wb.allocator,
-                    agent_x,
-                    inner_x,
-                    content_w,
-                    content_y,
-                    null,
-                    live_text,
-                    .{
-                        .bg = .{ .r = 0.12, .g = 0.22, .b = 0.32, .a = 1.0 },
-                        .fg = .{ .r = 0.8, .g = 0.95, .b = 0.85, .a = 1.0 },
-                    },
-                );
-                content_y += drawn;
+                content_y += chat_bubble.drawStatusLine(inner_x, content_y, live_buf[0..live_text.len :0]);
             }
 
             if (stream_src.len > 0) {
-                _ = chat_bubble.drawBubble(
+                content_y += chat_bubble.drawPlainMessage(
                     wb.allocator,
-                    agent_x,
                     inner_x,
                     content_w,
                     content_y,
-                    if (thinking_src.len > 0) "Response" else null,
                     stream_src,
-                    .{
-                        .bg = .{ .r = 0.12, .g = 0.24, .b = 0.18, .a = 1.0 },
-                        .fg = .{ .r = 0.85, .g = 0.95, .b = 0.88, .a = 1.0 },
-                    },
+                    chat_bubble.agent_text_style,
                 );
             }
         }
     }
 
-    if (snap.show_review) {
+    if (snap.show_review and !wb.proposal_review_open) {
         wb.agent.lock();
         const review_content = agent_panel.reviewContentHeight(&wb.agent);
         wb.agent.unlock();
-        const review_top = run_y + 8;
+        const review_top = chat_top;
         const review_viewport = @max(0, chat_bottom - review_top);
         const review_max = @max(0, review_content - review_viewport);
         const show_review_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, review_top, agent_w, review_viewport);
@@ -519,7 +486,9 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
     } else {
         var chat_lines: usize = 0;
         for (state.chat_history.?.items) |msg| {
+            if (!agent_panel.chatHasVisibleContent(msg.content)) continue;
             chat_lines += chat_bubble.visualLineCount(msg.content, content_w) + 1;
+            if (msg.role == .user) chat_lines += 1;
         }
         if (snap.worker_running) {
             wb.agent.lock();
@@ -533,14 +502,14 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
             chat_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble.line_h)));
             wb.agent.unlock();
         }
-        const chat_top = run_y + 8;
-        const chat_viewport = @max(0, chat_bottom - chat_top);
+        const chat_top_scroll = chat_top;
+        const chat_viewport = @max(0, chat_bottom - chat_top_scroll);
         const chat_content = @as(f32, @floatFromInt(@max(1, chat_lines))) * chat_bubble.line_h;
         const chat_max = @max(0, chat_content - chat_viewport);
-        const show_chat_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, chat_top, agent_w, chat_viewport);
+        const show_chat_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, chat_top_scroll, agent_w, chat_viewport);
         scrollbar.drawVertical(
             agent_x + agent_w - scrollbar.track_w - 4,
-            chat_top,
+            chat_top_scroll,
             chat_viewport,
             wb.chat_scroll_y,
             chat_max,
@@ -561,6 +530,8 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
         snap.context_inspector_expanded,
         snap.attachment_count,
         &wb.prompt_buffer,
+        ctx_scroll,
+        ctx_selected,
     );
 
     const show_prompt_cursor = @mod(state.time, 1.0) < 0.5 and wb.focused_panel == .agent and !snap.show_review and !snap.worker_running;
@@ -575,7 +546,7 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
         snap.show_review,
     );
 
-    if (snap.show_review) {
+    if (snap.show_review and !wb.proposal_review_open) {
         wb.agent.lock();
         const show_rollback = wb.agent.last_checkpoint_id != null;
         const show_approve_spec = wb.agent.spec_pending;
@@ -1824,6 +1795,12 @@ fn drawEditorViewport(
 }
 
 fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@import("forge-editor").Buffer, editor_x: f32, editor_w: f32, editor_h: f32, _: f32) void {
+    if (wb.proposal_review_open) {
+        const theme = &wb.theme;
+        proposal_review_panel.drawTab(editor_x, c(theme.colors.accent), c(theme.colors.editor_bg), c(theme.colors.border), c(theme.colors.text_primary), theme.ui_font_size);
+        proposal_review_panel.draw(wb, editor_x, editor_w, editor_h);
+        return;
+    }
     if (wb.ai_settings_open) {
         ai_settings_panel.draw(wb, editor_x, editor_w, editor_h);
         return;
