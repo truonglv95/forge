@@ -1,0 +1,81 @@
+const renderer = @import("forge-renderer");
+const std = @import("std");
+const editor_scroll = @import("../../editor/editor_scroll.zig");
+const Workbench = @import("../../../workbench.zig").Workbench;
+const Buffer = @import("forge-editor").Buffer;
+
+pub fn lineColAtBufferOffset(editor_buf: *Buffer, offset: usize) struct { line: usize, col: usize } {
+    var pos: usize = 0;
+    const line_count = editor_buf.lineCount();
+    for (0..line_count) |line| {
+        const line_len = editor_buf.lineAt(line).len;
+        const line_end = pos + line_len;
+        if (offset <= line_end) return .{ .line = line, .col = offset - pos };
+        pos = line_end + 1;
+    }
+    if (line_count > 0) {
+        const last = line_count - 1;
+        return .{ .line = last, .col = editor_buf.lineAt(last).len };
+    }
+    return .{ .line = 0, .col = 0 };
+}
+
+pub fn reviewLineHasChange(
+    wb: *Workbench,
+    editor_buf: *Buffer,
+    file_path: []const u8,
+    line_index: usize,
+) bool {
+    if (!wb.agent.show_review) return false;
+    wb.agent.lock();
+    defer wb.agent.unlock();
+    for (wb.agent.review.hunks) |hunk| {
+        if (!hunk.accepted or !std.mem.eql(u8, hunk.path, file_path)) continue;
+        if (hunk.edit_start == null or hunk.edit_end == null) return true;
+        const del_start = lineColAtBufferOffset(editor_buf, @intCast(hunk.edit_start.?));
+        const del_end = lineColAtBufferOffset(editor_buf, @intCast(hunk.edit_end.?));
+        if (line_index >= del_start.line and line_index <= del_end.line) return true;
+    }
+    return false;
+}
+
+pub fn drawReviewLineOverlay(
+    wb: *Workbench,
+    theme: *const @import("forge-workspace").Theme,
+    editor_buf: *Buffer,
+    file_path: []const u8,
+    line_index: usize,
+    text_x: f32,
+    line_y: f32,
+    line_h: f32,
+    font_size: f32,
+) void {
+    if (!wb.agent.show_review) return;
+    wb.agent.lock();
+    defer wb.agent.unlock();
+    const line = editor_buf.lineAt(line_index);
+    for (wb.agent.review.hunks) |hunk| {
+        if (!hunk.accepted or !std.mem.eql(u8, hunk.path, file_path)) continue;
+        const edit_start = hunk.edit_start orelse continue;
+        const edit_end = hunk.edit_end orelse continue;
+        const del_start = lineColAtBufferOffset(editor_buf, @intCast(edit_start));
+        const del_end = lineColAtBufferOffset(editor_buf, @intCast(edit_end));
+        if (line_index < del_start.line or line_index > del_end.line) continue;
+
+        const start_col = if (line_index == del_start.line) del_start.col else 0;
+        const end_col = if (line_index == del_end.line) del_end.col else line.len;
+        const start_x = text_x + editor_scroll.cursorX(line, start_col, font_size);
+        const end_x = text_x + editor_scroll.cursorX(line, end_col, font_size);
+        renderer.Renderer.drawRect(start_x, line_y, @max(4, end_x - start_x), line_h, .{ .r = 0.75, .g = 0.2, .b = 0.2, .a = 0.28 });
+
+        if (hunk.replacement) |replacement| {
+            if (replacement.len > 0 and line_index == del_start.line) {
+                const first_line_end = std.mem.indexOfScalar(u8, replacement, '\n') orelse replacement.len;
+                const preview = replacement[0..first_line_end];
+                const ins_x = text_x + editor_scroll.cursorX(line, start_col, font_size);
+                const ins_w = @as(f32, @floatFromInt(preview.len)) * editor_scroll.charWidth(theme);
+                renderer.Renderer.drawRect(ins_x, line_y, @max(4, ins_w), line_h, .{ .r = 0.2, .g = 0.65, .b = 0.3, .a = 0.35 });
+            }
+        }
+    }
+}

@@ -48,7 +48,7 @@ const agent_ui_queue_mod = @import("workbench/agent_ui_queue.zig");
 
 pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, ai_settings, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename };
 pub const EditorPane = enum { primary, secondary };
-pub const ChatRole = enum { user, agent };
+pub const ChatRole = @import("workbench/types.zig").ChatRole;
 pub const ChatMessage = struct {
     role: ChatRole,
     content: [:0]const u8,
@@ -365,12 +365,12 @@ pub const Workbench = struct {
         }
     }
 
-    fn navBack(self: *Workbench) !void {
+    pub fn navBack(self: *Workbench) !void {
         const entry = self.nav_history.back() orelse return;
         try self.goToNavEntry(entry);
     }
 
-    fn navForward(self: *Workbench) !void {
+    pub fn navForward(self: *Workbench) !void {
         const entry = self.nav_history.forward() orelse return;
         try self.goToNavEntry(entry);
     }
@@ -392,777 +392,82 @@ pub const Workbench = struct {
     }
 
     pub fn dispatch(self: *Workbench, command: Command) !void {
-        switch (command) {
-            .open_file => |path| try self.openFile(path),
-            .activate_tab => |index| try self.activateTab(index),
-            .close_tab => |index| try self.closeTabAt(index),
-            .close_active_tab => try self.closeTabAt(self.tabs.active),
-            .close_all_tabs => {
-                self.tabs.closeAll();
-                self.tab_scroll_x = 0;
-            },
-            .reload_theme => try self.reloadTheme(),
-            .save_active => {
-                const doc = self.tabs.activeDoc() orelse return;
-                if (doc.external_conflict) {
-                    try self.openConflictDialog(doc.path);
-                    return;
-                }
-                try workspace_io.saveDocument(self.io, self.workspace_root, doc);
-                try recovery_mod.snapshotDirtyDocs(self.allocator, self.io, self.workspace_root, &self.tabs);
-                workspace.hooks.runOnSave(self.allocator, self.io, self.workspace_root, doc.path, self.workspace_path) catch {};
-                try self.events.publish(.{ .file_saved = doc.path });
-                if (std.mem.eql(u8, doc.path, ".forge/settings.toml")) {
-                    try self.reloadUserSettings();
-                }
-                try self.setStatus("Saved");
-            },
-            .explorer_toggle => |path| {
-                try self.explorer.toggleExpand(path);
-            },
-            .explorer_select => |path| try self.explorer.select(path),
-            .explorer_create_file => |name| {
-                const parent = self.explorer.selectedOrRoot();
-                const created = try explorer_ops.createFileAlloc(self.allocator, self.io, self.workspace_root, parent, name);
-                try self.explorer.rebuild(self.io, self.workspace_root);
-                try self.explorer.select(created);
-                const open_path = try self.allocator.dupe(u8, created);
-                self.allocator.free(created);
-                try self.dispatch(.{ .open_file = open_path });
-                self.allocator.free(open_path);
-                try self.events.publish(.{ .explorer_refreshed = {} });
-            },
-            .explorer_create_folder => |name| {
-                const parent = self.explorer.selectedOrRoot();
-                const created = try explorer_ops.createFolder(self.allocator, self.io, self.workspace_root, parent, name);
-                defer self.allocator.free(created);
-                try self.explorer.rebuild(self.io, self.workspace_root);
-                try self.explorer.select(created);
-                try self.events.publish(.{ .explorer_refreshed = {} });
-            },
-            .explorer_rename => |payload| {
-                const old_path = self.explorer.selected_path orelse return;
-                const new_path = try explorer_ops.renameEntry(self.allocator, self.io, self.workspace_root, old_path, payload.new_name);
-                defer self.allocator.free(new_path);
-                try self.updateTabPath(old_path, new_path);
-                if (self.explorer.selected_path) |sel| self.allocator.free(sel);
-                self.explorer.selected_path = try self.allocator.dupe(u8, new_path);
-                self.renaming = false;
-                try self.explorer.rebuild(self.io, self.workspace_root);
-                try self.events.publish(.{ .explorer_refreshed = {} });
-            },
-            .explorer_begin_rename => {
-                const path = self.explorer.selected_path orelse return;
-                self.renaming = true;
-                try self.rename_buffer.loadFromSlice(std.fs.path.basename(path));
-            },
-            .explorer_delete_selected => {
-                const path = self.explorer.selected_path orelse return;
-                const kind = self.explorerKind(path) orelse return;
-                try explorer_ops.deleteEntry(self.io, self.workspace_root, path, kind);
-                if (self.explorer.selected_path) |sel| self.allocator.free(sel);
-                self.explorer.selected_path = null;
-                try self.explorer.rebuild(self.io, self.workspace_root);
-                try self.events.publish(.{ .explorer_refreshed = {} });
-            },
-            .run_extension_command => |command_id| try self.extension_host.executeCommand(command_id),
-            .reload_extensions => try self.reloadExtensions(),
-            .set_sidebar_view => |view| {
-                if (view == .ai) {
-                    try self.openAiSettings();
-                    return;
-                }
-                self.sidebar_view = view;
-                self.focused_panel = switch (view) {
-                    .explorer => .explorer,
-                    .search => .search,
-                    .git => .git,
-                    .run => .run,
-                    .extensions => .extensions,
-                    .ai => .ai_settings,
-                };
-                if (view == .git) try self.refreshGitStatus();
-            },
-            .extension_toggle => |index| {
-                if (index >= self.extension_host.extensions.items.len) return;
-                const ext = &self.extension_host.extensions.items[index];
-                if (ext.active) {
-                    try self.extension_host.deactivateExtension(ext.id);
-                    try self.setStatus("Extension deactivated");
-                } else {
-                    try self.extension_host.activateExtension(ext.id);
-                    try self.setStatus("Extension activated");
-                }
-                self.selected_extension_index = index;
-            },
-            .open_extensions_dir => |path| {
-                const doc = try self.tabs.openOrActivate(path);
-                try workspace_io.loadDocument(self.io, self.workspace_root, doc);
-                self.sidebar_view = .extensions;
-                self.focused_panel = .extensions;
-                self.syncTabScroll();
-            },
-            .set_extensions_panel_mode => |mode| {
-                self.extensions_panel_mode = mode;
-                self.extensions_scroll_y = 0;
-                self.extensions_detail_index = null;
-            },
-            .install_marketplace_extension => |extension_id| {
-                const catalog = self.marketplace_catalog orelse {
-                    try self.setStatus("Marketplace catalog not loaded");
-                    return;
-                };
-                const entry = plugin.marketplace.findEntry(&catalog, extension_id) orelse {
-                    try self.setStatus("Extension not found in catalog");
-                    return;
-                };
-                const installed = try plugin.marketplace.install(self.allocator, self.io, self.workspace_root, entry);
-                defer self.allocator.free(installed);
-                try self.reloadExtensions();
-                try self.setStatus("Extension installed");
-            },
-            .apply_extension_theme => |qualified| {
-                if (self.active_extension_theme.len > 0) self.allocator.free(self.active_extension_theme);
-                self.active_extension_theme = try self.allocator.dupe(u8, qualified);
-                try self.persistExtensionTheme(qualified);
-                try self.reloadTheme();
-                try self.setStatus("Extension theme applied");
-            },
-            .refresh_explorer => {
-                try self.explorer.rebuild(self.io, self.workspace_root);
-                try self.events.publish(.{ .explorer_refreshed = {} });
-            },
-            .run_task => |task_name| {
-                self.references.clear();
-                if (self.task_output.isRunning()) {
-                    try self.setStatus("Task already running");
-                    return;
-                }
-                self.task_output.clear();
-                self.task_output.setRunning(true);
-                try tasks_mod.spawn(
-                    self.allocator,
-                    self.io,
-                    task_name,
-                    self.workspace_path,
-                    Workbench.onTaskLine,
-                    Workbench.onTaskFinished,
-                    self,
-                );
-            },
-            .check_external_conflicts => {
-                for (self.tabs.tabs.items) |*doc| {
-                    try doc.checkExternalConflict(self.io, self.workspace_root);
-                }
-                if (self.tabs.activeDoc()) |doc| {
-                    if (doc.external_conflict) try self.openConflictDialog(doc.path);
-                }
-                try self.setStatus("Checked external changes");
-            },
-            .reload_active_from_disk => {
-                const doc = self.tabs.activeDoc() orelse return;
-                try workspace_io.loadDocument(self.io, self.workspace_root, doc);
-                try self.closeConflictDialog();
-                try self.setStatus("Reloaded from disk");
-            },
-            .dismiss_external_conflict => {
-                if (self.tabs.activeDoc()) |doc| doc.external_conflict = false;
-                try self.closeConflictDialog();
-                try self.setStatus("Keeping local version");
-            },
-            .restore_recovery_snapshots => {
-                try self.restoreRecoverySnapshots();
-                self.recovery_count = 0;
-                self.focused_panel = self.previous_focus;
-                try self.setStatus("Restored recovery snapshots");
-            },
-            .discard_recovery_snapshots => {
-                try self.discardRecoverySnapshots();
-                self.recovery_count = 0;
-                self.focused_panel = self.previous_focus;
-                try self.setStatus("Discarded recovery snapshots");
-            },
-            .palette_open => {
-                self.previous_focus = self.focused_panel;
-                self.focused_panel = .palette;
-                try self.palette.openPalette();
-            },
-            .palette_close => {
-                self.palette.close();
-                self.focused_panel = self.previous_focus;
-            },
-            .agent_set_mode => |mode| {
-                self.agent.lock();
-                self.agent.mode = mode;
-                self.agent.mode_menu_open = false;
-                self.agent.unlock();
-                const label = switch (mode) {
-                    .ask => "Ask mode",
-                    .plan => "Plan mode",
-                    .agent => "Agent mode",
-                };
-                try self.setStatus(label);
-            },
-            .agent_submit => {
-                const prompt_text = try self.prompt_buffer.content();
-                defer self.prompt_buffer.allocator.free(prompt_text);
-                const trimmed = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);
-                if (trimmed.len == 0) return;
-                const owned_prompt = try self.allocator.dupe(u8, trimmed);
-                defer self.allocator.free(owned_prompt);
-
-                self.prompt_buffer.deinit();
-                self.prompt_buffer = try editor.Buffer.init(self.allocator);
-                self.prompt_scroll_y = 0;
-                self.focused_panel = .agent;
-
-                try self.appendChat(.user, owned_prompt);
-                self.scrollChatToEnd(768);
-                const active = self.tabs.activeDoc();
-                const active_path = if (active) |doc| doc.path else null;
-                const scope = self.agent.effectiveScope(active_path);
-                agent_workflow.spawnGenerate(&self.agentHost(), owned_prompt, scope, active_path) catch |err| {
-                    const msg = switch (err) {
-                        error.AgentBusy => "Agent is already running",
-                        else => "Agent failed to start",
-                    };
-                    try self.setStatus(msg);
-                    return;
-                };
-                try self.setStatus("Agent: building context…");
-            },
-            .agent_edit_selection => {
-                const doc = self.tabs.activeDoc() orelse {
-                    try self.setStatus("No active file");
-                    return;
-                };
-                const selection = doc.buffer.selectedText(self.allocator) catch {
-                    try self.setStatus("Failed to read selection");
-                    return;
-                };
-                defer self.allocator.free(selection);
-                if (selection.len == 0) {
-                    try self.setStatus("Select code first (drag in editor)");
-                    return;
-                }
-
-                const prompt_text = self.prompt_buffer.content() catch {
-                    try self.setStatus("Failed to read prompt");
-                    return;
-                };
-                defer self.prompt_buffer.allocator.free(prompt_text);
-                const user_part = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);
-
-                const intent = if (user_part.len > 0)
-                    try std.fmt.allocPrint(self.allocator, "Edit the selected code in {s}.\n\nRequest: {s}\n\nSelected code:\n```\n{s}\n```", .{ doc.path, user_part, selection })
-                else
-                    try std.fmt.allocPrint(self.allocator, "Edit the selected code in {s}.\n\n```\n{s}\n```\n\nImprove or fix as needed.", .{ doc.path, selection });
-                defer self.allocator.free(intent);
-
-                self.prompt_buffer.deinit();
-                self.prompt_buffer = try editor.Buffer.init(self.allocator);
-                self.prompt_scroll_y = 0;
-                self.focused_panel = .agent;
-                self.agent.lock();
-                self.agent.mode = .agent;
-                self.agent.unlock();
-
-                try self.appendChat(.user, intent);
-                self.scrollChatToEnd(768);
-
-                const scope = try self.allocator.alloc([]const u8, 1);
-                defer self.allocator.free(scope);
-                scope[0] = try self.allocator.dupe(u8, doc.path);
-                defer self.allocator.free(scope[0]);
-
-                agent_workflow.spawnGenerate(&self.agentHost(), intent, scope, doc.path) catch |err| {
-                    const msg = switch (err) {
-                        error.AgentBusy => "Agent is already running",
-                        else => "Agent failed to start",
-                    };
-                    try self.setStatus(msg);
-                    return;
-                };
-                try self.setStatus("Agent: editing selection…");
-            },
-            .agent_cancel => {
-                agent_workflow.cancel(&self.agentHost());
-                try self.setStatus("Cancelling agent...");
-            },
-            .agent_apply => {
-                const tx_id = try agent_workflow.applyCurrentProposal(&self.agentHost());
-                self.closeProposalReview();
-                var buf: [64]u8 = undefined;
-                const msg = try std.fmt.bufPrint(&buf, "Applied transaction {d}", .{tx_id});
-                try self.setStatus(msg);
-                try self.appendChat(.agent, "Changes applied to workspace.");
-            },
-            .agent_rollback => {
-                try agent_workflow.rollbackLastCheckpoint(&self.agentHost());
-                self.closeProposalReview();
-                try self.appendChat(.agent, "Rolled back to pre-apply checkpoint.");
-                try self.setStatus("Checkpoint restored");
-            },
-            .agent_dismiss_apply => {
-                self.agent.dismissPostApplyBanner();
-                try self.setStatus("Changes kept");
-            },
-            .agent_approve_spec => {
-                try agent_workflow.approveSpecAndGenerate(&self.agentHost());
-                try self.setStatus("Spec approved — generating proposal...");
-            },
-            .agent_reject => {
-                agent_workflow.rejectCurrentProposal(&self.agentHost());
-                self.closeProposalReview();
-                try self.appendChat(.agent, "Proposal rejected.");
-                try self.setStatus("Proposal rejected");
-            },
-            .agent_show_review => try self.showAgentReview(),
-            .agent_toggle_step => |index| {
-                self.agent.lock();
-                if (index < self.agent.agent_steps.items.len) {
-                    const step = &self.agent.agent_steps.items[index];
-                    step.expanded = !step.expanded;
-                }
-                self.agent.unlock();
-            },
-            .agent_select_run => |index| {
-                self.agent.lock();
-                if (index < self.agent.run_history.items.len) {
-                    self.agent.selected_run_index = index;
-                    const entry = self.agent.run_history.items[index];
-                    if (self.agent.run_id) |old| self.allocator.free(old);
-                    self.agent.run_id = self.allocator.dupe(u8, entry.run_id) catch null;
-                    if (self.agent.proposal_rel) |old| self.allocator.free(old);
-                    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-                    const proposal_rel = std.fmt.bufPrint(&path_buf, ".forge/proposals/{s}.json", .{entry.run_id}) catch "";
-                    self.agent.proposal_rel = self.allocator.dupe(u8, proposal_rel) catch null;
-                }
-                self.agent.unlock();
-                if (self.agent.proposal_rel) |rel| {
-                    agent_workflow.loadProposalPreview(&self.agentHost(), rel) catch {};
-                    self.openProposalReview();
-                }
-            },
-            .agent_refresh_runs => try agent_workflow.refreshRunHistory(&self.agentHost()),
-            .agent_add_scope => |path| {
-                try self.agent.addScopeFile(path);
-                self.refreshAgentContextPreview();
-            },
-            .agent_remove_scope => |path| {
-                self.agent.removeScopeFile(path);
-                self.refreshAgentContextPreview();
-            },
-            .agent_clear_scope => {
-                self.agent.clearScope();
-                self.refreshAgentContextPreview();
-            },
-            .agent_scope_picker_open => try self.openScopePicker(),
-            .agent_scope_picker_close => self.agent.closeScopePicker(),
-            .agent_scope_picker_select => try self.selectScopePickerEntry(),
-            .agent_toggle_context_inspector => self.agent.toggleContextInspector(),
-            .agent_toggle_mode_menu => self.agent.toggleModeMenu(),
-            .agent_toggle_model_menu => self.agent.toggleModelMenu(),
-            .agent_close_menus => self.agent.closeMenus(),
-            .agent_set_model => |index| try self.setAgentModelIndex(index),
-            .agent_remove_attachment => |index| {
-                self.agent.removeAttachment(index);
-                self.refreshAgentContextPreview();
-                try self.setStatus("Attachment removed");
-            },
-            .set_shell_mode => |mode| {
-                self.shell_mode = mode;
-                if (mode == .agent_window) self.focused_panel = .agent;
-                try self.setStatus(switch (mode) {
-                    .ide => "IDE mode",
-                    .agent_window => "Agent window",
-                });
-            },
-            .toggle_shell_mode => {
-                self.shell_mode = if (self.shell_mode == .ide) .agent_window else .ide;
-                if (self.shell_mode == .agent_window) self.focused_panel = .agent;
-                try self.setStatus(switch (self.shell_mode) {
-                    .ide => "IDE mode",
-                    .agent_window => "Agent window",
-                });
-            },
-            .search_run => try self.runSearch(),
-            .git_refresh => try self.refreshGitStatus(),
-            .uninstall_extension => |extension_id| {
-                try plugin.marketplace.uninstall(self.allocator, self.io, self.workspace_root, extension_id);
-                try self.reloadExtensions();
-                self.extensions_detail_index = null;
-                try self.setStatus("Extension uninstalled");
-            },
-            .extensions_show_detail => |index| {
-                self.extensions_detail_index = index;
-                self.extensions_scroll_y = 0;
-            },
-            .extensions_back_from_detail => {
-                self.extensions_detail_index = null;
-                self.extensions_scroll_y = 0;
-            },
-            .set_bottom_panel_mode => |mode| {
-                self.bottom_panel_mode = mode;
-                self.task_scroll_y = 0;
-                if (mode == .terminal) {
-                    self.focused_panel = .terminal;
-                    self.terminal_boot_pending = true;
-                }
-            },
-            .terminal_submit => {
-                try self.refreshGitStatus();
-                try self.updateTerminalPrompt();
-            },
-            .terminal_new => {
-                try self.terminals.addSession();
-                self.bottom_panel_mode = .terminal;
-                self.focused_panel = .terminal;
-                self.terminal_boot_pending = true;
-                try self.setStatus("New terminal");
-            },
-            .terminal_close => {
-                if (self.terminals.closeActive()) {
-                    try self.setStatus("Terminal closed");
-                }
-            },
-            .terminal_next => {
-                self.terminals.next();
-                self.syncTerminalSize();
-            },
-            .terminal_prev => {
-                self.terminals.prev();
-                self.syncTerminalSize();
-            },
-            .terminal_activate => |index| {
-                self.terminals.activate(index);
-                self.syncTerminalSize();
-            },
-            .debug_toggle_breakpoint => try self.toggleBreakpointAtCursor(),
-            .debug_clear_breakpoints => {
-                self.breakpoints.clear();
-                try self.debug_console.log("Breakpoints cleared");
-            },
-            .rename_accept => try self.acceptRenamePreview(),
-            .rename_reject => self.rejectRenamePreview(),
-            .debug_run_launch => |index| try self.runLaunchConfig(index),
-            .debug_clear_console => self.debug_console.clear(),
-            .debug_continue => try self.debugContinue(),
-            .debug_step_over => try self.debugStepOver(),
-            .debug_step_into => try self.debugStepInto(),
-            .debug_step_out => try self.debugStepOut(),
-            .debug_stop => self.debugStop(),
-            .editor_completion => {
-                if (self.tabs.activeDoc()) |doc| self.completions.requestForDocument(doc);
-            },
-            .editor_find => try self.openEditorFind(false),
-            .editor_replace => try self.openEditorFind(true),
-            .editor_goto_line => try self.openGotoLine(),
-            .editor_find_next => try self.findNextMatch(),
-            .editor_find_prev => try self.findPrevMatch(),
-            .editor_find_close => self.closeEditorOverlay(),
-            .editor_redo => {
-                if (self.activeBuffer()) |buf| try buf.redo();
-            },
-            .editor_undo => {
-                if (self.activeBuffer()) |buf| try buf.undo();
-            },
-            .editor_scroll_to_cursor => self.scrollEditorToCursor(),
-            .editor_go_to_definition => try self.goToDefinition(),
-            .editor_find_references => try self.findReferences(),
-            .editor_rename_symbol => try self.openRenameSymbol(),
-            .editor_format_document => try self.formatDocument(),
-            .editor_split_right => try self.splitEditorRight(),
-            .editor_close_split => try self.closeEditorSplit(),
-            .editor_accept_inline_edit => {
-                if (self.tabs.activeDoc()) |doc| {
-                    try doc.buffer.acceptInlineEdit();
-                }
-            },
-            .editor_reject_inline_edit => {
-                if (self.tabs.activeDoc()) |doc| {
-                    try doc.buffer.rejectInlineEdit();
-                }
-            },
-            .references_goto => |index| try self.gotoReference(index),
-            .problems_goto => |index| try self.gotoProblem(index),
-            .completion_accept => {
-                if (self.tabs.activeDoc()) |doc| try self.completions.acceptSelected(doc);
-            },
-            .completion_dismiss => self.completions.dismiss(),
-            .save_session_state => try self.persistSessionState(),
-            .restore_session_state => try self.restoreSessionTabs(),
-            .settings_reload => try self.reloadUserSettings(),
-            .settings_toggle_word_wrap => try self.toggleWordWrap(),
-            .open_recent_workspace => |index| try self.openRecentWorkspace(index),
-            .problem_quick_fix => try self.quickFixAtCursor(),
-            .debug_stack_goto => |index| try self.gotoDebugStackFrame(index),
-            .debug_copy_variable => |index| try self.copyDebugVariable(index),
-            .ai_open_forge_toml => try self.openForgeToml(),
-            .ai_open_mcp_config => try self.openMcpConfig(),
-            .ai_toggle_mcp => try self.toggleAiMcp(),
-            .ai_refresh_mcp => try self.refreshAiMcpStatus(),
-            .toggle_sidebar => self.sidebar_visible = !self.sidebar_visible,
-            .toggle_bottom_panel => self.bottom_panel_visible = !self.bottom_panel_visible,
-            .toggle_agent_panel => self.agent_panel_visible = !self.agent_panel_visible,
-            .focus_agent => {
-                self.agent_panel_visible = true;
-                self.focused_panel = .agent;
-            },
-            .nav_back => try self.navBack(),
-            .nav_forward => try self.navForward(),
-            .open_ai_settings => try self.openAiSettings(),
-            .close_ai_settings => self.closeAiSettings(),
-            .close_proposal_review => self.closeProposalReview(),
-        }
+        return @import("workbench/dispatch.zig").dispatch(self, command);
     }
 
     fn clearScopePickerPaths(self: *Workbench) void {
-        for (self.scope_picker_paths.items) |path| self.allocator.free(path);
-        self.scope_picker_paths.clearRetainingCapacity();
-        self.scope_picker_filtered.clearRetainingCapacity();
+        @import("workbench/agent_ops.zig").clearScopePickerPaths(self);
     }
 
     pub fn openScopePicker(self: *Workbench) !void {
-        self.clearScopePickerPaths();
-        try agent_scope_picker.collectFilePaths(self.allocator, &self.explorer, &self.scope_picker_paths);
-        self.agent.openScopePicker();
-        try self.applyScopePickerFilter();
+        return @import("workbench/agent_ops.zig").openScopePicker(self);
     }
 
     pub fn applyScopePickerFilter(self: *Workbench) !void {
-        self.agent.lock();
-        const query = self.agent.scope_query[0..self.agent.scope_query_len];
-        self.agent.unlock();
-        try agent_scope_picker.applyFilter(self.allocator, query, self.scope_picker_paths.items, &self.scope_picker_filtered);
-        self.agent.lock();
-        if (self.agent.scope_picker_selected >= self.scope_picker_filtered.items.len) {
-            self.agent.scope_picker_selected = if (self.scope_picker_filtered.items.len > 0) self.scope_picker_filtered.items.len - 1 else 0;
-        }
-        self.agent.unlock();
+        return @import("workbench/agent_ops.zig").applyScopePickerFilter(self);
     }
 
     pub fn setAgentModelIndex(self: *Workbench, index: usize) !void {
-        const agent_composer = @import("ui/agent/agent_composer.zig");
-        if (index >= agent_composer.models.len) return;
-        const option = agent_composer.models[index];
-        if (self.ai_model) |old| self.allocator.free(old);
-        self.ai_model = try self.allocator.dupe(u8, option.id);
-        self.allocator.free(self.ai_provider);
-        self.ai_provider = try self.allocator.dupe(u8, option.provider);
-        self.agent.closeMenus();
-        try ai_config_io.writeAiProvider(self.allocator, self.io, self.workspace_root, option.provider);
-        try ai_config_io.writeAiModel(self.allocator, self.io, self.workspace_root, option.id);
-        try self.setStatus("Model saved to forge.toml");
+        return @import("workbench/agent_ops.zig").setAgentModelIndex(self, index);
     }
 
     pub fn refreshAiMcpStatus(self: *Workbench) !void {
-        if (self.ai_mcp_status) |old| self.allocator.free(old);
-        self.ai_mcp_status = null;
-
-        if (!self.ai_mcp_enabled) {
-            self.ai_mcp_status = try self.allocator.dupe(u8, "MCP disabled in forge.toml ([ai] mcp = false)");
-            return;
-        }
-
-        var registry = ai.mcp_registry.Registry.load(
-            self.allocator,
-            self.io,
-            self.workspace_root,
-            self.workspace_path,
-            true,
-            resolveWorkbenchHome(self.environ_map),
-            self.environ_map,
-        ) catch |err| {
-            const msg = try std.fmt.allocPrint(self.allocator, "MCP load failed: {}", .{err});
-            self.ai_mcp_status = msg;
-            return;
-        };
-        defer registry.deinit();
-        self.ai_mcp_status = try self.allocator.dupe(u8, registry.status_lines);
+        return @import("workbench/agent_ops.zig").refreshAiMcpStatus(self);
     }
 
     pub fn toggleAiMcp(self: *Workbench) !void {
-        const next = !self.ai_mcp_enabled;
-        try ai_config_io.writeAiMcp(self.allocator, self.io, self.workspace_root, next);
-        self.ai_mcp_enabled = next;
-        try self.refreshAiMcpStatus();
-        try self.setStatus(if (next) "MCP tools enabled" else "MCP tools disabled");
+        return @import("workbench/agent_ops.zig").toggleAiMcp(self);
     }
 
     pub fn openForgeToml(self: *Workbench) !void {
-        try self.openFile("forge.toml");
+        return @import("workbench/agent_ops.zig").openForgeToml(self);
     }
 
     pub fn openMcpConfig(self: *Workbench) !void {
-        try self.ensureMcpConfigFile();
-        const candidates = [_][]const u8{ ".mcp.json", ".cursor/mcp.json", ".vscode/mcp.json" };
-        for (candidates) |rel| {
-            const wp = workspace.WorkspacePath.parse(rel) catch continue;
-            var snap = workspace.FileSnapshot.read(self.allocator, self.io, self.workspace_root, wp) catch continue;
-            snap.deinit();
-            try self.openFile(rel);
-            return;
-        }
-        try self.openFile(".mcp.json");
+        return @import("workbench/agent_ops.zig").openMcpConfig(self);
     }
 
     fn ensureMcpConfigFile(self: *Workbench) !void {
-        const target = try workspace.WorkspacePath.parse(".mcp.json");
-        if (workspace.FileSnapshot.read(self.allocator, self.io, self.workspace_root, target)) |snap| {
-            var owned = snap;
-            owned.deinit();
-            return;
-        } else |_| {}
-
-        const example = try workspace.WorkspacePath.parse(".mcp.json.example");
-        var example_snap = try workspace.FileSnapshot.read(self.allocator, self.io, self.workspace_root, example);
-        defer example_snap.deinit();
-        try workspace.atomic.replaceFile(self.io, self.workspace_root, target, example_snap.content);
+        return @import("workbench/agent_ops.zig").ensureMcpConfigFile(self);
     }
 
     pub fn openAiSettings(self: *Workbench) !void {
-        if (!self.ai_settings_open) {
-            self.previous_focus = self.focused_panel;
-        }
-        self.ai_settings_open = true;
-        self.sidebar_visible = true;
-        self.sidebar_view = .ai;
-        self.focused_panel = .ai_settings;
-        self.ai_settings_scroll_y = 0;
-        try self.refreshAiMcpStatus();
+        return @import("workbench/agent_ops.zig").openAiSettings(self);
     }
 
     pub fn closeAiSettings(self: *Workbench) void {
-        self.ai_settings_open = false;
-        if (self.focused_panel == .ai_settings) {
-            self.focused_panel = if (self.previous_focus == .ai_settings) .editor else self.previous_focus;
-        }
-        if (self.sidebar_view == .ai) self.sidebar_view = .explorer;
+        @import("workbench/agent_ops.zig").closeAiSettings(self);
     }
 
     pub fn openProposalReview(self: *Workbench) void {
-        if (!self.proposal_review_open) {
-            self.previous_focus = self.focused_panel;
-        }
-        self.proposal_review_open = true;
-        self.proposal_review_scroll_y = 0;
-        self.proposal_review_file_index = 0;
-        self.focused_panel = .proposal_review;
+        @import("workbench/agent_ops.zig").openProposalReview(self);
     }
 
     pub fn closeProposalReview(self: *Workbench) void {
-        self.proposal_review_open = false;
-        if (self.focused_panel == .proposal_review) {
-            self.focused_panel = if (self.previous_focus == .proposal_review) .agent else self.previous_focus;
-        }
+        @import("workbench/agent_ops.zig").closeProposalReview(self);
     }
 
     pub fn handleProposalReviewClick(self: *Workbench, hit: @import("ui/editor/proposal_review_panel.zig").Hit) !void {
-        switch (hit) {
-            .close_tab => self.closeProposalReview(),
-            .select_file => |index| {
-                self.proposal_review_file_index = index;
-                self.proposal_review_scroll_y = 0;
-            },
-            .toggle_hunk => |index| {
-                self.agent.lock();
-                self.agent.review.toggle(index);
-                self.agent.unlock();
-            },
-            .apply => try self.dispatch(.agent_apply),
-            .reject => try self.dispatch(.agent_reject),
-        }
+        return @import("workbench/agent_ops.zig").handleProposalReviewClick(self, hit);
     }
 
     pub fn clampProposalReviewScroll(self: *Workbench, editor_h: f32) void {
-        if (!self.proposal_review_open) return;
-        self.agent.lock();
-        const hunks = self.agent.review.hunks;
-        const file_index = self.proposal_review_file_index;
-        self.agent.unlock();
-        const panel = @import("ui/editor/proposal_review_panel.zig");
-        var files = panel.collectFiles(self.allocator, hunks) catch return;
-        defer files.deinit(self.allocator);
-        self.proposal_review_scroll_y = panel.clampScrollY(
-            self.proposal_review_scroll_y,
-            editor_h,
-            hunks,
-            file_index,
-            files.items,
-        );
+        @import("workbench/scroll.zig").clampProposalReviewScroll(self, editor_h);
     }
 
     pub fn handleAiSettingsClick(self: *Workbench, hit: @import("ui/agent/ai_settings_panel.zig").Hit) !void {
-        switch (hit) {
-            .toggle_mcp => try self.toggleAiMcp(),
-            .open_forge_toml => {
-                self.closeAiSettings();
-                try self.openForgeToml();
-            },
-            .open_mcp_json => {
-                self.closeAiSettings();
-                try self.openMcpConfig();
-            },
-            .refresh_mcp => try self.refreshAiMcpStatus(),
-            .close_tab => self.closeAiSettings(),
-        }
+        return @import("workbench/agent_ops.zig").handleAiSettingsClick(self, hit);
     }
 
     fn resolveWorkbenchHome(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
-        if (environ_map) |map| return map.get("HOME");
-        return null;
+        return @import("workbench/agent_ops.zig").resolveWorkbenchHome(environ_map);
     }
 
     pub fn pasteIntoAgent(self: *Workbench) !void {
-        const timestamp_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const rel_path = try std.fmt.bufPrint(&path_buf, ".forge/attachments/att_{d}.png", .{timestamp_ms});
-        var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const abs_path = try std.fmt.bufPrint(&abs_buf, "{s}/{s}", .{ self.workspace_path, rel_path });
-
-        try self.ensureAgentAttachmentsDir();
-
-        if (renderer.Renderer.saveClipboardPng(abs_path)) {
-            var label_buf: [64:0]u8 = undefined;
-            const label = std.fmt.bufPrint(&label_buf, "image_{d}.png", .{timestamp_ms}) catch "image.png";
-            label_buf[label.len] = 0;
-            try self.agent.addAttachment(.{
-                .kind = .image,
-                .label = try self.allocator.dupe(u8, label_buf[0..label.len]),
-                .stored_path = try self.allocator.dupe(u8, rel_path),
-                .text_preview = null,
-            });
-            self.refreshAgentContextPreview();
-            try self.setStatus("Pasted image attachment");
-            return;
-        }
-
-        const text = renderer.Renderer.clipboardText(self.allocator) catch return;
-        defer self.allocator.free(text);
-        if (text.len == 0) return;
-
-        if (text.len > 4096) {
-            var label_buf: [32:0]u8 = undefined;
-            const label = std.fmt.bufPrint(&label_buf, "paste_{d}.txt", .{timestamp_ms}) catch "paste.txt";
-            label_buf[label.len] = 0;
-            const preview = try self.allocator.dupe(u8, text[0..4096]);
-            try self.agent.addAttachment(.{
-                .kind = .text_snippet,
-                .label = try self.allocator.dupe(u8, label_buf[0..label.len]),
-                .stored_path = null,
-                .text_preview = preview,
-            });
-            self.refreshAgentContextPreview();
-            try self.setStatus("Pasted text attachment");
-            return;
-        }
-
-        try self.prompt_buffer.insertString(text);
-        self.ensurePromptCursorVisible();
+        return @import("workbench/agent_ops.zig").pasteIntoAgent(self);
     }
 
-    fn composerInputHeight(self: *Workbench, agent_w: f32) f32 {
+    pub fn composerInputHeight(self: *Workbench, agent_w: f32) f32 {
         const ac = @import("ui/agent/agent_composer.zig");
         self.agent.lock();
         const attachment_count = self.agent.attachments.items.len;
@@ -1174,82 +479,26 @@ pub const Workbench = struct {
     }
 
     pub fn clampPromptScroll(self: *Workbench, agent_w: f32) void {
-        const ac = @import("ui/agent/agent_composer.zig");
-        const visual_lines = ac.visualLineCount(&self.prompt_buffer, agent_w);
-        const input_h = self.composerInputHeight(agent_w);
-        self.prompt_scroll_y = ac.clampPromptScroll(self.prompt_scroll_y, visual_lines, input_h);
+        @import("workbench/scroll.zig").clampPromptScroll(self, agent_w);
     }
 
     pub fn ensurePromptCursorVisible(self: *Workbench) void {
-        var w: f32 = 0;
-        var h: f32 = 0;
-        renderer.Renderer.getWindowSize(&w, &h);
-        const geo = self.layoutGeometry(w, h);
-        const ac = @import("ui/agent/agent_composer.zig");
-        const max_w = ac.promptMaxWidth(geo.agent_w);
-        const input_h = self.composerInputHeight(geo.agent_w);
-        self.prompt_scroll_y = ac.ensureCursorVisible(self.prompt_scroll_y, &self.prompt_buffer, max_w, input_h);
+        @import("workbench/agent_ops.zig").ensurePromptCursorVisible(self);
     }
 
     fn ensureAgentAttachmentsDir(self: *Workbench) !void {
-        var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const dir_path = try std.fmt.bufPrint(&dir_buf, "{s}/.forge/attachments", .{self.workspace_path});
-        std.Io.Dir.createDirPath(std.Io.Dir.cwd(), self.io, dir_path) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
+        return @import("workbench/agent_ops.zig").ensureAgentAttachmentsDir(self);
     }
 
     pub fn refreshAgentContextPreview(self: *Workbench) void {
-        const host = self.agentHost();
-        const active = self.tabs.activeDoc();
-        const active_path = if (active) |doc| doc.path else null;
-        const intent_owned = blk: {
-            self.agent.lock();
-            defer self.agent.unlock();
-            if (self.agent.intent) |text| break :blk self.allocator.dupe(u8, text) catch null;
-            break :blk null;
-        };
-        if (intent_owned) |intent| {
-            defer self.allocator.free(intent);
-            agent_workflow.refreshContextPreview(&host, intent, active_path) catch {};
-            return;
-        }
-        const prompt = self.prompt_buffer.content() catch return;
-        defer self.prompt_buffer.allocator.free(prompt);
-        const trimmed = std.mem.trim(u8, prompt, &std.ascii.whitespace);
-        if (trimmed.len == 0) {
-            agent_workflow.refreshContextPreview(&host, null, active_path) catch {};
-        } else {
-            agent_workflow.refreshContextPreview(&host, trimmed, active_path) catch {};
-        }
+        @import("workbench/agent_ops.zig").refreshAgentContextPreview(self);
     }
 
     pub fn selectScopePickerEntry(self: *Workbench) !void {
-        const query = self.agent.scope_query[0..self.agent.scope_query_len];
-        const total_rows = agent_scope_picker.visibleRowCount(self.scope_picker_filtered.items.len, query);
-        if (total_rows == 0) {
-            self.agent.closeScopePicker();
-            return;
-        }
-        self.agent.lock();
-        const selected = self.agent.scope_picker_selected;
-        self.agent.unlock();
-
-        if (agent_scope_picker.pinnedMarkerAt(query, selected)) |marker| {
-            try self.agent.addScopeFile(marker);
-        } else if (agent_scope_picker.fileListIndex(selected, query)) |list_index| {
-            if (list_index >= self.scope_picker_filtered.items.len) return;
-            const path_index = self.scope_picker_filtered.items[list_index];
-            const path = self.scope_picker_paths.items[path_index];
-            try self.agent.addScopeFile(path);
-        }
-        self.agent.closeScopePicker();
-        self.refreshAgentContextPreview();
-        try self.setStatus("Added to agent scope");
+        return @import("workbench/agent_ops.zig").selectScopePickerEntry(self);
     }
 
-    fn updateTabPath(self: *Workbench, old_path: []const u8, new_path: []const u8) !void {
+    pub fn updateTabPath(self: *Workbench, old_path: []const u8, new_path: []const u8) !void {
         for (self.tabs.tabs.items) |*doc| {
             if (!std.mem.eql(u8, doc.path, old_path)) continue;
             self.allocator.free(doc.path);
@@ -1366,87 +615,19 @@ pub const Workbench = struct {
     }
 
     pub fn clampEditorScroll(self: *Workbench, editor_w: f32, editor_h: f32) void {
-        const scroll = @import("ui/editor/editor_scroll.zig");
-        const word_wrap = @import("ui/editor/word_wrap.zig");
-        const pane_w = self.paneWidth(editor_w);
-        const viewport_w = scroll.viewportWidth(pane_w, &self.theme);
-        const wrap = self.user_settings.word_wrap;
-
-        if (self.docForPane(.primary)) |doc| {
-            if (wrap) {
-                self.editor_scroll_y = std.math.clamp(
-                    self.editor_scroll_y,
-                    0,
-                    word_wrap.maxScrollY(&doc.buffer, editor_h, viewport_w, self.theme.editor_font_size, &self.theme),
-                );
-                self.editor_scroll_x = 0;
-            } else {
-                const max_line_len = scroll.longestLineLen(&doc.buffer);
-                const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&self.theme);
-                self.editor_scroll_y = scroll.clampScrollY(self.editor_scroll_y, doc.buffer.lineCount(), editor_h, &self.theme);
-                self.editor_scroll_x = scroll.clampScrollX(self.editor_scroll_x, content_w, pane_w, &self.theme);
-            }
-        } else {
-            self.editor_scroll_y = 0;
-            self.editor_scroll_x = 0;
-        }
-        if (self.editor_split) {
-            if (self.docForPane(.secondary)) |doc| {
-                if (wrap) {
-                    self.split_scroll_y = std.math.clamp(
-                        self.split_scroll_y,
-                        0,
-                        word_wrap.maxScrollY(&doc.buffer, editor_h, viewport_w, self.theme.editor_font_size, &self.theme),
-                    );
-                    self.split_scroll_x = 0;
-                } else {
-                    const max_line_len = scroll.longestLineLen(&doc.buffer);
-                    const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&self.theme);
-                    self.split_scroll_y = scroll.clampScrollY(self.split_scroll_y, doc.buffer.lineCount(), editor_h, &self.theme);
-                    self.split_scroll_x = scroll.clampScrollX(self.split_scroll_x, content_w, pane_w, &self.theme);
-                }
-            } else {
-                self.split_scroll_y = 0;
-                self.split_scroll_x = 0;
-            }
-        }
+        @import("workbench/scroll.zig").clampEditorScroll(self, editor_w, editor_h);
     }
 
     pub fn clampExplorerScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/sidebar/explorer_scroll.zig");
-        self.explorer_scroll_y = scroll.clampScrollY(
-            self.explorer_scroll_y,
-            self.explorer.entries.len,
-            window_h,
-        );
+        @import("workbench/scroll.zig").clampExplorerScroll(self, window_h);
     }
 
     pub fn clampExtensionsScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/sidebar/extensions_panel.zig");
-        const catalog_ptr: ?*const plugin.MarketplaceCatalog = if (self.marketplace_catalog) |*catalog| catalog else null;
-        self.extensions_scroll_y = scroll.clampScrollY(
-            self.extensions_scroll_y,
-            &self.extension_host,
-            catalog_ptr,
-            self.extensions_panel_mode,
-            window_h,
-            self.extensionsFilterSlice(),
-            self.extensions_detail_index,
-        );
+        @import("workbench/scroll.zig").clampExtensionsScroll(self, window_h);
     }
 
     pub fn clampAiSettingsScroll(self: *Workbench, editor_h: f32) void {
-        const panel = @import("ui/agent/ai_settings_panel.zig");
-        const lines = blk: {
-            const status = self.ai_mcp_status orelse break :blk @as(usize, 1);
-            if (status.len == 0) break :blk @as(usize, 1);
-            var count: usize = 1;
-            for (status) |ch| {
-                if (ch == '\n') count += 1;
-            }
-            break :blk count;
-        };
-        self.ai_settings_scroll_y = panel.clampScrollY(self.ai_settings_scroll_y, editor_h, lines);
+        @import("workbench/scroll.zig").clampAiSettingsScroll(self, editor_h);
     }
 
     pub fn extensionsFilterSlice(self: *const Workbench) []const u8 {
@@ -1454,21 +635,15 @@ pub const Workbench = struct {
     }
 
     pub fn clampSearchScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/sidebar/search_panel.zig");
-        const count = if (self.search_results) |results| results.matches.len else 0;
-        self.search_scroll_y = scroll.clampScrollY(self.search_scroll_y, count, window_h);
+        @import("workbench/scroll.zig").clampSearchScroll(self, window_h);
     }
 
     pub fn clampGitScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/sidebar/git_panel.zig");
-        const count = if (self.git_status) |status| status.entries.len else 0;
-        self.git_scroll_y = scroll.clampScrollY(self.git_scroll_y, count, window_h);
+        @import("workbench/scroll.zig").clampGitScroll(self, window_h);
     }
 
     pub fn clampRunScroll(self: *Workbench, window_h: f32) void {
-        const scroll = @import("ui/sidebar/debug_panel.zig");
-        const debug_active = self.debug_lldb.isActive();
-        self.run_scroll_y = scroll.clampScrollY(self.run_scroll_y, self.breakpoints.items.items.len, window_h, debug_active);
+        @import("workbench/scroll.zig").clampRunScroll(self, window_h);
     }
 
     pub fn bottomPanelLineCount(self: *const Workbench) usize {
@@ -1496,14 +671,7 @@ pub const Workbench = struct {
     }
 
     pub fn clampBottomPanelScroll(self: *Workbench, panel_h: f32) void {
-        const panel_scroll = @import("ui/core/panel_scroll.zig");
-        const viewport = panel_scroll.bottomViewportHeight(panel_h);
-        self.task_scroll_y = panel_scroll.clampScrollY(
-            self.task_scroll_y,
-            self.bottomPanelLineCount(),
-            viewport,
-            panel_scroll.bottom_line_h,
-        );
+        @import("workbench/scroll.zig").clampBottomPanelScroll(self, panel_h);
     }
 
     pub fn copyTerminalSelection(self: *Workbench) !void {
@@ -1526,330 +694,83 @@ pub const Workbench = struct {
     }
 
     pub fn clampChatScroll(self: *Workbench, agent_h: f32) void {
-        const panel_scroll = @import("ui/core/panel_scroll.zig");
-        const layout_mod = @import("ui/core/layout.zig");
-        const context_inspector_mod = @import("ui/agent/context_inspector.zig");
-        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
-        const chat_bubble_mod = @import("ui/agent/chat_bubble.zig");
-        const content_w = @max(40, self.agent_panel_width - 40);
-        var estimated_lines: usize = 0;
-        for (self.chat_history.items) |msg| {
-            if (!agent_panel_mod.chatHasVisibleContent(msg.content)) continue;
-            const msg_h = chat_bubble_mod.historyMessageHeight(msg.role == .user, msg.content, content_w);
-            estimated_lines += @max(1, @as(usize, @intFromFloat(std.math.ceil(msg_h / chat_bubble_mod.line_h))));
-        }
-        self.agent.lock();
-        if (self.agent.worker_running) {
-            estimated_lines += chat_bubble_mod.estimateLiveLines(
-                self.agent.thinking_text.items,
-                self.agent.stream_text.items,
-                true,
-                content_w,
-            );
-            const tool_step_card_mod = @import("ui/agent/tool_step_card.zig");
-            const steps_h = tool_step_card_mod.totalStepsHeight(self.agent.agent_steps.items, content_w);
-            estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
-        }
-        const entry_count = self.agent.context_entries.items.len;
-        const expanded = self.agent.context_inspector_expanded;
-        const has_detail = self.agent.context_selected_index != null and expanded;
-        const attachment_count = self.agent.attachments.items.len;
-        self.agent.unlock();
-        const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail);
-        const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
-        self.chat_scroll_y = panel_scroll.clampScrollY(
-            self.chat_scroll_y,
-            estimated_lines,
-            viewport,
-            chat_bubble_mod.line_h,
-        );
+        @import("workbench/scroll.zig").clampChatScroll(self, agent_h);
     }
 
     pub fn scrollChatToEnd(self: *Workbench, agent_h: f32) void {
-        const layout_mod = @import("ui/core/layout.zig");
-        const context_inspector_mod = @import("ui/agent/context_inspector.zig");
-        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
-        const chat_bubble_mod = @import("ui/agent/chat_bubble.zig");
-        const content_w = @max(40, self.agent_panel_width - 40);
-        var estimated_lines: usize = 0;
-        for (self.chat_history.items) |msg| {
-            if (!agent_panel_mod.chatHasVisibleContent(msg.content)) continue;
-            const msg_h = chat_bubble_mod.historyMessageHeight(msg.role == .user, msg.content, content_w);
-            estimated_lines += @max(1, @as(usize, @intFromFloat(std.math.ceil(msg_h / chat_bubble_mod.line_h))));
-        }
-        self.agent.lock();
-        if (self.agent.worker_running) {
-            estimated_lines += chat_bubble_mod.estimateLiveLines(
-                self.agent.thinking_text.items,
-                self.agent.stream_text.items,
-                true,
-                content_w,
-            );
-            const tool_step_card_mod = @import("ui/agent/tool_step_card.zig");
-            const steps_h = tool_step_card_mod.totalStepsHeight(self.agent.agent_steps.items, content_w);
-            estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
-        }
-        const entry_count = self.agent.context_entries.items.len;
-        const expanded = self.agent.context_inspector_expanded;
-        const has_detail = self.agent.context_selected_index != null and expanded;
-        const attachment_count = self.agent.attachments.items.len;
-        self.agent.unlock();
-        const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail);
-        const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
-        const content_h = @as(f32, @floatFromInt(estimated_lines)) * chat_bubble_mod.line_h;
-        self.chat_scroll_y = @max(0, content_h - viewport);
+        @import("workbench/agent_ops.zig").scrollChatToEnd(self, agent_h);
     }
 
     pub fn clampReviewScroll(self: *Workbench, agent_h: f32) void {
-        const panel_scroll = @import("ui/core/panel_scroll.zig");
-        const layout_mod = @import("ui/core/layout.zig");
-        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
-        self.agent.lock();
-        const content_h = agent_panel_mod.reviewContentHeight(&self.agent);
-        self.agent.unlock();
-        const viewport = @max(0, agent_h - layout_mod.status_height - 200);
-        self.agent.review_scroll_y = panel_scroll.clampScrollY(
-            self.agent.review_scroll_y,
-            @intFromFloat(content_h),
-            viewport,
-            1.0,
-        );
+        @import("workbench/scroll.zig").clampReviewScroll(self, agent_h);
     }
 
     pub fn toggleBreakpointAtCursor(self: *Workbench) !void {
-        const doc = self.tabs.activeDoc() orelse return;
-        const row = doc.buffer.cursor.row;
-        const added = try self.breakpoints.toggle(doc.path, row);
-        var buf: [128]u8 = undefined;
-        const msg = if (added)
-            try std.fmt.bufPrint(&buf, "Breakpoint set at {s}:{d}", .{ doc.path, row + 1 })
-        else
-            try std.fmt.bufPrint(&buf, "Breakpoint removed at {s}:{d}", .{ doc.path, row + 1 });
-        try self.debug_console.log(msg);
-        try self.setStatus(msg);
-        try self.persistSessionState();
+        return @import("workbench/debug_ops.zig").toggleBreakpointAtCursor(self);
     }
 
     pub fn runLaunchConfig(self: *Workbench, index: usize) !void {
-        const panel = @import("ui/sidebar/debug_panel.zig");
-        if (index >= panel.default_launches.len) return;
-        const launch = panel.default_launches[index];
-
-        if (std.mem.eql(u8, launch.task, "debug_current")) {
-            const path = self.activeFilePath() orelse {
-                try self.setStatus("No file open for debug");
-                return;
-            };
-            if (self.task_output.isRunning()) {
-                try self.setStatus("Task already running");
-                return;
-            }
-            self.task_output.clear();
-            self.task_output.setRunning(true);
-            self.debug_console.clear();
-            self.clearDebugStop();
-            self.clearDebugInspect();
-            try self.debug_console.log("Starting interactive lldb session…");
-            try self.debug_lldb.start(
-                self.allocator,
-                self.workspace_path,
-                path,
-                &self.breakpoints,
-                onDebugLine,
-                onDebugLldbFinished,
-                self,
-            );
-            self.bottom_panel_mode = .debug_console;
-            self.focused_panel = .run;
-            try self.setStatus("Debug session started");
-            return;
-        }
-
-        var buf: [128]u8 = undefined;
-        const msg = try std.fmt.bufPrint(&buf, "Launch: {s}", .{launch.label});
-        try self.debug_console.log(msg);
-        if (self.task_output.isRunning()) {
-            try self.setStatus("Task already running");
-            return;
-        }
-        self.task_output.clear();
-        self.task_output.setRunning(true);
-        try tasks_mod.spawn(
-            self.allocator,
-            self.io,
-            launch.task,
-            self.workspace_path,
-            Workbench.onTaskLine,
-            Workbench.onTaskFinished,
-            self,
-        );
-        self.bottom_panel_mode = .debug_console;
-        self.focused_panel = .run;
+        return @import("workbench/debug_ops.zig").runLaunchConfig(self, index);
     }
 
     fn onDebugLine(context: ?*anyopaque, line: []const u8) void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        self.debug_console.log(line) catch {};
-        if (debug_variables_mod.parseVariableLine(line)) |parsed| {
-            self.debug_variables.addParsed(parsed) catch {};
-            self.bottom_panel_mode = .debug_variables;
-        }
-        if (debug_callstack_mod.parseFrameLine(line)) |parsed| {
-            self.debug_callstack.addFrame(parsed) catch {};
-            self.bottom_panel_mode = .debug_callstack;
-        }
-        if (debug_stop_mod.parseStopLine(line)) |loc| {
-            self.applyDebugStop(loc.path, loc.line);
-        }
+        @import("workbench/debug_ops.zig").onDebugLine(context, line);
     }
 
     fn clearDebugStop(self: *Workbench) void {
-        if (self.debug_stop_path) |path| self.allocator.free(path);
-        self.debug_stop_path = null;
-        self.debug_stop_line = null;
+        @import("workbench/debug_ops.zig").clearDebugStop(self);
     }
 
     fn applyDebugStop(self: *Workbench, parsed_path: []const u8, line: usize) void {
-        for (self.tabs.tabs.items) |doc| {
-            if (!debug_stop_mod.pathsMatch(doc.path, parsed_path)) continue;
-            if (self.debug_stop_path) |old| {
-                if (std.mem.eql(u8, old, doc.path) and self.debug_stop_line == line) return;
-                self.allocator.free(old);
-            }
-            self.debug_stop_path = self.allocator.dupe(u8, doc.path) catch return;
-            self.debug_stop_line = line;
-            if (self.debug_lldb.isActive()) {
-                self.debug_lldb.refreshBacktrace() catch {};
-            }
-            if (self.activeFilePath()) |active| {
-                if (std.mem.eql(u8, active, doc.path)) self.scrollEditorToLine(line);
-            }
-            return;
-        }
+        @import("workbench/debug_ops.zig").applyDebugStop(self, parsed_path, line);
     }
 
     fn scrollEditorToLine(self: *Workbench, line: usize) void {
-        if (self.activeBuffer()) |buf| {
-            buf.cursor.row = @intCast(@min(line, buf.lineCount() - 1));
-            buf.cursor.col = 0;
-        }
-        self.scrollEditorToCursor();
+        @import("workbench/debug_ops.zig").scrollEditorToLine(self, line);
     }
 
     fn clearDebugInspect(self: *Workbench) void {
-        self.debug_variables.clear();
-        self.debug_callstack.clear();
+        @import("workbench/debug_ops.zig").clearDebugInspect(self);
     }
 
     fn onDebugLldbFinished(context: ?*anyopaque, exit_code: i32) void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        self.clearDebugStop();
-        self.clearDebugInspect();
-        self.task_output.setRunning(false);
-        var buf: [64]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Debug session ended (exit {d})", .{exit_code}) catch "Debug session ended";
-        self.debug_console.log(msg) catch {};
-        self.setStatus(if (exit_code == 0) "Debug session ended" else "Debug failed") catch {};
+        @import("workbench/debug_ops.zig").onDebugLldbFinished(context, exit_code);
     }
 
     fn onDebugFinished(context: ?*anyopaque, exit_code: i32) void {
-        onDebugLldbFinished(context, exit_code);
+        @import("workbench/debug_ops.zig").onDebugFinished(context, exit_code);
     }
 
     pub fn debugContinue(self: *Workbench) !void {
-        if (!self.debug_lldb.isActive()) {
-            try self.setStatus("No active debug session");
-            return;
-        }
-        self.clearDebugInspect();
-        try self.debug_lldb.continueExecution();
-        try self.setStatus("Debug: continue");
+        return @import("workbench/debug_ops.zig").debugContinue(self);
     }
 
     pub fn debugStepOver(self: *Workbench) !void {
-        if (!self.debug_lldb.isActive()) {
-            try self.setStatus("No active debug session");
-            return;
-        }
-        self.clearDebugInspect();
-        try self.debug_lldb.stepOver();
-        try self.setStatus("Debug: step over");
+        return @import("workbench/debug_ops.zig").debugStepOver(self);
     }
 
     pub fn debugStepInto(self: *Workbench) !void {
-        if (!self.debug_lldb.isActive()) {
-            try self.setStatus("No active debug session");
-            return;
-        }
-        self.clearDebugInspect();
-        try self.debug_lldb.stepInto();
-        try self.setStatus("Debug: step into");
+        return @import("workbench/debug_ops.zig").debugStepInto(self);
     }
 
     pub fn debugStepOut(self: *Workbench) !void {
-        if (!self.debug_lldb.isActive()) {
-            try self.setStatus("No active debug session");
-            return;
-        }
-        self.clearDebugInspect();
-        try self.debug_lldb.stepOut();
-        try self.setStatus("Debug: step out");
+        return @import("workbench/debug_ops.zig").debugStepOut(self);
     }
 
     pub fn debugStop(self: *Workbench) void {
-        if (!self.debug_lldb.isActive()) return;
-        self.debug_lldb.stop();
-        self.clearDebugStop();
-        self.clearDebugInspect();
-        self.task_output.setRunning(false);
-        self.debug_console.log("Debug session stopped") catch {};
+        @import("workbench/debug_ops.zig").debugStop(self);
     }
 
     pub fn handleDebugClick(self: *Workbench, hit: @import("ui/sidebar/debug_panel.zig").Hit) !void {
-        switch (hit) {
-            .run_launch => |index| try self.dispatch(.{ .debug_run_launch = index }),
-            .toggle_breakpoint => try self.dispatch(.debug_toggle_breakpoint),
-            .clear_breakpoints => try self.dispatch(.debug_clear_breakpoints),
-            .debug_control => |control| switch (control) {
-                .continue_exec => try self.dispatch(.debug_continue),
-                .step_over => try self.dispatch(.debug_step_over),
-                .step_into => try self.dispatch(.debug_step_into),
-                .step_out => try self.dispatch(.debug_step_out),
-                .stop => self.dispatch(.debug_stop) catch {},
-            },
-        }
+        return @import("workbench/debug_ops.zig").handleDebugClick(self, hit);
     }
 
     pub fn runSearch(self: *Workbench) !void {
-        const query = try self.search_buffer.content();
-        defer self.search_buffer.allocator.free(query);
-        if (self.search_results) |*results| results.deinit(self.allocator);
-        self.search_results = try search_engine.searchWorkspace(
-            self.allocator,
-            self.io,
-            self.workspace_root,
-            &self.explorer,
-            query,
-        );
-        self.search_scroll_y = 0;
-        var buf: [96]u8 = undefined;
-        const count = self.search_results.?.matches.len;
-        const msg = try std.fmt.bufPrint(&buf, "Search: {d} result(s)", .{count});
-        try self.setStatus(msg);
+        return @import("workbench/search_ops.zig").runSearch(self);
     }
 
     pub fn refreshGitStatus(self: *Workbench) !void {
-        const new_status = try git_status_mod.refresh(self.allocator, self.workspace_path);
-        if (self.git_status) |*status| status.deinit(self.allocator);
-        self.git_status = new_status;
-        self.git_scroll_y = 0;
-        if (self.git_status.?.is_repo) {
-            var buf: [96]u8 = undefined;
-            const msg = try std.fmt.bufPrint(&buf, "Git: {d} change(s)", .{self.git_status.?.entries.len});
-            try self.setStatus(msg);
-        } else {
-            try self.setStatus("Not a git repository");
-        }
+        return @import("workbench/git_ops.zig").refreshGitStatus(self);
     }
 
     pub fn updateTerminalPrompt(self: *Workbench) !void {
@@ -1860,154 +781,31 @@ pub const Workbench = struct {
     }
 
     pub fn handleSearchClick(self: *Workbench, hit: @import("ui/sidebar/search_panel.zig").Hit) !void {
-        switch (hit) {
-            .run_search => try self.dispatch(.search_run),
-            .open_result => |index| {
-                const results = self.search_results orelse return;
-                if (index >= results.matches.len) return;
-                const match = results.matches[index];
-                const path = try self.allocator.dupe(u8, match.path);
-                defer self.allocator.free(path);
-                try self.dispatch(.{ .open_file = path });
-                if (match.line) |line| {
-                    if (self.activeBuffer()) |buf| {
-                        if (line < buf.lineCount()) {
-                            buf.cursor.row = line;
-                            buf.cursor.col = 0;
-                        }
-                    }
-                }
-            },
-        }
+        return @import("workbench/search_ops.zig").handleSearchClick(self, hit);
     }
 
     pub fn handleGitClick(self: *Workbench, hit: @import("ui/sidebar/git_panel.zig").Hit) !void {
-        switch (hit) {
-            .refresh => try self.dispatch(.git_refresh),
-            .commit => try self.commitStagedChanges(),
-            .ai_generate => try self.setStatus("AI Commit Generation not yet implemented"),
-            .view_as_tree => try self.setStatus("View as tree not yet implemented"),
-            .more_actions => try self.setStatus("More actions not yet implemented"),
-            .focus_commit_msg => {
-                // Focus is already set to .git by input.zig
-            },
-            .toggle_staged_section => self.git_staged_collapsed = !self.git_staged_collapsed,
-            .toggle_changes_section => self.git_changes_collapsed = !self.git_changes_collapsed,
-            .toggle_file_staged => |index| {
-                const status = self.git_status orelse return;
-                if (index >= status.entries.len) return;
-                const entry = status.entries[index];
-                const process_spawn = @import("forge-util").process_spawn;
-                if (entry.isStaged() and !entry.isUnstaged()) {
-                    // It is ONLY staged. Unstage it.
-                    _ = process_spawn.runWait(self.allocator, &.{ "git", "restore", "--staged", entry.path }, .{ .cwd = self.workspace_path }) catch {};
-                } else if (entry.isUnstaged()) {
-                    // It is unstaged. Stage it.
-                    _ = process_spawn.runWait(self.allocator, &.{ "git", "add", entry.path }, .{ .cwd = self.workspace_path }) catch {};
-                }
-                try self.refreshGitStatus();
-            },
-            .open_file => |index| {
-                const status = self.git_status orelse return;
-                if (index >= status.entries.len) return;
-                const entry = status.entries[index];
-                const path = try self.allocator.dupe(u8, entry.path);
-                defer self.allocator.free(path);
-                const untracked = entry.status[0] == '?' or entry.status[1] == '?';
-                try self.showGitDiff(path, untracked);
-                const open_path = try self.allocator.dupe(u8, path);
-                try self.dispatch(.{ .open_file = open_path });
-            },
-        }
+        return @import("workbench/git_ops.zig").handleGitClick(self, hit);
     }
 
     pub fn commitStagedChanges(self: *Workbench) !void {
-        const msg = try self.git_commit_msg.content();
-        defer self.allocator.free(msg);
-
-        if (msg.len == 0) {
-            try self.setStatus("Commit message cannot be empty");
-            return;
-        }
-
-        const process_spawn = @import("forge-util").process_spawn;
-        const exit_code = process_spawn.runWait(self.allocator, &.{ "git", "commit", "-m", msg }, .{ .cwd = self.workspace_path }) catch -1;
-
-        if (exit_code == 0) {
-            self.git_commit_msg.clear();
-            try self.refreshGitStatus();
-            try self.setStatus("Commit successful");
-        } else {
-            try self.setStatus("Commit failed (are there staged changes?)");
-        }
+        return @import("workbench/git_ops.zig").commitStagedChanges(self);
     }
 
     pub fn canUninstallExtension(self: *const Workbench, ext: *const plugin.LoadedExtension) bool {
-        _ = self;
-        return std.mem.startsWith(u8, ext.root_path, ".forge/extensions/");
+        return @import("workbench/extensions_ops.zig").canUninstallExtension(self, ext);
     }
 
     pub fn handleExtensionsClick(self: *Workbench, hit: @import("ui/sidebar/extensions_panel.zig").Hit) !void {
-        switch (hit) {
-            .reload => try self.dispatch(.reload_extensions),
-            .open_workspace_dir => try self.dispatch(.{ .open_file = "extensions/README.md" }),
-            .open_user_dir => try self.dispatch(.{ .open_file = ".forge/extensions/README.md" }),
-            .show_installed => try self.dispatch(.{ .set_extensions_panel_mode = .installed }),
-            .show_marketplace => try self.dispatch(.{ .set_extensions_panel_mode = .marketplace }),
-            .toggle => |index| try self.dispatch(.{ .extension_toggle = index }),
-            .install => |index| {
-                const catalog = self.marketplace_catalog orelse return;
-                if (index >= catalog.entries.len) return;
-                const id = try self.allocator.dupe(u8, catalog.entries[index].id);
-                defer self.allocator.free(id);
-                try self.dispatch(.{ .install_marketplace_extension = id });
-            },
-            .show_detail => |index| try self.dispatch(.{ .extensions_show_detail = index }),
-            .back_from_detail => try self.dispatch(.extensions_back_from_detail),
-            .uninstall => |index| {
-                if (index >= self.extension_host.extensions.items.len) return;
-                const ext = &self.extension_host.extensions.items[index];
-                const id = try self.allocator.dupe(u8, ext.id);
-                defer self.allocator.free(id);
-                try self.dispatch(.{ .uninstall_extension = id });
-            },
-            .run_command => |sel| {
-                if (sel.ext_index >= self.extension_host.extensions.items.len) return;
-                const ext = &self.extension_host.extensions.items[sel.ext_index];
-                if (sel.cmd_index >= ext.commands.items.len) return;
-                const cmd_id = ext.commands.items[sel.cmd_index].id;
-                try self.dispatch(.{ .run_extension_command = cmd_id });
-                self.selected_extension_index = sel.ext_index;
-            },
-        }
+        return @import("workbench/extensions_ops.zig").handleExtensionsClick(self, hit);
     }
 
     pub fn reloadExtensions(self: *Workbench) !void {
-        self.extension_host.deinit();
-        self.extension_host = plugin.Host.init(self.allocator, self.io);
-        try self.extension_host.registerBuiltin(&builtin_ext.hello_extension);
-        self.extension_host.setHostCallbacks(wasm_bridge.hostCallbacks());
-        try self.extension_host.discoverWorkspace(self.workspace_root);
-        try self.extension_host.activateAll();
-        if (self.marketplace_catalog) |*catalog| catalog.deinit(self.allocator);
-        self.marketplace_catalog = plugin.marketplace.loadCatalog(self.allocator, self.io, self.workspace_root) catch null;
-        try self.palette.rebuildCatalog();
-        try self.syncContributions();
-        try self.setStatus("Extensions reloaded");
+        return @import("workbench/extensions_ops.zig").reloadExtensions(self);
     }
 
     pub fn ensureBundledExtensions(self: *Workbench) !void {
-        const manifest_wp = workspace.WorkspacePath.parse(".forge/extensions/zig-lsp/forge.toml") catch return;
-        if (workspace.FileSnapshot.read(self.allocator, self.io, self.workspace_root, manifest_wp)) |snap_val| {
-            var snap = snap_val;
-            defer snap.deinit();
-            return;
-        } else |_| {}
-
-        const catalog = self.marketplace_catalog orelse return;
-        const entry = plugin.marketplace.findEntry(&catalog, "forge.lsp.zig") orelse return;
-        const dest = try plugin.marketplace.install(self.allocator, self.io, self.workspace_root, entry);
-        defer self.allocator.free(dest);
+        return @import("workbench/extensions_ops.zig").ensureBundledExtensions(self);
     }
 
     pub fn requestEditorHover(
@@ -2048,23 +846,10 @@ pub const Workbench = struct {
         self.lsp_proxy.warmLanguage(config);
     }
 
-    fn persistExtensionTheme(self: *Workbench, qualified: []const u8) !void {
-        const existing = @import("theme_loader.zig").readUserSettings(self.allocator, self.io, self.workspace_root) catch null;
-        defer if (existing) |content| self.allocator.free(content);
-
-        const content = if (existing) |user_content|
-            try settings_mod.mergeExtensionTheme(self.allocator, user_content, qualified)
-        else
-            try std.fmt.allocPrint(self.allocator,
-                \\[extension_theme]
-                \\active = "{s}"
-                \\
-            , .{qualified});
-        defer self.allocator.free(content);
-
-        const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
-        try workspace.atomic.replaceFile(self.io, self.workspace_root, wp, content);
+    pub fn persistExtensionTheme(self: *Workbench, qualified: []const u8) !void {
+        return @import("workbench/extensions_ops.zig").persistExtensionTheme(self, qualified);
     }
+
     pub fn reloadTheme(self: *Workbench) !void {
         self.theme.deinit();
         self.theme = try @import("theme_loader.zig").loadTheme(self.allocator, self.io, self.workspace_root, &self.extension_host);
@@ -2092,54 +877,15 @@ pub const Workbench = struct {
     }
 
     pub fn copyDebugVariable(self: *Workbench, index: usize) !void {
-        if (index >= self.debug_variables.items.items.len) return;
-        const entry = self.debug_variables.items.items[index];
-        @import("forge-renderer").Renderer.setClipboardText(entry.value);
-        var buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Copied {s}", .{entry.name}) catch "Copied value";
-        try self.setStatus(msg);
+        return @import("workbench/debug_ops.zig").copyDebugVariable(self, index);
     }
 
     pub fn showAgentReview(self: *Workbench) !void {
-        var owned_path: ?[]const u8 = null;
-        defer if (owned_path) |path| self.allocator.free(path);
-
-        const proposal_rel = blk: {
-            self.agent.lock();
-            defer self.agent.unlock();
-            if (self.agent.proposal_rel) |path| break :blk path;
-            if (self.agent.run_history.items.len == 0) break :blk null;
-            const entry = self.agent.run_history.items[self.agent.selected_run_index];
-            owned_path = try std.fmt.allocPrint(self.allocator, ".forge/proposals/{s}.json", .{entry.run_id});
-            break :blk owned_path.?;
-        };
-
-        if (proposal_rel) |rel| {
-            try agent_workflow.loadProposalPreview(&self.agentHost(), rel);
-            self.openProposalReview();
-            self.focused_panel = .proposal_review;
-            try self.setStatus("Proposal review opened");
-            return;
-        }
-        try self.setStatus("No proposal to review — submit an agent prompt first");
+        return @import("workbench/agent_ops.zig").showAgentReview(self);
     }
 
     pub fn gotoDebugStackFrame(self: *Workbench, index: usize) !void {
-        if (index >= self.debug_callstack.items.items.len) return;
-        const frame = self.debug_callstack.items.items[index];
-        for (self.tabs.tabs.items) |doc| {
-            if (!debug_stop_mod.pathsMatch(doc.path, frame.path)) continue;
-            for (self.tabs.tabs.items, 0..) |_, tab_index| {
-                if (std.mem.eql(u8, self.tabs.tabs.items[tab_index].path, doc.path)) {
-                    try self.activateTab(tab_index);
-                    break;
-                }
-            }
-            self.applyDebugStop(doc.path, frame.line);
-            try self.setStatus("Jumped to stack frame");
-            return;
-        }
-        try self.setStatus("Stack frame file not open");
+        return @import("workbench/debug_ops.zig").gotoDebugStackFrame(self, index);
     }
 
     pub fn refreshRecentWorkspaces(self: *Workbench) !void {
@@ -2212,7 +958,7 @@ pub const Workbench = struct {
         }
 
         if (actions[0].edit) |*edit| {
-            try self.applyWorkspaceEdit(edit);
+            try @import("workbench/editor_ops.zig").applyWorkspaceEdit(self, edit);
             try self.setStatus(actions[0].title);
             return;
         }
@@ -2220,8 +966,7 @@ pub const Workbench = struct {
     }
 
     pub fn clampTabScroll(self: *Workbench, editor_w: f32) void {
-        const tabs_ui = @import("ui/editor/tabs.zig");
-        self.tab_scroll_x = tabs_ui.clampScroll(self.tab_scroll_x, self, editor_w);
+        @import("workbench/scroll.zig").clampTabScroll(self, editor_w);
     }
 
     pub fn syncTabScroll(self: *Workbench) void {
@@ -2323,12 +1068,12 @@ pub const Workbench = struct {
         }
     }
 
-    fn onTaskLine(context: ?*anyopaque, line: []const u8) void {
+    pub fn onTaskLine(context: ?*anyopaque, line: []const u8) void {
         const self: *Workbench = @ptrCast(@alignCast(context.?));
         self.task_output.appendLine(line) catch {};
     }
 
-    fn onTaskFinished(context: ?*anyopaque, exit_code: i32) void {
+    pub fn onTaskFinished(context: ?*anyopaque, exit_code: i32) void {
         const self: *Workbench = @ptrCast(@alignCast(context.?));
         self.task_output.setRunning(false);
         self.task_output.setExitCode(exit_code);
@@ -2339,333 +1084,75 @@ pub const Workbench = struct {
     }
 
     pub fn scrollEditorToCursor(self: *Workbench) void {
-        const renderer_mod = @import("forge-renderer");
-        var w: f32 = 0;
-        var h: f32 = 0;
-        renderer_mod.Renderer.getWindowSize(&w, &h);
-        const geo = self.layoutGeometry(w, h);
-        const pane = self.focusedPane();
-        const doc = self.docForPane(pane) orelse return;
-        const pane_w = self.paneWidth(geo.editor_w);
-        const scroll_y: *f32 = if (pane == .secondary) &self.split_scroll_y else &self.editor_scroll_y;
-        const scroll_x: *f32 = if (pane == .secondary) &self.split_scroll_x else &self.editor_scroll_x;
-        if (self.user_settings.word_wrap) {
-            const word_wrap = @import("ui/editor/word_wrap.zig");
-            const viewport_w = @import("ui/editor/editor_scroll.zig").viewportWidth(pane_w, &self.theme);
-            scroll_y.* = word_wrap.scrollToCursor(scroll_y.*, &doc.buffer, geo.editor_h, viewport_w, self.theme.editor_font_size, &self.theme);
-            scroll_x.* = 0;
-        } else {
-            const scrolled = @import("ui/editor/editor_scroll.zig").scrollToCursor(
-                scroll_y.*,
-                scroll_x.*,
-                &doc.buffer,
-                pane_w,
-                geo.editor_h,
-                &self.theme,
-            );
-            scroll_y.* = scrolled.y;
-            scroll_x.* = scrolled.x;
-        }
+        @import("workbench/editor_ops.zig").scrollEditorToCursor(self);
     }
 
     pub fn openEditorFind(self: *Workbench, replace_mode: bool) !void {
-        self.previous_focus = self.focused_panel;
-        self.focused_panel = .find;
-        self.find_bar.openFind(replace_mode);
-        if (self.activeBuffer()) |buf| {
-            try self.find_bar.refreshMatches(buf);
-            self.scrollEditorToCursor();
-        }
+        return @import("workbench/editor_ops.zig").openEditorFind(self, replace_mode);
     }
 
     pub fn openGotoLine(self: *Workbench) !void {
-        self.previous_focus = self.focused_panel;
-        self.focused_panel = .goto_line;
-        self.goto_bar.open = true;
-        try self.goto_bar.input.loadFromSlice("");
+        return @import("workbench/editor_ops.zig").openGotoLine(self);
     }
 
     pub fn closeEditorOverlay(self: *Workbench) void {
-        self.find_bar.close();
-        self.goto_bar.open = false;
-        self.rename_bar.close();
-        if (self.focused_panel == .find or self.focused_panel == .goto_line or self.focused_panel == .rename) {
-            self.focused_panel = self.previous_focus;
-        }
-        self.completions.dismiss();
+        @import("workbench/editor_ops.zig").closeEditorOverlay(self);
     }
 
     pub fn openRenameSymbol(self: *Workbench) !void {
-        const buf = self.activeBuffer() orelse return;
-        const word = wordAtCursor(buf);
-        if (word.len == 0) {
-            try self.setStatus("No symbol at cursor");
-            return;
-        }
-        self.previous_focus = self.focused_panel;
-        self.focused_panel = .rename;
-        try self.rename_bar.openRename(word);
+        return @import("workbench/editor_ops.zig").openRenameSymbol(self);
     }
 
     pub fn commitRenameSymbol(self: *Workbench) !void {
-        const name = self.rename_bar.name();
-        if (name.len == 0) return;
-        try self.previewRenameSymbol(name);
-        self.closeEditorOverlay();
+        return @import("workbench/editor_ops.zig").commitRenameSymbol(self);
     }
 
     pub fn previewRenameSymbol(self: *Workbench, new_name: []const u8) !void {
-        const doc = self.tabs.activeDoc() orelse return;
-        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
-        const config = owned orelse {
-            try self.setStatus("No language server for this file");
-            return;
-        };
-        defer lsp.Registry.freeConfig(self.allocator, config);
-
-        const uri = try self.lspSyncDocument(doc);
-        defer self.allocator.free(uri);
-
-        const line: u32 = @intCast(doc.buffer.cursor.row);
-        const character: u32 = @intCast(doc.buffer.cursor.col);
-        const req = try lsp.rename.buildRenameRequest(self.allocator, 93, uri, line, character, new_name);
-        defer self.allocator.free(req);
-
-        var response_buf: [65536]u8 = undefined;
-        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
-            try self.setStatus("Rename failed");
-            return;
-        };
-
-        const edit = try lsp.rename.parseRenameResponse(self.allocator, response_buf[0..len]);
-        if (edit) |workspace_edit| {
-            try self.rename_preview.setPreview(self.workspace_path, &self.tabs, new_name, workspace_edit);
-            self.references.clear();
-            self.bottom_panel_mode = .output;
-            self.task_scroll_y = 0;
-            var status_buf: [96]u8 = undefined;
-            const msg = try std.fmt.bufPrint(&status_buf, "Rename preview: {d} change(s)", .{self.rename_preview.lines.len});
-            try self.setStatus(msg);
-            return;
-        }
-        try self.setStatus("Rename rejected by language server");
+        return @import("workbench/editor_ops.zig").previewRenameSymbol(self, new_name);
     }
 
     pub fn acceptRenamePreview(self: *Workbench) !void {
-        if (self.rename_preview.edit) |*edit| {
-            try self.applyWorkspaceEdit(edit);
-            self.rename_preview.clear();
-            try self.setStatus("Rename applied");
-            return;
-        }
-        try self.setStatus("No rename preview");
+        return @import("workbench/editor_ops.zig").acceptRenamePreview(self);
     }
 
     pub fn rejectRenamePreview(self: *Workbench) void {
-        if (!self.rename_preview.active) return;
-        self.rename_preview.clear();
-        self.setStatus("Rename cancelled") catch {};
+        @import("workbench/editor_ops.zig").rejectRenamePreview(self);
     }
 
     pub fn gotoReference(self: *Workbench, index: usize) !void {
-        if (index >= self.references.items.len) return;
-        const item = self.references.items[index];
-        try self.openFile(item.path);
-        if (self.activeBuffer()) |buf| {
-            buf.goToLine(@intCast(item.line + 1));
-            buf.cursor.col = @intCast(item.character);
-            self.scrollEditorToCursor();
-        }
-    }
-
-    fn lspSyncDocument(self: *Workbench, doc: *editor.Document) ![]const u8 {
-        return self.lsp_sync.ensureSyncedBlocking(doc);
+        return @import("workbench/editor_ops.zig").gotoReference(self, index);
     }
 
     pub fn gotoLocation(self: *Workbench, loc: lsp.navigation.Location) !void {
-        const rel = try lsp.navigation.uriToRelativePath(self.allocator, self.workspace_path, loc.uri);
-        if (rel) |path| {
-            defer self.allocator.free(path);
-            try self.openFile(path);
-            if (self.activeBuffer()) |buf| {
-                buf.goToLine(@intCast(loc.line + 1));
-                buf.cursor.col = @intCast(loc.character);
-                self.scrollEditorToCursor();
-            }
-            return;
-        }
-        try self.setStatus("Location outside workspace");
+        return @import("workbench/editor_ops.zig").gotoLocation(self, loc);
     }
 
     pub fn findReferences(self: *Workbench) !void {
-        const doc = self.tabs.activeDoc() orelse return;
-        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
-        const config = owned orelse {
-            try self.setStatus("No language server for this file");
-            return;
-        };
-        defer lsp.Registry.freeConfig(self.allocator, config);
-
-        const uri = try self.lspSyncDocument(doc);
-        defer self.allocator.free(uri);
-
-        const line: u32 = @intCast(doc.buffer.cursor.row);
-        const character: u32 = @intCast(doc.buffer.cursor.col);
-        const req = try lsp.references.buildReferencesRequest(self.allocator, 92, uri, line, character);
-        defer self.allocator.free(req);
-
-        var response_buf: [65536]u8 = undefined;
-        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
-            try self.setStatus("Find references failed");
-            return;
-        };
-
-        var list = try lsp.references.parseReferencesResponse(self.allocator, response_buf[0..len]);
-        defer list.deinit(self.allocator);
-
-        var items: std.ArrayList(references_store_mod.Item) = .empty;
-        errdefer {
-            for (items.items) |*item| item.deinit(self.allocator);
-            items.deinit(self.allocator);
-        }
-
-        for (list.items) |loc| {
-            const rel = try lsp.navigation.uriToRelativePath(self.allocator, self.workspace_path, loc.uri);
-            const path = rel orelse continue;
-            const label = try std.fmt.allocPrint(self.allocator, "{s}:{d}:{d}", .{
-                path,
-                loc.line + 1,
-                loc.character + 1,
-            });
-            errdefer self.allocator.free(label);
-            try items.append(self.allocator, .{
-                .path = path,
-                .line = loc.line,
-                .character = loc.character,
-                .label = label,
-            });
-        }
-
-        self.references.setItems(try items.toOwnedSlice(self.allocator));
-        self.rename_preview.clear();
-        self.bottom_panel_mode = .output;
-        self.task_scroll_y = 0;
-        var status_buf: [64]u8 = undefined;
-        const msg = try std.fmt.bufPrint(&status_buf, "{d} references", .{self.references.items.len});
-        try self.setStatus(msg);
+        return @import("workbench/editor_ops.zig").findReferences(self);
     }
 
     pub fn renameSymbol(self: *Workbench, new_name: []const u8) !void {
-        try self.previewRenameSymbol(new_name);
-        if (self.rename_preview.active) try self.acceptRenamePreview();
+        return @import("workbench/editor_ops.zig").renameSymbol(self, new_name);
     }
 
     pub fn formatDocument(self: *Workbench) !void {
-        const doc = self.tabs.activeDoc() orelse {
-            try self.setStatus("No file open to format");
-            return;
-        };
-        _ = try self.lsp_sync.ensureSyncedBlocking(doc);
-
-        const uri = try lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path);
-        defer self.allocator.free(uri);
-
-        const req = try lsp.format.buildFormatRequest(self.allocator, 94, uri, 4);
-        defer self.allocator.free(req);
-
-        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
-        const config = owned orelse {
-            try self.setStatus("No language server for format");
-            return;
-        };
-        defer lsp.Registry.freeConfig(self.allocator, config);
-
-        var response_buf: [256 * 1024]u8 = undefined;
-        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch |err| {
-            try self.setStatus(@errorName(err));
-            return;
-        };
-
-        const edits = try lsp.format.parseFormatResponse(self.allocator, response_buf[0..len]);
-        defer {
-            for (edits) |*edit| edit.deinit(self.allocator);
-            self.allocator.free(edits);
-        }
-        if (edits.len == 0) {
-            try self.setStatus("Nothing to format");
-            return;
-        }
-
-        var index = edits.len;
-        while (index > 0) {
-            index -= 1;
-            const text_edit = edits[index];
-            try doc.buffer.applyLspTextEdit(
-                @intCast(text_edit.line),
-                @intCast(text_edit.character),
-                @intCast(text_edit.end_line),
-                @intCast(text_edit.end_character),
-                text_edit.new_text,
-            );
-        }
-        try self.setStatus("Document formatted");
-    }
-
-    fn applyWorkspaceEdit(self: *Workbench, edit: *const lsp.rename.WorkspaceEdit) !void {
-        for (edit.files) |file_edit| {
-            const rel = try lsp.navigation.uriToRelativePath(self.allocator, self.workspace_path, file_edit.uri);
-            const path = rel orelse continue;
-            defer self.allocator.free(path);
-
-            const doc = try self.tabs.openOrActivate(path);
-            var index = file_edit.edits.len;
-            while (index > 0) {
-                index -= 1;
-                const text_edit = file_edit.edits[index];
-                try doc.buffer.applyLspTextEdit(
-                    @intCast(text_edit.line),
-                    @intCast(text_edit.character),
-                    @intCast(text_edit.end_line),
-                    @intCast(text_edit.end_character),
-                    text_edit.new_text,
-                );
-            }
-        }
+        return @import("workbench/editor_ops.zig").formatDocument(self);
     }
 
     pub fn findNextMatch(self: *Workbench) !void {
-        const buf = self.activeBuffer() orelse return;
-        if (self.find_bar.matches.len == 0) try self.find_bar.refreshMatches(buf);
-        self.find_bar.nextMatch(buf);
-        self.scrollEditorToCursor();
+        return @import("workbench/editor_ops.zig").findNextMatch(self);
     }
 
     pub fn findPrevMatch(self: *Workbench) !void {
-        const buf = self.activeBuffer() orelse return;
-        if (self.find_bar.matches.len == 0) try self.find_bar.refreshMatches(buf);
-        self.find_bar.prevMatch(buf);
-        self.scrollEditorToCursor();
+        return @import("workbench/editor_ops.zig").findPrevMatch(self);
     }
 
     pub fn commitGotoLine(self: *Workbench) !void {
-        const line = self.goto_bar.parseLine() orelse return;
-        if (self.activeBuffer()) |buf| {
-            buf.goToLine(line);
-            self.scrollEditorToCursor();
-        }
-        self.closeEditorOverlay();
+        return @import("workbench/editor_ops.zig").commitGotoLine(self);
     }
 
     pub fn gotoProblem(self: *Workbench, index: usize) !void {
-        if (index >= self.diagnostics.list.items.len) return;
-        const diag = self.diagnostics.list.items[index];
-        if (self.activeBuffer()) |buf| {
-            buf.cursor.row = @intCast(@min(diag.line, buf.lineCount() - 1));
-            const line_len = buf.lineAt(buf.cursor.row).len;
-            buf.cursor.col = @intCast(@min(diag.character, line_len));
-            self.scrollEditorToCursor();
-            self.focused_panel = .editor;
-        }
+        return @import("workbench/editor_ops.zig").gotoProblem(self, index);
     }
 
     pub fn handleProblemsClick(self: *Workbench, index: usize) !void {
@@ -2784,7 +1271,7 @@ pub const Workbench = struct {
         self.tab_scroll_x = 0;
     }
 
-    fn openFile(self: *Workbench, path: []const u8) !void {
+    pub fn openFile(self: *Workbench, path: []const u8) !void {
         const doc = try self.tabs.openOrActivate(path);
         try workspace_io.loadDocument(self.io, self.workspace_root, doc);
         try self.explorer.select(path);
@@ -2796,7 +1283,7 @@ pub const Workbench = struct {
         try self.events.publish(.{ .file_opened = path });
     }
 
-    fn activateTab(self: *Workbench, index: usize) !void {
+    pub fn activateTab(self: *Workbench, index: usize) !void {
         if (index >= self.tabs.tabs.items.len) return;
         self.tabs.active = index;
         const doc = &self.tabs.tabs.items[index];
@@ -2810,236 +1297,47 @@ pub const Workbench = struct {
     }
 
     pub fn agentHost(self: *Workbench) agent_workflow.Host {
-        return .{
-            .allocator = self.allocator,
-            .io = self.io,
-            .environ_map = self.environ_map,
-            .ai_provider = self.ai_provider,
-            .ai_model = self.ai_model,
-            .ai_mcp_enabled = self.ai_mcp_enabled,
-            .workspace_root = self.workspace_root,
-            .workspace_path = self.workspace_path,
-            .agent = &self.agent,
-            .agent_cancel_slot = &self.agent_cancel_source,
-            .context = self,
-            .append_chat = Workbench.bridgeAppendChat,
-            .set_status = Workbench.bridgeSetStatus,
-            .enqueue_ui = Workbench.bridgeEnqueueAgentUi,
-            .refresh_explorer = Workbench.bridgeRefreshExplorer,
-            .open_file = Workbench.bridgeOpenFile,
-            .snapshot_conversation = Workbench.bridgeSnapshotConversation,
-            .free_conversation_snapshot = Workbench.bridgeFreeConversationSnapshot,
-            .snapshot_recent_files = Workbench.bridgeSnapshotRecentFiles,
-            .free_recent_files_snapshot = Workbench.bridgeFreeRecentFilesSnapshot,
-            .snapshot_context_supplement = Workbench.bridgeSnapshotContextSupplement,
-            .free_context_supplement = Workbench.bridgeFreeContextSupplement,
-        };
+        return @import("workbench/agent_ops.zig").agentHost(self);
     }
 
     pub fn snapshotContextSupplement(self: *Workbench, allocator: std.mem.Allocator) !ai.context_supplement.Supplement {
-        var diagnostics: std.ArrayList(ai.context_supplement.DiagnosticEntry) = .empty;
-        errdefer ai.context_supplement.freeDiagnosticEntries(allocator, diagnostics.items);
-
-        var lsp_hints: std.ArrayList(ai.context_supplement.LspHint) = .empty;
-        errdefer ai.context_supplement.freeLspHints(allocator, lsp_hints.items);
-
-        var cursor_owned: ?[]const u8 = null;
-        errdefer if (cursor_owned) |path| allocator.free(path);
-
-        var hover_owned: ?[]const u8 = null;
-        errdefer if (hover_owned) |text| allocator.free(text);
-
-        var cursor_pos: ?ai.context_supplement.CursorPosition = null;
-
-        const doc = self.tabs.activeDoc();
-        if (doc) |active| {
-            cursor_owned = try allocator.dupe(u8, active.path);
-            const line: u32 = @intCast(active.buffer.cursor.row);
-            const character: u32 = @intCast(active.buffer.cursor.col);
-            cursor_pos = .{
-                .path = cursor_owned.?,
-                .line = line,
-                .character = character,
-            };
-
-            for (self.diagnostics.list.items) |diag| {
-                try diagnostics.append(allocator, .{
-                    .path = try allocator.dupe(u8, active.path),
-                    .line = diag.line,
-                    .character = diag.character,
-                    .severity = try allocator.dupe(u8, diagnosticSeverityLabel(diag.severity)),
-                    .message = try allocator.dupe(u8, diag.message),
-                });
-            }
-
-            const owned = self.lsp_registry.copyMatchForPath(allocator, active.path) catch null;
-            if (owned) |config| {
-                defer lsp.Registry.freeConfig(allocator, config);
-
-                if (self.lspSyncDocument(active)) |uri| {
-                    defer allocator.free(uri);
-
-                    const hover_req = lsp.hover.buildHoverRequest(allocator, 93, uri, line, character) catch null;
-                    if (hover_req) |hover_req_body| {
-                        defer allocator.free(hover_req_body);
-                        var hover_buf: [65536]u8 = undefined;
-                        if (self.lsp_proxy.request(config.language_id, hover_req_body, &hover_buf, hover_buf.len) catch null) |hover_len| {
-                            hover_owned = lsp.hover.parseHoverResponse(allocator, hover_buf[0..hover_len]) catch null;
-                        }
-                    }
-
-                    const def_req = lsp.navigation.buildDefinitionRequest(allocator, 91, uri, line, character) catch null;
-                    if (def_req) |req| {
-                        defer allocator.free(req);
-                        var response_buf: [65536]u8 = undefined;
-                        if (self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len)) |len| {
-                            if (lsp.navigation.parseDefinitionResponse(allocator, response_buf[0..len])) |location| {
-                                if (location) |loc_value| {
-                                    var loc = loc_value;
-                                    defer loc.deinit(allocator);
-                                    if (lsp.navigation.uriToRelativePath(allocator, self.workspace_path, loc.uri) catch null) |rel| {
-                                        try lsp_hints.append(allocator, .{
-                                            .kind = .definition,
-                                            .path = rel,
-                                            .line = loc.line,
-                                            .character = loc.character,
-                                        });
-                                    }
-                                }
-                            } else |_| {}
-                        } else |_| {}
-                    }
-
-                    const refs_req = lsp.references.buildReferencesRequest(allocator, 94, uri, line, character) catch null;
-                    if (refs_req) |req| {
-                        defer allocator.free(req);
-                        var response_buf: [65536]u8 = undefined;
-                        if (self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len)) |len| {
-                            if (lsp.references.parseReferencesResponse(allocator, response_buf[0..len])) |list| {
-                                var owned_list = list;
-                                defer owned_list.deinit(allocator);
-                                var ref_count: usize = 0;
-                                for (owned_list.items) |loc_value| {
-                                    if (ref_count >= 5) break;
-                                    var loc = loc_value;
-                                    defer loc.deinit(allocator);
-                                    if (lsp.navigation.uriToRelativePath(allocator, self.workspace_path, loc.uri) catch null) |rel| {
-                                        try lsp_hints.append(allocator, .{
-                                            .kind = .reference,
-                                            .path = rel,
-                                            .line = loc.line,
-                                            .character = loc.character,
-                                        });
-                                        ref_count += 1;
-                                    }
-                                }
-                            } else |_| {}
-                        } else |_| {}
-                    }
-                } else |_| {}
-            }
-        }
-
-        return .{
-            .cursor = cursor_pos,
-            .diagnostics = try diagnostics.toOwnedSlice(allocator),
-            .lsp_hints = try lsp_hints.toOwnedSlice(allocator),
-            .hover_text = hover_owned,
-        };
+        return @import("workbench/agent_ops.zig").snapshotContextSupplement(self, allocator);
     }
 
     fn diagnosticSeverityLabel(severity: lsp.diagnostics.Severity) []const u8 {
-        return switch (severity) {
-            .err => "error",
-            .warning => "warning",
-            .info => "info",
-            .hint => "hint",
-            else => "unknown",
-        };
+        return @import("workbench/agent_ops.zig").diagnosticSeverityLabel(severity);
     }
 
     fn bridgeSnapshotContextSupplement(context: ?*anyopaque, allocator: std.mem.Allocator) ai.context_supplement.Supplement {
-        const self: *Workbench = @ptrCast(@alignCast(context.?));
-        return self.snapshotContextSupplement(allocator) catch .{};
+        return @import("workbench/agent_ops.zig").bridgeSnapshotContextSupplement(context, allocator);
     }
 
     fn bridgeFreeContextSupplement(context: ?*anyopaque, allocator: std.mem.Allocator, supplement: ai.context_supplement.Supplement) void {
-        _ = context;
-        ai.context_supplement.freeSupplement(allocator, supplement);
+        @import("workbench/agent_ops.zig").bridgeFreeContextSupplement(context, allocator, supplement);
     }
 
     pub fn snapshotRecentTabPaths(self: *Workbench, allocator: std.mem.Allocator) ![]const []const u8 {
-        var paths: std.ArrayList([]const u8) = .empty;
-        errdefer {
-            for (paths.items) |path| allocator.free(path);
-            paths.deinit(allocator);
-        }
-
-        if (self.tabs.tabs.items.len == 0) return try paths.toOwnedSlice(allocator);
-
-        if (self.tabs.active < self.tabs.tabs.items.len) {
-            try paths.append(allocator, try allocator.dupe(u8, self.tabs.tabs.items[self.tabs.active].path));
-        }
-
-        var index = self.tabs.tabs.items.len;
-        while (index > 0) {
-            index -= 1;
-            if (index == self.tabs.active) continue;
-            const path = self.tabs.tabs.items[index].path;
-            var duplicate = false;
-            for (paths.items) |existing| {
-                if (std.mem.eql(u8, existing, path)) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (duplicate) continue;
-            try paths.append(allocator, try allocator.dupe(u8, path));
-        }
-
-        return try paths.toOwnedSlice(allocator);
+        return @import("workbench/agent_ops.zig").snapshotRecentTabPaths(self, allocator);
     }
 
     fn bridgeSnapshotRecentFiles(context: ?*anyopaque, allocator: std.mem.Allocator) []const []const u8 {
-        const self: *Workbench = @ptrCast(@alignCast(context.?));
-        return self.snapshotRecentTabPaths(allocator) catch return &.{};
+        return @import("workbench/agent_ops.zig").bridgeSnapshotRecentFiles(context, allocator);
     }
 
     fn bridgeFreeRecentFilesSnapshot(context: ?*anyopaque, allocator: std.mem.Allocator, paths: []const []const u8) void {
-        _ = context;
-        for (paths) |path| allocator.free(path);
-        allocator.free(paths);
+        @import("workbench/agent_ops.zig").bridgeFreeRecentFilesSnapshot(context, allocator, paths);
     }
 
     pub fn snapshotAgentConversation(self: *Workbench, allocator: std.mem.Allocator) ![]ai.conversation.Turn {
-        var turns: std.ArrayList(ai.conversation.Turn) = .empty;
-        errdefer ai.conversation.freeTurns(allocator, turns.items);
-
-        var end = self.chat_history.items.len;
-        if (end > 0 and self.chat_history.items[end - 1].role == .user) end -= 1;
-
-        const start = if (end > ai.conversation.max_turns) end - ai.conversation.max_turns else 0;
-        for (self.chat_history.items[start..end]) |msg| {
-            const slice = ai.conversation.truncateContent(msg.content);
-            try turns.append(allocator, .{
-                .role = switch (msg.role) {
-                    .user => .user,
-                    .agent => .agent,
-                },
-                .content = try allocator.dupe(u8, slice),
-            });
-        }
-        return try turns.toOwnedSlice(allocator);
+        return @import("workbench/agent_ops.zig").snapshotAgentConversation(self, allocator);
     }
 
     fn bridgeSnapshotConversation(context: ?*anyopaque, allocator: std.mem.Allocator) []const ai.conversation.Turn {
-        const self: *Workbench = @ptrCast(@alignCast(context.?));
-        return self.snapshotAgentConversation(allocator) catch return &.{};
+        return @import("workbench/agent_ops.zig").bridgeSnapshotConversation(context, allocator);
     }
 
     fn bridgeFreeConversationSnapshot(context: ?*anyopaque, allocator: std.mem.Allocator, turns: []const ai.conversation.Turn) void {
-        _ = context;
-        ai.conversation.freeTurns(allocator, turns);
+        @import("workbench/agent_ops.zig").bridgeFreeConversationSnapshot(context, allocator, turns);
     }
 
     fn loadAiConfig(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !struct {
@@ -3059,129 +1357,31 @@ pub const Workbench = struct {
     }
 
     fn bridgeAppendChat(context: ?*anyopaque, role: agent_workflow.ChatRole, content: []const u8) void {
-        const self: *Workbench = @ptrCast(@alignCast(context.?));
-        const mapped: ChatRole = if (role == .user) .user else .agent;
-        self.appendChat(mapped, content) catch {};
+        @import("workbench/agent_ops.zig").bridgeAppendChat(context, role, content);
     }
 
     fn bridgeSetStatus(context: ?*anyopaque, message: []const u8) void {
-        const self: *Workbench = @ptrCast(@alignCast(context.?));
-        self.setStatus(message) catch {};
+        @import("workbench/agent_ops.zig").bridgeSetStatus(context, message);
     }
 
     fn bridgeEnqueueAgentUi(context: ?*anyopaque, op: agent_ui_queue_mod.Op) void {
-        const self: *Workbench = @ptrCast(@alignCast(context.?));
-        self.agent_ui_queue.push(self.allocator, op) catch {
-            var owned = op;
-            owned.deinit(self.allocator);
-        };
+        @import("workbench/agent_ops.zig").bridgeEnqueueAgentUi(context, op);
     }
 
     pub fn flushAgentUi(self: *Workbench) !void {
-        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
-        const ops = try self.agent_ui_queue.takeAll(self.allocator);
-        defer self.allocator.free(ops);
-        const host = self.agentHost();
-        for (ops) |*op| {
-            defer op.deinit(self.allocator);
-            switch (op.*) {
-                .append_chat => |payload| {
-                    const mapped: ChatRole = if (payload.role == .user) .user else .agent;
-                    try self.appendChat(mapped, payload.text);
-                },
-                .set_status => |text| try self.setStatus(text),
-                .append_thinking => |text| {
-                    try self.agent.appendThinkingChunk(text);
-                    self.scrollChatToEnd(768);
-                },
-                .append_stream => |text| {
-                    try self.agent.appendStreamChunk(text);
-                    self.scrollChatToEnd(768);
-                },
-                .append_step => |payload| try self.agent.appendAgentStep(payload.index, payload.kind, payload.summary),
-                .set_phase => |payload| {
-                    if (payload.phase == .sending) {
-                        self.agent.clearStreamText();
-                    } else if (payload.phase == .streaming) {
-                        self.agent.lock();
-                        self.agent.stream_live = true;
-                        self.agent.unlock();
-                    }
-                    try self.agent.setPhase(payload.phase, payload.label);
-                },
-                .run_finished => |payload| {
-                    self.agent.lock();
-                    if (self.agent.run_id) |old| self.allocator.free(old);
-                    if (self.agent.proposal_rel) |old| self.allocator.free(old);
-                    self.agent.run_id = try self.allocator.dupe(u8, payload.run_id);
-                    self.agent.proposal_rel = try self.allocator.dupe(u8, payload.proposal_rel);
-                    self.agent.worker_running = false;
-                    self.agent.unlock();
-
-                    try agent_workflow.applyManifestText(&host, payload.manifest_text);
-                    if (payload.proposal_rel.len > 0) {
-                        try agent_workflow.loadProposalPreview(&host, payload.proposal_rel);
-                        self.openProposalReview();
-                        try self.agent.setPhase(.proposal_ready, "Proposal ready for review");
-                        try self.setStatus("Proposal ready for review");
-                    } else {
-                        if (self.agent.mode == .agent) {
-                            try self.agent.setPhase(.idle, "Agent finished — check inline edits");
-                            try self.setStatus("Agent finished — check inline edits");
-                        } else {
-                            try self.agent.setPhase(.idle, "Spec ready — approve to continue");
-                            try self.setStatus("Spec ready — approve to continue");
-                        }
-                    }
-                    try agent_workflow.refreshRunHistory(&host);
-                    if (payload.plan_text) |plan| {
-                        if (agent_panel_mod.chatHasVisibleContent(plan)) {
-                            try self.appendChat(.agent, plan);
-                        }
-                    }
-                    if (agent_panel_mod.chatHasVisibleContent(payload.chat_text)) {
-                        try self.appendChat(.agent, payload.chat_text);
-                    }
-                    self.scrollChatToEnd(768);
-                },
-                .run_failed => |payload| {
-                    self.agent.lock();
-                    self.agent.worker_running = false;
-                    self.agent.unlock();
-                    try self.agent.setPhase(payload.phase, payload.message);
-                    try self.appendChat(.agent, payload.message);
-                    try self.setStatus(payload.message);
-                },
-                .refresh_context_preview => self.refreshAgentContextPreview(),
-                .propose_edit => |payload| {
-                    const doc = self.tabs.openOrActivate(payload.path) catch |err| {
-                        std.debug.print("Failed to open file for edit: {any}\n", .{err});
-                        continue;
-                    };
-                    doc.buffer.applyInlineEdit(payload.start_line, payload.end_line, payload.replacement) catch |err| {
-                        std.debug.print("Failed to apply inline edit: {any}\n", .{err});
-                    };
-                },
-            }
-        }
+        return @import("workbench/agent_ops.zig").flushAgentUi(self);
     }
 
     fn bridgeRefreshExplorer(context: ?*anyopaque) void {
-        const self: *Workbench = @ptrCast(@alignCast(context.?));
-        self.explorer.rebuild(self.io, self.workspace_root) catch {};
+        @import("workbench/agent_ops.zig").bridgeRefreshExplorer(context);
     }
 
     fn bridgeOpenFile(context: ?*anyopaque, path: []const u8) void {
-        const self: *Workbench = @ptrCast(@alignCast(context.?));
-        self.dispatch(.{ .open_file = path }) catch {};
+        @import("workbench/agent_ops.zig").bridgeOpenFile(context, path);
     }
 
     pub fn appendChat(self: *Workbench, role: ChatRole, content: []const u8) !void {
-        const agent_panel_mod = @import("ui/agent/agent_panel.zig");
-        if (!agent_panel_mod.chatHasVisibleContent(content)) return;
-        const owned = try self.allocator.dupeZ(u8, content);
-        try self.chat_history.append(self.allocator, .{ .role = role, .content = owned });
-        self.persistChatHistory() catch {};
+        return @import("workbench/agent_ops.zig").appendChat(self, role, content);
     }
 
     pub fn openConflictDialog(self: *Workbench, path: []const u8) !void {
@@ -3269,13 +1469,7 @@ pub const Workbench = struct {
     }
 
     pub fn showGitDiff(self: *Workbench, path: []const u8, untracked: bool) !void {
-        const diff = try git_diff_mod.fileDiff(self.allocator, self.workspace_path, path, untracked);
-        defer self.allocator.free(diff);
-        self.task_output.clear();
-        try self.task_output.appendChunk(diff);
-        self.bottom_panel_mode = .output;
-        self.task_scroll_y = 0;
-        try self.setStatus("Git diff");
+        return @import("workbench/git_ops.zig").showGitDiff(self, path, untracked);
     }
 
     pub fn goToDefinition(self: *Workbench) !void {
@@ -3287,7 +1481,7 @@ pub const Workbench = struct {
         };
         defer lsp.Registry.freeConfig(self.allocator, config);
 
-        const uri = try self.lspSyncDocument(doc);
+        const uri = try @import("workbench/editor_ops.zig").lspSyncDocument(self, doc);
         defer self.allocator.free(uri);
 
         const line: u32 = @intCast(doc.buffer.cursor.row);
@@ -3317,22 +1511,7 @@ pub const Workbench = struct {
         try self.setStatus("No definition found");
     }
 
-    fn wordAtCursor(buf: *editor.Buffer) []const u8 {
-        const line = buf.lineAt(buf.cursor.row);
-        if (line.len == 0) return "";
-        var start = buf.cursor.col;
-        if (start >= line.len) start = line.len - 1;
-        while (start > 0 and isIdentByte(line[start - 1])) start -= 1;
-        var end = start;
-        while (end < line.len and isIdentByte(line[end])) end += 1;
-        return line[start..end];
-    }
-
-    fn isIdentByte(ch: u8) bool {
-        return std.ascii.isAlphanumeric(ch) or ch == '_';
-    }
-
-    fn restoreRecoverySnapshots(self: *Workbench) !void {
+    pub fn restoreRecoverySnapshots(self: *Workbench) !void {
         const paths = try recovery_mod.listRecoveryFiles(self.allocator, self.io, self.workspace_root);
         defer {
             for (paths) |path| self.allocator.free(path);
@@ -3354,7 +1533,7 @@ pub const Workbench = struct {
         }
     }
 
-    fn discardRecoverySnapshots(self: *Workbench) !void {
+    pub fn discardRecoverySnapshots(self: *Workbench) !void {
         const paths = try recovery_mod.listRecoveryFiles(self.allocator, self.io, self.workspace_root);
         defer {
             for (paths) |path| self.allocator.free(path);
