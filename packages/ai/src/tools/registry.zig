@@ -26,3 +26,58 @@ test "allowedNativeTool gates read_file" {
     try std.testing.expect(allowedNativeTool("read_file", .read_only));
     try std.testing.expect(!allowedNativeTool("replace_file_content", .read_only));
 }
+
+/// Convert Gemini-style functionDeclarations JSON to Ollama `tools` array entries.
+pub fn geminiDeclarationsToOllama(allocator: std.mem.Allocator, gemini_declarations: []const u8) ![]u8 {
+    const Decl = struct {
+        name: []const u8,
+        description: []const u8,
+        parameters: std.json.Value,
+    };
+    var parsed = try std.json.parseFromSlice([]const Decl, allocator, gemini_declarations, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '[');
+    for (parsed.value, 0..) |decl, i| {
+        if (i > 0) try out.append(allocator, ',');
+        const params_json = try std.json.Stringify.valueAlloc(allocator, decl.parameters, .{});
+        defer allocator.free(params_json);
+        const desc_escaped = try jsonEscape(allocator, decl.description);
+        defer allocator.free(desc_escaped);
+        const piece = try std.fmt.allocPrint(allocator,
+            \\{{"type":"function","function":{{"name":"{s}","description":{s},"parameters":{s}}}}}
+        , .{ decl.name, desc_escaped, params_json });
+        defer allocator.free(piece);
+        try out.appendSlice(allocator, piece);
+    }
+    try out.append(allocator, ']');
+    return try out.toOwnedSlice(allocator);
+}
+
+fn jsonEscape(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '"');
+    for (text) |c| {
+        switch (c) {
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            '\t' => try out.appendSlice(allocator, "\\t"),
+            else => try out.append(allocator, c),
+        }
+    }
+    try out.append(allocator, '"');
+    return try out.toOwnedSlice(allocator);
+}
+
+test "geminiDeclarationsToOllama wraps native tools" {
+    const allocator = std.testing.allocator;
+    const ollama = try geminiDeclarationsToOllama(allocator, native_declarations_json);
+    defer allocator.free(ollama);
+    try std.testing.expect(std.mem.startsWith(u8, ollama, "[{\"type\":\"function\""));
+    try std.testing.expect(std.mem.indexOf(u8, ollama, "\"name\":\"search\"") != null);
+}

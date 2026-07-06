@@ -13,6 +13,7 @@ const conversation = @import("conversation.zig");
 const multimodal = @import("multimodal.zig");
 const agent_loop = @import("agent/loop.zig");
 const gemini_transport = @import("providers/gemini/tool_transport.zig");
+const ollama_transport = @import("providers/ollama/tool_transport.zig");
 const mcp_registry = @import("mcp_registry.zig");
 const progress = @import("progress.zig");
 const validation_hints = @import("validation_hints.zig");
@@ -117,36 +118,45 @@ pub fn run(
 
     var next_index: u32 = 1;
 
-    if (provider_handle.gemini) |*gemini| {
-        const NativeCtx = struct {
-            allocator: std.mem.Allocator,
-            steps: *std.ArrayList(Step),
-            config: Config,
+    const used_native_loop = blk: {
+        if (provider_handle.gemini != null or provider_handle.ollama != null) {
+            const NativeCtx = struct {
+                allocator: std.mem.Allocator,
+                steps: *std.ArrayList(Step),
+                config: Config,
 
-            fn onStep(ctx: ?*anyopaque, index: u32, kind: []const u8, summary: []const u8) void {
-                const self: *@This() = @ptrCast(@alignCast(ctx.?));
-                appendStep(self.allocator, self.steps, index, kind, summary, null, self.config) catch {};
+                fn onStep(ctx: ?*anyopaque, index: u32, kind: []const u8, summary: []const u8) void {
+                    const self: *@This() = @ptrCast(@alignCast(ctx.?));
+                    appendStep(self.allocator, self.steps, index, kind, summary, null, self.config) catch {};
+                }
+            };
+            var native_ctx = NativeCtx{ .allocator = allocator, .steps = &steps, .config = config };
+
+            if (provider_handle.gemini) |*gemini| {
+                var transport_state = gemini_transport.GeminiTransport{
+                    .gemini = gemini,
+                    .io = io,
+                    .mcp = &mcp,
+                };
+                const declarations = transport_state.declarationsJson(allocator) catch return error.ProviderFailed;
+                defer allocator.free(declarations);
+                try runExploreLoop(allocator, transport_state.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx);
+            } else if (provider_handle.ollama) |*ollama| {
+                var transport_state = ollama_transport.OllamaTransport{
+                    .ollama = ollama,
+                    .io = io,
+                    .mcp = &mcp,
+                };
+                const declarations = transport_state.declarationsJson(allocator) catch return error.ProviderFailed;
+                defer allocator.free(declarations);
+                try runExploreLoop(allocator, transport_state.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx);
             }
-        };
-        var native_ctx = NativeCtx{ .allocator = allocator, .steps = &steps, .config = config };
-        var transport_state = gemini_transport.GeminiTransport{
-            .gemini = gemini,
-            .io = io,
-            .mcp = &mcp,
-        };
-        const declarations = transport_state.declarationsJson(allocator) catch return error.ProviderFailed;
-        defer allocator.free(declarations);
+            break :blk true;
+        }
+        break :blk false;
+    };
 
-        agent_loop.run(allocator, transport_state.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, .{
-            .max_tool_steps = config.max_steps,
-            .cancel_token = config.cancel_token,
-            .step_callback = NativeCtx.onStep,
-            .step_context = &native_ctx,
-        }) catch |err| switch (err) {
-            error.Cancelled => return error.Cancelled,
-            error.StepLimitReached => return error.StepLimitReached,
-            else => return error.ProviderFailed,
-        };
+    if (used_native_loop) {
         next_index = @as(u32, @intCast(steps.items.len)) + 1;
     } else {
         var first_match_path: ?[]const u8 = null;
@@ -371,6 +381,30 @@ fn appendStep(
         .summary = allocator.dupe(u8, summary) catch return error.WorkspaceFailed,
         .run_id = if (run_id) |id| allocator.dupe(u8, id) catch return error.WorkspaceFailed else null,
     }) catch return error.WorkspaceFailed;
+}
+
+fn runExploreLoop(
+    allocator: std.mem.Allocator,
+    transport: @import("agent/turn.zig").Transport,
+    declarations: []const u8,
+    intent: []const u8,
+    ctx_builder: *const @import("context.zig").ContextBuilder,
+    tool_ctx: tool_executor.Context,
+    mcp: *mcp_registry.Registry,
+    config: Config,
+    on_step: agent_loop.StepCallback,
+    on_step_ctx: ?*anyopaque,
+) AgentError!void {
+    agent_loop.run(allocator, transport, declarations, intent, ctx_builder, tool_ctx, mcp, .{
+        .max_tool_steps = config.max_steps,
+        .cancel_token = config.cancel_token,
+        .step_callback = on_step,
+        .step_context = on_step_ctx,
+    }) catch |err| switch (err) {
+        error.Cancelled => return error.Cancelled,
+        error.StepLimitReached => return error.StepLimitReached,
+        else => return error.ProviderFailed,
+    };
 }
 
 fn mapToolError(err: tool_executor.AgentToolError) AgentError {
