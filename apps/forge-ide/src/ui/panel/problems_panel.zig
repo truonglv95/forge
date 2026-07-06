@@ -1,5 +1,5 @@
 const std = @import("std");
-const panel_scroll = @import("panel_scroll.zig");
+const panel_scroll = @import("../core/panel_scroll.zig");
 
 pub fn hitTest(
     editor_x: f32,

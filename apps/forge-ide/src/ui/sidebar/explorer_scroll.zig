@@ -1,5 +1,5 @@
 const std = @import("std");
-const layout = @import("layout.zig");
+const layout = @import("../core/layout.zig");
 
 pub const list_top: f32 = 100;
 pub const row_height: f32 = 20;

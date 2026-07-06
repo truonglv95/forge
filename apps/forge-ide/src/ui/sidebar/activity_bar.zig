@@ -1,4 +1,4 @@
-const layout = @import("layout.zig");
+const layout = @import("../core/layout.zig");
 const sidebar_view = @import("sidebar_view.zig");
 
 // Start horizontally from the left edge

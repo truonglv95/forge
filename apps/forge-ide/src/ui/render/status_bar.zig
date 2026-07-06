@@ -1,6 +1,6 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const layout = @import("../layout.zig");
+const layout = @import("../core/layout.zig");
 const Workbench = @import("../../workbench.zig").Workbench;
 
 pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMode) void {

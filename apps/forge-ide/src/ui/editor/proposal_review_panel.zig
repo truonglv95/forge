@@ -2,9 +2,9 @@ const std = @import("std");
 const renderer = @import("forge-renderer");
 const workspace = @import("forge-workspace");
 const tabs_ui = @import("tabs.zig");
-const scrollbar = @import("scrollbar.zig");
-const review_store = @import("../agent/review_store.zig");
-const agent_session = @import("../agent/session.zig");
+const scrollbar = @import("../core/scrollbar.zig");
+const review_store = @import("../../agent/review_store.zig");
+const agent_session = @import("../../agent/session.zig");
 
 pub const tab_label = "Proposal Review";
 pub const file_col_w: f32 = 200;
@@ -139,7 +139,7 @@ pub fn drawTab(
 }
 
 pub fn draw(
-    wb: *@import("../workbench.zig").Workbench,
+    wb: *@import("../../workbench.zig").Workbench,
     editor_x: f32,
     editor_w: f32,
     editor_h: f32,

@@ -1,6 +1,6 @@
 const std = @import("std");
-const layout = @import("layout.zig");
-const git_status = @import("../git/status.zig");
+const layout = @import("../core/layout.zig");
+const git_status = @import("../../git/status.zig");
 
 pub const list_top: f32 = 131;
 pub const row_h: f32 = 28;

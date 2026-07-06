@@ -1,4 +1,4 @@
-const commands_mod = @import("../workbench/commands.zig");
+const commands_mod = @import("../../workbench/commands.zig");
 
 pub const tab_bar_height: f32 = 28;
 pub const tab_h: f32 = 18;

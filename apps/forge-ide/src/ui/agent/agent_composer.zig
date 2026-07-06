@@ -1,12 +1,12 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
 const editor = @import("forge-editor");
-const layout = @import("layout.zig");
-const agent_session = @import("../agent/session.zig");
-const word_wrap = @import("word_wrap.zig");
-const editor_scroll = @import("editor_scroll.zig");
-const scrollbar = @import("scrollbar.zig");
-const state = @import("state.zig");
+const layout = @import("../core/layout.zig");
+const agent_session = @import("../../agent/session.zig");
+const word_wrap = @import("../editor/word_wrap.zig");
+const editor_scroll = @import("../editor/editor_scroll.zig");
+const scrollbar = @import("../core/scrollbar.zig");
+const state = @import("../core/state.zig");
 
 pub const prompt_font_size: f32 = 13.5;
 pub const prompt_line_h: f32 = 18.0;

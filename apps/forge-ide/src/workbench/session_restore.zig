@@ -1,7 +1,7 @@
 const std = @import("std");
 const workspace = @import("forge-workspace");
 const commands_mod = @import("commands.zig");
-const sidebar_view_mod = @import("../ui/sidebar_view.zig");
+const sidebar_view_mod = @import("../ui/sidebar/sidebar_view.zig");
 const breakpoints_mod = @import("breakpoints.zig");
 
 const state_path = ".forge/last_session.toml";
@@ -17,7 +17,7 @@ pub const Layout = struct {
     split_scroll_x: f32 = 0,
     bottom_panel_mode: commands_mod.BottomPanelMode = .output,
     sidebar_view: sidebar_view_mod.SidebarView = .explorer,
-    bottom_panel_height: f32 = @import("../ui/layout.zig").task_panel_height,
+    bottom_panel_height: f32 = @import("../ui/core/layout.zig").task_panel_height,
 };
 
 pub const BreakpointEntry = breakpoints_mod.Entry;

@@ -1,6 +1,6 @@
 const std = @import("std");
 const debug_stop = @import("debug_stop.zig");
-const panel_scroll = @import("../ui/panel_scroll.zig");
+const panel_scroll = @import("../ui/core/panel_scroll.zig");
 
 pub const Frame = struct {
     index: usize,

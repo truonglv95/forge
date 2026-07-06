@@ -1,6 +1,6 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const layout = @import("layout.zig");
+const layout = @import("../core/layout.zig");
 
 pub const Action = enum {
     toggle_sidebar,

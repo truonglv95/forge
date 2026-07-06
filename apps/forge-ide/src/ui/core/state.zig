@@ -1,6 +1,6 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const Workbench = @import("../workbench.zig").Workbench;
+const Workbench = @import("../../workbench.zig").Workbench;
 
 pub var gpa: std.mem.Allocator = undefined;
 pub var wb: ?*Workbench = undefined;
@@ -17,12 +17,12 @@ pub var border_view: ?*renderer.View = null;
 pub var status_view: ?*renderer.View = null;
 
 pub var prompt_buffer: ?*@import("forge-editor").Buffer = null;
-pub var chat_history: ?*std.ArrayList(@import("../workbench.zig").ChatMessage) = null;
+pub var chat_history: ?*std.ArrayList(@import("../../workbench.zig").ChatMessage) = null;
 
 pub var is_dragging_agent_splitter: bool = false;
 pub var is_dragging_explorer_splitter: bool = false;
 pub var is_dragging_bottom_panel_splitter: bool = false;
-pub var header_hover_action: ?@import("header_toolbar.zig").Action = null;
+pub var header_hover_action: ?@import("../chrome/header_toolbar.zig").Action = null;
 pub var is_dragging_terminal_selection: bool = false;
 pub var is_dragging_editor_selection: bool = false;
 pub var last_mouse_x: f32 = 0;

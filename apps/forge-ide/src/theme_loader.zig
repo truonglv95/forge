@@ -97,7 +97,7 @@ pub fn toColor(rgba: workspace.Rgba) renderer.Color {
 }
 
 pub fn applyShellColors(theme: workspace.Theme) void {
-    const state = @import("ui/state.zig");
+    const state = @import("ui/core/state.zig");
     const c = theme.colors;
     if (state.root_view) |v| v.bg_color = toColor(c.workbench_bg);
     if (state.header_view) |v| v.bg_color = toColor(c.header_bg);

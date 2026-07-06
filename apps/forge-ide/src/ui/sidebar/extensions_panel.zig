@@ -1,7 +1,7 @@
 const std = @import("std");
-const layout = @import("layout.zig");
+const layout = @import("../core/layout.zig");
 const plugin = @import("forge-plugin");
-const scope_picker = @import("../agent/scope_picker.zig");
+const scope_picker = @import("../../agent/scope_picker.zig");
 
 pub const PanelMode = enum { installed, marketplace };
 

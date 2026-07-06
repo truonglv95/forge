@@ -3,7 +3,7 @@ const editor = @import("forge-editor");
 const renderer = @import("forge-renderer");
 const context_inspector = @import("context_inspector.zig");
 const agent_composer = @import("agent_composer.zig");
-const agent_session = @import("../agent/session.zig");
+const agent_session = @import("../../agent/session.zig");
 
 pub const chat_content_top: f32 = 68.0;
 
@@ -101,7 +101,7 @@ pub fn reviewHunksScreenTop(
     return y;
 }
 
-pub fn hitTestSteps(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agent_w: f32, x: f32, y: f32) ?usize {
+pub fn hitTestSteps(wb: *@import("../../workbench.zig").Workbench, agent_x: f32, agent_w: f32, x: f32, y: f32) ?usize {
     const pad: f32 = 20;
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
@@ -113,7 +113,7 @@ pub fn hitTestSteps(wb: *@import("../workbench.zig").Workbench, agent_x: f32, ag
     const chat_bubble = @import("chat_bubble.zig");
     const tool_step_card = @import("tool_step_card.zig");
 
-    const state = @import("state.zig");
+    const state = @import("../core/state.zig");
     if (state.chat_history) |history| {
         for (history.items) |msg| {
             if (!chatHasVisibleContent(msg.content)) continue;

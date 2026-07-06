@@ -1,5 +1,5 @@
 const std = @import("std");
-const panel_scroll = @import("../ui/panel_scroll.zig");
+const panel_scroll = @import("../ui/core/panel_scroll.zig");
 
 pub const Item = struct {
     path: []const u8,

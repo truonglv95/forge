@@ -1,7 +1,7 @@
 const std = @import("std");
 const lsp = @import("forge-lsp");
 const editor = @import("forge-editor");
-const panel_scroll = @import("../ui/panel_scroll.zig");
+const panel_scroll = @import("../ui/core/panel_scroll.zig");
 
 pub const Line = struct {
     label: []const u8,

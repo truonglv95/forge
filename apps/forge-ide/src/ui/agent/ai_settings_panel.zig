@@ -1,10 +1,10 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
 const workspace = @import("forge-workspace");
-const layout = @import("layout.zig");
-const tabs_ui = @import("tabs.zig");
-const scrollbar = @import("scrollbar.zig");
-const state = @import("state.zig");
+const layout = @import("../core/layout.zig");
+const tabs_ui = @import("../editor/tabs.zig");
+const scrollbar = @import("../core/scrollbar.zig");
+const state = @import("../core/state.zig");
 
 fn color(rgba: workspace.Rgba) renderer.Color {
     return .{ .r = rgba.r, .g = rgba.g, .b = rgba.b, .a = rgba.a };
@@ -135,7 +135,7 @@ pub fn drawTab(
 }
 
 pub fn draw(
-    wb: *@import("../workbench.zig").Workbench,
+    wb: *@import("../../workbench.zig").Workbench,
     editor_x: f32,
     editor_w: f32,
     editor_h: f32,

@@ -1,21 +1,21 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
-const state = @import("state.zig");
-const layout = @import("layout.zig");
-const ai_settings_panel = @import("ai_settings_panel.zig");
-const header_toolbar = @import("header_toolbar.zig");
-const theme_loader = @import("../theme_loader.zig");
-const agent_render = @import("render/agent.zig");
-const editor_render = @import("render/editor.zig");
-const sidebar_render = @import("render/sidebar.zig");
-const status_bar_render = @import("render/status_bar.zig");
-const task_panel_render = @import("render/task_panel.zig");
+const state = @import("../core/state.zig");
+const layout = @import("../core/layout.zig");
+const ai_settings_panel = @import("../agent/ai_settings_panel.zig");
+const header_toolbar = @import("../chrome/header_toolbar.zig");
+const theme_loader = @import("../../theme_loader.zig");
+const agent_render = @import("agent.zig");
+const editor_render = @import("editor.zig");
+const sidebar_render = @import("sidebar.zig");
+const status_bar_render = @import("status_bar.zig");
+const task_panel_render = @import("task_panel.zig");
 
 fn c(rgba: @import("forge-workspace").Rgba) renderer.Color {
     return theme_loader.toColor(rgba);
 }
 
-fn drawConflictDialog(wb: *@import("../workbench.zig").Workbench, w: f32, h: f32) void {
+fn drawConflictDialog(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32) void {
     renderer.Renderer.drawRect(0, 0, w, h, .{ .r = 0, .g = 0, .b = 0, .a = 0.55 });
     const box_w: f32 = 520;
     const box_h: f32 = 180;
@@ -32,7 +32,7 @@ fn drawConflictDialog(wb: *@import("../workbench.zig").Workbench, w: f32, h: f32
     renderer.Renderer.drawText("Enter: reload from disk    Esc: keep local edits", box_x + 20, box_y + 78, 12.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
 }
 
-fn drawRecoveryDialog(wb: *@import("../workbench.zig").Workbench, w: f32, h: f32) void {
+fn drawRecoveryDialog(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32) void {
     renderer.Renderer.drawRect(0, 0, w, h, .{ .r = 0, .g = 0, .b = 0, .a = 0.55 });
     const box_w: f32 = 520;
     const box_h: f32 = 180;
@@ -48,7 +48,7 @@ fn drawRecoveryDialog(wb: *@import("../workbench.zig").Workbench, w: f32, h: f32
     renderer.Renderer.drawText("Enter: restore    Esc: discard", box_x + 20, box_y + 82, 12.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
 }
 
-fn drawPalette(wb: *@import("../workbench.zig").Workbench, w: f32, h: f32) void {
+fn drawPalette(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32) void {
     renderer.Renderer.drawRect(0, 0, w, h, .{ .r = 0, .g = 0, .b = 0, .a = 0.55 });
     const box_w: f32 = 560;
     const box_h: f32 = 360;
