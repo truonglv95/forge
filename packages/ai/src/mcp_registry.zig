@@ -2,7 +2,7 @@ const std = @import("std");
 const workspace = @import("forge-workspace");
 const mcp_config = @import("mcp_config.zig");
 const mcp_client = @import("mcp_client.zig");
-const gemini_tools = @import("gemini_tools.zig");
+const tool_registry = @import("tools/registry.zig");
 
 pub const RegistryError = error{
     OutOfMemory,
@@ -257,12 +257,12 @@ pub const Registry = struct {
 
     pub fn buildDeclarationsJson(self: *const Registry, allocator: std.mem.Allocator) RegistryError![]u8 {
         if (self.tools.len == 0) {
-            return try allocator.dupe(u8, gemini_tools.function_declarations_json);
+            return try allocator.dupe(u8, tool_registry.native_declarations_json);
         }
 
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(allocator);
-        try out.appendSlice(allocator, gemini_tools.function_declarations_json);
+        try out.appendSlice(allocator, tool_registry.native_declarations_json);
         if (out.items.len > 0 and out.items[out.items.len - 1] == ']') {
             _ = out.pop();
         } else {
@@ -270,7 +270,7 @@ pub const Registry = struct {
         }
 
         for (self.tools, 0..) |tool, i| {
-            if (i > 0 or gemini_tools.function_declarations_json.len > 2) {
+            if (i > 0 or tool_registry.native_declarations_json.len > 2) {
                 try out.append(allocator, ',');
             }
             const desc = tool.description orelse tool.tool_name;

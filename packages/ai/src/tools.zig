@@ -56,6 +56,28 @@ pub fn name(tool: ToolId) []const u8 {
     };
 }
 
+/// Wire name exposed to LLM function-calling APIs (may differ from internal ToolId).
+pub fn wireName(tool: ToolId) []const u8 {
+    return switch (tool) {
+        .propose_edit => "replace_file_content",
+        else => name(tool),
+    };
+}
+
+pub fn idFromWire(wire_name: []const u8) ?ToolId {
+    if (std.mem.eql(u8, wire_name, "replace_file_content")) return .propose_edit;
+    inline for (@typeInfo(ToolId).@"enum".fields) |field| {
+        const id: ToolId = @enumFromInt(@intFromEnum(@field(ToolId, field.name)));
+        if (std.mem.eql(u8, wire_name, name(id))) return id;
+    }
+    return null;
+}
+
+pub fn isAllowedWire(profile: CapabilityProfile, wire_name: []const u8) bool {
+    const id = idFromWire(wire_name) orelse return false;
+    return isAllowed(profile, id);
+}
+
 test "capability profiles gate destructive tools" {
     try std.testing.expect(isAllowed(.read_only, .search));
     try std.testing.expect(!isAllowed(.read_only, .propose_edit));

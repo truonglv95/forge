@@ -11,7 +11,8 @@ const tool_executor = @import("tool_executor.zig");
 const proposal_workflow = @import("proposal_workflow.zig");
 const conversation = @import("conversation.zig");
 const multimodal = @import("multimodal.zig");
-const gemini_agent = @import("gemini_agent.zig");
+const agent_loop = @import("agent/loop.zig");
+const gemini_transport = @import("providers/gemini/tool_transport.zig");
 const mcp_registry = @import("mcp_registry.zig");
 const progress = @import("progress.zig");
 const validation_hints = @import("validation_hints.zig");
@@ -128,7 +129,15 @@ pub fn run(
             }
         };
         var native_ctx = NativeCtx{ .allocator = allocator, .steps = &steps, .config = config };
-        gemini_agent.exploreWithGemini(allocator, io, gemini, intent, &ctx_builder, tool_ctx, &mcp, .{
+        var transport_state = gemini_transport.GeminiTransport{
+            .gemini = gemini,
+            .io = io,
+            .mcp = &mcp,
+        };
+        const declarations = transport_state.declarationsJson(allocator) catch return error.ProviderFailed;
+        defer allocator.free(declarations);
+
+        agent_loop.run(allocator, transport_state.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, .{
             .max_tool_steps = config.max_steps,
             .cancel_token = config.cancel_token,
             .step_callback = NativeCtx.onStep,

@@ -27,7 +27,8 @@ pub fn classifyTool(tool_name: []const u8) Kind {
         return .bash;
     if (std.mem.eql(u8, tool_name, "remember")) return .memory;
     if (std.mem.eql(u8, tool_name, "fetch_url")) return .web;
-    if (std.mem.eql(u8, tool_name, "propose")) return .propose;
+    if (std.mem.eql(u8, tool_name, "propose") or std.mem.eql(u8, tool_name, "replace_file_content"))
+        return .propose;
     return .explore;
 }
 
