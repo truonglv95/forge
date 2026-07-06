@@ -4,6 +4,10 @@ const fake_provider = @import("fake_provider.zig");
 const gemini_provider = @import("gemini_provider.zig");
 const ollama_provider = @import("ollama_provider.zig");
 const credentials = @import("credentials.zig");
+const agent_turn = @import("agent/turn.zig");
+const gemini_transport = @import("providers/gemini/tool_transport.zig");
+const ollama_transport = @import("providers/ollama/tool_transport.zig");
+const mcp_registry = @import("mcp_registry.zig");
 
 pub const Kind = enum {
     auto,
@@ -37,6 +41,8 @@ pub const Handle = struct {
     fake: ?fake_provider.FakeProvider = null,
     gemini: ?gemini_provider.GeminiProvider = null,
     ollama: ?ollama_provider.OllamaProvider = null,
+    tool_gemini: ?gemini_transport.GeminiTransport = null,
+    tool_ollama: ?ollama_transport.OllamaTransport = null,
 
     pub fn deinit(self: *Handle) void {
         if (self.gemini) |*owned| owned.deinit();
@@ -48,6 +54,40 @@ pub const Handle = struct {
         if (self.ollama) |*ollama| return ollama.providerInterface();
         if (self.fake) |*fake| return fake.providerInterface();
         unreachable;
+    }
+
+    pub const ToolExplore = struct {
+        transport: agent_turn.Transport,
+        declarations: []const u8,
+    };
+
+    pub fn supportsToolLoop(self: *const Handle) bool {
+        return self.gemini != null or self.ollama != null;
+    }
+
+    pub fn openToolExplore(
+        self: *Handle,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        mcp: ?*mcp_registry.Registry,
+    ) !?ToolExplore {
+        if (self.gemini) |*gemini| {
+            self.tool_gemini = .{ .gemini = gemini, .io = io, .mcp = mcp };
+            const declarations = try self.tool_gemini.?.declarationsJson(allocator);
+            return .{
+                .transport = self.tool_gemini.?.transport(),
+                .declarations = declarations,
+            };
+        }
+        if (self.ollama) |*ollama| {
+            self.tool_ollama = .{ .ollama = ollama, .io = io, .mcp = mcp };
+            const declarations = try self.tool_ollama.?.declarationsJson(allocator);
+            return .{
+                .transport = self.tool_ollama.?.transport(),
+                .declarations = declarations,
+            };
+        }
+        return null;
     }
 };
 

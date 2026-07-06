@@ -12,8 +12,6 @@ const proposal_workflow = @import("proposal_workflow.zig");
 const conversation = @import("conversation.zig");
 const multimodal = @import("multimodal.zig");
 const agent_loop = @import("agent/loop.zig");
-const gemini_transport = @import("providers/gemini/tool_transport.zig");
-const ollama_transport = @import("providers/ollama/tool_transport.zig");
 const mcp_registry = @import("mcp_registry.zig");
 const progress = @import("progress.zig");
 const validation_hints = @import("validation_hints.zig");
@@ -119,7 +117,7 @@ pub fn run(
     var next_index: u32 = 1;
 
     const used_native_loop = blk: {
-        if (provider_handle.gemini != null or provider_handle.ollama != null) {
+        if (provider_handle.supportsToolLoop()) {
             const NativeCtx = struct {
                 allocator: std.mem.Allocator,
                 steps: *std.ArrayList(Step),
@@ -132,25 +130,10 @@ pub fn run(
             };
             var native_ctx = NativeCtx{ .allocator = allocator, .steps = &steps, .config = config };
 
-            if (provider_handle.gemini) |*gemini| {
-                var transport_state = gemini_transport.GeminiTransport{
-                    .gemini = gemini,
-                    .io = io,
-                    .mcp = &mcp,
-                };
-                const declarations = transport_state.declarationsJson(allocator) catch return error.ProviderFailed;
-                defer allocator.free(declarations);
-                try runExploreLoop(allocator, transport_state.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx);
-            } else if (provider_handle.ollama) |*ollama| {
-                var transport_state = ollama_transport.OllamaTransport{
-                    .ollama = ollama,
-                    .io = io,
-                    .mcp = &mcp,
-                };
-                const declarations = transport_state.declarationsJson(allocator) catch return error.ProviderFailed;
-                defer allocator.free(declarations);
-                try runExploreLoop(allocator, transport_state.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx);
-            }
+            const explore = provider_handle.openToolExplore(allocator, io, &mcp) catch return error.ProviderFailed;
+            const session = explore orelse break :blk false;
+            defer allocator.free(session.declarations);
+            try runExploreLoop(allocator, session.transport, session.declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx);
             break :blk true;
         }
         break :blk false;
