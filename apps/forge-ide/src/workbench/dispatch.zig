@@ -341,13 +341,23 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         },
         .agent_continue_session => {
             wb.agent.lock();
+            const kind = wb.agent.resume_offer_kind;
             const session_id = if (wb.agent.resume_session_id) |id| try wb.allocator.dupe(u8, id) else null;
             wb.agent.unlock();
             if (session_id) |id| {
                 defer wb.allocator.free(id);
-                agent_workflow.spawnResumeSession(&wb.agentHost(), id) catch |err| {
-                    try wb.setStatus(agent_workflow.agentFailureMessage(err));
-                };
+                switch (kind) {
+                    .continue_run => agent_workflow.spawnResumeSession(&wb.agentHost(), id) catch |err| {
+                        try wb.setStatus(agent_workflow.agentFailureMessage(err));
+                    },
+                    .review_proposal => {
+                        agent_workflow.openStoredProposal(&wb.agentHost(), id) catch |err| {
+                            try wb.setStatus(agent_workflow.agentFailureMessage(err));
+                            return;
+                        };
+                        wb.openProposalReview();
+                    },
+                }
             }
         },
         .agent_dismiss_resume => {

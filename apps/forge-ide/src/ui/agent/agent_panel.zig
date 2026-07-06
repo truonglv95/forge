@@ -8,11 +8,19 @@ const agent_session = @import("../../agent/session.zig");
 pub const chat_content_top: f32 = 68.0;
 
 pub const apply_banner_h: f32 = 34;
+pub const apply_banner_validation_line_h: f32 = 14;
+pub const apply_banner_validation_pad: f32 = 8;
 
 pub const resume_banner_h: f32 = 52;
 
+pub fn applyBannerHeight(validation_failed: bool, validation_count: usize) f32 {
+    if (!validation_failed or validation_count == 0) return apply_banner_h;
+    const lines: f32 = @floatFromInt(@min(validation_count, 4));
+    return apply_banner_h + apply_banner_validation_pad + lines * apply_banner_validation_line_h;
+}
+
 pub const ResumeBanner = struct {
-    continue_run: ButtonRect,
+    primary: ButtonRect,
     dismiss: ButtonRect,
 };
 
@@ -21,57 +29,127 @@ pub const ApplyBanner = struct {
     undo: ButtonRect,
 };
 
-pub fn applyBannerLayout(agent_x: f32, y: f32) ApplyBanner {
+pub fn applyBannerLayout(agent_x: f32, y: f32, validation_failed: bool, validation_count: usize) ApplyBanner {
     const inner_x = agent_x + 20;
+    const button_y = if (validation_failed and validation_count > 0)
+        y + apply_banner_h - 26 + apply_banner_validation_pad + @as(f32, @floatFromInt(@min(validation_count, 4))) * apply_banner_validation_line_h
+    else
+        y;
     return .{
-        .keep = .{ .x = inner_x, .y = y, .w = 72, .h = 24 },
-        .undo = .{ .x = inner_x + 80, .y = y, .w = 72, .h = 24 },
+        .keep = .{ .x = inner_x, .y = button_y, .w = 72, .h = 24 },
+        .undo = .{ .x = inner_x + 80, .y = button_y, .w = 88, .h = 24 },
     };
 }
 
-pub fn hitApplyBanner(agent_x: f32, y: f32, px: f32, py: f32) ?enum { keep, undo } {
-    const banner = applyBannerLayout(agent_x, y);
+pub fn hitApplyBanner(agent_x: f32, y: f32, px: f32, py: f32, validation_failed: bool, validation_count: usize) ?enum { keep, undo } {
+    const banner = applyBannerLayout(agent_x, y, validation_failed, validation_count);
     if (banner.keep.contains(px, py)) return .keep;
     if (banner.undo.contains(px, py)) return .undo;
     return null;
 }
 
-pub fn drawApplyBanner(agent_x: f32, agent_w: f32, y: f32) void {
-    const banner = applyBannerLayout(agent_x, y);
-    renderer.Renderer.drawRoundedRect(agent_x + 10, y - 4, agent_w - 20, apply_banner_h, 8, .{ .r = 0.14, .g = 0.24, .b = 0.18, .a = 1.0 });
-    renderer.Renderer.drawText("Applied — keep changes?", agent_x + 20, y + 2, 11.0, .{ .r = 0.75, .g = 0.95, .b = 0.8, .a = 1.0 });
-    renderer.Renderer.drawRoundedRect(banner.keep.x, banner.keep.y, banner.keep.w, banner.keep.h, 5, .{ .r = 0.2, .g = 0.5, .b = 0.35, .a = 1.0 });
+pub fn drawApplyBanner(
+    agent_x: f32,
+    agent_w: f32,
+    y: f32,
+    validation_failed: bool,
+    validation_results: []const agent_session.ValidationResult,
+) void {
+    const banner_h = applyBannerHeight(validation_failed, validation_results.len);
+    const banner = applyBannerLayout(agent_x, y, validation_failed, validation_results.len);
+    const bg = if (validation_failed)
+        renderer.Color{ .r = 0.28, .g = 0.14, .b = 0.14, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.14, .g = 0.24, .b = 0.18, .a = 1.0 };
+    renderer.Renderer.drawRoundedRect(agent_x + 10, y - 4, agent_w - 20, banner_h, 8, bg);
+    const title = if (validation_failed) "Validation failed — rollback recommended" else "Applied — keep changes?";
+    const title_color = if (validation_failed)
+        renderer.Color{ .r = 1.0, .g = 0.72, .b = 0.55, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.75, .g = 0.95, .b = 0.8, .a = 1.0 };
+    renderer.Renderer.drawText(title, agent_x + 20, y + 2, 11.0, title_color);
+
+    if (validation_failed) {
+        var line_y = y + 18;
+        const show_count = @min(validation_results.len, 4);
+        var i: usize = 0;
+        while (i < show_count) : (i += 1) {
+            const result = validation_results[i];
+            var line_buf: [192:0]u8 = undefined;
+            const status = if (result.skipped) "skip" else if (result.exit_code == 0) "ok" else "fail";
+            const clipped_task = result.task[0..@min(result.task.len, 80)];
+            const line = std.fmt.bufPrint(&line_buf, "{s} · {s}", .{ status, clipped_task }) catch continue;
+            line_buf[line.len] = 0;
+            const line_color = if (std.mem.eql(u8, status, "fail"))
+                renderer.Color{ .r = 0.95, .g = 0.55, .b = 0.5, .a = 1.0 }
+            else
+                renderer.Color{ .r = 0.7, .g = 0.75, .b = 0.8, .a = 1.0 };
+            renderer.Renderer.drawText(@ptrCast(&line_buf), agent_x + 20, line_y, 9.5, line_color);
+            line_y += apply_banner_validation_line_h;
+        }
+    }
+
+    const keep_bg = if (validation_failed)
+        renderer.Color{ .r = 0.35, .g = 0.35, .b = 0.4, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.2, .g = 0.5, .b = 0.35, .a = 1.0 };
+    renderer.Renderer.drawRoundedRect(banner.keep.x, banner.keep.y, banner.keep.w, banner.keep.h, 5, keep_bg);
     renderer.Renderer.drawText("Keep", banner.keep.x + 18, banner.keep.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+    const undo_label = if (validation_failed) "Rollback" else "Undo";
     renderer.Renderer.drawRoundedRect(banner.undo.x, banner.undo.y, banner.undo.w, banner.undo.h, 5, .{ .r = 0.45, .g = 0.22, .b = 0.22, .a = 1.0 });
-    renderer.Renderer.drawText("Undo", banner.undo.x + 18, banner.undo.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+    const undo_x = banner.undo.x + if (validation_failed) @as(f32, 12) else @as(f32, 18);
+    renderer.Renderer.drawText(undo_label, undo_x, banner.undo.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
 }
 
 pub fn resumeBannerLayout(agent_x: f32, y: f32) ResumeBanner {
     const inner_x = agent_x + 20;
     return .{
-        .continue_run = .{ .x = inner_x, .y = y + 24, .w = 96, .h = 24 },
+        .primary = .{ .x = inner_x, .y = y + 24, .w = 96, .h = 24 },
         .dismiss = .{ .x = inner_x + 104, .y = y + 24, .w = 72, .h = 24 },
     };
 }
 
-pub fn hitResumeBanner(agent_x: f32, y: f32, px: f32, py: f32) ?enum { continue_run, dismiss } {
+pub fn hitResumeBanner(agent_x: f32, y: f32, px: f32, py: f32) ?enum { primary, dismiss } {
     const banner = resumeBannerLayout(agent_x, y);
-    if (banner.continue_run.contains(px, py)) return .continue_run;
+    if (banner.primary.contains(px, py)) return .primary;
     if (banner.dismiss.contains(px, py)) return .dismiss;
     return null;
 }
 
-pub fn drawResumeBanner(agent_x: f32, agent_w: f32, y: f32, intent: []const u8, state: []const u8) void {
+pub fn drawResumeBanner(
+    agent_x: f32,
+    agent_w: f32,
+    y: f32,
+    kind: agent_session.ResumeOfferKind,
+    intent: []const u8,
+    state: []const u8,
+) void {
     const banner = resumeBannerLayout(agent_x, y);
-    renderer.Renderer.drawRoundedRect(agent_x + 10, y - 4, agent_w - 20, resume_banner_h, 8, .{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 });
-    renderer.Renderer.drawText("Interrupted agent run", agent_x + 20, y + 2, 11.0, .{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 });
+    const is_proposal = kind == .review_proposal;
+    const bg = if (is_proposal)
+        renderer.Color{ .r = 0.16, .g = 0.24, .b = 0.18, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 };
+    renderer.Renderer.drawRoundedRect(agent_x + 10, y - 4, agent_w - 20, resume_banner_h, 8, bg);
+    const title = if (is_proposal) "Proposal ready for review" else "Interrupted agent run";
+    const title_color = if (is_proposal)
+        renderer.Color{ .r = 0.75, .g = 0.95, .b = 0.8, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 };
+    renderer.Renderer.drawText(title, agent_x + 20, y + 2, 11.0, title_color);
     var detail_buf: [256:0]u8 = undefined;
     const clipped_intent = intent[0..@min(intent.len, 120)];
     const detail = std.fmt.bufPrint(&detail_buf, "{s} · {s}", .{ clipped_intent, state }) catch clipped_intent;
     detail_buf[@min(detail.len, detail_buf.len - 1)] = 0;
     renderer.Renderer.drawText(@ptrCast(&detail_buf), agent_x + 20, y + 16, 10.0, .{ .r = 0.68, .g = 0.74, .b = 0.82, .a = 1.0 });
-    renderer.Renderer.drawRoundedRect(banner.continue_run.x, banner.continue_run.y, banner.continue_run.w, banner.continue_run.h, 5, .{ .r = 0.2, .g = 0.45, .b = 0.62, .a = 1.0 });
-    renderer.Renderer.drawText("Continue", banner.continue_run.x + 16, banner.continue_run.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+    const primary_bg = if (is_proposal)
+        renderer.Color{ .r = 0.2, .g = 0.5, .b = 0.35, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.2, .g = 0.45, .b = 0.62, .a = 1.0 };
+    renderer.Renderer.drawRoundedRect(banner.primary.x, banner.primary.y, banner.primary.w, banner.primary.h, 5, primary_bg);
+    const primary_label = if (is_proposal) "Review" else "Continue";
+    const primary_x = banner.primary.x + if (is_proposal) @as(f32, 22) else @as(f32, 16);
+    renderer.Renderer.drawText(primary_label, primary_x, banner.primary.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
     renderer.Renderer.drawRoundedRect(banner.dismiss.x, banner.dismiss.y, banner.dismiss.w, banner.dismiss.h, 5, .{ .r = 0.35, .g = 0.35, .b = 0.4, .a = 1.0 });
     renderer.Renderer.drawText("Dismiss", banner.dismiss.x + 10, banner.dismiss.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
 }
@@ -164,6 +242,7 @@ pub fn hitTestSteps(wb: *@import("../../workbench.zig").Workbench, agent_x: f32,
 
     wb.agent.lock();
     defer wb.agent.unlock();
+    const mode = wb.agent.mode;
 
     var step_i: usize = 0;
     while (step_i < wb.agent.agent_steps.items.len) : (step_i += 1) {
@@ -176,7 +255,7 @@ pub fn hitTestSteps(wb: *@import("../../workbench.zig").Workbench, agent_x: f32,
             inner_x,
             content_w,
         )) |index| return index;
-        content_y += tool_step_card.stepHeight(wb.agent.agent_steps.items, step_i, content_w);
+        content_y += tool_step_card.stepHeight(wb.agent.agent_steps.items, step_i, content_w, mode);
     }
     return null;
 }

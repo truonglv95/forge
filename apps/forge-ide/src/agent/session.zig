@@ -59,6 +59,8 @@ pub const ValidationResult = struct {
 
 pub const ApprovalDecision = enum { none, pending, approved, rejected };
 
+pub const ResumeOfferKind = enum { continue_run, review_proposal };
+
 pub const AgentStep = struct {
     index: u32,
     kind: []const u8,
@@ -124,9 +126,11 @@ pub const Session = struct {
     approval_risk: ?[]const u8 = null,
     approval_kind: ?ai.tool_registry.Approval = null,
     resume_offer_visible: bool = false,
+    resume_offer_kind: ResumeOfferKind = .continue_run,
     resume_session_id: ?[]const u8 = null,
     resume_intent: ?[]const u8 = null,
     resume_state: ?[]const u8 = null,
+    resume_proposal_path: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Session {
         return .{
@@ -179,6 +183,7 @@ pub const Session = struct {
         if (self.resume_session_id) |text| self.allocator.free(text);
         if (self.resume_intent) |text| self.allocator.free(text);
         if (self.resume_state) |text| self.allocator.free(text);
+        if (self.resume_proposal_path) |text| self.allocator.free(text);
         self.clearAgentStepsUnlocked();
         self.agent_steps.deinit(self.allocator);
         if (self.status_line.len > 0) self.allocator.free(self.status_line);
@@ -454,22 +459,34 @@ pub const Session = struct {
         self.post_apply_visible = false;
     }
 
-    pub fn setResumeOffer(self: *Session, session_id: []const u8, intent: []const u8, state: []const u8) !void {
+    pub fn setResumeOffer(
+        self: *Session,
+        kind: ResumeOfferKind,
+        session_id: []const u8,
+        intent: []const u8,
+        state: []const u8,
+        proposal_path: ?[]const u8,
+    ) !void {
         const id_owned = try self.allocator.dupe(u8, session_id);
         errdefer self.allocator.free(id_owned);
         const intent_owned = try self.allocator.dupe(u8, intent);
         errdefer self.allocator.free(intent_owned);
         const state_owned = try self.allocator.dupe(u8, state);
         errdefer self.allocator.free(state_owned);
+        const proposal_owned = if (proposal_path) |path| try self.allocator.dupe(u8, path) else null;
+        errdefer if (proposal_owned) |owned| self.allocator.free(owned);
 
         self.lock();
         defer self.unlock();
         if (self.resume_session_id) |old| self.allocator.free(old);
         if (self.resume_intent) |old| self.allocator.free(old);
         if (self.resume_state) |old| self.allocator.free(old);
+        if (self.resume_proposal_path) |old| self.allocator.free(old);
         self.resume_session_id = id_owned;
         self.resume_intent = intent_owned;
         self.resume_state = state_owned;
+        self.resume_proposal_path = proposal_owned;
+        self.resume_offer_kind = kind;
         self.resume_offer_visible = true;
     }
 
@@ -479,9 +496,12 @@ pub const Session = struct {
         if (self.resume_session_id) |text| self.allocator.free(text);
         if (self.resume_intent) |text| self.allocator.free(text);
         if (self.resume_state) |text| self.allocator.free(text);
+        if (self.resume_proposal_path) |text| self.allocator.free(text);
         self.resume_session_id = null;
         self.resume_intent = null;
         self.resume_state = null;
+        self.resume_proposal_path = null;
+        self.resume_offer_kind = .continue_run;
         self.resume_offer_visible = false;
     }
 
@@ -657,8 +677,10 @@ pub const Session = struct {
         approval_pending: bool,
         approval_kind: ?ai.tool_registry.Approval,
         resume_offer_visible: bool,
+        resume_offer_kind: ResumeOfferKind,
         resume_intent: ?[]const u8,
         resume_state: ?[]const u8,
+        validation_failed: bool,
     } {
         self.lock();
         defer self.unlock();
@@ -694,8 +716,10 @@ pub const Session = struct {
             .approval_pending = self.approval_decision == .pending,
             .approval_kind = self.approval_kind,
             .resume_offer_visible = self.resume_offer_visible,
+            .resume_offer_kind = self.resume_offer_kind,
             .resume_intent = self.resume_intent,
             .resume_state = self.resume_state,
+            .validation_failed = self.phase == .failed and self.post_apply_visible,
         };
     }
 };

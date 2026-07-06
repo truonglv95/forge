@@ -9,6 +9,11 @@ pub const child_h: f32 = 20;
 pub const child_indent: f32 = 28;
 pub const expanded_content_pad: f32 = 8;
 
+pub fn stepVisibleInMode(mode: agent_session.Mode, kind: []const u8) bool {
+    if (mode == .ask and std.mem.eql(u8, kind, "propose")) return false;
+    return true;
+}
+
 pub fn kindAccent(kind: []const u8) renderer.Color {
     if (std.mem.eql(u8, kind, "explore")) return .{ .r = 0.45, .g = 0.72, .b = 0.95, .a = 1.0 };
     if (std.mem.eql(u8, kind, "bash")) return .{ .r = 0.95, .g = 0.72, .b = 0.4, .a = 1.0 };
@@ -55,9 +60,11 @@ pub fn stepHeight(
     steps: []agent_session.AgentStep,
     step_i: usize,
     content_w: f32,
+    mode: agent_session.Mode,
 ) f32 {
     const step = &steps[step_i];
     if (step.parent_index != null) return 0;
+    if (!stepVisibleInMode(mode, step.kind)) return 0;
 
     var h = card_h + card_gap;
     if (!step.expanded) return h;
@@ -78,11 +85,11 @@ pub fn stepHeight(
     return h + expanded_content_pad;
 }
 
-pub fn totalStepsHeight(steps: []agent_session.AgentStep, content_w: f32) f32 {
+pub fn totalStepsHeight(steps: []agent_session.AgentStep, content_w: f32, mode: agent_session.Mode) f32 {
     var total: f32 = 0;
     var i: usize = 0;
     while (i < steps.len) : (i += 1) {
-        total += stepHeight(steps, i, content_w);
+        total += stepHeight(steps, i, content_w, mode);
     }
     return total;
 }
@@ -96,9 +103,11 @@ pub fn drawStep(
     step_i: usize,
     allocator: std.mem.Allocator,
     anim_time: f32,
+    mode: agent_session.Mode,
 ) f32 {
     const step = &steps[step_i];
     if (step.parent_index != null) return 0;
+    if (!stepVisibleInMode(mode, step.kind)) return 0;
 
     const accent = kindAccent(step.kind);
     const card_x = agent_x + 8;

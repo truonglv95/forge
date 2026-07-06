@@ -88,14 +88,18 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     var content_y: f32 = chat_top - wb.chat_scroll_y;
 
     if (snap.post_apply_visible) {
-        agent_panel.drawApplyBanner(agent_x, agent_w, content_y);
-        content_y += agent_panel.apply_banner_h + 4;
+        wb.agent.lock();
+        const validation_results = wb.agent.validation_results.items;
+        const banner_h = agent_panel.applyBannerHeight(snap.validation_failed, validation_results.len);
+        agent_panel.drawApplyBanner(agent_x, agent_w, content_y, snap.validation_failed, validation_results);
+        wb.agent.unlock();
+        content_y += banner_h + 4;
     }
 
     if (snap.resume_offer_visible) {
         const intent = snap.resume_intent orelse "previous run";
         const resume_state = snap.resume_state orelse "interrupted";
-        agent_panel.drawResumeBanner(agent_x, agent_w, content_y, intent, resume_state);
+        agent_panel.drawResumeBanner(agent_x, agent_w, content_y, snap.resume_offer_kind, intent, resume_state);
         content_y += agent_panel.resume_banner_h + 4;
     }
 
@@ -222,6 +226,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                     step_i,
                     wb.allocator,
                     state.time,
+                    snap.mode,
                 );
                 if (drawn > 0) content_y += drawn;
             }
@@ -302,7 +307,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                 true,
                 content_w,
             );
-            const steps_h = tool_step_card.totalStepsHeight(wb.agent.agent_steps.items, content_w);
+            const steps_h = tool_step_card.totalStepsHeight(wb.agent.agent_steps.items, content_w, snap.mode);
             chat_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble.line_h)));
             wb.agent.unlock();
         }

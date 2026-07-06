@@ -41,8 +41,25 @@ pub const ResumableSession = struct {
     execution_state: []const u8,
 };
 
+pub const ProposalReadySession = struct {
+    session_id: []const u8,
+    intent: []const u8,
+    proposal_path: []const u8,
+};
+
 pub fn isResumableExecutionState(state: []const u8) bool {
     return std.mem.eql(u8, state, "exploring") or std.mem.eql(u8, state, "tool_pending");
+}
+
+pub fn isProposalReadyExecutionState(state: []const u8) bool {
+    return std.mem.eql(u8, state, "proposal_ready");
+}
+
+pub fn deinitProposalReady(allocator: std.mem.Allocator, offer: *ProposalReadySession) void {
+    allocator.free(offer.session_id);
+    allocator.free(offer.intent);
+    allocator.free(offer.proposal_path);
+    offer.* = undefined;
 }
 
 pub fn deinitResumable(allocator: std.mem.Allocator, offer: *ResumableSession) void {
@@ -70,6 +87,30 @@ pub fn findLatestResumable(
             .session_id = try allocator.dupe(u8, doc.session_id),
             .intent = try allocator.dupe(u8, doc.intent),
             .execution_state = try allocator.dupe(u8, doc.execution_state),
+        };
+    }
+    return null;
+}
+
+pub fn findLatestProposalReady(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+) !?ProposalReadySession {
+    var list = try listEntries(allocator, io, root);
+    defer list.deinit();
+
+    var index = list.items.len;
+    while (index > 0) : (index -= 1) {
+        const entry = list.items[index - 1];
+        var doc = loadSession(allocator, io, root, entry.session_id) catch continue;
+        defer deinitSession(allocator, &doc);
+        if (!isProposalReadyExecutionState(doc.execution_state)) continue;
+        if (doc.proposal_path.len == 0) continue;
+        return ProposalReadySession{
+            .session_id = try allocator.dupe(u8, doc.session_id),
+            .intent = try allocator.dupe(u8, doc.intent),
+            .proposal_path = try allocator.dupe(u8, doc.proposal_path),
         };
     }
     return null;
@@ -329,6 +370,35 @@ test "findLatestResumable prefers interrupted sessions" {
         defer deinitResumable(allocator, &owned);
         try std.testing.expectEqualStrings("sess_pending", owned.session_id);
         try std.testing.expectEqualStrings("tool_pending", owned.execution_state);
+    }
+}
+
+test "findLatestProposalReady prefers latest proposal_ready session" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+
+    const older =
+        \\{"schema_version":3,"session_id":"sess_old","intent":"old","execution_state":"proposal_ready","proposal_path":".forge/proposals/run_old.json","conversation_json":"[]","steps":[]}
+    ;
+    const newer =
+        \\{"schema_version":3,"session_id":"sess_new","intent":"review me","execution_state":"proposal_ready","proposal_path":".forge/proposals/run_new.json","conversation_json":"[]","steps":[]}
+    ;
+    try persistSession(io, root, "sess_old", older);
+    try persistSession(io, root, "sess_new", newer);
+    try appendIndex(allocator, io, root, "{\"session_id\":\"sess_old\",\"intent\":\"old\",\"timestamp_ms\":1}\n");
+    try appendIndex(allocator, io, root, "{\"session_id\":\"sess_new\",\"intent\":\"review me\",\"timestamp_ms\":2}\n");
+
+    const offer_opt = try findLatestProposalReady(allocator, io, root);
+    try std.testing.expect(offer_opt != null);
+    if (offer_opt) |value| {
+        var owned = value;
+        defer deinitProposalReady(allocator, &owned);
+        try std.testing.expectEqualStrings("sess_new", owned.session_id);
+        try std.testing.expectEqualStrings(".forge/proposals/run_new.json", owned.proposal_path);
     }
 }
 
