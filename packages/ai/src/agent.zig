@@ -18,10 +18,12 @@ const progress = @import("progress.zig");
 const validation_hints = @import("validation_hints.zig");
 const repair_loop = @import("repair_loop.zig");
 const subagent = @import("subagent.zig");
+const routing = @import("routing.zig");
 
 pub const Config = struct {
     max_steps: u32 = 8,
     provider_options: provider_factory.Options,
+    mode: tools.Mode = .agent,
     capability_profile: tools.CapabilityProfile = .propose,
     workspace_cwd: []const u8 = ".",
     mcp_enabled: bool = true,
@@ -122,7 +124,11 @@ pub fn run(
         workspace.sessions.appendIndex(allocator, io, root, session_index) catch return error.WorkspaceFailed;
     }
 
-    var ctx_builder = context_loader.build(allocator, io, root, .{
+    const route = routing.plan(.{
+        .mode = config.mode,
+        .intent = intent,
+        .has_active_file = config.active_file != null,
+    }, .{
         .intent = intent,
         .explicit_files = config.explicit_files,
         .active_file = config.active_file,
@@ -130,8 +136,19 @@ pub fn run(
         .include_project_rules = true,
         .workspace_cwd = config.workspace_cwd,
         .recent_files = config.recent_files,
-    }) catch return error.WorkspaceFailed;
+    });
+
+    var ctx_builder = context_loader.build(allocator, io, root, route.context) catch return error.WorkspaceFailed;
     defer ctx_builder.deinit();
+    {
+        var routing_buf: [128]u8 = undefined;
+        const summary = routing.formatRoutingSummary(&routing_buf, .{
+            .mode = config.mode,
+            .intent = intent,
+            .has_active_file = config.active_file != null,
+        }, route);
+        ctx_builder.addBlock(.intent, "routing", summary) catch {};
+    }
     emitProgress(config, .context_built);
 
     var mcp = mcp_registry.Registry.load(allocator, io, root, config.workspace_cwd, config.mcp_enabled, resolveHomeDir(environ_map), environ_map) catch return error.WorkspaceFailed;
@@ -211,7 +228,17 @@ pub fn run(
             var tool_binding = llm.toolLoopBinding(io, &mcp, config.cancel_token);
             const raw_declarations = llm.toolDeclarationsJson(allocator, &mcp) catch return error.ProviderFailed;
             defer allocator.free(raw_declarations);
-            const declarations = tool_registry.filterDeclarationsForProfile(allocator, raw_declarations, config.capability_profile) catch return error.ProviderFailed;
+            const declarations = routing.filterDeclarationsForRoute(
+                allocator,
+                raw_declarations,
+                config.capability_profile,
+                routing.classify(.{
+                    .mode = config.mode,
+                    .intent = intent,
+                    .has_active_file = config.active_file != null,
+                }),
+                intent,
+            ) catch return error.ProviderFailed;
             defer allocator.free(declarations);
             var loop_state = try runExploreLoop(allocator, tool_binding.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx, NativeCtx.onCheckpoint, &native_ctx);
             defer loop_state.deinit(allocator);

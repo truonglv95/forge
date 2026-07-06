@@ -592,6 +592,7 @@ fn resumeWorker(ctx: *ResumeContext) void {
         .{
             .max_steps = 8,
             .provider_options = provider_options,
+            .mode = if (ctx.capability_profile == .read_only) .ask else .agent,
             .capability_profile = ctx.capability_profile,
             .surface = .ide,
             .cancel_token = &cancel_token,
@@ -785,6 +786,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
         .{
             .max_steps = 8,
             .provider_options = provider_options,
+            .mode = @enumFromInt(@intFromEnum(host.agent.mode)),
             .capability_profile = capability_profile,
             .explicit_files = ctx.scope_files,
             .active_file = ctx.active_file,
@@ -1055,7 +1057,16 @@ fn buildContext(
     const supplement = host.snapshot_context_supplement(host.context, host.allocator);
     defer host.free_context_supplement(host.context, host.allocator, supplement);
 
-    return ai.context_loader.build(host.allocator, host.io, host.workspace_root, .{
+    host.agent.lock();
+    const mode: ai.tools.Mode = @enumFromInt(@intFromEnum(host.agent.mode));
+    host.agent.unlock();
+
+    const intent_text = intent orelse "";
+    const route = ai.routing.plan(.{
+        .mode = mode,
+        .intent = intent_text,
+        .has_active_file = active_file != null,
+    }, .{
         .intent = intent,
         .explicit_files = explicit_files,
         .active_file = active_file,
@@ -1067,7 +1078,37 @@ fn buildContext(
         .prefer_gemini_embeddings = !preview_only,
         .include_semantic_search = !preview_only,
         .environ_map = host.environ_map,
-    }) catch return error.ProviderFailed;
+    });
+    var context_opts = route.context;
+    if (preview_only) {
+        context_opts.include_semantic_search = false;
+        context_opts.prefer_gemini_embeddings = false;
+    }
+
+    var tools_buf: [256]u8 = undefined;
+    const tools_summary = ai.routing.formatToolsSummary(
+        &tools_buf,
+        route.capability_profile,
+        route.intent,
+        intent_text,
+    );
+    host.agent.setRoutingPreview(
+        ai.routing.intentLabel(route.intent),
+        @tagName(route.capability_profile),
+        tools_summary,
+    ) catch {};
+
+    var builder = ai.context_loader.build(host.allocator, host.io, host.workspace_root, context_opts) catch return error.ProviderFailed;
+    {
+        var routing_buf: [128]u8 = undefined;
+        const summary = ai.routing.formatRoutingSummary(&routing_buf, .{
+            .mode = mode,
+            .intent = intent_text,
+            .has_active_file = active_file != null,
+        }, route);
+        builder.addBlock(.intent, "routing", summary) catch {};
+    }
+    return builder;
 }
 
 fn collectAttachmentInputs(host: *const Host) ![]const ai.context_loader.AttachmentInput {

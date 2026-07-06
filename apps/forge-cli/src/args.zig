@@ -16,6 +16,7 @@ pub const GlobalFlags = struct {
     model: ?[]const u8 = null,
     budget_bytes: usize = 0,
     capability: ?[]const u8 = null,
+    mode: ?[]const u8 = null,
 };
 
 pub const Command = enum {
@@ -99,6 +100,9 @@ pub const CliArgs = struct {
                 } else if (std.mem.eql(u8, arg, "--capability")) {
                     i += 1;
                     if (i < args.len) flags.capability = args[i];
+                } else if (std.mem.eql(u8, arg, "--mode")) {
+                    i += 1;
+                    if (i < args.len) flags.mode = args[i];
                 } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
                     command = .help;
                     cmd_found = true;

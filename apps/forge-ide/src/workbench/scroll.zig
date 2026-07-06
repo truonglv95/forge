@@ -171,7 +171,8 @@ pub fn clampChatScroll(wb: anytype, agent_h: f32) void {
     const has_detail = wb.agent.context_selected_index != null and expanded;
     const attachment_count = wb.agent.attachments.items.len;
     wb.agent.unlock();
-    const bottom = agent_panel_mod.bottomReserved(attachment_count, wb.agent_panel_width, &wb.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail);
+    const has_routing = wb.agent.hasRoutingPreview();
+    const bottom = agent_panel_mod.bottomReserved(attachment_count, wb.agent_panel_width, &wb.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail, has_routing);
     const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
     wb.chat_scroll_y = panel_scroll.clampScrollY(
         wb.chat_scroll_y,
