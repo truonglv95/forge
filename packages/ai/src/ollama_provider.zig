@@ -3,6 +3,9 @@ const provider = @import("provider.zig");
 const kernel = @import("forge-kernel");
 const gemini_provider = @import("gemini_provider.zig");
 const ollama_ndjson = @import("ollama_ndjson.zig");
+const agent_turn = @import("agent/turn.zig");
+const mcp_registry = @import("mcp_registry.zig");
+const ollama_transport = @import("providers/ollama/tool_transport.zig");
 
 pub const default_host = "http://127.0.0.1:11434";
 pub const default_model = "qwen2.5-coder:7b";
@@ -66,6 +69,12 @@ pub const OllamaProvider = struct {
                 .ask = askImpl,
                 .metadata = metadataImpl,
                 .usage = usageImpl,
+                .supports_tool_loop = supportsToolLoopImpl,
+                .complete_turn = completeTurnImpl,
+                .tool_declarations_json = toolDeclarationsJsonImpl,
+                .append_tool_user_text = appendToolUserTextImpl,
+                .append_tool_call = appendToolCallImpl,
+                .append_tool_result = appendToolResultImpl,
             },
         };
     }
@@ -157,6 +166,72 @@ pub const OllamaProvider = struct {
     fn usageImpl(ptr: *const anyopaque) provider.TokenUsage {
         const self: *const OllamaProvider = @ptrCast(@alignCast(ptr));
         return self.latest_usage;
+    }
+
+    fn toolTransportState(self: *OllamaProvider, io: std.Io, mcp: ?*mcp_registry.Registry) ollama_transport.OllamaTransport {
+        return .{ .ollama = self, .io = io, .mcp = mcp };
+    }
+
+    fn supportsToolLoopImpl(_: *const anyopaque) bool {
+        return true;
+    }
+
+    fn completeTurnImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        mcp: ?*mcp_registry.Registry,
+        conversation_json: []const u8,
+        tool_declarations_json: []const u8,
+        cancel_token: ?*const kernel.cancellation.CancellationToken,
+    ) provider.ProviderError!agent_turn.Completion {
+        const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
+        var transport_state = self.toolTransportState(io, mcp);
+        return transport_state.transport().complete(allocator, conversation_json, tool_declarations_json, cancel_token) catch |err| return provider.mapTransportError(err);
+    }
+
+    fn toolDeclarationsJsonImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        mcp: ?*mcp_registry.Registry,
+    ) provider.ProviderError![]const u8 {
+        const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
+        const transport_state = self.toolTransportState(undefined, mcp);
+        return transport_state.declarationsJson(allocator) catch return error.ProviderInternalError;
+    }
+
+    fn appendToolUserTextImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        conversation: *std.ArrayList(u8),
+        text: []const u8,
+    ) provider.ProviderError!void {
+        const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
+        var transport_state = self.toolTransportState(undefined, null);
+        return transport_state.transport().appendUserText(allocator, conversation, text) catch |err| return provider.mapTransportError(err);
+    }
+
+    fn appendToolCallImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        conversation: *std.ArrayList(u8),
+        call: agent_turn.ToolCall,
+    ) provider.ProviderError!void {
+        const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
+        var transport_state = self.toolTransportState(undefined, null);
+        return transport_state.transport().appendToolCall(allocator, conversation, call) catch |err| return provider.mapTransportError(err);
+    }
+
+    fn appendToolResultImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        conversation: *std.ArrayList(u8),
+        tool_name: []const u8,
+        result: []const u8,
+    ) provider.ProviderError!void {
+        const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
+        var transport_state = self.toolTransportState(undefined, null);
+        return transport_state.transport().appendToolResult(allocator, conversation, tool_name, result) catch |err| return provider.mapTransportError(err);
     }
 };
 

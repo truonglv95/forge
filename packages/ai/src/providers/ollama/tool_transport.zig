@@ -4,6 +4,7 @@ const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
+const kernel = @import("forge-kernel");
 
 pub const OllamaTransport = struct {
     ollama: *ollama_provider.OllamaProvider,
@@ -34,9 +35,16 @@ pub const OllamaTransport = struct {
         allocator: std.mem.Allocator,
         conversation_json: []const u8,
         tool_declarations_json: []const u8,
+        cancel_token: ?*const kernel.cancellation.CancellationToken,
     ) turn.TransportError!turn.Completion {
         const self: *OllamaTransport = @ptrCast(@alignCast(ptr));
-        const response_body = fetchChat(self.ollama, allocator, self.io, conversation_json, tool_declarations_json) catch return error.ProviderFailed;
+        if (cancel_token) |token| {
+            if (token.isCancelled()) return error.Cancelled;
+        }
+        const response_body = fetchChat(self.ollama, allocator, self.io, conversation_json, tool_declarations_json, cancel_token) catch |err| switch (err) {
+            error.Cancelled => return error.Cancelled,
+            else => return error.ProviderFailed,
+        };
         defer allocator.free(response_body);
         return try parseCompletion(allocator, response_body);
     }
@@ -103,7 +111,12 @@ fn fetchChat(
     io: std.Io,
     messages_body: []const u8,
     tools_json: []const u8,
+    cancel_token: ?*const kernel.cancellation.CancellationToken,
 ) ![]u8 {
+    if (cancel_token) |token| {
+        if (token.isCancelled()) return error.Cancelled;
+    }
+
     const trimmed = trimTrailingSlash(ollama.base_url);
     const endpoint = try std.fmt.allocPrint(allocator, "{s}/api/chat", .{trimmed});
     defer allocator.free(endpoint);

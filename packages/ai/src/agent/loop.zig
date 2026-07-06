@@ -58,15 +58,14 @@ pub fn run(
             if (token.isCancelled()) return error.Cancelled;
         }
 
-        var completion = transport.complete(allocator, conversation.items, tool_declarations_json) catch return error.ProviderFailed;
+        var completion = transport.complete(allocator, conversation.items, tool_declarations_json, config.cancel_token) catch |err| return switch (err) {
+            error.Cancelled => error.Cancelled,
+            else => error.ProviderFailed,
+        };
         defer completion.deinit(allocator);
 
         switch (completion) {
             .tool_call => |call| {
-                defer {
-                    allocator.free(call.name);
-                    allocator.free(call.args_json);
-                }
                 if (!tool_registry.isToolAllowed(call.name, tool_ctx.profile, mcp)) return error.NotAllowed;
 
                 const summary = tool_dispatch.execute(allocator, tool_ctx, mcp, call) catch |err| return mapDispatch(err);

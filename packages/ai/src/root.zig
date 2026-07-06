@@ -21,6 +21,7 @@ pub const agent_loop = @import("agent/loop.zig");
 pub const agent_turn = @import("agent/turn.zig");
 pub const gemini_tool_transport = @import("providers/gemini/tool_transport.zig");
 pub const ollama_tool_transport = @import("providers/ollama/tool_transport.zig");
+pub const fake_tool_transport = @import("providers/fake/tool_transport.zig");
 pub const tool_executor = @import("tool_executor.zig");
 pub const progress = @import("progress.zig");
 pub const streaming = @import("streaming.zig");
