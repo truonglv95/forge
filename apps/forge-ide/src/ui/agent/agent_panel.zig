@@ -208,6 +208,24 @@ pub fn hitReviewAction(
     return null;
 }
 
+pub const ApprovalActions = struct { approve: ButtonRect, reject: ButtonRect };
+
+pub fn approvalActions(agent_x: f32, agent_w: f32, window_h: f32, attachment_count: usize, prompt: *const editor.Buffer) ApprovalActions {
+    const y = agent_composer.composerTop(window_h, attachment_count, agent_w, prompt) - 36;
+    const x = agent_x + 20;
+    return .{
+        .approve = .{ .x = x, .y = y, .w = 108, .h = 28 },
+        .reject = .{ .x = x + 116, .y = y, .w = 108, .h = 28 },
+    };
+}
+
+pub fn hitApprovalAction(agent_x: f32, agent_w: f32, window_h: f32, attachment_count: usize, prompt: *const editor.Buffer, x: f32, y: f32) ?enum { approve, reject } {
+    const actions = approvalActions(agent_x, agent_w, window_h, attachment_count, prompt);
+    if (actions.approve.contains(x, y)) return .approve;
+    if (actions.reject.contains(x, y)) return .reject;
+    return null;
+}
+
 pub fn composerLayout(
     agent_x: f32,
     agent_w: f32,

@@ -92,6 +92,27 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         content_y += agent_panel.apply_banner_h + 4;
     }
 
+    if (snap.approval_pending) {
+        renderer.Renderer.drawRoundedRect(inner_x, content_y, content_w, 72, 8, .{ .r = 0.28, .g = 0.2, .b = 0.08, .a = 1.0 });
+        renderer.Renderer.drawText("TOOL APPROVAL REQUIRED", inner_x + 10, content_y + 8, 11.0, .{ .r = 1.0, .g = 0.78, .b = 0.35, .a = 1.0 });
+        wb.agent.lock();
+        var approval_buf: [384:0]u8 = undefined;
+        const approval_line = std.fmt.bufPrint(&approval_buf, "{s} · risk: {s}", .{
+            wb.agent.approval_tool orelse "unknown tool",
+            wb.agent.approval_risk orelse "unknown",
+        }) catch "Tool details unavailable";
+        approval_buf[approval_line.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&approval_buf), inner_x + 10, content_y + 27, 11.0, .{ .r = 0.95, .g = 0.9, .b = 0.78, .a = 1.0 });
+        var args_buf: [384:0]u8 = undefined;
+        const args_src = wb.agent.approval_args orelse "{}";
+        const clipped_args = args_src[0..@min(args_src.len, 360)];
+        const args_line = std.fmt.bufPrint(&args_buf, "Args: {s}", .{clipped_args}) catch "Args unavailable";
+        args_buf[args_line.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&args_buf), inner_x + 10, content_y + 46, 9.5, .{ .r = 0.78, .g = 0.75, .b = 0.68, .a = 1.0 });
+        wb.agent.unlock();
+        content_y += 80;
+    }
+
     if (snap.show_review and wb.proposal_review_open) {
         renderer.Renderer.drawRoundedRect(agent_x + 10, content_y, agent_w - 20, 48, 8, .{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 });
         renderer.Renderer.drawText("Proposal review open in editor panel", inner_x, content_y + 10, 12.0, .{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 });
@@ -234,7 +255,13 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         }
     }
 
-    if (snap.show_review and !wb.proposal_review_open) {
+    if (snap.approval_pending) {
+        const actions = agent_panel.approvalActions(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer);
+        renderer.Renderer.drawRoundedRect(actions.approve.x, actions.approve.y, actions.approve.w, actions.approve.h, 6, .{ .r = 0.2, .g = 0.55, .b = 0.35, .a = 1.0 });
+        renderer.Renderer.drawText("Approve once", actions.approve.x + 10, actions.approve.y + 6, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
+        renderer.Renderer.drawRoundedRect(actions.reject.x, actions.reject.y, actions.reject.w, actions.reject.h, 6, .{ .r = 0.5, .g = 0.2, .b = 0.2, .a = 1.0 });
+        renderer.Renderer.drawText("Reject", actions.reject.x + 30, actions.reject.y + 6, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
+    } else if (snap.show_review and !wb.proposal_review_open) {
         wb.agent.lock();
         const review_content = agent_panel.reviewContentHeight(&wb.agent);
         wb.agent.unlock();

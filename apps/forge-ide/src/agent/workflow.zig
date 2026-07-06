@@ -148,6 +148,7 @@ pub fn spawnGenerate(host: *const Host, intent: []const u8, scope_files: []const
 
 pub fn cancel(host: *const Host) void {
     if (host.agent_cancel_slot.*) |source| source.cancel();
+    host.agent.resolveToolApproval(false);
 }
 
 pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
@@ -180,18 +181,53 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
     ) catch return error.ProviderFailed;
     workspace.checkpoint.linkTransaction(host.io, host.workspace_root, checkpoint_id, tx_id) catch {};
 
+    host.agent.setPhase(.verifying, "Verifying applied changes...") catch {};
+    const validation = ai.validation_runner.runTasks(host.allocator, host.workspace_path, proposal.metadata.validation_tasks) catch return error.ProviderFailed;
+    defer ai.validation_runner.freeResults(host.allocator, validation);
+    var validation_failed = false;
+    for (validation) |item| {
+        if (!item.skipped and item.exit_code != 0) validation_failed = true;
+    }
+
     if (host.agent.run_id) |run_id| {
-        workspace.runs.updateRunState(host.allocator, host.io, host.workspace_root, run_id, "done", tx_id) catch {};
+        workspace.runs.updateRunState(
+            host.allocator,
+            host.io,
+            host.workspace_root,
+            run_id,
+            if (validation_failed) "validation_failed" else "done",
+            tx_id,
+        ) catch {};
     }
 
     host.agent.lock();
+    host.agent.clearValidationResultsUnlocked();
+    for (validation) |item| {
+        const task_copy = host.allocator.dupe(u8, item.task) catch continue;
+        const output_copy = host.allocator.dupe(u8, item.output) catch {
+            host.allocator.free(task_copy);
+            continue;
+        };
+        host.agent.validation_results.append(host.allocator, .{
+            .task = task_copy,
+            .exit_code = item.exit_code,
+            .output = output_copy,
+            .skipped = item.skipped,
+        }) catch {
+            host.allocator.free(task_copy);
+            host.allocator.free(output_copy);
+        };
+    }
     host.agent.last_transaction_id = tx_id;
     host.agent.last_checkpoint_id = checkpoint_id;
     host.agent.show_review = false;
-    host.agent.phase = .done;
+    host.agent.phase = if (validation_failed) .failed else .done;
     if (host.agent.status_line.len > 0) host.allocator.free(host.agent.status_line);
-    host.agent.status_line = host.allocator.dupe(u8, "Applied successfully") catch "";
-    host.agent.showPostApplyBanner();
+    host.agent.status_line = host.allocator.dupe(
+        u8,
+        if (validation_failed) "Applied, but validation failed — inspect output or rollback" else "Applied and verified successfully",
+    ) catch "";
+    host.agent.post_apply_visible = true;
     host.agent.unlock();
 
     host.refresh_explorer(host.context);
@@ -297,28 +333,9 @@ pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
         try host.agent.context_lines.append(host.allocator, try std.fmt.allocPrint(host.allocator, "Validate: {s}", .{item}));
     }
 
-    const validation = ai.validation_runner.runTasks(host.allocator, host.workspace_path, proposal.metadata.validation_tasks) catch null;
+    // Validation belongs after the accepted edit is applied. Running it here
+    // would only verify the pre-proposal workspace and could produce a false green.
     host.agent.clearValidationResultsUnlocked();
-    if (validation) |results| {
-        defer ai.validation_runner.freeResults(host.allocator, results);
-        for (results) |item| {
-            try host.agent.validation_results.append(host.allocator, .{
-                .task = try host.allocator.dupe(u8, item.task),
-                .exit_code = item.exit_code,
-                .output = try host.allocator.dupe(u8, item.output),
-                .skipped = item.skipped,
-            });
-        }
-
-        if (ai.validation_runner.formatLines(host.allocator, results)) |report| {
-            defer host.allocator.free(report);
-            var line_it = std.mem.splitScalar(u8, report, '\n');
-            while (line_it.next()) |line| {
-                if (line.len == 0) continue;
-                try host.agent.context_lines.append(host.allocator, try host.allocator.dupe(u8, line));
-            }
-        } else |_| {}
-    }
 
     try host.agent.context_lines.append(host.allocator, try std.fmt.allocPrint(host.allocator, "Proposal: {s}", .{proposal_rel}));
 
@@ -408,8 +425,9 @@ fn generateWorker(ctx: *GenerateContext) void {
     const fake_plan = if (mode == .plan) default_plan_markdown else null;
 
     const run_fn = switch (mode) {
-        .agent => agentRunInner(ctx, providerOptions(&ctx.host, fake_response, null, true)),
-        else => generateInner(ctx, providerOptions(&ctx.host, fake_response, fake_plan, false)),
+        .ask => agentRunInner(ctx, providerOptions(&ctx.host, fake_response, null, true), .read_only),
+        .agent => agentRunInner(ctx, providerOptions(&ctx.host, fake_response, null, true), .propose_and_task),
+        .plan => generateInner(ctx, providerOptions(&ctx.host, fake_response, fake_plan, false)),
     };
 
     run_fn catch |err| {
@@ -491,6 +509,8 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .conversation = ctx.conversation,
             .workspace_cwd = host.workspace_path,
             .recent_files = recent_files,
+            .enable_repair_loop = plan_phase != .plan_only and provider_options.kind != .fake,
+            .max_repair_attempts = if (provider_options.kind == .fake) 0 else 2,
         },
     ) catch |err| switch (err) {
         ai.proposal_workflow.WorkflowError.Cancelled => return error.Cancelled,
@@ -537,7 +557,7 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     try enqueueRunFinished(host, result.run_id, result.proposal_rel, chat_owned, manifest_owned, plan_owned);
 }
 
-fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Options) AgentError!void {
+fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Options, capability_profile: ai.tools.CapabilityProfile) AgentError!void {
     const host = &ctx.host;
     const cancel_token = ctx.cancel_source.getToken();
 
@@ -555,6 +575,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
         .{
             .max_steps = 8,
             .provider_options = provider_options,
+            .capability_profile = capability_profile,
             .explicit_files = ctx.scope_files,
             .active_file = ctx.active_file,
             .attachments = attachments,
@@ -569,12 +590,18 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .step_begin_context = host,
             .turn_callback = turnBridge,
             .turn_context = host,
-            .edit_callback = editBridge,
-            .edit_context = host,
-            .use_inline_edits = true,
+            .approval_callback = approvalBridge,
+            .approval_context = host,
+            // Agent edits remain proposals until the review transaction is
+            // explicitly approved. Never mutate the authoritative editor
+            // buffer from a model tool callback.
+            .edit_callback = null,
+            .edit_context = null,
+            .use_inline_edits = false,
             .workspace_cwd = host.workspace_path,
             .mcp_enabled = host.ai_mcp_enabled,
             .recent_files = recent_files,
+            .max_repair_attempts = if (capability_profile == .read_only or provider_options.kind == .fake) 0 else 2,
         },
     ) catch |err| switch (err) {
         error.Cancelled => return error.Cancelled,
@@ -592,7 +619,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     defer host.allocator.free(manifest_owned);
 
     var chat_buf: [512]u8 = undefined;
-    const chat_line = std.fmt.bufPrint(&chat_buf, "Agent finished", .{}) catch "Agent finished";
+    const chat_line = result.response_text orelse (std.fmt.bufPrint(&chat_buf, "Agent finished", .{}) catch "Agent finished");
     const chat_owned = host.allocator.dupe(u8, chat_line) catch return error.ProviderFailed;
     errdefer host.allocator.free(chat_owned);
 
@@ -752,6 +779,11 @@ fn turnBridge(context: ?*anyopaque, index: u32) void {
     const label = std.fmt.bufPrint(&buf, "Step {d}: calling model...", .{index}) catch return;
     const owned = host.allocator.dupe(u8, label) catch return;
     host.enqueue_ui(host.context, .{ .set_status = owned });
+}
+
+fn approvalBridge(context: ?*anyopaque, tool_name: []const u8, args_json: []const u8, policy: ai.tool_registry.Policy) bool {
+    const host: *Host = @ptrCast(@alignCast(context.?));
+    return host.agent.requestToolApproval(tool_name, args_json, @tagName(policy.risk));
 }
 
 fn editBridge(context: ?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void {

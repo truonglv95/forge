@@ -331,6 +331,14 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             try agent_workflow.approveSpecAndGenerate(&wb.agentHost());
             try wb.setStatus("Spec approved — generating proposal...");
         },
+        .agent_approve_tool => {
+            wb.agent.resolveToolApproval(true);
+            try wb.setStatus("Tool approved — continuing agent...");
+        },
+        .agent_reject_tool => {
+            wb.agent.resolveToolApproval(false);
+            try wb.setStatus("Tool rejected");
+        },
         .agent_reject => {
             agent_workflow.rejectCurrentProposal(&wb.agentHost());
             wb.closeProposalReview();

@@ -24,8 +24,9 @@ pub fn execute(
         defer allocator.free(term);
         const out = tool_executor.search(tool_ctx, term) catch |err| return mapTool(err);
         defer allocator.free(out.summary);
+        defer allocator.free(out.observation);
         defer if (out.first_match_path) |path| allocator.free(path);
-        return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
+        return allocator.dupe(u8, out.observation) catch return error.WorkspaceFailed;
     }
     if (std.mem.eql(u8, call.name, "codebase_search")) {
         const query = args.parseCodebaseQuery(allocator, call.args_json) catch return error.ParseFailed;
@@ -39,14 +40,16 @@ pub fn execute(
         return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
     }
     if (std.mem.eql(u8, call.name, "list_tree")) {
-        const out = tool_executor.listTree(tool_ctx) catch |err| return mapTool(err);
+        const tree_args = args.parseListTreeArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer allocator.free(tree_args.path);
+        const out = tool_executor.listTree(tool_ctx, tree_args.path, tree_args.depth) catch |err| return mapTool(err);
         defer allocator.free(out.summary);
         return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
     }
     if (std.mem.eql(u8, call.name, "read_file")) {
-        const path = args.parseReadPath(allocator, call.args_json) catch return error.ParseFailed;
-        defer allocator.free(path);
-        const out = tool_executor.readFile(tool_ctx, path) catch |err| return mapTool(err);
+        const read_args = args.parseReadFileArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer allocator.free(read_args.path);
+        const out = tool_executor.readFile(tool_ctx, read_args.path, read_args.start_line, read_args.end_line) catch |err| return mapTool(err);
         defer allocator.free(out.summary);
         return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
     }

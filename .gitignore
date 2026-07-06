@@ -5,5 +5,7 @@ zig-pkg
 fixtures/eval-workspace/
 /extension.o
 /main.wasm
+.forge/evals/
+scripts/__pycache__/
 
 .env

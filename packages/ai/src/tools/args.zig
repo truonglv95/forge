@@ -18,6 +18,17 @@ pub const ReplaceFileContentArgs = struct {
     replacement: []const u8,
 };
 
+pub const ReadFileArgs = struct {
+    path: []const u8,
+    start_line: ?usize,
+    end_line: ?usize,
+};
+
+pub const ListTreeArgs = struct {
+    path: []const u8,
+    depth: usize,
+};
+
 pub const RememberArgs = struct {
     content: []const u8,
     kind: []const u8,
@@ -40,12 +51,31 @@ pub fn parseCodebaseQuery(allocator: std.mem.Allocator, args_json: []const u8) !
     return try allocator.dupe(u8, query);
 }
 
-pub fn parseReadPath(allocator: std.mem.Allocator, args_json: []const u8) ![]const u8 {
-    const Args = struct { path: ?[]const u8 = null };
+pub fn parseReadFileArgs(allocator: std.mem.Allocator, args_json: []const u8) !ReadFileArgs {
+    const Args = struct {
+        path: ?[]const u8 = null,
+        start_line: ?usize = null,
+        end_line: ?usize = null,
+    };
     var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const path = parsed.value.path orelse return error.MissingArg;
-    return try allocator.dupe(u8, path);
+    if (parsed.value.start_line != null and parsed.value.end_line != null and parsed.value.start_line.? > parsed.value.end_line.?) return error.InvalidRange;
+    return .{
+        .path = try allocator.dupe(u8, path),
+        .start_line = parsed.value.start_line,
+        .end_line = parsed.value.end_line,
+    };
+}
+
+pub fn parseListTreeArgs(allocator: std.mem.Allocator, args_json: []const u8) !ListTreeArgs {
+    const Args = struct { path: ?[]const u8 = null, depth: ?usize = null };
+    var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return .{
+        .path = try allocator.dupe(u8, parsed.value.path orelse "."),
+        .depth = @min(parsed.value.depth orelse 3, 8),
+    };
 }
 
 pub fn parseFetchUrl(allocator: std.mem.Allocator, args_json: []const u8) ![]const u8 {

@@ -19,9 +19,11 @@ pub const Phase = enum {
     sending,
     streaming,
     parsing,
+    waiting_approval,
     proposal_ready,
     reviewing,
     applying,
+    verifying,
     done,
     failed,
     cancelled,
@@ -53,6 +55,8 @@ pub const ValidationResult = struct {
     output: []const u8,
     skipped: bool = false,
 };
+
+pub const ApprovalDecision = enum { none, pending, approved, rejected };
 
 pub const AgentStep = struct {
     index: u32,
@@ -112,6 +116,11 @@ pub const Session = struct {
     attachments: std.ArrayList(Attachment),
     mode_menu_open: bool = false,
     model_menu_open: bool = false,
+    approval_condition: forge_util.sync.Condition = .{},
+    approval_decision: ApprovalDecision = .none,
+    approval_tool: ?[]const u8 = null,
+    approval_args: ?[]const u8 = null,
+    approval_risk: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Session {
         return .{
@@ -138,7 +147,6 @@ pub const Session = struct {
 
     pub fn deinit(self: *Session) void {
         self.lock();
-        defer self.unlock();
         self.clearProposalStateUnlocked();
         self.freeLinesUnlocked(&self.context_lines);
         self.clearContextEntriesUnlocked();
@@ -159,10 +167,15 @@ pub const Session = struct {
         self.scope_files.deinit(self.allocator);
         self.clearAttachmentsUnlocked();
         self.attachments.deinit(self.allocator);
+        if (self.approval_tool) |text| self.allocator.free(text);
+        if (self.approval_args) |text| self.allocator.free(text);
+        if (self.approval_risk) |text| self.allocator.free(text);
         self.clearAgentStepsUnlocked();
         self.agent_steps.deinit(self.allocator);
         if (self.status_line.len > 0) self.allocator.free(self.status_line);
         if (self.provider_label.len > 0) self.allocator.free(self.provider_label);
+        self.unlock();
+        self.approval_condition.deinit();
         self.mutex.deinit();
     }
 
@@ -432,6 +445,48 @@ pub const Session = struct {
         self.post_apply_visible = false;
     }
 
+    pub fn requestToolApproval(self: *Session, tool: []const u8, args: []const u8, risk: []const u8) bool {
+        const tool_copy = self.allocator.dupe(u8, tool) catch return false;
+        const args_copy = self.allocator.dupe(u8, args) catch {
+            self.allocator.free(tool_copy);
+            return false;
+        };
+        const risk_copy = self.allocator.dupe(u8, risk) catch {
+            self.allocator.free(tool_copy);
+            self.allocator.free(args_copy);
+            return false;
+        };
+
+        self.lock();
+        if (self.approval_tool) |text| self.allocator.free(text);
+        if (self.approval_args) |text| self.allocator.free(text);
+        if (self.approval_risk) |text| self.allocator.free(text);
+        self.approval_tool = tool_copy;
+        self.approval_args = args_copy;
+        self.approval_risk = risk_copy;
+        self.approval_decision = .pending;
+        self.phase = .waiting_approval;
+        while (self.approval_decision == .pending) self.approval_condition.wait(&self.mutex);
+        const approved = self.approval_decision == .approved;
+        self.approval_decision = .none;
+        self.approval_tool = null;
+        self.approval_args = null;
+        self.approval_risk = null;
+        self.allocator.free(tool_copy);
+        self.allocator.free(args_copy);
+        self.allocator.free(risk_copy);
+        self.unlock();
+        return approved;
+    }
+
+    pub fn resolveToolApproval(self: *Session, approved: bool) void {
+        self.lock();
+        defer self.unlock();
+        if (self.approval_decision != .pending) return;
+        self.approval_decision = if (approved) .approved else .rejected;
+        self.approval_condition.signal();
+    }
+
     pub fn showPostApplyBanner(self: *Session) void {
         self.lock();
         defer self.unlock();
@@ -551,6 +606,7 @@ pub const Session = struct {
         validation_count: usize,
         spec_pending: bool,
         last_checkpoint_id: ?u64,
+        approval_pending: bool,
     } {
         self.lock();
         defer self.unlock();
@@ -583,6 +639,7 @@ pub const Session = struct {
             .validation_count = self.validation_results.items.len,
             .spec_pending = self.spec_pending,
             .last_checkpoint_id = self.last_checkpoint_id,
+            .approval_pending = self.approval_decision == .pending,
         };
     }
 };

@@ -705,9 +705,12 @@ pub fn flushAgentUi(wb: anytype) !void {
                     try wb.agent.setPhase(.proposal_ready, "Proposal ready for review");
                     try wb.setStatus("Proposal ready for review");
                 } else {
-                    if (wb.agent.mode == .agent) {
-                        try wb.agent.setPhase(.idle, "Agent finished — check inline edits");
-                        try wb.setStatus("Agent finished — check inline edits");
+                    if (wb.agent.mode == .ask) {
+                        try wb.agent.setPhase(.idle, "Answer ready");
+                        try wb.setStatus("Answer ready");
+                    } else if (wb.agent.mode == .agent) {
+                        try wb.agent.setPhase(.idle, "Agent finished without a proposal");
+                        try wb.setStatus("Agent finished without a proposal");
                     } else {
                         try wb.agent.setPhase(.idle, "Spec ready — approve to continue");
                         try wb.setStatus("Spec ready — approve to continue");
@@ -735,14 +738,10 @@ pub fn flushAgentUi(wb: anytype) !void {
             .refresh_context_preview => refreshAgentContextPreview(
                 wb,
             ),
-            .propose_edit => |payload| {
-                const doc = wb.tabs.openOrActivate(payload.path) catch |err| {
-                    std.debug.print("Failed to open file for edit: {any}\n", .{err});
-                    continue;
-                };
-                doc.buffer.applyInlineEdit(payload.start_line, payload.end_line, payload.replacement) catch |err| {
-                    std.debug.print("Failed to apply inline edit: {any}\n", .{err});
-                };
+            .propose_edit => {
+                // Legacy queue event retained for schema compatibility. Model
+                // edits are rendered only from a persisted proposal review.
+                try wb.setStatus("Pending AI edit captured for proposal review");
             },
         }
     }

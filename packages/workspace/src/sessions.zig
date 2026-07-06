@@ -13,12 +13,20 @@ pub const SessionStep = struct {
 };
 
 pub const SessionDoc = struct {
-    schema_version: u32,
+    schema_version: u32 = 1,
     session_id: []const u8,
     intent: []const u8,
     run_ids: [][]const u8,
     proposal_path: []const u8,
     steps: []SessionStep,
+    execution_state: []const u8 = "completed",
+    next_step_index: u32 = 1,
+    pending_tool: []const u8 = "",
+    pending_tool_args: []const u8 = "",
+    conversation_json: []const u8 = "",
+    provider_kind: []const u8 = "",
+    capability_profile: []const u8 = "propose",
+    max_steps: u32 = 8,
 };
 
 pub const IndexEntry = struct {
@@ -138,6 +146,12 @@ pub fn deinitSession(allocator: std.mem.Allocator, doc: *SessionDoc) void {
     allocator.free(doc.session_id);
     allocator.free(doc.intent);
     allocator.free(doc.proposal_path);
+    allocator.free(doc.execution_state);
+    allocator.free(doc.pending_tool);
+    allocator.free(doc.pending_tool_args);
+    allocator.free(doc.conversation_json);
+    allocator.free(doc.provider_kind);
+    allocator.free(doc.capability_profile);
     for (doc.run_ids) |run_id| allocator.free(run_id);
     allocator.free(doc.run_ids);
     for (doc.steps) |step| {
@@ -205,6 +219,14 @@ pub fn loadSession(
         .run_ids = owned_run_ids,
         .proposal_path = try allocator.dupe(u8, value.proposal_path),
         .steps = owned_steps,
+        .execution_state = try allocator.dupe(u8, value.execution_state),
+        .next_step_index = value.next_step_index,
+        .pending_tool = try allocator.dupe(u8, value.pending_tool),
+        .pending_tool_args = try allocator.dupe(u8, value.pending_tool_args),
+        .conversation_json = try allocator.dupe(u8, value.conversation_json),
+        .provider_kind = try allocator.dupe(u8, value.provider_kind),
+        .capability_profile = try allocator.dupe(u8, value.capability_profile),
+        .max_steps = value.max_steps,
     };
 }
 

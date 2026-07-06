@@ -1,6 +1,5 @@
 const std = @import("std");
 const kernel = @import("forge-kernel");
-const builtin = @import("builtin");
 
 pub const RunError = error{
     TaskFailed,
@@ -40,14 +39,21 @@ pub fn runTasks(
             continue;
         }
 
-        const argv = try argvForTask(allocator, task);
+        const argv = argvForTask(allocator, task) catch |err| switch (err) {
+            error.TaskFailed => {
+                try items.append(allocator, .{
+                    .task = try allocator.dupe(u8, task),
+                    .exit_code = 1,
+                    .output = try allocator.dupe(u8, "validation task is not allowlisted"),
+                });
+                continue;
+            },
+            else => return error.OutOfMemory,
+        };
         defer allocator.free(argv);
 
-        const shell_argv = try shellWrap(allocator, argv);
-        defer allocator.free(shell_argv);
-
         const captured = kernel.process.runCapture(allocator, .{
-            .argv = shell_argv,
+            .argv = argv,
             .cwd = cwd,
             .max_bytes = 16 * 1024,
         }) catch {
@@ -115,31 +121,7 @@ fn argvForTask(allocator: std.mem.Allocator, task: []const u8) ![]const []const 
         return argv;
     }
 
-    var parts: std.ArrayList([]const u8) = .empty;
-    defer parts.deinit(allocator);
-    var split = std.mem.tokenizeScalar(u8, task, ' ');
-    while (split.next()) |token| try parts.append(allocator, token);
-    if (parts.items.len == 0) return error.TaskFailed;
-    return try allocator.dupe([]const u8, parts.items);
-}
-
-fn shellWrap(allocator: std.mem.Allocator, argv: []const []const u8) ![]const []const u8 {
-    if (argv.len == 0) return error.TaskFailed;
-    if (argv.len == 1 and std.mem.indexOfScalar(u8, argv[0], ' ') != null) {
-        if (builtin.os.tag == .windows) {
-            const out = try allocator.alloc([]const u8, 3);
-            out[0] = "cmd";
-            out[1] = "/c";
-            out[2] = argv[0];
-            return out;
-        }
-        const out = try allocator.alloc([]const u8, 3);
-        out[0] = "sh";
-        out[1] = "-c";
-        out[2] = argv[0];
-        return out;
-    }
-    return try allocator.dupe([]const u8, argv);
+    return error.TaskFailed;
 }
 
 test "argvForTask parses zig build test" {
@@ -147,4 +129,10 @@ test "argvForTask parses zig build test" {
     const argv = try argvForTask(allocator, "zig build test");
     defer allocator.free(argv);
     try std.testing.expectEqual(@as(usize, 3), argv.len);
+}
+
+test "validation tasks reject arbitrary process execution" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.TaskFailed, argvForTask(allocator, "rm -rf ."));
+    try std.testing.expectError(error.TaskFailed, argvForTask(allocator, "sh -c echo-owned"));
 }
