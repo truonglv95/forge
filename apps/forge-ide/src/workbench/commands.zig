@@ -38,6 +38,8 @@ pub const Command = union(enum) {
     agent_approve_spec: void,
     agent_approve_tool: void,
     agent_reject_tool: void,
+    agent_continue_session: void,
+    agent_dismiss_resume: void,
     agent_reject: void,
     agent_show_review: void,
     agent_toggle_step: usize,

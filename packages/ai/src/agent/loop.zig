@@ -156,10 +156,12 @@ fn executeTool(
     }
 
     const policy = tool_registry.policyFor(call.name);
-    if (policy.approval == .every_time) {
+    if (policy.approval == .every_time or policy.approval == .review) {
         if (config.approval_callback) |approve| {
             if (!approve(config.approval_context, call.name, call.args_json, policy)) return error.NotAllowed;
-        } else if (!config.approve_every_time_tools) {
+        } else if (policy.approval == .every_time and !config.approve_every_time_tools) {
+            return error.NotAllowed;
+        } else if (policy.approval == .review) {
             return error.NotAllowed;
         }
     }

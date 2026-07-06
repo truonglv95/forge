@@ -31,6 +31,11 @@ jobs:
       - name: Check formatting, build, and tests
         run: ./scripts/check.sh --full
 
+      - name: Agent reliability eval (fake)
+        run: |
+          zig build
+          ./scripts/eval_reliability.sh --provider fake --min-success-rate 0.66
+
       - name: Smoke test CLI
         run: |
           zig build run -- version

@@ -16,9 +16,9 @@ pub const SessionDoc = struct {
     schema_version: u32 = 1,
     session_id: []const u8,
     intent: []const u8,
-    run_ids: [][]const u8,
-    proposal_path: []const u8,
-    steps: []SessionStep,
+    run_ids: [][]const u8 = &.{},
+    proposal_path: []const u8 = "",
+    steps: []SessionStep = &.{},
     execution_state: []const u8 = "completed",
     next_step_index: u32 = 1,
     pending_tool: []const u8 = "",
@@ -34,6 +34,46 @@ pub const IndexEntry = struct {
     intent: []const u8,
     timestamp_ms: i64,
 };
+
+pub const ResumableSession = struct {
+    session_id: []const u8,
+    intent: []const u8,
+    execution_state: []const u8,
+};
+
+pub fn isResumableExecutionState(state: []const u8) bool {
+    return std.mem.eql(u8, state, "exploring") or std.mem.eql(u8, state, "tool_pending");
+}
+
+pub fn deinitResumable(allocator: std.mem.Allocator, offer: *ResumableSession) void {
+    allocator.free(offer.session_id);
+    allocator.free(offer.intent);
+    allocator.free(offer.execution_state);
+    offer.* = undefined;
+}
+
+pub fn findLatestResumable(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+) !?ResumableSession {
+    var list = try listEntries(allocator, io, root);
+    defer list.deinit();
+
+    var index = list.items.len;
+    while (index > 0) : (index -= 1) {
+        const entry = list.items[index - 1];
+        var doc = loadSession(allocator, io, root, entry.session_id) catch continue;
+        defer deinitSession(allocator, &doc);
+        if (!isResumableExecutionState(doc.execution_state)) continue;
+        return ResumableSession{
+            .session_id = try allocator.dupe(u8, doc.session_id),
+            .intent = try allocator.dupe(u8, doc.intent),
+            .execution_state = try allocator.dupe(u8, doc.execution_state),
+        };
+    }
+    return null;
+}
 
 pub const IndexList = struct {
     allocator: std.mem.Allocator,
@@ -261,6 +301,35 @@ test "sessions index list parses jsonl" {
 
     try std.testing.expectEqual(@as(usize, 1), list.items.len);
     try std.testing.expectEqualStrings("sess_1", list.items[0].session_id);
+}
+
+test "findLatestResumable prefers interrupted sessions" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+
+    const completed =
+        \\{"schema_version":3,"session_id":"sess_done","intent":"done","execution_state":"completed","conversation_json":"[]","steps":[]}
+    ;
+    const pending =
+        \\{"schema_version":3,"session_id":"sess_pending","intent":"resume me","execution_state":"tool_pending","pending_tool":"search","pending_tool_args":"{}","conversation_json":"[]","steps":[]}
+    ;
+    try persistSession(io, root, "sess_done", completed);
+    try persistSession(io, root, "sess_pending", pending);
+    try appendIndex(allocator, io, root, "{\"session_id\":\"sess_done\",\"intent\":\"done\",\"timestamp_ms\":1}\n");
+    try appendIndex(allocator, io, root, "{\"session_id\":\"sess_pending\",\"intent\":\"resume me\",\"timestamp_ms\":2}\n");
+
+    const offer_opt = try findLatestResumable(allocator, io, root);
+    try std.testing.expect(offer_opt != null);
+    if (offer_opt) |value| {
+        var owned = value;
+        defer deinitResumable(allocator, &owned);
+        try std.testing.expectEqualStrings("sess_pending", owned.session_id);
+        try std.testing.expectEqualStrings("tool_pending", owned.execution_state);
+    }
 }
 
 test "loadSession reads persisted session" {
