@@ -40,11 +40,13 @@ const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
 const editor_find_mod = @import("workbench/editor_find.zig");
 const settings_mod = @import("workbench/settings.zig");
+const ai_config_io = @import("workbench/ai_config_io.zig");
+const navigation_history_mod = @import("workbench/navigation_history.zig");
 const session_restore_mod = @import("workbench/session_restore.zig");
 const chat_persistence_mod = @import("workbench/chat_persistence.zig");
 const agent_ui_queue_mod = @import("workbench/agent_ui_queue.zig");
 
-pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, terminal, palette, conflict, recovery, find, goto_line, rename };
+pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, ai_settings, terminal, palette, conflict, recovery, find, goto_line, rename };
 pub const EditorPane = enum { primary, secondary };
 pub const ChatRole = enum { user, agent };
 pub const ChatMessage = struct {
@@ -109,6 +111,10 @@ pub const Workbench = struct {
     agent_panel_width: f32 = 380.0,
     explorer_panel_width: f32 = 250.0,
     bottom_panel_height: f32 = @import("ui/layout.zig").task_panel_height,
+    sidebar_visible: bool = true,
+    bottom_panel_visible: bool = true,
+    agent_panel_visible: bool = true,
+    nav_history: navigation_history_mod.History = undefined,
     terminal_selection: ?@import("ui/terminal_panel.zig").Selection = null,
     shell_mode: @import("ui/layout.zig").ShellMode = .ide,
     editor_scroll_y: f32 = 0,
@@ -121,6 +127,9 @@ pub const Workbench = struct {
     tab_scroll_x: f32 = 0,
     explorer_scroll_y: f32 = 0,
     extensions_scroll_y: f32 = 0,
+    ai_settings_scroll_y: f32 = 0,
+    ai_settings_open: bool = false,
+    ai_mcp_status: ?[]const u8 = null,
     sidebar_view: @import("ui/sidebar_view.zig").SidebarView = .explorer,
     selected_extension_index: ?usize = null,
     chat_scroll_y: f32 = 0,
@@ -133,6 +142,7 @@ pub const Workbench = struct {
     conflict_check_cooldown: f32 = 0,
     terminal_prompt_refresh_cooldown: f32 = 3.0,
     terminal_boot_pending: bool = false,
+    explorer_boot_pending: bool = false,
     theme: workspace.Theme = workspace.Theme.darkDefault(),
     active_extension_theme: []const u8 = "",
     find_bar: editor_find_mod.FindBar,
@@ -143,6 +153,11 @@ pub const Workbench = struct {
     environ_map: ?*const std.process.Environ.Map = null,
     ai_provider: []const u8 = "auto",
     ai_model: ?[]const u8 = null,
+    ai_mcp_enabled: bool = true,
+
+    git_commit_msg: editor.Buffer,
+    git_staged_collapsed: bool = false,
+    git_changes_collapsed: bool = false,
 
     pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8, ide_launcher: []const u8, environ_map: ?*const std.process.Environ.Map) !void {
         var root = try workspace.WorkspaceRoot.open(io, workspace_path);
@@ -157,6 +172,7 @@ pub const Workbench = struct {
             .explorer = explorer_tree.Tree.init(allocator),
             .extension_host = plugin.Host.init(allocator, io),
             .keybindings = keybindings_mod.Registry.init(allocator),
+            .nav_history = navigation_history_mod.History.init(allocator),
             .lsp_registry = lsp.Registry.init(allocator),
             .lsp_proxy = try lsp.Proxy.init(allocator, io, workspace_path),
             .events = kernel.EventBus(Event).init(allocator),
@@ -168,6 +184,7 @@ pub const Workbench = struct {
             .prompt_buffer = try editor.Buffer.init(allocator),
             .rename_buffer = try editor.Buffer.init(allocator),
             .search_buffer = try editor.Buffer.init(allocator),
+            .git_commit_msg = try editor.Buffer.init(allocator),
             .chat_history = .empty,
             .breakpoints = breakpoints_mod.Store.init(allocator),
             .debug_console = debug_console_mod.DebugConsole.init(allocator, io),
@@ -219,9 +236,10 @@ pub const Workbench = struct {
             self.allocator.free(self.ai_provider);
             self.ai_provider = cfg.provider;
             self.ai_model = cfg.model;
+            self.ai_mcp_enabled = cfg.mcp_enabled;
         } else |_| {}
 
-        try self.explorer.rebuild(io, root);
+        self.explorer_boot_pending = true;
         try self.restoreSessionTabs();
         if (self.tabs.tabs.items.len == 0) {
             try self.dispatch(.{ .open_file = "apps/forge-ide/src/main.zig" });
@@ -250,6 +268,7 @@ pub const Workbench = struct {
         self.chat_history.deinit(self.allocator);
         self.rename_buffer.deinit();
         self.search_buffer.deinit();
+        self.git_commit_msg.deinit();
         if (self.search_results) |*results| results.deinit(self.allocator);
         if (self.git_status) |*status| status.deinit(self.allocator);
         if (self.debug_stop_path) |path| self.allocator.free(path);
@@ -279,11 +298,13 @@ pub const Workbench = struct {
         self.user_settings.deinit(self.allocator);
         self.allocator.free(self.ai_provider);
         if (self.ai_model) |model| self.allocator.free(model);
+        if (self.ai_mcp_status) |status| self.allocator.free(status);
         self.allocator.free(self.ide_launcher);
         self.palette.deinit();
         self.theme.deinit();
         if (self.active_extension_theme.len > 0) self.allocator.free(self.active_extension_theme);
         if (self.marketplace_catalog) |*catalog| catalog.deinit(self.allocator);
+        self.nav_history.deinit();
         self.keybindings.deinit();
         self.lsp_registry.deinit(self.allocator);
         self.lsp_proxy.deinit();
@@ -293,6 +314,78 @@ pub const Workbench = struct {
         self.tabs.deinit();
         self.workspace_root.close(self.io);
         self.allocator.free(self.workspace_path);
+    }
+
+    pub fn layoutGeometry(self: *const Workbench, window_w: f32, window_h: f32) @import("ui/layout.zig").Geometry {
+        return @import("ui/layout.zig").compute(
+            self.shell_mode,
+            window_w,
+            window_h,
+            self.explorer_panel_width,
+            self.agent_panel_width,
+            self.bottom_panel_height,
+            self.sidebar_visible,
+            self.agent_panel_visible,
+            self.bottom_panel_visible,
+        );
+    }
+
+    pub fn headerToolbarState(self: *const Workbench) @import("ui/header_toolbar.zig").ToolbarState {
+        return .{
+            .shell_mode = self.shell_mode,
+            .sidebar_visible = self.sidebar_visible,
+            .bottom_panel_visible = self.bottom_panel_visible,
+            .agent_panel_visible = self.agent_panel_visible,
+            .can_go_back = self.nav_history.canGoBack(),
+            .can_go_forward = self.nav_history.canGoForward(),
+        };
+    }
+
+    pub fn handleHeaderAction(self: *Workbench, action: @import("ui/header_toolbar.zig").Action) !void {
+        switch (action) {
+            .toggle_sidebar => {
+                self.sidebar_visible = !self.sidebar_visible;
+                try self.setStatus(if (self.sidebar_visible) "Sidebar shown" else "Sidebar hidden");
+            },
+            .nav_back => try self.navBack(),
+            .nav_forward => try self.navForward(),
+            .toggle_bottom_panel => {
+                self.bottom_panel_visible = !self.bottom_panel_visible;
+                try self.setStatus(if (self.bottom_panel_visible) "Panel shown" else "Panel hidden");
+            },
+            .toggle_agent => {
+                self.agent_panel_visible = !self.agent_panel_visible;
+                try self.setStatus(if (self.agent_panel_visible) "Agent panel shown" else "Agent panel hidden");
+            },
+            .open_settings => try self.openAiSettings(),
+            .toggle_agent_window => try self.dispatch(.toggle_shell_mode),
+        }
+    }
+
+    fn navBack(self: *Workbench) !void {
+        const entry = self.nav_history.back() orelse return;
+        try self.goToNavEntry(entry);
+    }
+
+    fn navForward(self: *Workbench) !void {
+        const entry = self.nav_history.forward() orelse return;
+        try self.goToNavEntry(entry);
+    }
+
+    fn goToNavEntry(self: *Workbench, entry: navigation_history_mod.Entry) !void {
+        self.nav_history.suppress = true;
+        defer self.nav_history.suppress = false;
+        for (self.tabs.tabs.items, 0..) |doc, i| {
+            if (std.mem.eql(u8, doc.path, entry.path)) {
+                try self.activateTab(i);
+                return;
+            }
+        }
+        try self.openFile(entry.path);
+    }
+
+    fn recordNavigation(self: *Workbench, path: []const u8) !void {
+        try self.nav_history.record(path, self.tabs.active);
     }
 
     pub fn dispatch(self: *Workbench, command: Command) !void {
@@ -314,6 +407,7 @@ pub const Workbench = struct {
                 }
                 try workspace_io.saveDocument(self.io, self.workspace_root, doc);
                 try recovery_mod.snapshotDirtyDocs(self.allocator, self.io, self.workspace_root, &self.tabs);
+                workspace.hooks.runOnSave(self.allocator, self.io, self.workspace_root, doc.path, self.workspace_path) catch {};
                 try self.events.publish(.{ .file_saved = doc.path });
                 if (std.mem.eql(u8, doc.path, ".forge/settings.toml")) {
                     try self.reloadUserSettings();
@@ -371,6 +465,10 @@ pub const Workbench = struct {
             .run_extension_command => |command_id| try self.extension_host.executeCommand(command_id),
             .reload_extensions => try self.reloadExtensions(),
             .set_sidebar_view => |view| {
+                if (view == .ai) {
+                    try self.openAiSettings();
+                    return;
+                }
                 self.sidebar_view = view;
                 self.focused_panel = switch (view) {
                     .explorer => .explorer,
@@ -378,6 +476,7 @@ pub const Workbench = struct {
                     .git => .git,
                     .run => .run,
                     .extensions => .extensions,
+                    .ai => .ai_settings,
                 };
                 if (view == .git) try self.refreshGitStatus();
             },
@@ -529,6 +628,60 @@ pub const Workbench = struct {
                 };
                 try self.setStatus("Agent: building context…");
             },
+            .agent_edit_selection => {
+                const doc = self.tabs.activeDoc() orelse {
+                    try self.setStatus("No active file");
+                    return;
+                };
+                const selection = doc.buffer.selectedText(self.allocator) catch {
+                    try self.setStatus("Failed to read selection");
+                    return;
+                };
+                defer self.allocator.free(selection);
+                if (selection.len == 0) {
+                    try self.setStatus("Select code first (drag in editor)");
+                    return;
+                }
+
+                const prompt_text = self.prompt_buffer.content() catch {
+                    try self.setStatus("Failed to read prompt");
+                    return;
+                };
+                defer self.prompt_buffer.allocator.free(prompt_text);
+                const user_part = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);
+
+                const intent = if (user_part.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "Edit the selected code in {s}.\n\nRequest: {s}\n\nSelected code:\n```\n{s}\n```", .{ doc.path, user_part, selection })
+                else
+                    try std.fmt.allocPrint(self.allocator, "Edit the selected code in {s}.\n\n```\n{s}\n```\n\nImprove or fix as needed.", .{ doc.path, selection });
+                defer self.allocator.free(intent);
+
+                self.prompt_buffer.deinit();
+                self.prompt_buffer = try editor.Buffer.init(self.allocator);
+                self.prompt_scroll_y = 0;
+                self.focused_panel = .agent;
+                self.agent.lock();
+                self.agent.mode = .agent;
+                self.agent.unlock();
+
+                try self.appendChat(.user, intent);
+                self.scrollChatToEnd(768);
+
+                const scope = try self.allocator.alloc([]const u8, 1);
+                defer self.allocator.free(scope);
+                scope[0] = try self.allocator.dupe(u8, doc.path);
+                defer self.allocator.free(scope[0]);
+
+                agent_workflow.spawnGenerate(&self.agentHost(), intent, scope, doc.path) catch |err| {
+                    const msg = switch (err) {
+                        error.AgentBusy => "Agent is already running",
+                        else => "Agent failed to start",
+                    };
+                    try self.setStatus(msg);
+                    return;
+                };
+                try self.setStatus("Agent: editing selection…");
+            },
             .agent_cancel => {
                 agent_workflow.cancel(&self.agentHost());
                 try self.setStatus("Cancelling agent...");
@@ -540,12 +693,29 @@ pub const Workbench = struct {
                 try self.setStatus(msg);
                 try self.appendChat(.agent, "Changes applied to workspace.");
             },
+            .agent_rollback => {
+                try agent_workflow.rollbackLastCheckpoint(&self.agentHost());
+                try self.appendChat(.agent, "Rolled back to pre-apply checkpoint.");
+                try self.setStatus("Checkpoint restored");
+            },
+            .agent_approve_spec => {
+                try agent_workflow.approveSpecAndGenerate(&self.agentHost());
+                try self.setStatus("Spec approved — generating proposal...");
+            },
             .agent_reject => {
                 agent_workflow.rejectCurrentProposal(&self.agentHost());
                 try self.appendChat(.agent, "Proposal rejected.");
                 try self.setStatus("Proposal rejected");
             },
             .agent_show_review => try self.showAgentReview(),
+            .agent_toggle_step => |index| {
+                self.agent.lock();
+                if (index < self.agent.agent_steps.items.len) {
+                    const step = &self.agent.agent_steps.items[index];
+                    step.expanded = !step.expanded;
+                }
+                self.agent.unlock();
+            },
             .agent_select_run => |index| {
                 self.agent.lock();
                 if (index < self.agent.run_history.items.len) {
@@ -693,6 +863,16 @@ pub const Workbench = struct {
             .editor_format_document => try self.formatDocument(),
             .editor_split_right => try self.splitEditorRight(),
             .editor_close_split => try self.closeEditorSplit(),
+            .editor_accept_inline_edit => {
+                if (self.tabs.activeDoc()) |doc| {
+                    try doc.buffer.acceptInlineEdit();
+                }
+            },
+            .editor_reject_inline_edit => {
+                if (self.tabs.activeDoc()) |doc| {
+                    try doc.buffer.rejectInlineEdit();
+                }
+            },
             .references_goto => |index| try self.gotoReference(index),
             .problems_goto => |index| try self.gotoProblem(index),
             .completion_accept => {
@@ -707,6 +887,21 @@ pub const Workbench = struct {
             .problem_quick_fix => try self.quickFixAtCursor(),
             .debug_stack_goto => |index| try self.gotoDebugStackFrame(index),
             .debug_copy_variable => |index| try self.copyDebugVariable(index),
+            .ai_open_forge_toml => try self.openForgeToml(),
+            .ai_open_mcp_config => try self.openMcpConfig(),
+            .ai_toggle_mcp => try self.toggleAiMcp(),
+            .ai_refresh_mcp => try self.refreshAiMcpStatus(),
+            .toggle_sidebar => self.sidebar_visible = !self.sidebar_visible,
+            .toggle_bottom_panel => self.bottom_panel_visible = !self.bottom_panel_visible,
+            .toggle_agent_panel => self.agent_panel_visible = !self.agent_panel_visible,
+            .focus_agent => {
+                self.agent_panel_visible = true;
+                self.focused_panel = .agent;
+            },
+            .nav_back => try self.navBack(),
+            .nav_forward => try self.navForward(),
+            .open_ai_settings => try self.openAiSettings(),
+            .close_ai_settings => self.closeAiSettings(),
         }
     }
 
@@ -738,11 +933,121 @@ pub const Workbench = struct {
     pub fn setAgentModelIndex(self: *Workbench, index: usize) !void {
         const agent_composer = @import("ui/agent_composer.zig");
         if (index >= agent_composer.models.len) return;
-        const model_id = agent_composer.models[index].id;
+        const option = agent_composer.models[index];
         if (self.ai_model) |old| self.allocator.free(old);
-        self.ai_model = try self.allocator.dupe(u8, model_id);
+        self.ai_model = try self.allocator.dupe(u8, option.id);
+        self.allocator.free(self.ai_provider);
+        self.ai_provider = try self.allocator.dupe(u8, option.provider);
         self.agent.closeMenus();
-        try self.setStatus("Model updated");
+        try ai_config_io.writeAiProvider(self.allocator, self.io, self.workspace_root, option.provider);
+        try ai_config_io.writeAiModel(self.allocator, self.io, self.workspace_root, option.id);
+        try self.setStatus("Model saved to forge.toml");
+    }
+
+    pub fn refreshAiMcpStatus(self: *Workbench) !void {
+        if (self.ai_mcp_status) |old| self.allocator.free(old);
+        self.ai_mcp_status = null;
+
+        if (!self.ai_mcp_enabled) {
+            self.ai_mcp_status = try self.allocator.dupe(u8, "MCP disabled in forge.toml ([ai] mcp = false)");
+            return;
+        }
+
+        var registry = ai.mcp_registry.Registry.load(
+            self.allocator,
+            self.io,
+            self.workspace_root,
+            self.workspace_path,
+            true,
+            resolveWorkbenchHome(self.environ_map),
+            self.environ_map,
+        ) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "MCP load failed: {}", .{err});
+            self.ai_mcp_status = msg;
+            return;
+        };
+        defer registry.deinit();
+        self.ai_mcp_status = try self.allocator.dupe(u8, registry.status_lines);
+    }
+
+    pub fn toggleAiMcp(self: *Workbench) !void {
+        const next = !self.ai_mcp_enabled;
+        try ai_config_io.writeAiMcp(self.allocator, self.io, self.workspace_root, next);
+        self.ai_mcp_enabled = next;
+        try self.refreshAiMcpStatus();
+        try self.setStatus(if (next) "MCP tools enabled" else "MCP tools disabled");
+    }
+
+    pub fn openForgeToml(self: *Workbench) !void {
+        try self.openFile("forge.toml");
+    }
+
+    pub fn openMcpConfig(self: *Workbench) !void {
+        try self.ensureMcpConfigFile();
+        const candidates = [_][]const u8{ ".mcp.json", ".cursor/mcp.json", ".vscode/mcp.json" };
+        for (candidates) |rel| {
+            const wp = workspace.WorkspacePath.parse(rel) catch continue;
+            var snap = workspace.FileSnapshot.read(self.allocator, self.io, self.workspace_root, wp) catch continue;
+            snap.deinit();
+            try self.openFile(rel);
+            return;
+        }
+        try self.openFile(".mcp.json");
+    }
+
+    fn ensureMcpConfigFile(self: *Workbench) !void {
+        const target = try workspace.WorkspacePath.parse(".mcp.json");
+        if (workspace.FileSnapshot.read(self.allocator, self.io, self.workspace_root, target)) |snap| {
+            var owned = snap;
+            owned.deinit();
+            return;
+        } else |_| {}
+
+        const example = try workspace.WorkspacePath.parse(".mcp.json.example");
+        var example_snap = try workspace.FileSnapshot.read(self.allocator, self.io, self.workspace_root, example);
+        defer example_snap.deinit();
+        try workspace.atomic.replaceFile(self.io, self.workspace_root, target, example_snap.content);
+    }
+
+    pub fn openAiSettings(self: *Workbench) !void {
+        if (!self.ai_settings_open) {
+            self.previous_focus = self.focused_panel;
+        }
+        self.ai_settings_open = true;
+        self.sidebar_visible = true;
+        self.sidebar_view = .ai;
+        self.focused_panel = .ai_settings;
+        self.ai_settings_scroll_y = 0;
+        try self.refreshAiMcpStatus();
+    }
+
+    pub fn closeAiSettings(self: *Workbench) void {
+        self.ai_settings_open = false;
+        if (self.focused_panel == .ai_settings) {
+            self.focused_panel = if (self.previous_focus == .ai_settings) .editor else self.previous_focus;
+        }
+        if (self.sidebar_view == .ai) self.sidebar_view = .explorer;
+    }
+
+    pub fn handleAiSettingsClick(self: *Workbench, hit: @import("ui/ai_settings_panel.zig").Hit) !void {
+        switch (hit) {
+            .toggle_mcp => try self.toggleAiMcp(),
+            .open_forge_toml => {
+                self.closeAiSettings();
+                try self.openForgeToml();
+            },
+            .open_mcp_json => {
+                self.closeAiSettings();
+                try self.openMcpConfig();
+            },
+            .refresh_mcp => try self.refreshAiMcpStatus(),
+            .close_tab => self.closeAiSettings(),
+        }
+    }
+
+    fn resolveWorkbenchHome(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
+        if (environ_map) |map| return map.get("HOME");
+        return null;
     }
 
     pub fn pasteIntoAgent(self: *Workbench) !void {
@@ -815,7 +1120,7 @@ pub const Workbench = struct {
         var w: f32 = 0;
         var h: f32 = 0;
         renderer.Renderer.getWindowSize(&w, &h);
-        const geo = @import("ui/layout.zig").compute(self.shell_mode, w, h, self.explorer_panel_width, self.agent_panel_width, self.bottom_panel_height);
+        const geo = self.layoutGeometry(w, h);
         const ac = @import("ui/agent_composer.zig");
         const max_w = ac.promptMaxWidth(geo.agent_w);
         const input_h = self.composerInputHeight(geo.agent_w);
@@ -1066,6 +1371,20 @@ pub const Workbench = struct {
         );
     }
 
+    pub fn clampAiSettingsScroll(self: *Workbench, editor_h: f32) void {
+        const panel = @import("ui/ai_settings_panel.zig");
+        const lines = blk: {
+            const status = self.ai_mcp_status orelse break :blk @as(usize, 1);
+            if (status.len == 0) break :blk @as(usize, 1);
+            var count: usize = 1;
+            for (status) |ch| {
+                if (ch == '\n') count += 1;
+            }
+            break :blk count;
+        };
+        self.ai_settings_scroll_y = panel.clampScrollY(self.ai_settings_scroll_y, editor_h, lines);
+    }
+
     pub fn extensionsFilterSlice(self: *const Workbench) []const u8 {
         return self.extensions_filter[0..self.extensions_filter_len];
     }
@@ -1147,28 +1466,35 @@ pub const Workbench = struct {
         const layout_mod = @import("ui/layout.zig");
         const context_inspector_mod = @import("ui/context_inspector.zig");
         const agent_panel_mod = @import("ui/agent_panel.zig");
+        const chat_bubble_mod = @import("ui/chat_bubble.zig");
+        const content_w = @max(40, self.agent_panel_width - 40);
         var estimated_lines: usize = 0;
         for (self.chat_history.items) |msg| {
-            estimated_lines += std.mem.count(u8, msg.content, "\n") + 4;
+            estimated_lines += chat_bubble_mod.visualLineCount(msg.content, content_w) + 1;
         }
         self.agent.lock();
-        if (self.agent.stream_text.items.len > 0) {
-            estimated_lines += std.mem.count(u8, self.agent.stream_text.items, "\n") + 4;
-        }
-        if (self.agent.thinking_text.items.len > 0) {
-            estimated_lines += std.mem.count(u8, self.agent.thinking_text.items, "\n") + 4;
+        if (self.agent.worker_running) {
+            estimated_lines += chat_bubble_mod.estimateLiveLines(
+                self.agent.thinking_text.items,
+                self.agent.stream_text.items,
+                true,
+                content_w,
+            );
+            const tool_step_card_mod = @import("ui/tool_step_card.zig");
+            const steps_h = tool_step_card_mod.totalStepsHeight(self.agent.agent_steps.items, content_w);
+            estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
         }
         const entry_count = self.agent.context_entries.items.len;
         const expanded = self.agent.context_inspector_expanded;
         const attachment_count = self.agent.attachments.items.len;
         self.agent.unlock();
         const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count);
-        const viewport = @max(0, agent_h - layout_mod.status_height - 110 - bottom);
+        const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
         self.chat_scroll_y = panel_scroll.clampScrollY(
             self.chat_scroll_y,
             estimated_lines,
             viewport,
-            16.0,
+            chat_bubble_mod.line_h,
         );
     }
 
@@ -1176,24 +1502,31 @@ pub const Workbench = struct {
         const layout_mod = @import("ui/layout.zig");
         const context_inspector_mod = @import("ui/context_inspector.zig");
         const agent_panel_mod = @import("ui/agent_panel.zig");
+        const chat_bubble_mod = @import("ui/chat_bubble.zig");
+        const content_w = @max(40, self.agent_panel_width - 40);
         var estimated_lines: usize = 0;
         for (self.chat_history.items) |msg| {
-            estimated_lines += std.mem.count(u8, msg.content, "\n") + 4;
+            estimated_lines += chat_bubble_mod.visualLineCount(msg.content, content_w) + 1;
         }
         self.agent.lock();
-        if (self.agent.stream_text.items.len > 0) {
-            estimated_lines += std.mem.count(u8, self.agent.stream_text.items, "\n") + 4;
-        }
-        if (self.agent.thinking_text.items.len > 0) {
-            estimated_lines += std.mem.count(u8, self.agent.thinking_text.items, "\n") + 4;
+        if (self.agent.worker_running) {
+            estimated_lines += chat_bubble_mod.estimateLiveLines(
+                self.agent.thinking_text.items,
+                self.agent.stream_text.items,
+                true,
+                content_w,
+            );
+            const tool_step_card_mod = @import("ui/tool_step_card.zig");
+            const steps_h = tool_step_card_mod.totalStepsHeight(self.agent.agent_steps.items, content_w);
+            estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
         }
         const entry_count = self.agent.context_entries.items.len;
         const expanded = self.agent.context_inspector_expanded;
         const attachment_count = self.agent.attachments.items.len;
         self.agent.unlock();
         const bottom = agent_panel_mod.bottomReserved(attachment_count, self.agent_panel_width, &self.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count);
-        const viewport = @max(0, agent_h - layout_mod.status_height - 110 - bottom);
-        const content_h = @as(f32, @floatFromInt(estimated_lines)) * 16.0;
+        const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
+        const content_h = @as(f32, @floatFromInt(estimated_lines)) * chat_bubble_mod.line_h;
         self.chat_scroll_y = @max(0, content_h - viewport);
     }
 
@@ -1481,6 +1814,29 @@ pub const Workbench = struct {
     pub fn handleGitClick(self: *Workbench, hit: @import("ui/git_panel.zig").Hit) !void {
         switch (hit) {
             .refresh => try self.dispatch(.git_refresh),
+            .commit => try self.commitStagedChanges(),
+            .ai_generate => try self.setStatus("AI Commit Generation not yet implemented"),
+            .view_as_tree => try self.setStatus("View as tree not yet implemented"),
+            .more_actions => try self.setStatus("More actions not yet implemented"),
+            .focus_commit_msg => {
+                // Focus is already set to .git by input.zig
+            },
+            .toggle_staged_section => self.git_staged_collapsed = !self.git_staged_collapsed,
+            .toggle_changes_section => self.git_changes_collapsed = !self.git_changes_collapsed,
+            .toggle_file_staged => |index| {
+                const status = self.git_status orelse return;
+                if (index >= status.entries.len) return;
+                const entry = status.entries[index];
+                const process_spawn = @import("forge-util").process_spawn;
+                if (entry.isStaged() and !entry.isUnstaged()) {
+                    // It is ONLY staged. Unstage it.
+                    _ = process_spawn.runWait(self.allocator, &.{ "git", "restore", "--staged", entry.path }, .{ .cwd = self.workspace_path }) catch {};
+                } else if (entry.isUnstaged()) {
+                    // It is unstaged. Stage it.
+                    _ = process_spawn.runWait(self.allocator, &.{ "git", "add", entry.path }, .{ .cwd = self.workspace_path }) catch {};
+                }
+                try self.refreshGitStatus();
+            },
             .open_file => |index| {
                 const status = self.git_status orelse return;
                 if (index >= status.entries.len) return;
@@ -1492,6 +1848,27 @@ pub const Workbench = struct {
                 const open_path = try self.allocator.dupe(u8, path);
                 try self.dispatch(.{ .open_file = open_path });
             },
+        }
+    }
+
+    pub fn commitStagedChanges(self: *Workbench) !void {
+        const msg = try self.git_commit_msg.content();
+        defer self.allocator.free(msg);
+
+        if (msg.len == 0) {
+            try self.setStatus("Commit message cannot be empty");
+            return;
+        }
+
+        const process_spawn = @import("forge-util").process_spawn;
+        const exit_code = process_spawn.runWait(self.allocator, &.{ "git", "commit", "-m", msg }, .{ .cwd = self.workspace_path }) catch -1;
+
+        if (exit_code == 0) {
+            self.git_commit_msg.clear();
+            try self.refreshGitStatus();
+            try self.setStatus("Commit successful");
+        } else {
+            try self.setStatus("Commit failed (are there staged changes?)");
         }
     }
 
@@ -1778,12 +2155,11 @@ pub const Workbench = struct {
 
     pub fn syncTabScroll(self: *Workbench) void {
         const renderer_mod = @import("forge-renderer");
-        const layout = @import("ui/layout.zig");
         const tabs_ui = @import("ui/tabs.zig");
         var w: f32 = 0;
         var h: f32 = 0;
         renderer_mod.Renderer.getWindowSize(&w, &h);
-        const geo = layout.compute(self.shell_mode, w, h, self.explorer_panel_width, self.agent_panel_width, self.bottom_panel_height);
+        const geo = self.layoutGeometry(w, h);
         if (self.tabs.tabs.items.len > 0) {
             tabs_ui.scrollToTab(self, self.tabs.active, geo.editor_x, geo.editor_w);
         } else {
@@ -1893,11 +2269,10 @@ pub const Workbench = struct {
 
     pub fn scrollEditorToCursor(self: *Workbench) void {
         const renderer_mod = @import("forge-renderer");
-        const layout_mod = @import("ui/layout.zig");
         var w: f32 = 0;
         var h: f32 = 0;
         renderer_mod.Renderer.getWindowSize(&w, &h);
-        const geo = layout_mod.compute(self.shell_mode, w, h, self.explorer_panel_width, self.agent_panel_width, self.bottom_panel_height);
+        const geo = self.layoutGeometry(w, h);
         const pane = self.focusedPane();
         const doc = self.docForPane(pane) orelse return;
         const pane_w = self.paneWidth(geo.editor_w);
@@ -2292,9 +2667,6 @@ pub const Workbench = struct {
         for (loaded.paths) |path| {
             self.openFile(path) catch {};
         }
-        for (self.tabs.tabs.items) |*doc| {
-            _ = self.lsp_sync.ensureSyncedBlocking(doc) catch {};
-        }
         if (loaded.layout.active < self.tabs.tabs.items.len) {
             try self.activateTab(loaded.layout.active);
         }
@@ -2337,6 +2709,7 @@ pub const Workbench = struct {
         self.syncTabScroll();
         self.warmLspForPath(path);
         try self.diagnostics.setActivePath(path);
+        try self.recordNavigation(path);
         try self.events.publish(.{ .file_opened = path });
     }
 
@@ -2350,6 +2723,7 @@ pub const Workbench = struct {
         self.warmLspForPath(doc.path);
         try self.diagnostics.setActivePath(doc.path);
         if (doc.external_conflict) try self.openConflictDialog(doc.path);
+        try self.recordNavigation(doc.path);
     }
 
     pub fn agentHost(self: *Workbench) agent_workflow.Host {
@@ -2359,6 +2733,7 @@ pub const Workbench = struct {
             .environ_map = self.environ_map,
             .ai_provider = self.ai_provider,
             .ai_model = self.ai_model,
+            .ai_mcp_enabled = self.ai_mcp_enabled,
             .workspace_root = self.workspace_root,
             .workspace_path = self.workspace_path,
             .agent = &self.agent,
@@ -2587,6 +2962,7 @@ pub const Workbench = struct {
     fn loadAiConfig(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !struct {
         provider: []const u8,
         model: ?[]const u8,
+        mcp_enabled: bool,
     } {
         const wp = try workspace.WorkspacePath.parse("forge.toml");
         var snap = try workspace.FileSnapshot.read(allocator, io, root, wp);
@@ -2596,7 +2972,7 @@ pub const Workbench = struct {
         errdefer allocator.free(provider);
         const model = if (config.ai_model) |value| try allocator.dupe(u8, value) else null;
         errdefer if (model) |owned| allocator.free(owned);
-        return .{ .provider = provider, .model = model };
+        return .{ .provider = provider, .model = model, .mcp_enabled = config.ai_mcp_enabled };
     }
 
     fn bridgeAppendChat(context: ?*anyopaque, role: agent_workflow.ChatRole, content: []const u8) void {
@@ -2630,8 +3006,14 @@ pub const Workbench = struct {
                     try self.appendChat(mapped, payload.text);
                 },
                 .set_status => |text| try self.setStatus(text),
-                .append_thinking => |text| try self.agent.appendThinkingChunk(text),
-                .append_stream => |text| try self.agent.appendStreamChunk(text),
+                .append_thinking => |text| {
+                    try self.agent.appendThinkingChunk(text);
+                    self.scrollChatToEnd(768);
+                },
+                .append_stream => |text| {
+                    try self.agent.appendStreamChunk(text);
+                    self.scrollChatToEnd(768);
+                },
                 .append_step => |payload| try self.agent.appendAgentStep(payload.index, payload.kind, payload.summary),
                 .set_phase => |payload| {
                     if (payload.phase == .sending) {
@@ -2653,14 +3035,24 @@ pub const Workbench = struct {
                     self.agent.unlock();
 
                     try agent_workflow.applyManifestText(&host, payload.manifest_text);
-                    try agent_workflow.loadProposalPreview(&host, payload.proposal_rel);
+                    if (payload.proposal_rel.len > 0) {
+                        try agent_workflow.loadProposalPreview(&host, payload.proposal_rel);
+                        try self.agent.setPhase(.proposal_ready, "Proposal ready for review");
+                        try self.setStatus("Proposal ready for review");
+                    } else {
+                        if (self.agent.mode == .agent) {
+                            try self.agent.setPhase(.idle, "Agent finished — check inline edits");
+                            try self.setStatus("Agent finished — check inline edits");
+                        } else {
+                            try self.agent.setPhase(.idle, "Spec ready — approve to continue");
+                            try self.setStatus("Spec ready — approve to continue");
+                        }
+                    }
                     try agent_workflow.refreshRunHistory(&host);
                     if (payload.plan_text) |plan| {
                         try self.appendChat(.agent, plan);
                     }
                     try self.appendChat(.agent, payload.chat_text);
-                    try self.agent.setPhase(.proposal_ready, "Proposal ready for review");
-                    try self.setStatus("Proposal ready for review");
                     self.scrollChatToEnd(768);
                 },
                 .run_failed => |payload| {
@@ -2670,6 +3062,16 @@ pub const Workbench = struct {
                     try self.agent.setPhase(payload.phase, payload.message);
                     try self.appendChat(.agent, payload.message);
                     try self.setStatus(payload.message);
+                },
+                .refresh_context_preview => self.refreshAgentContextPreview(),
+                .propose_edit => |payload| {
+                    const doc = self.tabs.openOrActivate(payload.path) catch |err| {
+                        std.debug.print("Failed to open file for edit: {any}\n", .{err});
+                        continue;
+                    };
+                    doc.buffer.applyInlineEdit(payload.start_line, payload.end_line, payload.replacement) catch |err| {
+                        std.debug.print("Failed to apply inline edit: {any}\n", .{err});
+                    };
                 },
             }
         }
@@ -2730,6 +3132,11 @@ pub const Workbench = struct {
         self.diagnostics.tick(dt, self.tabs.activeDoc(), self.agent.worker_running);
         self.hover.tick(dt);
 
+        if (self.explorer_boot_pending) {
+            self.explorer_boot_pending = false;
+            self.explorer.rebuild(self.io, self.workspace_root) catch {};
+        }
+
         if (self.terminal_boot_pending) {
             self.terminal_boot_pending = false;
             self.activeTerminal().ensureStarted() catch {};
@@ -2756,21 +3163,13 @@ pub const Workbench = struct {
         if (self.bottom_panel_mode != .terminal) return;
 
         const renderer_mod = @import("forge-renderer");
-        const layout_mod = @import("ui/layout.zig");
         const panel_scroll = @import("ui/panel_scroll.zig");
         const terminal_panel = @import("ui/terminal_panel.zig");
 
         var w: f32 = 0;
         var h: f32 = 0;
         renderer_mod.Renderer.getWindowSize(&w, &h);
-        const geo = layout_mod.compute(
-            self.shell_mode,
-            w,
-            h,
-            self.explorer_panel_width,
-            self.agent_panel_width,
-            self.bottom_panel_height,
-        );
+        const geo = self.layoutGeometry(w, h);
         const viewport = panel_scroll.bottomViewportHeight(geo.task_panel_h) - terminal_panel.session_tab_h;
         const char_w = @max(1.0, renderer_mod.Renderer.measureText("M", terminal_panel.font_size));
         const cols: u16 = @intFromFloat(@floor(@max(10.0, (geo.editor_w - terminal_panel.text_inset_x * 2) / char_w)));

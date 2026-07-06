@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "forge-core", .module = core },
+            .{ .name = "forge-kernel", .module = kernel },
             .{ .name = "forge-util", .module = util },
         },
     });
@@ -64,6 +65,7 @@ pub fn build(b: *std.Build) void {
     renderer.linkFramework("CoreGraphics", .{});
     renderer.linkFramework("CoreText", .{});
     renderer.linkFramework("CoreFoundation", .{});
+    renderer.linkFramework("QuartzCore", .{});
     renderer.linkSystemLibrary("objc", .{});
     renderer.linkSystemLibrary("c", .{});
     const lsp = b.addModule("forge-lsp", .{
@@ -179,6 +181,7 @@ pub fn build(b: *std.Build) void {
     spike.root_module.linkFramework("CoreGraphics", .{});
     spike.root_module.linkFramework("CoreText", .{});
     spike.root_module.linkFramework("CoreFoundation", .{});
+    spike.root_module.linkFramework("QuartzCore", .{});
     spike.root_module.linkSystemLibrary("objc", .{});
     spike.root_module.linkSystemLibrary("c", .{});
 

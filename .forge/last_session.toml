@@ -1,0 +1,14 @@
+[session]
+active = 0
+editor_split = false
+split_tab_index = 0
+editor_pane = "primary"
+editor_scroll_y = 0.0
+editor_scroll_x = 0.0
+split_scroll_y = 0.0
+split_scroll_x = 0.0
+bottom_panel = "output"
+sidebar_view = "explorer"
+bottom_panel_height = 216.0
+
+[tabs]

@@ -14,6 +14,7 @@ pub const Host = struct {
     environ_map: ?*const std.process.Environ.Map,
     ai_provider: []const u8,
     ai_model: ?[]const u8,
+    ai_mcp_enabled: bool,
     workspace_root: workspace.WorkspaceRoot,
     workspace_path: []const u8,
     agent: *session_mod.Session,
@@ -45,6 +46,7 @@ pub const AgentError = error{
     StepLimitReached,
     InvalidProposal,
     NoAcceptedHunks,
+    NoCheckpoint,
 } || ai.provider.ProviderError;
 
 pub fn refreshContextPreview(host: *const Host, intent: ?[]const u8, active_file: ?[]const u8) AgentError!void {
@@ -52,7 +54,7 @@ pub fn refreshContextPreview(host: *const Host, intent: ?[]const u8, active_file
     const attachments = collectAttachmentInputs(host) catch return error.ProviderFailed;
     defer freeAttachmentInputs(host.allocator, attachments);
 
-    var builder = try buildContext(host, intent, scope, active_file, attachments);
+    var builder = try buildContext(host, intent, scope, active_file, attachments, true);
     defer builder.deinit();
 
     var manifest_items: std.ArrayList(ai.context_loader.ManifestItem) = .empty;
@@ -137,8 +139,6 @@ pub fn spawnGenerate(host: *const Host, intent: []const u8, scope_files: []const
     host.agent.run_active_file = if (active_file) |path| host.allocator.dupe(u8, path) catch null else null;
     host.agent.unlock();
 
-    refreshContextPreview(host, intent, active_file) catch {};
-
     const thread = std.Thread.spawn(.{}, generateWorker, .{ctx}) catch {
         ctx.deinit();
         return error.ProviderFailed;
@@ -166,6 +166,11 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
     const workspace_edit = filtered.workspaceEdit();
     workspace_edit.validate() catch return error.ProviderFailed;
 
+    const checkpoint_id = workspace.checkpoint.createFromEdits(host.allocator, host.io, host.workspace_root, filtered.files, .{
+        .run_id = host.agent.run_id,
+        .label = "pre-apply",
+    }) catch return error.ProviderFailed;
+
     var service = workspace.TransactionService.init(host.allocator, host.io, host.workspace_root);
     const tx_id = workspace.history.nextTransactionId(host.allocator, host.io, host.workspace_root) catch return error.ProviderFailed;
 
@@ -179,6 +184,7 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
 
     service.apply(&record) catch return error.ProviderFailed;
     workspace.history.persistApplied(host.allocator, host.io, host.workspace_root, &record, proposal_rel) catch return error.ProviderFailed;
+    workspace.checkpoint.linkTransaction(host.io, host.workspace_root, checkpoint_id, tx_id) catch {};
 
     if (host.agent.run_id) |run_id| {
         workspace.runs.updateRunState(host.allocator, host.io, host.workspace_root, run_id, "done", tx_id) catch {};
@@ -186,6 +192,7 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
 
     host.agent.lock();
     host.agent.last_transaction_id = tx_id;
+    host.agent.last_checkpoint_id = checkpoint_id;
     host.agent.show_review = false;
     host.agent.phase = .done;
     if (host.agent.status_line.len > 0) host.allocator.free(host.agent.status_line);
@@ -216,6 +223,37 @@ pub fn rejectCurrentProposal(host: *const Host) void {
     host.agent.unlock();
 
     refreshRunHistory(host) catch {};
+}
+
+pub fn approveSpecAndGenerate(host: *const Host) AgentError!void {
+    const run_id = host.agent.spec_run_id orelse return error.NoProposal;
+    ai.spec_writer.approve(host.io, host.workspace_root, run_id) catch return error.ProviderFailed;
+    const intent = host.agent.intent orelse return error.NoProposal;
+
+    host.agent.lock();
+    host.agent.spec_pending = false;
+    if (host.agent.proposal_only_run_id) |old| host.allocator.free(old);
+    host.agent.proposal_only_run_id = host.allocator.dupe(u8, run_id) catch {
+        host.agent.unlock();
+        return error.ProviderFailed;
+    };
+    host.agent.unlock();
+
+    const scope = host.agent.effectiveScope(host.agent.run_active_file);
+    try spawnGenerate(host, intent, scope, host.agent.run_active_file);
+}
+
+pub fn rollbackLastCheckpoint(host: *const Host) AgentError!void {
+    const checkpoint_id = host.agent.last_checkpoint_id orelse return error.NoCheckpoint;
+    workspace.checkpoint.restore(host.allocator, host.io, host.workspace_root, checkpoint_id) catch return error.ProviderFailed;
+
+    host.agent.lock();
+    host.agent.phase = .done;
+    if (host.agent.status_line.len > 0) host.allocator.free(host.agent.status_line);
+    host.agent.status_line = host.allocator.dupe(u8, "Checkpoint restored") catch "";
+    host.agent.unlock();
+
+    host.refresh_explorer(host.context);
 }
 
 pub fn applyManifestText(host: *const Host, manifest_text: []const u8) !void {
@@ -260,6 +298,19 @@ pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
     }
     for (proposal.metadata.validation_tasks) |item| {
         try host.agent.context_lines.append(host.allocator, try std.fmt.allocPrint(host.allocator, "Validate: {s}", .{item}));
+    }
+
+    const validation = ai.validation_runner.runTasks(host.allocator, host.workspace_path, proposal.metadata.validation_tasks) catch null;
+    if (validation) |results| {
+        defer ai.validation_runner.freeResults(host.allocator, results);
+        if (ai.validation_runner.formatLines(host.allocator, results)) |report| {
+            defer host.allocator.free(report);
+            var line_it = std.mem.splitScalar(u8, report, '\n');
+            while (line_it.next()) |line| {
+                if (line.len == 0) continue;
+                try host.agent.context_lines.append(host.allocator, try host.allocator.dupe(u8, line));
+            }
+        } else |_| {}
     }
 
     try host.agent.context_lines.append(host.allocator, try std.fmt.allocPrint(host.allocator, "Proposal: {s}", .{proposal_rel}));
@@ -367,7 +418,7 @@ fn generateWorker(ctx: *GenerateContext) void {
 fn agentFailureMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.Cancelled => "Cancelled",
-        error.MissingProviderCredentials => "Missing Gemini API key — export GEMINI_API_KEY or add Keychain entry (forge-gemini)",
+        error.MissingProviderCredentials => "Missing Gemini API key — export GEMINI_API_KEY, use Ollama (provider=ollama), or set provider=fake",
         error.AuthenticationFailed => ai.provider.Provider.errorMessage(error.AuthenticationFailed),
         error.RateLimitExceeded => ai.provider.Provider.errorMessage(error.RateLimitExceeded),
         error.ContextLengthExceeded => ai.provider.Provider.errorMessage(error.ContextLengthExceeded),
@@ -380,6 +431,17 @@ fn agentFailureMessage(err: anyerror) []const u8 {
     };
 }
 
+fn resolvePlanPhase(host: *const Host) ai.proposal_workflow.PlanPhase {
+    if (host.agent.mode != .plan) return .full;
+    if (host.agent.proposal_only_run_id != null) return .proposal_only;
+    return .plan_only;
+}
+
+fn continueRunId(host: *const Host, plan_phase: ai.proposal_workflow.PlanPhase) ?[]const u8 {
+    if (plan_phase != .proposal_only) return null;
+    return host.agent.proposal_only_run_id orelse host.agent.spec_run_id;
+}
+
 fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Options) AgentError!void {
     const host = &ctx.host;
     const cancel_token = ctx.cancel_source.getToken();
@@ -388,6 +450,9 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     defer freeAttachmentInputs(host.allocator, attachments);
     const recent_files = collectRecentFiles(host) catch &.{};
     defer if (recent_files.len > 0) host.free_recent_files_snapshot(host.context, host.allocator, recent_files);
+
+    const plan_phase = resolvePlanPhase(host);
+    const continue_id = continueRunId(host, plan_phase);
 
     var result = ai.proposal_workflow.generateAndPersist(
         host.allocator,
@@ -403,6 +468,8 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
                 .ask, .agent => .ask,
                 .plan => .plan,
             },
+            .plan_phase = if (host.agent.mode == .plan) plan_phase else .full,
+            .continue_run_id = continue_id,
             .cancel_token = &cancel_token,
             .progress_callback = phaseBridge,
             .progress_context = host,
@@ -424,6 +491,13 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     };
     defer ai.proposal_workflow.deinitResult(host.allocator, &result);
 
+    host.agent.lock();
+    if (host.agent.proposal_only_run_id) |rid| {
+        host.allocator.free(rid);
+        host.agent.proposal_only_run_id = null;
+    }
+    host.agent.unlock();
+
     const manifest_owned = try buildManifestText(host, ctx.intent, ctx.scope_files, ctx.active_file, attachments);
     defer host.allocator.free(manifest_owned);
 
@@ -431,12 +505,25 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     errdefer if (plan_owned) |text| host.allocator.free(text);
 
     var chat_buf: [512]u8 = undefined;
-    const chat_line = if (plan_owned != null)
+    const chat_line = if (plan_phase == .plan_only)
+        std.fmt.bufPrint(&chat_buf, "Spec ready at .forge/specs/{s}/ — Approve spec to generate proposal", .{result.run_id}) catch "Plan ready"
+    else if (plan_owned != null)
         std.fmt.bufPrint(&chat_buf, "Plan ready — proposal: {s}", .{result.proposal_rel}) catch "Proposal ready"
     else
         std.fmt.bufPrint(&chat_buf, "Proposal ready: {s}", .{result.proposal_rel}) catch "Proposal ready";
     const chat_owned = host.allocator.dupe(u8, chat_line) catch return error.ProviderFailed;
     errdefer host.allocator.free(chat_owned);
+
+    if (plan_phase == .plan_only) {
+        host.agent.lock();
+        if (host.agent.spec_run_id) |old| host.allocator.free(old);
+        host.agent.spec_run_id = host.allocator.dupe(u8, result.run_id) catch {
+            host.agent.unlock();
+            return error.ProviderFailed;
+        };
+        host.agent.spec_pending = true;
+        host.agent.unlock();
+    }
 
     try enqueueRunFinished(host, result.run_id, result.proposal_rel, chat_owned, manifest_owned, plan_owned);
 }
@@ -469,7 +556,11 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .progress_context = host,
             .step_callback = stepBridge,
             .step_context = host,
+            .edit_callback = editBridge,
+            .edit_context = host,
+            .use_inline_edits = true,
             .workspace_cwd = host.workspace_path,
+            .mcp_enabled = host.ai_mcp_enabled,
             .recent_files = recent_files,
         },
     ) catch |err| switch (err) {
@@ -481,14 +572,14 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     };
     defer ai.agent.deinitResult(host.allocator, &result);
 
-    const run_id = result.final_run_id orelse return error.ProviderFailed;
-    const proposal_rel = result.proposal_rel orelse return error.NoProposal;
+    const run_id = result.final_run_id orelse "inline_run";
+    const proposal_rel = result.proposal_rel orelse "";
 
     const manifest_owned = try buildManifestText(host, ctx.intent, ctx.scope_files, ctx.active_file, attachments);
     defer host.allocator.free(manifest_owned);
 
     var chat_buf: [512]u8 = undefined;
-    const chat_line = std.fmt.bufPrint(&chat_buf, "Agent finished — proposal: {s}", .{proposal_rel}) catch "Proposal ready";
+    const chat_line = std.fmt.bufPrint(&chat_buf, "Agent finished", .{}) catch "Agent finished";
     const chat_owned = host.allocator.dupe(u8, chat_line) catch return error.ProviderFailed;
     errdefer host.allocator.free(chat_owned);
 
@@ -502,7 +593,7 @@ fn buildManifestText(
     active_file: ?[]const u8,
     attachments: []const ai.context_loader.AttachmentInput,
 ) AgentError![]u8 {
-    var builder = try buildContext(host, intent, scope_files, active_file, attachments);
+    var builder = try buildContext(host, intent, scope_files, active_file, attachments, false);
     defer builder.deinit();
 
     var manifest_writer = std.Io.Writer.Allocating.init(host.allocator);
@@ -538,18 +629,7 @@ fn enqueueRunFinished(
 fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
     const host: *Host = @ptrCast(@alignCast(context.?));
     if (phase == .context_built) {
-        host.agent.lock();
-        const intent_copy = if (host.agent.intent) |text| host.allocator.dupe(u8, text) catch null else null;
-        host.agent.unlock();
-        if (intent_copy) |intent| {
-            defer host.allocator.free(intent);
-            const active_file = blk: {
-                host.agent.lock();
-                defer host.agent.unlock();
-                break :blk host.agent.run_active_file;
-            };
-            refreshContextPreview(host, intent, active_file) catch {};
-        }
+        host.enqueue_ui(host.context, .refresh_context_preview);
     }
     const mapped: session_mod.Phase = switch (phase) {
         .context_built => .building_context,
@@ -558,6 +638,7 @@ fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
         .sending => .sending,
         .streaming => .streaming,
         .parsing => .parsing,
+        .repairing => .parsing,
         .proposal_ready => .proposal_ready,
     };
     const label = switch (phase) {
@@ -567,6 +648,7 @@ fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
         .sending => "Sending to provider...",
         .streaming => "Streaming response...",
         .parsing => "Parsing proposal...",
+        .repairing => "Repairing proposal (validation failed)...",
         .proposal_ready => "Proposal ready for review",
     };
     const owned = host.allocator.dupe(u8, label) catch return;
@@ -576,45 +658,21 @@ fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
 
 fn resolveProviderLabel(host: *const Host) ![]const u8 {
     const kind = ai.provider_factory.Kind.parse(host.ai_provider);
-    const resolved = resolveProviderKind(host, kind) catch {
-        return host.allocator.dupe(u8, "gemini (missing API key)");
-    };
-    return switch (resolved) {
+    return switch (kind) {
+        .ollama => blk: {
+            if (host.ai_model) |model| {
+                break :blk try std.fmt.allocPrint(host.allocator, "ollama/{s}", .{model});
+            }
+            break :blk try host.allocator.dupe(u8, "ollama");
+        },
         .gemini => blk: {
             if (host.ai_model) |model| {
                 break :blk try std.fmt.allocPrint(host.allocator, "gemini/{s}", .{model});
             }
             break :blk try host.allocator.dupe(u8, "gemini");
         },
-        .fake => blk: {
-            if (kind == .gemini) {
-                break :blk try host.allocator.dupe(u8, "fake (GEMINI_API_KEY not visible to IDE)");
-            }
-            if (kind == .auto) {
-                break :blk try host.allocator.dupe(u8, "fake (no API key — launch IDE from terminal or use Keychain)");
-            }
-            break :blk try host.allocator.dupe(u8, "fake");
-        },
-    };
-}
-
-fn resolveProviderKind(host: *const Host, kind: ai.provider_factory.Kind) !enum { fake, gemini } {
-    return switch (kind) {
-        .fake => .fake,
-        .gemini => {
-            var creds = ai.credentials.Credentials.loadGemini(host.allocator, host.io, host.environ_map) catch {
-                return error.MissingCredentials;
-            };
-            defer creds.deinit();
-            return .gemini;
-        },
-        .auto => {
-            var creds = ai.credentials.Credentials.loadGemini(host.allocator, host.io, host.environ_map) catch {
-                return .fake;
-            };
-            defer creds.deinit();
-            return .gemini;
-        },
+        .fake => try host.allocator.dupe(u8, "fake"),
+        .auto => try host.allocator.dupe(u8, "auto"),
     };
 }
 
@@ -653,6 +711,18 @@ fn stepBridge(context: ?*anyopaque, step: ai.agent.Step) void {
             .index = step.index,
             .kind = kind_owned,
             .summary = summary_owned,
+        },
+    });
+}
+
+fn editBridge(context: ?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void {
+    const host: *Host = @ptrCast(@alignCast(context.?));
+    host.enqueue_ui(host.context, .{
+        .propose_edit = .{
+            .path = host.allocator.dupe(u8, path) catch return,
+            .start_line = start_line,
+            .end_line = end_line,
+            .replacement = host.allocator.dupe(u8, replacement) catch return,
         },
     });
 }
@@ -696,6 +766,7 @@ fn buildContext(
     explicit_files: []const []const u8,
     active_file: ?[]const u8,
     attachments: []const ai.context_loader.AttachmentInput,
+    preview_only: bool,
 ) AgentError!ai.context.ContextBuilder {
     const recent = host.snapshot_recent_files(host.context, host.allocator);
     defer host.free_recent_files_snapshot(host.context, host.allocator, recent);
@@ -712,7 +783,8 @@ fn buildContext(
         .workspace_cwd = host.workspace_path,
         .recent_files = recent,
         .supplement = supplement,
-        .prefer_gemini_embeddings = true,
+        .prefer_gemini_embeddings = !preview_only,
+        .include_semantic_search = !preview_only,
         .environ_map = host.environ_map,
     }) catch return error.ProviderFailed;
 }

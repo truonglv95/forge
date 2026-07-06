@@ -69,6 +69,10 @@ pub const Registry = struct {
             .{ .key = "f11", .palette_id = "debug.step_into" },
             .{ .key = "shift+f11", .palette_id = "debug.step_out" },
             .{ .key = "shift+alt+f", .palette_id = "editor.format" },
+            .{ .key = "cmd+k", .palette_id = "agent.edit_selection" },
+            .{ .key = "cmd+b", .palette_id = "view.toggle_sidebar" },
+            .{ .key = "cmd+j", .palette_id = "view.toggle_panel" },
+            .{ .key = "cmd+l", .palette_id = "view.focus_agent" },
             .{ .key = "cmd+.", .palette_id = "problem.quick_fix" },
         };
 
@@ -199,6 +203,7 @@ fn keycodeForChar(ch: u8) ?i32 {
             'o' => 31,
             'u' => 32,
             'i' => 34,
+            'k' => 40,
             'p' => 35,
             '.' => 47,
             else => null,

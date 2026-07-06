@@ -23,12 +23,21 @@ const UndoOp = union(enum) {
     },
 };
 
+pub const Decoration = struct {
+    kind: enum { addition, deletion },
+    row: usize,
+    col_start: usize = 0,
+    col_end: usize = 0, // 0 means entire line
+};
+
 pub const Buffer = struct {
     lines: std.ArrayList(std.ArrayList(u8)),
     cursor: Cursor,
+    selection_anchor: ?Cursor = null,
     allocator: std.mem.Allocator,
     undo_stack: std.ArrayList(UndoOp),
     redo_stack: std.ArrayList(UndoOp),
+    decorations: std.ArrayList(Decoration),
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         var lines: std.ArrayList(std.ArrayList(u8)) = .empty;
@@ -39,6 +48,7 @@ pub const Buffer = struct {
             .allocator = allocator,
             .undo_stack = .empty,
             .redo_stack = .empty,
+            .decorations = .empty,
         };
     }
 
@@ -46,6 +56,17 @@ pub const Buffer = struct {
         self.clearHistory();
         for (self.lines.items) |*line| line.deinit(self.allocator);
         self.lines.deinit(self.allocator);
+        self.decorations.deinit(self.allocator);
+    }
+
+    pub fn clear(self: *Buffer) void {
+        for (self.lines.items) |*line| line.deinit(self.allocator);
+        self.lines.clearRetainingCapacity();
+        self.lines.append(self.allocator, .empty) catch {};
+        self.cursor = .{};
+        self.selection_anchor = null;
+        self.decorations.clearRetainingCapacity();
+        self.clearHistory();
     }
 
     fn clearHistory(self: *Buffer) void {
@@ -67,6 +88,7 @@ pub const Buffer = struct {
 
     pub fn loadFromSlice(self: *Buffer, source: []const u8) !void {
         self.clearHistory();
+        self.decorations.clearRetainingCapacity();
         for (self.lines.items) |*line| line.deinit(self.allocator);
         self.lines.clearRetainingCapacity();
 
@@ -107,6 +129,132 @@ pub const Buffer = struct {
     pub fn lineAt(self: *const Buffer, row: usize) []const u8 {
         if (row >= self.lines.items.len) return "";
         return self.lines.items[row].items;
+    }
+
+    pub fn clearSelection(self: *Buffer) void {
+        self.selection_anchor = null;
+    }
+
+    pub fn beginSelection(self: *Buffer, row: usize, col: usize) void {
+        self.selection_anchor = .{ .row = row, .col = col };
+        self.cursor = .{ .row = row, .col = col };
+    }
+
+    pub fn hasSelection(self: *const Buffer) bool {
+        const anchor = self.selection_anchor orelse return false;
+        return anchor.row != self.cursor.row or anchor.col != self.cursor.col;
+    }
+
+    pub fn clearInlineEdit(self: *Buffer) void {
+        var keep: std.ArrayList(Decoration) = .empty;
+        for (self.decorations.items) |dec| {
+            if (dec.kind != .addition and dec.kind != .deletion) {
+                keep.append(self.allocator, dec) catch {};
+            }
+        }
+        self.decorations.deinit(self.allocator);
+        self.decorations = keep;
+    }
+
+    pub fn applyInlineEdit(self: *Buffer, start_line: usize, end_line: usize, replacement: []const u8) !void {
+        // Mark existing lines as deletions (0-indexed lines)
+        var row = start_line - 1;
+        while (row <= end_line - 1 and row < self.lines.items.len) : (row += 1) {
+            try self.decorations.append(self.allocator, .{ .kind = .deletion, .row = row });
+        }
+
+        // Insert new lines after end_line
+        var insert_row = end_line;
+        var start: usize = 0;
+        for (replacement, 0..) |byte, index| {
+            if (byte == '\n') {
+                var new_line: std.ArrayList(u8) = .empty;
+                try new_line.appendSlice(self.allocator, replacement[start..index]);
+                try self.lines.insert(self.allocator, insert_row, new_line);
+                try self.decorations.append(self.allocator, .{ .kind = .addition, .row = insert_row });
+                insert_row += 1;
+                start = index + 1;
+            }
+        }
+        if (start < replacement.len) {
+            var new_line: std.ArrayList(u8) = .empty;
+            try new_line.appendSlice(self.allocator, replacement[start..]);
+            try self.lines.insert(self.allocator, insert_row, new_line);
+            try self.decorations.append(self.allocator, .{ .kind = .addition, .row = insert_row });
+        }
+    }
+
+    pub fn acceptInlineEdit(self: *Buffer) !void {
+        var delete_indices: std.ArrayList(usize) = .empty;
+        defer delete_indices.deinit(self.allocator);
+        for (self.decorations.items) |dec| {
+            if (dec.kind == .deletion) try delete_indices.append(self.allocator, dec.row);
+        }
+        var i: usize = delete_indices.items.len;
+        while (i > 0) {
+            i -= 1;
+            const row = delete_indices.items[i];
+            if (row < self.lines.items.len) {
+                var removed = self.lines.orderedRemove(row);
+                removed.deinit(self.allocator);
+            }
+        }
+        self.clearInlineEdit();
+    }
+
+    pub fn rejectInlineEdit(self: *Buffer) !void {
+        var delete_indices: std.ArrayList(usize) = .empty;
+        defer delete_indices.deinit(self.allocator);
+        for (self.decorations.items) |dec| {
+            if (dec.kind == .addition) try delete_indices.append(self.allocator, dec.row);
+        }
+        var i: usize = delete_indices.items.len;
+        while (i > 0) {
+            i -= 1;
+            const row = delete_indices.items[i];
+            if (row < self.lines.items.len) {
+                var removed = self.lines.orderedRemove(row);
+                removed.deinit(self.allocator);
+            }
+        }
+        self.clearInlineEdit();
+    }
+
+    pub fn selectionOrdered(self: *const Buffer) struct { start: Cursor, end: Cursor } {
+        const anchor = self.selection_anchor orelse return .{ .start = self.cursor, .end = self.cursor };
+        const cur = self.cursor;
+        if (anchor.row < cur.row or (anchor.row == cur.row and anchor.col <= cur.col)) {
+            return .{ .start = anchor, .end = cur };
+        }
+        return .{ .start = cur, .end = anchor };
+    }
+
+    pub fn selectedText(self: *const Buffer, allocator: std.mem.Allocator) ![]u8 {
+        if (!self.hasSelection()) return try allocator.dupe(u8, "");
+        const ord = self.selectionOrdered();
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+
+        if (ord.start.row == ord.end.row) {
+            const line = self.lineAt(ord.start.row);
+            const start_col = @min(ord.start.col, line.len);
+            const end_col = @min(@max(ord.end.col, start_col), line.len);
+            try out.appendSlice(allocator, line[start_col..end_col]);
+        } else {
+            const first = self.lineAt(ord.start.row);
+            const first_start = @min(ord.start.col, first.len);
+            try out.appendSlice(allocator, first[first_start..]);
+            var row = ord.start.row + 1;
+            while (row < ord.end.row) : (row += 1) {
+                try out.append(allocator, '\n');
+                try out.appendSlice(allocator, self.lineAt(row));
+            }
+            try out.append(allocator, '\n');
+            const last = self.lineAt(ord.end.row);
+            const end_col = @min(ord.end.col, last.len);
+            try out.appendSlice(allocator, last[0..end_col]);
+        }
+        return try out.toOwnedSlice(allocator);
     }
 
     pub fn canUndo(self: *const Buffer) bool {

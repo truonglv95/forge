@@ -1,7 +1,7 @@
 const std = @import("std");
 const layout = @import("layout.zig");
 
-pub const list_top: f32 = 96;
+pub const list_top: f32 = 131;
 pub const row_h: f32 = 28;
 pub const launch_row_h: f32 = 32;
 pub const control_row_h: f32 = 24;

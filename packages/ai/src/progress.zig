@@ -7,6 +7,7 @@ pub const Phase = enum {
     sending,
     streaming,
     parsing,
+    repairing,
     proposal_ready,
 };
 

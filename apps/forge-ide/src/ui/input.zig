@@ -9,6 +9,8 @@ const search_panel = @import("search_panel.zig");
 const debug_panel = @import("debug_panel.zig");
 const git_panel = @import("git_panel.zig");
 const extensions_panel = @import("extensions_panel.zig");
+const ai_settings_panel = @import("ai_settings_panel.zig");
+const header_toolbar = @import("header_toolbar.zig");
 const plugin = @import("forge-plugin");
 const explorer_scroll = @import("explorer_scroll.zig");
 const tabs_ui = @import("tabs.zig");
@@ -207,6 +209,8 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         wb.activeBuffer() orelse return
     else if (wb.focused_panel == .agent)
         &wb.prompt_buffer
+    else if (wb.focused_panel == .git)
+        &wb.git_commit_msg
     else
         return;
 
@@ -260,7 +264,6 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     if (wb.focused_panel == .explorer) return;
     if (wb.focused_panel == .extensions) return;
     if (wb.focused_panel == .search) return;
-    if (wb.focused_panel == .git) return;
     if (wb.focused_panel == .run) return;
 
     if (event.keycode == 51) {
@@ -272,12 +275,16 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             active_buffer.insertNewline() catch {};
         }
     } else if (event.keycode == 123) {
+        active_buffer.clearSelection();
         active_buffer.moveLeft();
     } else if (event.keycode == 124) {
+        active_buffer.clearSelection();
         active_buffer.moveRight();
     } else if (event.keycode == 125) {
+        active_buffer.clearSelection();
         active_buffer.moveDown();
     } else if (event.keycode == 126) {
+        active_buffer.clearSelection();
         active_buffer.moveUp();
     } else if (event.chars.len > 0) {
         const char_val = event.chars[0];
@@ -560,6 +567,8 @@ fn pasteIntoActiveBuffer(wb: *@import("../workbench.zig").Workbench) void {
         &wb.goto_bar.input
     else if (wb.focused_panel == .rename)
         &wb.rename_bar.input
+    else if (wb.focused_panel == .git)
+        &wb.git_commit_msg
     else
         return;
 
@@ -627,11 +636,11 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
     var w: f32 = 0;
     var h: f32 = 0;
     renderer.Renderer.getWindowSize(&w, &h);
-    const geo = layout.compute(wb.shell_mode, w, h, wb.explorer_panel_width, wb.agent_panel_width, wb.bottom_panel_height);
+    const geo = wb.layoutGeometry(w, h);
 
-    const is_near_explorer_splitter = geo.shell_mode == .ide and @abs(event.x - geo.explorer_splitter_x) < 5.0;
-    const is_near_agent_splitter = geo.shell_mode == .ide and @abs(event.x - geo.agent_splitter_x) < 5.0;
-    const is_near_bottom_splitter = geo.shell_mode == .ide and
+    const is_near_explorer_splitter = geo.shell_mode == .ide and wb.sidebar_visible and @abs(event.x - geo.explorer_splitter_x) < 5.0;
+    const is_near_agent_splitter = geo.shell_mode == .ide and wb.agent_panel_visible and @abs(event.x - geo.agent_splitter_x) < 5.0;
+    const is_near_bottom_splitter = geo.shell_mode == .ide and wb.bottom_panel_visible and geo.task_panel_h > 0 and
         event.x >= geo.editor_x and event.x < geo.agent_splitter_x and
         event.y >= geo.task_panel_y and event.y < geo.task_panel_y + 4.0;
 
@@ -641,6 +650,12 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
     }
 
     if (event.action == .move) {
+        if (event.y < layout.header_height) {
+            state.header_hover_action = header_toolbar.hoverAction(w, wb.headerToolbarState(), event.x, event.y);
+        } else {
+            state.header_hover_action = null;
+        }
+
         if (is_near_agent_splitter or is_near_explorer_splitter) {
             renderer.Renderer.setCursor(2);
         } else if (is_near_bottom_splitter) {
@@ -671,14 +686,20 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         }
     } else if (event.action == .down) {
         if (wb.palette.open) return;
+        if (event.y < layout.header_height) {
+            if (header_toolbar.hitTest(w, wb.headerToolbarState(), event.x, event.y)) |action| {
+                wb.handleHeaderAction(action) catch {};
+            }
+            return;
+        }
         if (is_near_agent_splitter) {
             state.is_dragging_agent_splitter = true;
         } else if (is_near_explorer_splitter) {
             state.is_dragging_explorer_splitter = true;
         } else if (is_near_bottom_splitter) {
             state.is_dragging_bottom_panel_splitter = true;
-        } else if (event.x < layout.activity_bar_width and event.y >= layout.header_height) {
-            if (activity_bar.hitTest(event.x, event.y)) |view| {
+        } else if (event.x < geo.explorer_w and event.y >= layout.header_height and event.y < layout.header_height + layout.activity_bar_height) {
+            if (activity_bar.hitTest(event.x, event.y, geo.explorer_w)) |view| {
                 wb.dispatch(.{ .set_sidebar_view = view }) catch {};
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .extensions and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= extensions_panel.list_top) {
@@ -711,10 +732,12 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             )) |hit| {
                 wb.handleSearchClick(hit) catch {};
             }
-        } else if (geo.shell_mode == .ide and wb.sidebar_view == .git and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= git_panel.list_top - 40) {
+        } else if (geo.shell_mode == .ide and wb.sidebar_view == .git and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height) {
             wb.focused_panel = .git;
             if (git_panel.hitTest(
                 if (wb.git_status) |status| status.entries else &.{},
+                wb.git_staged_collapsed,
+                wb.git_changes_collapsed,
                 geo.explorer_x,
                 geo.explorer_w,
                 event.x,
@@ -799,14 +822,32 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             if (agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, event.x, event.y)) {
                 return;
             }
-            if (wb.agent.show_review) {
-                if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, event.x, event.y)) |action| {
+            wb.agent.lock();
+            const show_rollback = wb.agent.last_checkpoint_id != null;
+            const show_approve_spec = wb.agent.spec_pending;
+            const show_review = wb.agent.show_review;
+            wb.agent.unlock();
+            if (show_review or show_approve_spec or show_rollback) {
+                if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, show_rollback, show_approve_spec, event.x, event.y)) |action| {
                     switch (action) {
                         .apply => wb.dispatch(.agent_apply) catch {},
                         .reject => wb.dispatch(.agent_reject) catch {},
+                        .rollback => wb.dispatch(.agent_rollback) catch {},
+                        .approve_spec => wb.dispatch(.agent_approve_spec) catch {},
                     }
                     return;
                 }
+            }
+            wb.agent.lock();
+            wb.agent.unlock();
+
+            // Actually, we can add a toggleAgentStep method to workbench that iterates chat history and steps.
+            if (agent_panel.hitTestSteps(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |step_idx| {
+                wb.dispatch(.{ .agent_toggle_step = step_idx }) catch {};
+                return;
+            }
+
+            if (show_review) {
                 wb.agent.lock();
                 const run_count = @min(wb.agent.run_history.items.len, agent_panel.max_visible_runs);
                 const has_summary = wb.agent.summary != null;
@@ -838,16 +879,35 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
         } else if (geo.shell_mode == .ide and event.x >= geo.editor_x and event.x < geo.agent_splitter_x and event.y >= tabs_ui.tab_bar_top and event.y < tabs_ui.tab_bar_top + tabs_ui.tab_bar_height) {
-            wb.focused_panel = .editor;
-            var tab_layouts: std.ArrayList(tabs_ui.TabLayout) = .empty;
-            defer tab_layouts.deinit(state.gpa);
-            tabs_ui.collectLayouts(wb, geo.editor_x, &tab_layouts) catch {};
-            switch (tabs_ui.hitTest(tab_layouts.items, event.x, event.y)) {
-                .close => |index| wb.dispatch(.{ .close_tab = index }) catch {},
-                .activate => |index| wb.dispatch(.{ .activate_tab = index }) catch {},
-                .none => {},
+            if (wb.ai_settings_open) {
+                wb.focused_panel = .ai_settings;
+                if (ai_settings_panel.hitCloseTab(geo.editor_x, event.x, event.y)) {
+                    wb.dispatch(.close_ai_settings) catch {};
+                }
+            } else {
+                wb.focused_panel = .editor;
+                var tab_layouts: std.ArrayList(tabs_ui.TabLayout) = .empty;
+                defer tab_layouts.deinit(state.gpa);
+                tabs_ui.collectLayouts(wb, geo.editor_x, &tab_layouts) catch {};
+                switch (tabs_ui.hitTest(tab_layouts.items, event.x, event.y)) {
+                    .close => |index| wb.dispatch(.{ .close_tab = index }) catch {},
+                    .activate => |index| wb.dispatch(.{ .activate_tab = index }) catch {},
+                    .none => {},
+                }
             }
         } else if (geo.shell_mode == .ide and isEditorContentArea(geo, event.x, event.y)) {
+            if (wb.ai_settings_open) {
+                wb.focused_panel = .ai_settings;
+                if (ai_settings_panel.hitTestPoint(
+                    geo.editor_x,
+                    wb.ai_settings_scroll_y,
+                    event.x,
+                    event.y,
+                )) |hit| {
+                    wb.handleAiSettingsClick(hit) catch {};
+                }
+                return;
+            }
             wb.focused_panel = .editor;
             const pane = wb.paneAt(geo.editor_x, geo.editor_w, event.x);
             wb.editor_pane_focus = pane;
@@ -857,11 +917,12 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 const scroll_y = if (pane == .secondary) wb.split_scroll_y else wb.editor_scroll_y;
                 const scroll_x = if (pane == .secondary) wb.split_scroll_x else wb.editor_scroll_x;
                 if (editorPosAt(wb, &doc.buffer, pane_x, pane_w, scroll_y, scroll_x, event.x, event.y)) |pos| {
-                    doc.buffer.cursor.row = pos.row;
-                    doc.buffer.cursor.col = pos.col;
+                    doc.buffer.beginSelection(pos.row, pos.col);
+                    state.is_dragging_editor_selection = true;
                     wb.scrollEditorToCursor();
                     if (event.modifiers & cmd_mask != 0) {
                         wb.goToDefinition() catch {};
+                        state.is_dragging_editor_selection = false;
                         return;
                     }
                 }
@@ -871,7 +932,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.dispatch(.{ .set_bottom_panel_mode = mode }) catch {};
             } else if (wb.bottom_panel_mode == .terminal and bottom_panel.inContentArea(geo.task_panel_y, event.y)) {
                 wb.focused_panel = .terminal;
-                if (terminal_panel.hitSessionTab(geo.editor_x, geo.task_panel_y, event.x, event.y, wb.terminals.sessions.items.len)) |hit| {
+                if (terminal_panel.hitSessionTab(geo.editor_x, geo.editor_w, geo.task_panel_y, event.x, event.y, wb.terminals.sessions.items.len)) |hit| {
                     switch (hit) {
                         .new => wb.dispatch(.terminal_new) catch {},
                         .activate => |index| wb.dispatch(.{ .terminal_activate = index }) catch {},
@@ -966,12 +1027,18 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 if (sel.isEmpty()) wb.terminal_selection = null;
             }
         }
+        if (state.is_dragging_editor_selection) {
+            state.is_dragging_editor_selection = false;
+            if (wb.docForPane(wb.editor_pane_focus)) |doc| {
+                if (!doc.buffer.hasSelection()) doc.buffer.clearSelection();
+            }
+        }
     } else if (event.action == .drag) {
         if (state.is_dragging_agent_splitter) {
             wb.agent_panel_width = w - event.x;
             wb.agent_panel_width = @max(200.0, @min(800.0, wb.agent_panel_width));
         } else if (state.is_dragging_explorer_splitter) {
-            wb.explorer_panel_width = event.x - layout.activity_bar_width;
+            wb.explorer_panel_width = event.x;
             wb.explorer_panel_width = @max(100.0, @min(500.0, wb.explorer_panel_width));
         } else if (state.is_dragging_bottom_panel_splitter) {
             const new_editor_h = event.y - layout.header_height;
@@ -982,6 +1049,19 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             );
             wb.clampBottomPanelScroll(wb.bottom_panel_height);
             wb.syncTerminalSize();
+        } else if (state.is_dragging_editor_selection and geo.shell_mode == .ide and isEditorContentArea(geo, event.x, event.y)) {
+            const pane = wb.paneAt(geo.editor_x, geo.editor_w, event.x);
+            if (wb.docForPane(pane)) |doc| {
+                const pane_x = wb.paneOriginX(geo.editor_x, geo.editor_w, pane);
+                const pane_w = wb.paneWidth(geo.editor_w);
+                const scroll_y = if (pane == .secondary) wb.split_scroll_y else wb.editor_scroll_y;
+                const scroll_x = if (pane == .secondary) wb.split_scroll_x else wb.editor_scroll_x;
+                if (editorPosAt(wb, &doc.buffer, pane_x, pane_w, scroll_y, scroll_x, event.x, event.y)) |pos| {
+                    doc.buffer.cursor.row = pos.row;
+                    doc.buffer.cursor.col = pos.col;
+                    wb.scrollEditorToCursor();
+                }
+            }
         } else if (state.is_dragging_terminal_selection and wb.bottom_panel_mode == .terminal) {
             const terminal = wb.activeTerminal();
             terminal.lock();
@@ -1001,16 +1081,23 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
     } else if (event.action == .scroll) {
         const mx = state.last_mouse_x;
         const my = state.last_mouse_y;
-        const raw = scroll_axis.predominantDeltas(-event.x, -event.y);
+
+        // Trackpads provide precise 2D deltas.
+        // Multiply by 2.5 to match the fast, smooth feel of Cursor/Electron apps.
+        const raw = scroll_axis.predominantDeltas(-event.x * 2.5, -event.y * 2.5);
         const scroll_delta_y = raw.y;
         const scroll_delta_x = raw.x;
 
-        if (geo.shell_mode == .ide and mx >= geo.explorer_x and mx < geo.explorer_splitter_x and my >= layout.header_height) {
+        if (geo.shell_mode == .ide and wb.ai_settings_open and mx >= geo.editor_x and mx < geo.agent_splitter_x and my >= ai_settings_panel.contentTop()) {
+            wb.ai_settings_scroll_y += scroll_delta_y;
+            wb.clampAiSettingsScroll(geo.editor_h);
+        } else if (geo.shell_mode == .ide and mx >= geo.explorer_x and mx < geo.explorer_splitter_x and my >= layout.header_height) {
             switch (wb.sidebar_view) {
                 .extensions => {
                     wb.extensions_scroll_y += scroll_delta_y;
                     wb.clampExtensionsScroll(h);
                 },
+                .ai => {},
                 .search => {
                     wb.search_scroll_y += scroll_delta_y;
                     wb.clampSearchScroll(h);

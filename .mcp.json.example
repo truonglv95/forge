@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${workspaceFolder}"],
+      "env": {
+        "NODE_OPTIONS": "--no-warnings"
+      }
+    },
+    "remote-example": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MY_MCP_TOKEN}"
+      },
+      "disabled": true
+    }
+  }
+}

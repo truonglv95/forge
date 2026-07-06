@@ -17,6 +17,12 @@ pub const IgnoreRules = struct {
             "zig-out",
             "node_modules",
             ".DS_Store",
+            ".forge",
+            ".cursor",
+            "target",
+            "dist",
+            "coverage",
+            "out",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, component, b)) return true;
@@ -33,4 +39,6 @@ test "IgnoreRules recognizes built-ins" {
     try std.testing.expect(!IgnoreRules.isIgnored("src"));
     try std.testing.expect(!IgnoreRules.isIgnored("main.zig"));
     try std.testing.expect(!IgnoreRules.isIgnored("README.md"));
+
+    try std.testing.expect(IgnoreRules.isIgnored(".forge"));
 }

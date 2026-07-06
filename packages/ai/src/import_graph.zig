@@ -16,10 +16,14 @@ pub fn collectNeighborPaths(
     options: Options,
 ) ![]const []const u8 {
     var seen = std.StringHashMap(void).init(allocator);
-    defer seen.deinit();
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |key| allocator.free(key.*);
+        seen.deinit();
+    }
 
-    for (skip_paths) |path| try seen.put(path, {});
-    for (seed_paths) |path| try seen.put(path, {});
+    for (skip_paths) |path| try markSeen(allocator, &seen, path);
+    for (seed_paths) |path| try markSeen(allocator, &seen, path);
 
     var frontier: std.ArrayList([]const u8) = .empty;
     defer {
@@ -54,7 +58,7 @@ pub fn collectNeighborPaths(
 
             for (imports) |import_path| {
                 if (seen.contains(import_path)) continue;
-                try seen.put(import_path, {});
+                try markSeen(allocator, &seen, import_path);
 
                 try out.append(allocator, try allocator.dupe(u8, import_path));
                 if (out.items.len >= options.max_files) return try out.toOwnedSlice(allocator);
@@ -69,6 +73,12 @@ pub fn collectNeighborPaths(
     }
 
     return try out.toOwnedSlice(allocator);
+}
+
+fn markSeen(allocator: std.mem.Allocator, seen: *std.StringHashMap(void), path: []const u8) !void {
+    const owned = try allocator.dupe(u8, path);
+    const gop = try seen.getOrPut(owned);
+    if (gop.found_existing) allocator.free(owned);
 }
 
 pub fn extractImports(
@@ -261,4 +271,28 @@ test "extract zig imports" {
     const imports = try extractImports(allocator, io, root, "apps/main.zig", content);
     defer freeImports(allocator, imports);
     try std.testing.expect(imports.len >= 1);
+}
+
+test "collectNeighborPaths does not use freed import keys in seen set" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try tmp.dir.writeFile(io, "lib/util.zig", "pub fn util() void {}\n");
+    try tmp.dir.writeFile(io, "lib/helper.zig",
+        \\const util = @import("util.zig");
+    );
+    try tmp.dir.writeFile(io, "apps/main.zig",
+        \\const helper = @import("../lib/helper.zig");
+    );
+
+    const seeds = [_][]const u8{"apps/main.zig"};
+    const neighbors = try collectNeighborPaths(allocator, io, root, &seeds, &.{}, .{
+        .max_hops = 2,
+        .max_files = 8,
+    });
+    defer freePaths(allocator, neighbors);
+    try std.testing.expect(neighbors.len >= 1);
 }

@@ -128,6 +128,13 @@ fn kindLabel(kind: []const u8) []const u8 {
     return kind;
 }
 
+fn copyToSentinelBuf(dest: []u8, src: []const u8) []const u8 {
+    const n = @min(src.len, dest.len - 1);
+    @memcpy(dest[0..n], src[0..n]);
+    dest[n] = 0;
+    return dest[0..n];
+}
+
 pub fn draw(
     agent: *agent_session.Session,
     agent_x: f32,
@@ -206,9 +213,8 @@ pub fn draw(
         var pill_buf: [96:0]u8 = undefined;
         var label_buf: [96]u8 = undefined;
         const pill = ai.scope_resolver.displayLabel(path, &label_buf);
-        @memcpy(pill_buf[0..pill.len], pill);
-        pill_buf[pill.len] = 0;
-        const pill_w: f32 = @floatFromInt(pill.len * 6 + 14);
+        const pill_text = copyToSentinelBuf(&pill_buf, pill);
+        const pill_w: f32 = @floatFromInt(pill_text.len * 6 + 14);
         renderer.Renderer.drawRoundedRect(pill_x, pill_y, pill_w, pill_h, 4, .{ .r = 0.16, .g = 0.28, .b = 0.42, .a = 1.0 });
         renderer.Renderer.drawText(@ptrCast(&pill_buf), pill_x + 6, pill_y + 2, 10.0, .{ .r = 0.85, .g = 0.95, .b = 1.0, .a = 1.0 });
         pill_x += pill_w + 4;

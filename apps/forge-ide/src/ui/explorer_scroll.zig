@@ -1,7 +1,7 @@
 const std = @import("std");
 const layout = @import("layout.zig");
 
-pub const list_top: f32 = 80;
+pub const list_top: f32 = 100;
 pub const row_height: f32 = 20;
 
 pub fn viewportHeight(window_h: f32) f32 {

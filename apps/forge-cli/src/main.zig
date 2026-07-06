@@ -154,8 +154,8 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --dry-run            Dry-run flag (used with apply)
         \\  --yes                Approve apply without interactive prompt
         \\  --file <path>        Include file in AI context (repeatable)
-        \\  --provider <name>    AI provider: auto|fake|gemini (default: auto)
-        \\  --model <name>       Gemini model id (default: gemini-2.5-flash)
+        \\  --provider <name>    AI provider: auto|fake|gemini|ollama (default: auto)
+        \\  --model <name>       Model id (default: gemini-2.5-flash or qwen2.5-coder:7b for ollama)
         \\  --budget-bytes <n>   Context byte budget for forge context (default: 1MiB)
         \\  --capability <name>  Agent capability: read_only|propose|propose_and_task
         \\  --once               Single watch poll (for tests)
@@ -264,7 +264,7 @@ test "CLI ask records run list entry" {
     var buffer: [8192]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
 
-    const ask_args = [_][]const u8{ "forge", "ask", "create note", "--workspace", ws, "--json", "--quiet" };
+    const ask_args = [_][]const u8{ "forge", "ask", "create note", "--workspace", ws, "--json", "--quiet", "--provider", "fake" };
     try std.testing.expectEqual(@as(u8, 0), try run(allocator, io, environ, &ask_args, &writer));
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\"run_id\"") != null);
 

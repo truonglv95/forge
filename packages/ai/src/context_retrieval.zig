@@ -95,8 +95,9 @@ pub fn collectFromIntent(
     for (chunks.items) |chunk| {
         var key_buf: [512]u8 = undefined;
         const key = std.fmt.bufPrint(&key_buf, "{s}:{d}-{d}", .{ chunk.path, chunk.line_start, chunk.line_end }) catch continue;
-        if (used_keys.contains(key)) continue;
-        try used_keys.put(key, {});
+        const owned_key = try arena.allocator().dupe(u8, key);
+        const gop = try used_keys.getOrPut(owned_key);
+        if (gop.found_existing) continue;
 
         const snippet = try readLineWindow(allocator, io, root, chunk.path, chunk.line_start, chunk.line_end);
         errdefer allocator.free(snippet);

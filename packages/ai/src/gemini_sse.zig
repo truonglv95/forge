@@ -50,16 +50,11 @@ pub const Parser = struct {
     latest_usage: provider_mod.TokenUsage = .{},
 
     pub fn init(allocator: std.mem.Allocator, callbacks: Callbacks) Parser {
-        var self = Parser{
+        return Parser{
             .allocator = allocator,
             .callbacks = callbacks,
             .writer = undefined,
         };
-        self.writer = std.Io.Writer{
-            .buffer = self.writer_buffer[0..],
-            .vtable = &sse_writer_vtable,
-        };
-        return self;
     }
 
     pub fn deinit(self: *Parser) void {
@@ -68,6 +63,10 @@ pub const Parser = struct {
     }
 
     pub fn ioWriter(self: *Parser) *std.Io.Writer {
+        self.writer = std.Io.Writer{
+            .buffer = self.writer_buffer[0..],
+            .vtable = &sse_writer_vtable,
+        };
         sse_active_parser = self;
         return &self.writer;
     }
@@ -117,7 +116,22 @@ pub const Parser = struct {
             self.pending.appendSlice(self.allocator, rest) catch return error.MalformedResponse;
             if (raw_line.len == 0) continue;
             if (!std.mem.startsWith(u8, raw_line, "data:")) continue;
-            const payload = std.mem.trim(u8, raw_line["data:".len..], " ");
+
+            var payload_buf: std.ArrayList(u8) = .empty;
+            defer payload_buf.deinit(self.allocator);
+
+            var line_it = std.mem.splitScalar(u8, raw_line, '\n');
+            while (line_it.next()) |line| {
+                var l = std.mem.trim(u8, line, "\r");
+                if (std.mem.startsWith(u8, l, "data:")) {
+                    l = std.mem.trim(u8, l["data:".len..], " ");
+                }
+                if (l.len > 0) {
+                    payload_buf.appendSlice(self.allocator, l) catch return error.MalformedResponse;
+                }
+            }
+
+            const payload = payload_buf.items;
             if (payload.len == 0 or std.mem.eql(u8, payload, "[DONE]")) continue;
             try self.handlePayload(payload);
         }
@@ -126,10 +140,18 @@ pub const Parser = struct {
     fn handlePayload(self: *Parser, payload: []const u8) ParseError!void {
         var parsed = std.json.parseFromSlice(StreamEvent, self.allocator, payload, .{
             .ignore_unknown_fields = true,
-        }) catch return;
+        }) catch |err| {
+            std.log.err("Failed to parse SSE payload: {any}, payload: {s}", .{ err, payload });
+            return;
+        };
         defer parsed.deinit();
 
         if (parsed.value.@"error") |api_err| {
+            if (api_err.message) |msg| {
+                std.log.err("Gemini API Error: {s} (status: {?s})", .{ msg, api_err.status });
+            } else {
+                std.log.err("Gemini API Error: Unknown (status: {?s})", .{api_err.status});
+            }
             if (api_err.status) |status| {
                 if (std.mem.eql(u8, status, "UNAUTHENTICATED")) {
                     self.terminal_error = provider_mod.ProviderError.AuthenticationFailed;

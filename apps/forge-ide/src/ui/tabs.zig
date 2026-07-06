@@ -1,12 +1,12 @@
 const std = @import("std");
 const Workbench = @import("../workbench.zig").Workbench;
 
-pub const tab_gap: f32 = 6;
+pub const tab_gap: f32 = 0;
 pub const tab_padding_start: f32 = 10;
 pub const tab_bar_top: f32 = 30;
 pub const tab_bar_height: f32 = 35;
-pub const tab_y: f32 = 36;
-pub const tab_height: f32 = 30;
+pub const tab_y: f32 = 30;
+pub const tab_height: f32 = 35;
 pub const close_button_width: f32 = 20;
 pub const label_char_width: f32 = 8;
 pub const label_pad: f32 = 24;

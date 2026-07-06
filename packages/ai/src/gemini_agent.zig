@@ -5,6 +5,8 @@ const gemini_tools = @import("gemini_tools.zig");
 const tool_executor = @import("tool_executor.zig");
 const context = @import("context.zig");
 const gemini_provider = @import("gemini_provider.zig");
+const subagent = @import("subagent.zig");
+const mcp_registry = @import("mcp_registry.zig");
 
 pub const StepCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
 
@@ -29,6 +31,7 @@ pub fn exploreWithGemini(
     intent: []const u8,
     ctx_builder: *const context.ContextBuilder,
     tool_ctx: tool_executor.Context,
+    mcp: ?*mcp_registry.Registry,
     config: ExploreConfig,
 ) ExploreError!void {
     var contents: std.ArrayList(u8) = .empty;
@@ -54,7 +57,7 @@ pub fn exploreWithGemini(
             if (token.isCancelled()) return error.Cancelled;
         }
 
-        const response_body = fetchWithTools(gemini, allocator, io, contents.items) catch return error.ProviderFailed;
+        const response_body = fetchWithTools(gemini, allocator, io, contents.items, mcp) catch return error.ProviderFailed;
         defer allocator.free(response_body);
 
         var parsed = parseTurn(allocator, response_body) catch return error.ProviderFailed;
@@ -65,13 +68,14 @@ pub fn exploreWithGemini(
                 allocator.free(call.name);
                 allocator.free(call.args_json);
             }
-            if (!gemini_tools.allowedNativeTool(call.name, tool_ctx.profile)) return error.NotAllowed;
+            if (!gemini_tools.isToolAllowed(call.name, tool_ctx.profile, mcp)) return error.NotAllowed;
 
-            const summary = try executeTool(allocator, tool_ctx, call);
+            const summary = try executeTool(allocator, tool_ctx, mcp, call);
             defer allocator.free(summary);
 
             if (config.step_callback) |callback| {
-                callback(config.step_context, step_index, call.name, summary);
+                const kind = subagent.classifyTool(call.name).label();
+                callback(config.step_context, step_index, kind, summary);
             }
             step_index += 1;
 
@@ -146,13 +150,23 @@ fn fetchWithTools(
     allocator: std.mem.Allocator,
     io: std.Io,
     contents_body: []const u8,
+    mcp: ?*mcp_registry.Registry,
 ) ![]u8 {
     const endpoint = try std.fmt.allocPrint(allocator, "https://generativelanguage.googleapis.com/v1beta/models/{s}:generateContent", .{gemini.model_name});
     defer allocator.free(endpoint);
 
+    const declarations_owned = blk: {
+        if (mcp) |reg| {
+            break :blk reg.buildDeclarationsJson(allocator) catch break :blk null;
+        }
+        break :blk null;
+    };
+    defer if (declarations_owned) |buf| allocator.free(buf);
+    const declarations = declarations_owned orelse gemini_tools.function_declarations_json;
+
     const payload = try std.fmt.allocPrint(allocator,
         \\{{"contents":[{s}],"tools":[{{"functionDeclarations":{s}}}],"generationConfig":{{"temperature":0.2}}}}
-    , .{ contents_body, gemini_tools.function_declarations_json });
+    , .{ contents_body, declarations });
     defer allocator.free(payload);
 
     const api_headers = [_]std.http.Header{
@@ -227,7 +241,12 @@ fn parseTurn(allocator: std.mem.Allocator, body: []const u8) !ParsedTurn {
     return error.ProviderFailed;
 }
 
-fn executeTool(allocator: std.mem.Allocator, tool_ctx: tool_executor.Context, call: gemini_tools.FunctionCall) ExploreError![]u8 {
+fn executeTool(allocator: std.mem.Allocator, tool_ctx: tool_executor.Context, mcp: ?*mcp_registry.Registry, call: gemini_tools.FunctionCall) ExploreError![]u8 {
+    if (mcp) |reg| {
+        if (reg.hasTool(call.name)) {
+            return reg.callTool(call.name, call.args_json) catch return error.ProviderFailed;
+        }
+    }
     if (std.mem.eql(u8, call.name, "search")) {
         const term = gemini_tools.parseSearchTerm(allocator, call.args_json) catch return error.ProviderFailed;
         defer allocator.free(term);
@@ -275,6 +294,23 @@ fn executeTool(allocator: std.mem.Allocator, tool_ctx: tool_executor.Context, ca
         if (out.content) |content| {
             return allocator.dupe(u8, content) catch return error.ProviderFailed;
         }
+        return allocator.dupe(u8, out.summary) catch return error.ProviderFailed;
+    }
+    if (std.mem.eql(u8, call.name, "run_command")) {
+        const command = gemini_tools.parseRunCommand(allocator, call.args_json) catch return error.ProviderFailed;
+        defer allocator.free(command);
+        const out = tool_executor.runCommand(tool_ctx, command) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return allocator.dupe(u8, out.summary) catch return error.ProviderFailed;
+    }
+    if (std.mem.eql(u8, call.name, "replace_file_content")) {
+        const args = gemini_tools.parseReplaceFileContentArgs(allocator, call.args_json) catch return error.ProviderFailed;
+        defer {
+            allocator.free(args.path);
+            allocator.free(args.replacement);
+        }
+        const out = tool_executor.replaceFileContent(tool_ctx, args.path, args.start_line, args.end_line, args.replacement) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
         return allocator.dupe(u8, out.summary) catch return error.ProviderFailed;
     }
     return error.ProviderFailed;

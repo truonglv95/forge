@@ -12,6 +12,23 @@ pub const vectors_file = ".forge/index/v1/vectors.bin";
 pub const manifest_file = ".forge/index/v1/manifest.json";
 pub const file_hashes_file = ".forge/index/v1/file_hashes.json";
 
+fn storeHashRow(arena_alloc: std.mem.Allocator, stored: *std.StringHashMap(u64), path: []const u8, hash: u64) !void {
+    const owned = try arena_alloc.dupe(u8, path);
+    const gop = try stored.getOrPut(owned);
+    if (gop.found_existing) {
+        arena_alloc.free(owned);
+        gop.value_ptr.* = hash;
+    } else {
+        gop.value_ptr.* = hash;
+    }
+}
+
+fn markPathSeen(arena_alloc: std.mem.Allocator, seen: *std.StringHashMap(void), path: []const u8) !void {
+    const owned = try arena_alloc.dupe(u8, path);
+    const gop = try seen.getOrPut(owned);
+    if (gop.found_existing) arena_alloc.free(owned);
+}
+
 pub const max_chunk_lines: u32 = 48;
 pub const max_chunk_bytes: usize = 2048;
 pub const max_files: u32 = 800;
@@ -133,8 +150,10 @@ pub fn build(
     defer summary.deinit();
 
     var all_chunks: std.ArrayList(Chunk) = .empty;
-    errdefer freeChunks(allocator, all_chunks.items);
-    errdefer all_chunks.deinit(allocator);
+    errdefer {
+        for (all_chunks.items) |chunk| freeChunk(allocator, chunk);
+        all_chunks.deinit(allocator);
+    }
 
     var file_count: u32 = 0;
     var hash_lines: std.ArrayList(u8) = .empty;
@@ -255,7 +274,7 @@ pub fn needsRebuild(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Wor
         const Row = struct { path: []const u8, hash: u64 };
         var parsed = std.json.parseFromSlice(Row, allocator, line, .{}) catch return true;
         defer parsed.deinit();
-        try stored.put(parsed.value.path, parsed.value.hash);
+        try storeHashRow(arena.allocator(), &stored, parsed.value.path, parsed.value.hash);
     }
 
     var summary = try tree.scan(allocator, io, root, ".");
@@ -307,7 +326,7 @@ pub fn collectStalePaths(
         const Row = struct { path: []const u8, hash: u64 };
         var parsed = try std.json.parseFromSlice(Row, allocator, line, .{});
         defer parsed.deinit();
-        try stored.put(parsed.value.path, parsed.value.hash);
+        try storeHashRow(arena.allocator(), &stored, parsed.value.path, parsed.value.hash);
     }
 
     var stale: std.ArrayList([]const u8) = .empty;
@@ -337,7 +356,7 @@ pub fn collectStalePaths(
         if (skip) continue;
 
         checked += 1;
-        try seen.put(entry.path, {});
+        try markPathSeen(arena.allocator(), &seen, entry.path);
         const wp = try path_mod.WorkspacePath.parse(entry.path);
         var snap = snapshot.FileSnapshot.read(allocator, io, root, wp) catch continue;
         defer snap.deinit();
@@ -660,4 +679,22 @@ test "chunkContent splits long files" {
     const chunks = try chunkContent(allocator, "sample.zig", edit.contentHash(content.items), content.items);
     defer freeChunks(allocator, chunks);
     try std.testing.expect(chunks.len >= 2);
+}
+
+test "build cleans up chunks on embed failure" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("sample.zig"), "pub fn sample() void {}\n");
+
+    const failEmbed = struct {
+        fn embed(_: std.mem.Allocator, _: []const u8, _: []f32) !void {
+            return error.EmbedFailed;
+        }
+    }.embed;
+
+    try std.testing.expectError(error.EmbedFailed, build(allocator, io, root, 8, failEmbed));
 }

@@ -44,7 +44,8 @@ pub fn resolve(
     }
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var seen = std.StringHashMap(void).init(arena.allocator());
+    const arena_alloc = arena.allocator();
+    var seen = std.StringHashMap(void).init(arena_alloc);
 
     for (explicit_files) |entry| {
         if (std.mem.eql(u8, entry, codebase_marker)) {
@@ -58,7 +59,7 @@ pub fn resolve(
         if (std.mem.startsWith(u8, entry, docs_file_prefix)) {
             const doc_path = entry[docs_file_prefix.len..];
             if (seen.contains(doc_path)) continue;
-            try seen.put(doc_path, {});
+            try markScopeSeen(arena_alloc, &seen, doc_path);
             try docs_files.append(allocator, try allocator.dupe(u8, doc_path));
             continue;
         }
@@ -69,16 +70,16 @@ pub fn resolve(
         if (std.mem.startsWith(u8, entry, web_url_prefix)) {
             const url = entry[web_url_prefix.len..];
             if (seen.contains(url)) continue;
-            try seen.put(url, {});
+            try markScopeSeen(arena_alloc, &seen, url);
             try web_urls.append(allocator, try allocator.dupe(u8, url));
             continue;
         }
         if (std.mem.startsWith(u8, entry, folder_prefix)) {
-            try expandFolder(allocator, io, root, entry[folder_prefix.len..], &files, &seen);
+            try expandFolder(allocator, io, root, entry[folder_prefix.len..], arena_alloc, &files, &seen);
             continue;
         }
         if (seen.contains(entry)) continue;
-        try seen.put(entry, {});
+        try markScopeSeen(arena_alloc, &seen, entry);
         try files.append(allocator, try allocator.dupe(u8, entry));
     }
 
@@ -102,27 +103,49 @@ pub fn freeResolved(allocator: std.mem.Allocator, resolved: *ResolvedScope) void
     resolved.* = undefined;
 }
 
+fn copyLabel(out: []u8, label: []const u8) []const u8 {
+    if (out.len == 0) return "";
+    const n = @min(label.len, out.len - 1);
+    @memcpy(out[0..n], label[0..n]);
+    out[n] = 0;
+    return out[0..n];
+}
+
+fn formatAtSuffix(out: []u8, suffix: []const u8) []const u8 {
+    if (out.len == 0) return "";
+    if (std.fmt.bufPrint(out, "@{s}", .{suffix})) |written| {
+        return written;
+    } else |_| {}
+    const max_suffix = out.len -| 2;
+    out[0] = '@';
+    const n = @min(suffix.len, max_suffix);
+    if (n > 0) @memcpy(out[1..][0..n], suffix[0..n]);
+    out[1 + n] = 0;
+    return out[0 .. 1 + n];
+}
+
 pub fn displayLabel(path: []const u8, out: []u8) []const u8 {
-    if (std.mem.eql(u8, path, codebase_marker)) {
-        return std.fmt.bufPrint(out, "@codebase", .{}) catch "@codebase";
-    }
-    if (std.mem.eql(u8, path, docs_marker)) {
-        return std.fmt.bufPrint(out, "@docs", .{}) catch "@docs";
-    }
+    if (std.mem.eql(u8, path, codebase_marker)) return copyLabel(out, "@codebase");
+    if (std.mem.eql(u8, path, docs_marker)) return copyLabel(out, "@docs");
     if (std.mem.startsWith(u8, path, docs_file_prefix)) {
-        return std.fmt.bufPrint(out, "@{s}", .{path[docs_file_prefix.len..]}) catch path;
+        return formatAtSuffix(out, path[docs_file_prefix.len..]);
     }
-    if (std.mem.eql(u8, path, web_marker)) {
-        return std.fmt.bufPrint(out, "@web", .{}) catch "@web";
-    }
+    if (std.mem.eql(u8, path, web_marker)) return copyLabel(out, "@web");
     if (std.mem.startsWith(u8, path, web_url_prefix)) {
-        return std.fmt.bufPrint(out, "@{s}", .{path[web_url_prefix.len..]}) catch path;
+        return formatAtSuffix(out, path[web_url_prefix.len..]);
     }
     if (std.mem.startsWith(u8, path, folder_prefix)) {
-        return std.fmt.bufPrint(out, "@{s}", .{path[folder_prefix.len..]}) catch path;
+        return formatAtSuffix(out, path[folder_prefix.len..]);
     }
     const base = std.fs.path.basename(path);
-    return std.fmt.bufPrint(out, "@{s}", .{base}) catch path;
+    if (base.len > 0) return formatAtSuffix(out, base);
+    return formatAtSuffix(out, path);
+}
+
+fn markScopeSeen(arena_alloc: std.mem.Allocator, seen: *std.StringHashMap(void), path: []const u8) !void {
+    const owned = try arena_alloc.dupe(u8, path);
+    const gop = try seen.getOrPut(owned);
+    if (gop.found_existing) {}
 }
 
 fn expandFolder(
@@ -130,26 +153,27 @@ fn expandFolder(
     io: std.Io,
     root: workspace.WorkspaceRoot,
     folder: []const u8,
+    arena_alloc: std.mem.Allocator,
     out: *std.ArrayList([]const u8),
     seen: *std.StringHashMap(void),
 ) !void {
     var summary = try workspace.tree.scan(allocator, io, root, ".");
     defer summary.deinit();
 
-    const prefix = if (folder.len == 0 or std.mem.eql(u8, folder, "."))
-        ""
-    else blk: {
-        if (std.mem.endsWith(u8, folder, "/")) break :blk folder;
-        var buf: [512]u8 = undefined;
-        break :blk try std.fmt.bufPrint(&buf, "{s}/", .{folder});
-    };
+    const prefix_owned = if (folder.len == 0 or std.mem.eql(u8, folder, "."))
+        try arena_alloc.dupe(u8, "")
+    else if (std.mem.endsWith(u8, folder, "/"))
+        try arena_alloc.dupe(u8, folder)
+    else
+        try std.fmt.allocPrint(arena_alloc, "{s}/", .{folder});
+    const prefix = prefix_owned;
 
     for (summary.entries) |entry| {
         if (entry.kind != .file) continue;
         if (std.mem.startsWith(u8, entry.path, ".forge/")) continue;
         if (prefix.len > 0 and !std.mem.startsWith(u8, entry.path, prefix)) continue;
         if (seen.contains(entry.path)) continue;
-        try seen.put(entry.path, {});
+        try markScopeSeen(arena_alloc, seen, entry.path);
         try out.append(allocator, try allocator.dupe(u8, entry.path));
     }
 }
@@ -170,6 +194,23 @@ test "resolve expands folder scope" {
     defer freeResolved(allocator, &resolved);
 
     try std.testing.expect(resolved.include_codebase);
+    try std.testing.expectEqual(@as(usize, 2), resolved.files.len);
+}
+
+test "resolve folder scope then explicit file reuses seen safely" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/a.zig"), "a");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/b.zig"), "b");
+
+    var resolved = try resolve(allocator, io, root, &[_][]const u8{ "@folder:src", "src/a.zig" });
+    defer freeResolved(allocator, &resolved);
+
     try std.testing.expectEqual(@as(usize, 2), resolved.files.len);
 }
 
@@ -203,4 +244,17 @@ test "resolve handles @web url scope" {
     try std.testing.expect(resolved.include_web);
     try std.testing.expectEqual(@as(usize, 1), resolved.web_urls.len);
     try std.testing.expectEqualStrings("https://ziglang.org/documentation/", resolved.web_urls[0]);
+}
+
+test "displayLabel truncates to output buffer" {
+    var out: [16]u8 = undefined;
+    var path_buf: [128]u8 = undefined;
+    @memcpy(path_buf[0..folder_prefix.len], folder_prefix);
+    const suffix = "packages/ai/src/context_loader.zig";
+    @memcpy(path_buf[folder_prefix.len..][0..suffix.len], suffix);
+    const path = path_buf[0 .. folder_prefix.len + suffix.len];
+
+    const label = displayLabel(path, &out);
+    try std.testing.expect(label.len < out.len);
+    try std.testing.expect(label[0] == '@');
 }

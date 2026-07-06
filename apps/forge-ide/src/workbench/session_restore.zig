@@ -196,6 +196,7 @@ fn sidebarName(view: sidebar_view_mod.SidebarView) []const u8 {
         .git => "git",
         .run => "run",
         .extensions => "extensions",
+        .ai => "ai",
     };
 }
 
@@ -204,6 +205,7 @@ fn parseSidebar(name: []const u8) sidebar_view_mod.SidebarView {
     if (std.mem.eql(u8, name, "git")) return .git;
     if (std.mem.eql(u8, name, "run")) return .run;
     if (std.mem.eql(u8, name, "extensions")) return .extensions;
+    if (std.mem.eql(u8, name, "ai")) return .ai;
     return .explorer;
 }
 

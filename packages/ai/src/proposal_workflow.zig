@@ -8,8 +8,17 @@ const multimodal = @import("multimodal.zig");
 const progress = @import("progress.zig");
 const provider = @import("provider.zig");
 const run_record = @import("run_record.zig");
+const spec_writer = @import("spec_writer.zig");
+const validation_hints = @import("validation_hints.zig");
+const repair_loop = @import("repair_loop.zig");
 
 pub const Mode = enum { ask, plan };
+
+pub const PlanPhase = enum {
+    full,
+    plan_only,
+    proposal_only,
+};
 
 pub const WorkflowError = error{
     MissingProviderCredentials,
@@ -21,6 +30,8 @@ pub const WorkflowError = error{
 pub const GenerateOptions = struct {
     surface: run_record.Surface = .cli,
     mode: Mode = .ask,
+    plan_phase: PlanPhase = .full,
+    continue_run_id: ?[]const u8 = null,
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
     progress_callback: ?*const fn (?*anyopaque, progress.Phase) void = null,
     progress_context: ?*anyopaque = null,
@@ -34,6 +45,8 @@ pub const GenerateOptions = struct {
     conversation: []const @import("conversation.zig").Turn = &.{},
     workspace_cwd: ?[]const u8 = null,
     recent_files: []const []const u8 = &.{},
+    enable_repair_loop: bool = true,
+    max_repair_attempts: u8 = 2,
 };
 
 pub const Result = struct {
@@ -45,9 +58,16 @@ pub const Result = struct {
 };
 
 pub fn validateProposalBody(allocator: std.mem.Allocator, proposal_body: []const u8) WorkflowError!void {
-    var parsed_proposal = workspace.OwnedProposal.parseJson(allocator, proposal_body) catch return error.InvalidProposal;
+    var parsed_proposal = workspace.OwnedProposal.parseJson(allocator, proposal_body) catch |err| {
+        std.log.err("JSON Parse error: {any}", .{err});
+        std.log.err("Proposal Body: {s}", .{proposal_body});
+        return error.InvalidProposal;
+    };
     defer parsed_proposal.deinit();
-    parsed_proposal.workspaceEdit().validate() catch return error.InvalidProposal;
+    parsed_proposal.workspaceEdit().validate() catch |err| {
+        std.log.err("Validation error: {any}", .{err});
+        return error.InvalidProposal;
+    };
 }
 
 pub fn emitProgress(options: GenerateOptions, phase: progress.Phase) void {
@@ -94,7 +114,10 @@ pub fn generateAndPersist(
     emitProgress(options, .context_built);
 
     const timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
-    const run_id = run_record.makeRunId(allocator, timestamp_ms) catch return error.ProviderFailed;
+    const run_id = if (options.continue_run_id) |existing|
+        allocator.dupe(u8, existing) catch return error.ProviderFailed
+    else
+        run_record.makeRunId(allocator, timestamp_ms) catch return error.ProviderFailed;
     errdefer allocator.free(run_id);
 
     const llm = provider_handle.interface();
@@ -115,7 +138,7 @@ pub fn generateAndPersist(
     var owned_plan_rel: ?[]u8 = null;
     errdefer if (owned_plan_rel) |path| allocator.free(path);
 
-    if (options.mode == .plan) {
+    if (options.mode == .plan and options.plan_phase != .proposal_only) {
         emitProgress(options, .planning);
         var plan_writer = std.Io.Writer.Allocating.init(allocator);
         defer plan_writer.deinit();
@@ -140,32 +163,124 @@ pub fn generateAndPersist(
         };
         workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(plan_rel) catch return error.ProviderFailed, plan_body) catch return error.ProviderFailed;
 
+        spec_writer.persistFromPlan(io, root, run_id, plan_body, intent) catch {};
+
         ctx_builder.addBlock(.intent, "implementation_plan", plan_body) catch return error.ProviderFailed;
         plan_inst = planner.Planner.init(allocator, llm, &ctx_builder, options.conversation, images);
+    } else if (options.mode == .plan and options.plan_phase == .proposal_only) {
+        var plan_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const plan_rel = std.fmt.bufPrint(&plan_path_buf, ".forge/plans/{s}.md", .{run_id}) catch return error.ProviderFailed;
+        var plan_snap = workspace.FileSnapshot.read(allocator, io, root, workspace.WorkspacePath.parse(plan_rel) catch return error.ProviderFailed) catch return error.ProviderFailed;
+        defer plan_snap.deinit();
+        owned_plan_body = allocator.dupe(u8, plan_snap.content) catch return error.ProviderFailed;
+        owned_plan_rel = allocator.dupe(u8, plan_rel) catch return error.ProviderFailed;
+        ctx_builder.addBlock(.intent, "implementation_plan", plan_snap.content) catch return error.ProviderFailed;
+        plan_inst = planner.Planner.init(allocator, llm, &ctx_builder, options.conversation, images);
+    }
+
+    if (options.mode == .plan and options.plan_phase == .plan_only) {
+        const record = run_record.Record{
+            .run_id = run_id,
+            .surface = options.surface,
+            .intent = intent,
+            .state = .planning,
+            .proposal_path = "",
+            .provider_id = meta.provider_name,
+            .model_id = meta.model_name,
+            .timestamp_ms = timestamp_ms,
+        };
+        const json_body = run_record.formatJson(allocator, record) catch return error.ProviderFailed;
+        defer allocator.free(json_body);
+        workspace.runs.persistRun(io, root, run_id, json_body) catch return error.ProviderFailed;
+        const index_line = run_record.formatIndexLine(allocator, record) catch return error.ProviderFailed;
+        defer allocator.free(index_line);
+        workspace.runs.appendIndex(allocator, io, root, index_line) catch return error.ProviderFailed;
+        emitProgress(options, .plan_ready);
+
+        return .{
+            .run_id = run_id,
+            .proposal_rel = allocator.dupe(u8, "") catch return error.ProviderFailed,
+            .proposal_body = allocator.dupe(u8, "") catch return error.ProviderFailed,
+            .plan_body = owned_plan_body,
+            .plan_rel = owned_plan_rel,
+        };
     }
 
     var response = std.Io.Writer.Allocating.init(allocator);
     defer response.deinit();
 
-    emitProgress(options, .sending);
-    plan_inst.plan(&response.writer, cancel_token) catch |err| {
-        if (cancel_token.isCancelled()) return error.Cancelled;
-        return err;
-    };
-    emitProgress(options, .streaming);
-    emitProgress(options, .parsing);
+    const workspace_cwd = options.workspace_cwd orelse ".";
+    const max_repair = if (options.enable_repair_loop) options.max_repair_attempts else 0;
+    var owned_body: ?[]u8 = null;
+    errdefer if (owned_body) |body| allocator.free(body);
+    var last_validation_report: ?[]u8 = null;
+    errdefer if (last_validation_report) |report| allocator.free(report);
+    var attempt: u8 = 0;
 
-    const proposal_body = response.writer.buffer[0..response.writer.end];
-    try validateProposalBody(allocator, proposal_body);
+    while (true) {
+        if (attempt == 0) {
+            emitProgress(options, .sending);
+            plan_inst.plan(&response.writer, cancel_token) catch |err| {
+                if (cancel_token.isCancelled()) return error.Cancelled;
+                return err;
+            };
+        } else {
+            emitProgress(options, .repairing);
+            response.writer.end = 0;
+            plan_inst.planRepair(&response.writer, cancel_token, last_validation_report.?, owned_body.?) catch |err| {
+                if (cancel_token.isCancelled()) return error.Cancelled;
+                return err;
+            };
+        }
+        emitProgress(options, .streaming);
+        emitProgress(options, .parsing);
 
-    const owned_body = allocator.dupe(u8, proposal_body) catch return error.ProviderFailed;
-    errdefer allocator.free(owned_body);
+        const proposal_body = response.writer.buffer[0..response.writer.end];
+        try validateProposalBody(allocator, proposal_body);
+
+        const augmented_body = validation_hints.augmentProposalJson(allocator, proposal_body) catch return error.ProviderFailed;
+        defer allocator.free(augmented_body);
+
+        if (owned_body) |old| allocator.free(old);
+        owned_body = allocator.dupe(u8, augmented_body) catch return error.ProviderFailed;
+
+        if (max_repair == 0) break;
+
+        const trial = repair_loop.trialApplyAndValidate(allocator, io, root, workspace_cwd, owned_body.?) catch break;
+        if (trial.passed) {
+            allocator.free(trial.report);
+            break;
+        }
+        if (attempt >= max_repair) {
+            allocator.free(trial.report);
+            break;
+        }
+
+        ctx_builder.addBlock(.diagnostic, "validation_failure", trial.report) catch {
+            allocator.free(trial.report);
+            return error.ProviderFailed;
+        };
+        ctx_builder.addBlock(.intent, "failed_proposal", owned_body.?) catch return error.ProviderFailed;
+        plan_inst = planner.Planner.init(allocator, llm, &ctx_builder, options.conversation, images);
+        if (last_validation_report) |old| allocator.free(old);
+        last_validation_report = allocator.dupe(u8, trial.report) catch {
+            allocator.free(trial.report);
+            return error.ProviderFailed;
+        };
+        allocator.free(trial.report);
+        attempt += 1;
+    }
+
+    if (last_validation_report) |report| allocator.free(report);
+
+    const final_body = owned_body orelse return error.ProviderFailed;
+    owned_body = null;
 
     workspace.history.ensureLayout(io, root) catch return error.ProviderFailed;
 
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.ProviderFailed;
-    workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.ProviderFailed, proposal_body) catch return error.ProviderFailed;
+    workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.ProviderFailed, final_body) catch return error.ProviderFailed;
 
     const initial_state: run_record.State = .proposed;
 
@@ -195,7 +310,7 @@ pub fn generateAndPersist(
     return .{
         .run_id = run_id,
         .proposal_rel = owned_proposal_rel,
-        .proposal_body = owned_body,
+        .proposal_body = final_body,
         .plan_body = owned_plan_body,
         .plan_rel = owned_plan_rel,
     };
@@ -320,4 +435,62 @@ test "generateAndPersist rejects invalid proposal json" {
         error.InvalidProposal,
         generateAndPersist(allocator, io, null, root, "test", &.{}, provider_options, .{}),
     );
+}
+
+test "generateAndPersist with ollama when server is running" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const ollama_provider = @import("ollama_provider.zig");
+    if (!ollama_provider.isReachable(allocator, io, ollama_provider.default_host)) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello\n");
+
+    const provider_options = provider_factory.Options{
+        .kind = .ollama,
+        .model = ollama_provider.default_model,
+        .fake_response = "",
+    };
+
+    var cancel_src = try kernel.cancellation.CancellationTokenSource.init(allocator);
+    defer cancel_src.deinit();
+    const token = cancel_src.getToken();
+
+    var result = try generateAndPersist(allocator, io, null, root, "add a comment to sample.txt", &.{}, provider_options, .{
+        .cancel_token = &token,
+        .progress_callback = struct {
+            fn cb(_: ?*anyopaque, _: progress.Phase) void {}
+        }.cb,
+    });
+    defer deinitResult(allocator, &result);
+    try std.testing.expect(result.proposal_rel.len > 0);
+}
+
+test "generateAndPersist ollama via WorkspaceRoot.open path" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const ollama_provider = @import("ollama_provider.zig");
+    if (!ollama_provider.isReachable(allocator, io, ollama_provider.default_host)) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const seed_root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, seed_root, try workspace.WorkspacePath.parse("sample.txt"), "hello\n");
+
+    var ws_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const ws = try std.fmt.bufPrint(&ws_buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var opened_root = try workspace.WorkspaceRoot.open(io, ws);
+    defer opened_root.close(io);
+
+    const provider_options = provider_factory.Options{
+        .kind = .ollama,
+        .model = ollama_provider.default_model,
+        .fake_response = "",
+    };
+
+    var result = try generateAndPersist(allocator, io, null, opened_root, "add a comment to sample.txt", &.{}, provider_options, .{});
+    defer deinitResult(allocator, &result);
+    try std.testing.expect(result.proposal_rel.len > 0);
 }

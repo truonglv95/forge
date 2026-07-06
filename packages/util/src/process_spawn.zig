@@ -28,6 +28,21 @@ pub const SpawnOptions = struct {
     stdin: Stdio = .inherit,
     stdout: Stdio = .inherit,
     stderr: Stdio = .inherit,
+    /// Extra/overriding environment variables (merged with inherited environ).
+    extra_env: []const EnvEntry = &.{},
+};
+
+pub const EnvEntry = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+const EnvpPtr = [*]const ?[*:0]const u8;
+
+const EnvpBundle = struct {
+    pairs: [][:0]u8,
+    ptr: EnvpPtr,
+    ptr_storage: []?[*:0]const u8,
 };
 
 pub const CaptureResult = struct {
@@ -87,6 +102,20 @@ pub fn spawn(
     argv_in: []const []const u8,
     options: SpawnOptions,
 ) RunError!Child {
+    if (options.extra_env.len == 0) {
+        return spawnRaw(allocator, argv_in, options, null);
+    }
+    const envp = try buildEnvp(allocator, options.extra_env);
+    defer freeEnvp(allocator, envp);
+    return spawnRaw(allocator, argv_in, options, envp.ptr);
+}
+
+fn spawnRaw(
+    allocator: std.mem.Allocator,
+    argv_in: []const []const u8,
+    options: SpawnOptions,
+    envp: ?EnvpPtr,
+) RunError!Child {
     _ = allocator;
     if (argv_in.len == 0) return error.EmptyArgv;
     if (argv_in.len > max_spawn_args) return error.EmptyArgv;
@@ -110,14 +139,26 @@ pub fn spawn(
     }
 
     var spawned: c.forge_process_child = undefined;
-    if (c.forge_process_spawn(
-        cwd_ptr,
-        @ptrCast(&c_argv),
-        mapStdio(options.stdin),
-        mapStdio(options.stdout),
-        mapStdio(options.stderr),
-        &spawned,
-    ) != 0) {
+    const spawn_rc = if (envp) |env_ptr|
+        c.forge_process_spawn_env(
+            cwd_ptr,
+            @ptrCast(&c_argv),
+            @ptrCast(env_ptr),
+            mapStdio(options.stdin),
+            mapStdio(options.stdout),
+            mapStdio(options.stderr),
+            &spawned,
+        )
+    else
+        c.forge_process_spawn(
+            cwd_ptr,
+            @ptrCast(&c_argv),
+            mapStdio(options.stdin),
+            mapStdio(options.stdout),
+            mapStdio(options.stderr),
+            &spawned,
+        );
+    if (spawn_rc != 0) {
         return error.SpawnFailed;
     }
 
@@ -202,6 +243,73 @@ fn closeFd(fd: *c_int) void {
         _ = c.close(fd.*);
         fd.* = -1;
     }
+}
+
+fn buildEnvp(allocator: std.mem.Allocator, extra: []const EnvEntry) RunError!EnvpBundle {
+    var map = std.StringHashMap([]const u8).init(allocator);
+    errdefer {
+        var it_free = map.iterator();
+        while (it_free.next()) |e| {
+            allocator.free(e.key_ptr.*);
+            allocator.free(e.value_ptr.*);
+        }
+        map.deinit();
+    }
+
+    if (c.environ) |env| {
+        var i: usize = 0;
+        while (env[i]) |entry| : (i += 1) {
+            const line: []const u8 = std.mem.span(entry);
+            if (std.mem.indexOfScalar(u8, line, '=')) |eq| {
+                const key = try allocator.dupe(u8, line[0..eq]);
+                const value = try allocator.dupe(u8, line[eq + 1 ..]);
+                try map.put(key, value);
+            }
+        }
+    }
+
+    for (extra) |item| {
+        const owned_key = try allocator.dupe(u8, item.key);
+        const owned_val = try allocator.dupe(u8, item.value);
+        const gop = try map.getOrPut(owned_key);
+        if (gop.found_existing) {
+            allocator.free(owned_key);
+            allocator.free(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = owned_val;
+    }
+
+    var pairs: std.ArrayList([:0]u8) = .empty;
+    errdefer {
+        for (pairs.items) |pair| allocator.free(pair);
+        pairs.deinit(allocator);
+    }
+
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        const pair = try std.fmt.allocPrintSentinel(allocator, "{s}={s}", .{ entry.key_ptr.*, entry.value_ptr.* }, 0);
+        try pairs.append(allocator, pair);
+    }
+
+    var it_free = map.iterator();
+    while (it_free.next()) |e| {
+        allocator.free(e.key_ptr.*);
+        allocator.free(e.value_ptr.*);
+    }
+    map.deinit();
+
+    const owned_pairs = try pairs.toOwnedSlice(allocator);
+    const ptr_buf = try allocator.alloc(?[*:0]const u8, owned_pairs.len + 1);
+    for (owned_pairs, 0..) |pair, i| ptr_buf[i] = pair.ptr;
+    ptr_buf[owned_pairs.len] = null;
+
+    return .{ .pairs = owned_pairs, .ptr = ptr_buf.ptr, .ptr_storage = ptr_buf };
+}
+
+fn freeEnvp(allocator: std.mem.Allocator, envp: EnvpBundle) void {
+    for (envp.pairs) |pair| allocator.free(pair);
+    allocator.free(envp.pairs);
+    allocator.free(envp.ptr_storage);
 }
 
 test "runCapture reads echo output" {

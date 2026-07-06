@@ -8,6 +8,8 @@ pub const subsystem = core.Subsystem.ai;
 pub const provider = @import("provider.zig");
 pub const fake_provider = @import("fake_provider.zig");
 pub const gemini_provider = @import("gemini_provider.zig");
+pub const ollama_provider = @import("ollama_provider.zig");
+pub const ollama_ndjson = @import("ollama_ndjson.zig");
 pub const credentials = @import("credentials.zig");
 pub const provider_factory = @import("provider_factory.zig");
 pub const agent = @import("agent.zig");
@@ -39,6 +41,15 @@ pub const gemini_tools = @import("gemini_tools.zig");
 pub const gemini_agent = @import("gemini_agent.zig");
 pub const gemini_sse = @import("gemini_sse.zig");
 pub const proposal_workflow = @import("proposal_workflow.zig");
+pub const subagent = @import("subagent.zig");
+pub const spec_writer = @import("spec_writer.zig");
+pub const validation_hints = @import("validation_hints.zig");
+pub const validation_runner = @import("validation_runner.zig");
+pub const repair_loop = @import("repair_loop.zig");
+pub const mcp_config = @import("mcp_config.zig");
+pub const mcp_client = @import("mcp_client.zig");
+pub const mcp_http = @import("mcp_http.zig");
+pub const mcp_registry = @import("mcp_registry.zig");
 
 pub const ProposalStatus = enum {
     draft,

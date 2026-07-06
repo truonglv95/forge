@@ -40,7 +40,8 @@ pub fn run(
     const provider_kind = resolveProviderKind(allocator, io, environ_map, parsed);
     const provider_detail = switch (provider_kind) {
         .gemini => "gemini (credentials found)",
-        .fake => "fake (no gemini credentials; auto mode)",
+        .ollama => "ollama (local server reachable)",
+        .fake => "fake (no ollama/gemini; auto mode)",
         .missing => "none (--provider gemini but no credentials)",
     };
     const provider_ok = provider_kind != .missing;
@@ -71,6 +72,16 @@ pub fn run(
 
         const detail = try std.fmt.allocPrint(allocator, "writable at {s}", .{ws_path});
         try appendCheck(allocator, &checks, "workspace.writable", true, detail);
+
+        const mcp_enabled = loadMcpEnabled(allocator, io, opened.root);
+        var mcp = ai.mcp_registry.Registry.load(allocator, io, opened.root, ws_path, mcp_enabled, resolveDoctorHome(environ_map), environ_map) catch |err| {
+            const detail_msg = try std.fmt.allocPrint(allocator, "MCP load failed: {}", .{err});
+            try appendCheck(allocator, &checks, "mcp.tools", false, detail_msg);
+            return render(allocator, parsed, checks.items, writer);
+        };
+        defer mcp.deinit();
+        const mcp_detail = try allocator.dupe(u8, mcp.status_lines);
+        try appendCheck(allocator, &checks, "mcp.tools", true, mcp_detail);
     }
 
     return render(allocator, parsed, checks.items, writer);
@@ -78,9 +89,22 @@ pub fn run(
 
 const ProviderKind = enum {
     gemini,
+    ollama,
     fake,
     missing,
 };
+
+fn resolveDoctorHome(environ_map: *const std.process.Environ.Map) ?[]const u8 {
+    return environ_map.get("HOME");
+}
+
+fn loadMcpEnabled(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) bool {
+    const wp = workspace.WorkspacePath.parse("forge.toml") catch return true;
+    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return true;
+    defer snap.deinit();
+    const config = workspace.Config.parse(snap.content) catch return true;
+    return config.ai_mcp_enabled;
+}
 
 fn resolveProviderKind(
     allocator: std.mem.Allocator,
@@ -91,12 +115,17 @@ fn resolveProviderKind(
     const kind = ai.provider_factory.Kind.parse(parsed.flags.provider);
     return switch (kind) {
         .fake => .fake,
+        .ollama => .ollama,
         .gemini => blk: {
             var creds = ai.credentials.Credentials.loadGemini(allocator, io, environ_map) catch return .missing;
             creds.deinit();
             break :blk .gemini;
         },
         .auto => blk: {
+            const host = ai.ollama_provider.resolveHost(allocator, environ_map) catch return .fake;
+            defer allocator.free(host);
+            if (ai.ollama_provider.isReachable(allocator, io, host)) break :blk .ollama;
+
             var creds = ai.credentials.Credentials.loadGemini(allocator, io, environ_map) catch return .fake;
             creds.deinit();
             break :blk .gemini;

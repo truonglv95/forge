@@ -128,8 +128,7 @@ pub fn build(
     var builder = context.ContextBuilder.init(allocator, options.max_bytes);
 
     if (options.include_project_rules) {
-        try loadOptionalRulesBlock(allocator, io, root, &builder, rules_paths.forge_md);
-        try loadOptionalRulesBlock(allocator, io, root, &builder, rules_paths.forge_toml);
+        try loadProjectRules(allocator, io, root, &builder);
     }
 
     if (options.intent) |intent| {
@@ -340,6 +339,12 @@ fn noteSkippedBlock(allocator: std.mem.Allocator, builder: *context.ContextBuild
     try builder.addManifestExtra(btype, name, reason, 0);
 }
 
+fn markSeenPath(allocator: std.mem.Allocator, seen: *std.StringHashMap(void), path: []const u8) !void {
+    const owned = try allocator.dupe(u8, path);
+    const gop = try seen.getOrPut(owned);
+    if (gop.found_existing) allocator.free(owned);
+}
+
 fn loadDocsBlocks(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -354,21 +359,25 @@ fn loadDocsBlocks(
     }
 
     var seen = std.StringHashMap(void).init(allocator);
-    defer seen.deinit();
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |key| allocator.free(key.*);
+        seen.deinit();
+    }
 
     if (resolved.include_docs) {
         const collected = docs_loader.collectWorkspaceDocs(allocator, io, root, docs_loader.max_doc_files) catch return;
         defer docs_loader.freePaths(allocator, collected);
         for (collected) |path| {
             if (seen.contains(path)) continue;
-            try seen.put(path, {});
+            try markSeenPath(allocator, &seen, path);
             try paths.append(allocator, try allocator.dupe(u8, path));
         }
     }
 
     for (resolved.docs_files) |path| {
         if (seen.contains(path)) continue;
-        try seen.put(path, {});
+        try markSeenPath(allocator, &seen, path);
         try paths.append(allocator, try allocator.dupe(u8, path));
     }
 
@@ -469,6 +478,36 @@ fn loadOptionalRulesBlock(
     try builder.addBlock(.rules, rel_path, snap.content);
 }
 
+pub fn loadProjectRules(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    builder: *context.ContextBuilder,
+) !void {
+    try loadOptionalRulesBlock(allocator, io, root, builder, rules_paths.forge_md);
+    try loadOptionalRulesBlock(allocator, io, root, builder, rules_paths.forge_toml);
+    try loadOptionalRulesBlock(allocator, io, root, builder, ".cursorrules");
+    try loadOptionalRulesBlock(allocator, io, root, builder, "AGENTS.md");
+    try loadCursorRulesDirectory(allocator, io, root, builder);
+}
+
+fn loadCursorRulesDirectory(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    builder: *context.ContextBuilder,
+) !void {
+    const summary = workspace.tree.scan(allocator, io, root, ".cursor/rules") catch return;
+    var owned = summary;
+    defer owned.deinit();
+
+    for (owned.entries) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.path, ".md") and !std.mem.endsWith(u8, entry.path, ".mdc")) continue;
+        try loadOptionalRulesBlock(allocator, io, root, builder, entry.path);
+    }
+}
+
 fn loadExplicitFile(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -527,6 +566,22 @@ fn loadRetrievalBlock(
     }
 }
 
+fn appendOwnedRerankInput(
+    allocator: std.mem.Allocator,
+    inputs: *std.ArrayList(context_rerank.Input),
+    item: context_rerank.Input,
+) !void {
+    try inputs.append(allocator, .{
+        .path = try allocator.dupe(u8, item.path),
+        .line_start = item.line_start,
+        .line_end = item.line_end,
+        .text = try allocator.dupe(u8, item.text),
+        .source = item.source,
+        .source_score = item.source_score,
+        .source_rank = item.source_rank,
+    });
+}
+
 fn loadFusedBlock(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -547,7 +602,13 @@ fn loadFusedBlock(
     const pool_k = options.retrieval_max_chunks * 2;
 
     var inputs: std.ArrayList(context_rerank.Input) = .empty;
-    errdefer inputs.deinit(allocator);
+    errdefer {
+        for (inputs.items) |item| {
+            allocator.free(item.path);
+            allocator.free(item.text);
+        }
+        inputs.deinit(allocator);
+    }
 
     if (options.include_pre_retrieval) {
         const keyword = context_retrieval.collectFromIntent(allocator, io, root, intent, skip, .{
@@ -559,7 +620,7 @@ fn loadFusedBlock(
         for (keyword) |chunk| max_kw_score = @max(max_kw_score, chunk.score);
 
         for (keyword, 0..) |chunk, rank| {
-            try inputs.append(allocator, .{
+            try appendOwnedRerankInput(allocator, &inputs, .{
                 .path = chunk.path,
                 .line_start = chunk.line_start,
                 .line_end = chunk.line_end,
@@ -580,7 +641,7 @@ fn loadFusedBlock(
         defer if (semantic.len > 0) codebase_search.freeResults(allocator, semantic);
 
         for (semantic, 0..) |item, rank| {
-            try inputs.append(allocator, .{
+            try appendOwnedRerankInput(allocator, &inputs, .{
                 .path = item.path,
                 .line_start = item.line_start,
                 .line_end = item.line_end,
@@ -593,6 +654,14 @@ fn loadFusedBlock(
     }
 
     if (inputs.items.len == 0) return;
+
+    defer {
+        for (inputs.items) |item| {
+            allocator.free(item.path);
+            allocator.free(item.text);
+        }
+        inputs.deinit(allocator);
+    }
 
     const intent_terms = context_retrieval.intentTerms(allocator, intent, 6) catch &[_][]const u8{};
     defer context_retrieval.freeIntentTerms(allocator, intent_terms);
@@ -1203,4 +1272,94 @@ test "@web scope loads cached web documentation" {
         }
     }
     try std.testing.expect(found_web);
+}
+
+test "build with active file triggers import graph without crashing" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("lib/util.zig"), "pub fn util() void {}\n");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("apps/main.zig"),
+        \\const util = @import("../lib/util.zig");
+        \\pub fn main() void { util.util(); }
+    );
+
+    const recent = [_][]const u8{"apps/main.zig"};
+    var builder = try build(allocator, io, root, .{
+        .intent = "fix the main function",
+        .active_file = "apps/main.zig",
+        .recent_files = &recent,
+        .include_git_diff = false,
+        .workspace_cwd = ".",
+    });
+    defer builder.deinit();
+
+    var found_imports = false;
+    for (builder.blocks.items) |block| {
+        if (block.block_type == .imports) found_imports = true;
+    }
+    try std.testing.expect(found_imports);
+}
+
+test "fused rerank survives keyword candidate cleanup before rerank" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("auth.zig"), "pub fn authenticateUser() void {}\n");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("other.zig"), "const x = 1;\n");
+
+    var builder = try build(allocator, io, root, .{
+        .intent = "fix authenticate user flow",
+        .include_git_diff = false,
+        .include_pre_retrieval = true,
+        .include_semantic_search = false,
+        .fused_ranking = true,
+        .workspace_cwd = ".",
+    });
+    defer builder.deinit();
+
+    var found_fused = false;
+    for (builder.blocks.items) |block| {
+        if (block.block_type == .fused) found_fused = true;
+    }
+    try std.testing.expect(found_fused);
+}
+
+test "cursor-compatible rules files are loaded" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse(".cursorrules"), "Use zig fmt.\n");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("AGENTS.md"), "# Agents\nBe careful.\n");
+    tmp.dir.createDirPath(io, ".cursor/rules") catch {};
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse(".cursor/rules/zig.mdc"), "Prefer explicit error sets.\n");
+
+    var builder = try build(allocator, io, root, .{
+        .include_git_diff = false,
+        .include_pre_retrieval = false,
+        .include_semantic_search = false,
+        .include_recent_files = false,
+        .include_import_graph = false,
+    });
+    defer builder.deinit();
+
+    var found_cursorrules = false;
+    var found_agents = false;
+    var found_rule_file = false;
+    for (builder.blocks.items) |block| {
+        if (block.block_type != .rules) continue;
+        if (std.mem.eql(u8, block.name, ".cursorrules")) found_cursorrules = true;
+        if (std.mem.eql(u8, block.name, "AGENTS.md")) found_agents = true;
+        if (std.mem.eql(u8, block.name, ".cursor/rules/zig.mdc")) found_rule_file = true;
+    }
+    try std.testing.expect(found_cursorrules and found_agents and found_rule_file);
 }

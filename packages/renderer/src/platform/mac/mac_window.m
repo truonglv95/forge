@@ -2,8 +2,15 @@
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <CoreText/CoreText.h>
+#import <QuartzCore/QuartzCore.h>
 #import <string.h>
 #import "mac_window.h"
+
+#define NANOSVG_IMPLEMENTATION
+#define NANOSVGRAST_IMPLEMENTATION
+#include "nanosvg.h"
+#include "nanosvgrast.h"
+
 
 // --- Metal Types & Shaders ---
 typedef struct {
@@ -44,6 +51,200 @@ static const char* shaderSource =
 "    }\n"
 "    return finalColor;\n"
 "}\n";
+
+// --- Cache Structures ---
+typedef struct {
+    float uvX;
+    float uvY;
+    float gw;
+    float gh;
+    float boundsOriginX;
+    float boundsOriginY;
+    float boundsHeight;
+} ForgeGlyphInfo;
+
+@interface ForgeLineCacheEntry : NSObject
+@property (assign) CTLineRef line;
+@end
+
+@implementation ForgeLineCacheEntry
+- (void)dealloc {
+    if (_line) CFRelease(_line);
+}
+@end
+
+static NSMutableDictionary<NSString *, ForgeLineCacheEntry *> *g_lineCache = nil;
+static NSMutableArray<NSString *> *g_lineCacheKeys = nil;
+static const NSUInteger kMaxLineCacheSize = 2000;
+
+static CTLineRef ForgeGetCachedCTLine(NSString *text, CTFontRef font) {
+    if (!g_lineCache) {
+        g_lineCache = [NSMutableDictionary new];
+        g_lineCacheKeys = [NSMutableArray new];
+    }
+    
+    NSString *key = [NSString stringWithFormat:@"%@_%p", text, font];
+    ForgeLineCacheEntry *entry = g_lineCache[key];
+    if (entry) {
+        [g_lineCacheKeys removeObject:key];
+        [g_lineCacheKeys addObject:key];
+        return entry.line;
+    }
+    
+    NSDictionary *attributes = @{
+        (id)kCTFontAttributeName: (__bridge id)font,
+        (id)kCTForegroundColorAttributeName: (__bridge id)[NSColor whiteColor].CGColor
+    };
+    NSAttributedString *attrString = [[NSAttributedString alloc] initWithString:text attributes:attributes];
+    CTLineRef line = CTLineCreateWithAttributedString((CFAttributedStringRef)attrString);
+    
+    if (g_lineCacheKeys.count >= kMaxLineCacheSize) {
+        NSString *oldest = g_lineCacheKeys.firstObject;
+        [g_lineCache removeObjectForKey:oldest];
+        [g_lineCacheKeys removeObjectAtIndex:0];
+    }
+    
+    entry = [ForgeLineCacheEntry new];
+    entry.line = line;
+    g_lineCache[key] = entry;
+    [g_lineCacheKeys addObject:key];
+    
+    return line;
+}
+
+
+// --- Icon Atlas ---
+@interface ForgeIconAtlas : NSObject
+@property (strong) id<MTLTexture> texture;
+@property (assign) uint8_t *bitmapData;
+@property (strong) NSMutableDictionary *iconCache;
+@property (assign) int currentX;
+@property (assign) int currentY;
+@property (assign) int rowHeight;
+@property (assign) BOOL needsUpload;
+@property (assign) NSVGrasterizer *rasterizer;
+@end
+
+typedef struct {
+    float uvX;
+    float uvY;
+    float gw;
+    float gh;
+} ForgeIconInfo;
+
+@implementation ForgeIconAtlas
+- (instancetype)initWithDevice:(id<MTLDevice>)device {
+    self = [super init];
+    if (self) {
+        _iconCache = [NSMutableDictionary new];
+        _currentX = 1;
+        _currentY = 1;
+        _rowHeight = 0;
+        
+        int width = 2048;
+        int height = 2048;
+        _bitmapData = calloc(width * height * 4, 1);
+        
+        MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
+        texDesc.usage = MTLTextureUsageShaderRead;
+        _texture = [device newTextureWithDescriptor:texDesc];
+        
+        _rasterizer = nsvgCreateRasterizer();
+        _needsUpload = YES;
+    }
+    return self;
+}
+
+- (ForgeIconInfo)getIconInfo:(const char*)svg_string width:(int)w height:(int)h {
+    NSString *key = [NSString stringWithFormat:@"%lu_%d_%d", (unsigned long)[@(svg_string) hash], w, h];
+    NSValue *cached = _iconCache[key];
+    if (cached) {
+        ForgeIconInfo info;
+        [cached getValue:&info];
+        return info;
+    }
+    
+    char* mut_svg = strdup(svg_string);
+    NSVGimage* image = nsvgParse(mut_svg, "px", 96.0f);
+    free(mut_svg);
+    
+    if (!image) {
+        ForgeIconInfo empty = {0};
+        return empty;
+    }
+    
+    // Override shapes with pure white so we can tint it in the shader
+    for (NSVGshape* shape = image->shapes; shape != NULL; shape = shape->next) {
+        shape->fill.type = NSVG_PAINT_COLOR;
+        shape->fill.color = 0xFFFFFFFF; // White
+        shape->stroke.type = NSVG_PAINT_NONE; // Optional: we could colorize strokes too
+    }
+    
+    if (_currentX + w > 2048) {
+        _currentX = 1;
+        _currentY += _rowHeight;
+        _rowHeight = 0;
+    }
+    if (h > _rowHeight) {
+        _rowHeight = h;
+    }
+    if (_currentY + h > 2048) {
+        nsvgDelete(image);
+        ForgeIconInfo empty = {0};
+        return empty;
+    }
+    
+    // Rasterize
+    float scaleX = (float)w / image->width;
+    float scaleY = (float)h / image->height;
+    float scale = scaleX < scaleY ? scaleX : scaleY;
+    
+    // Create a temporary buffer for the icon
+    uint8_t* tempBuf = malloc(w * h * 4);
+    memset(tempBuf, 0, w * h * 4);
+    
+    // Rasterizer expects RGBA
+    nsvgRasterize(_rasterizer, image, 0, 0, scale, tempBuf, w, h, w * 4);
+    
+    // Copy into atlas bitmap (y is top-down in nanosvg, we need to map to our atlas)
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int srcIdx = (y * w + x) * 4;
+            // Metal texture uses y=0 as top. Our atlas is 2048x2048.
+            int dstIdx = ((_currentY + y) * 2048 + (_currentX + x)) * 4;
+            
+            // nanosvg outputs RGBA (premultiplied?). We need to make sure alpha works.
+            _bitmapData[dstIdx] = tempBuf[srcIdx];       // R
+            _bitmapData[dstIdx+1] = tempBuf[srcIdx+1];   // G
+            _bitmapData[dstIdx+2] = tempBuf[srcIdx+2];   // B
+            _bitmapData[dstIdx+3] = tempBuf[srcIdx+3];   // A
+        }
+    }
+    
+    free(tempBuf);
+    nsvgDelete(image);
+    
+    ForgeIconInfo info;
+    info.uvX = (float)_currentX / 2048.0;
+    info.uvY = (float)_currentY / 2048.0;
+    info.gw = w;
+    info.gh = h;
+    
+    _iconCache[key] = [NSValue valueWithBytes:&info objCType:@encode(ForgeIconInfo)];
+    
+    _currentX += w;
+    _needsUpload = YES;
+    
+    return info;
+}
+
+- (void)uploadIfNeeded {
+    if (_needsUpload) {
+        [_texture replaceRegion:MTLRegionMake2D(0, 0, 2048, 2048) mipmapLevel:0 withBytes:_bitmapData bytesPerRow:2048*4];
+        _needsUpload = NO;
+    }
+}
+@end
 
 // --- Glyph Atlas ---
 @interface ForgeGlyphAtlas : NSObject
@@ -100,7 +301,7 @@ static const char* shaderSource =
     return self;
 }
 
-- (CGRect)getGlyphUV:(CGGlyph)glyph font:(CTFontRef)font {
+- (ForgeGlyphInfo)getGlyphInfo:(CGGlyph)glyph font:(CTFontRef)font {
     CFStringRef postScriptName = CTFontCopyPostScriptName(font);
     NSString *key = [NSString stringWithFormat:@"%@_%.1f_%u",
                      (__bridge NSString *)postScriptName,
@@ -109,7 +310,9 @@ static const char* shaderSource =
     if (postScriptName) CFRelease(postScriptName);
     NSValue *cached = _glyphCache[key];
     if (cached) {
-        return [cached rectValue];
+        ForgeGlyphInfo info;
+        [cached getValue:&info];
+        return info;
     }
     
     // Not cached! Draw it to atlas.
@@ -133,7 +336,8 @@ static const char* shaderSource =
     
     if (_currentY + gh > 2048) {
         NSLog(@"Atlas full! Ignoring glyph.");
-        return CGRectMake(0, 0, 0, 0);
+        ForgeGlyphInfo empty = {0};
+        return empty;
     }
     
     CGContextSaveGState(_bitmapContext);
@@ -162,24 +366,21 @@ static const char* shaderSource =
                            (float)gw / 2048.0, 
                            (float)gh / 2048.0);
                            
-    // Save to cache
-    _glyphCache[key] = [NSValue valueWithRect:uv];
+    ForgeGlyphInfo info;
+    info.uvX = uv.origin.x;
+    info.uvY = uv.origin.y;
+    info.gw = gw;
+    info.gh = gh;
+    info.boundsOriginX = bounds.origin.x;
+    info.boundsOriginY = bounds.origin.y;
+    info.boundsHeight = bounds.size.height;
     
-    // We also need to save the physical bounds so we know how to offset the quad when drawing!
-    // But for simplicity in this MVP, we will just use the UV rect to draw the exact box size!
-    // We will pack the actual drawing offset into the cache value by slightly extending the struct or just passing it back.
-    // Let's cheat for MVP: return the UV rect, and assume size is gw x gh.
-    // We need `gw`, `gh` and `bounds.origin` to render correctly.
-    // Instead of `uv` being just UV, let's make a custom struct later. 
-    // Right now, return a rect: { uv.x, uv.y, gw, gh } 
-    // Wait, `CGRect` has 4 floats. We can pack: { uv.x, uv.y, gw, gh }.
-    CGRect packed = CGRectMake(uv.origin.x, uv.origin.y, gw, gh);
-    _glyphCache[key] = [NSValue valueWithRect:packed];
+    _glyphCache[key] = [NSValue valueWithBytes:&info objCType:@encode(ForgeGlyphInfo)];
     
     _currentX += gw;
     _needsUpload = YES;
     
-    return packed;
+    return info;
 }
 
 - (void)uploadIfNeeded {
@@ -225,6 +426,8 @@ static ForgeRenderer *g_renderer = nil;
 @property (assign) vector_float2 viewportSize;
 @property (strong) id<MTLRenderCommandEncoder> currentEncoder;
 @property (strong) ForgeGlyphAtlas *atlas;
+@property (strong) ForgeIconAtlas *iconAtlas;
+@property (strong) id<MTLTexture> currentTexture;
 @property (strong) MTKView *mtkView;
 @end
 
@@ -237,6 +440,8 @@ static ForgeRenderer *g_renderer = nil;
         _commandQueue = [_device newCommandQueue];
         
         _atlas = [[ForgeGlyphAtlas alloc] initWithDevice:_device];
+        _iconAtlas = [[ForgeIconAtlas alloc] initWithDevice:_device];
+        _currentTexture = _atlas.texture;
         
         NSError *error = nil;
         id<MTLLibrary> defaultLibrary = [_device newLibraryWithSource:[NSString stringWithUTF8String:shaderSource] options:nil error:&error];
@@ -297,8 +502,19 @@ static ForgeRenderer *g_renderer = nil;
     _viewportSize.x = view.bounds.size.width;
     _viewportSize.y = view.bounds.size.height;
 
+    static double lastTime = 0.0;
+    static int frameCount = 0;
+    double currentTime = CACurrentMediaTime();
+    if (lastTime == 0.0) lastTime = currentTime;
+    frameCount++;
+    if (currentTime - lastTime >= 1.0) {
+        frameCount = 0;
+        lastTime = currentTime;
+    }
+
     // Upload glyph atlas before the render pass — never during it (avoids GPU flicker).
     [_atlas uploadIfNeeded];
+    [_iconAtlas uploadIfNeeded];
     
     id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
     MTLRenderPassDescriptor *renderPassDescriptor = view.currentRenderPassDescriptor;
@@ -319,6 +535,7 @@ static ForgeRenderer *g_renderer = nil;
         
         [_currentEncoder endEncoding];
         [_atlas uploadIfNeeded];
+    [_iconAtlas uploadIfNeeded];
         [commandBuffer presentDrawable:view.currentDrawable];
     }
     _currentEncoder = nil;
@@ -396,7 +613,15 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
 
 - (void)scrollWheel:(NSEvent *)event {
     if (g_mouseCallback) {
-        g_mouseCallback(event.scrollingDeltaX, event.scrollingDeltaY, 0, 4, ForgeMapModifiers(event.modifierFlags));
+        CGFloat dx = event.scrollingDeltaX;
+        CGFloat dy = event.scrollingDeltaY;
+        if (!event.hasPreciseScrollingDeltas) {
+            // Standard mouse wheels emit line-based deltas (usually ±0.1 or ±1.0).
+            // Multiply by a line height factor so they scroll properly.
+            dx *= 15.0;
+            dy *= 15.0;
+        }
+        g_mouseCallback(dx, dy, 0, 4, ForgeMapModifiers(event.modifierFlags));
     }
 }
 @end
@@ -505,18 +730,15 @@ static void ForgeDrawGlyphsFromCTLine(CTLineRef line, CTFontRef defaultFont, flo
 
         for (CFIndex j = 0; j < glyphCount; j++) {
             ForgeEnsureVertexCapacity(6);
-            CGRect packedInfo = [g_renderer.atlas getGlyphUV:glyphs[j] font:runFont];
-            if (packedInfo.size.width == 0) continue;
+            ForgeGlyphInfo info = [g_renderer.atlas getGlyphInfo:glyphs[j] font:runFont];
+            if (info.gw == 0) continue;
 
-            float uvX = (float)packedInfo.origin.x;
-            float uvY = (float)packedInfo.origin.y;
-            float gw = (float)packedInfo.size.width;
-            float gh = (float)packedInfo.size.height;
+            float uvX = info.uvX;
+            float uvY = info.uvY;
+            float gw = info.gw;
+            float gh = info.gh;
 
-            CGRect bounds;
-            CTFontGetBoundingRectsForGlyphs(runFont, kCTFontOrientationDefault, &glyphs[j], &bounds, 1);
-
-            float box_top_from_baseline = (float)((bounds.size.height + bounds.origin.y) / scale);
+            float box_top_from_baseline = (float)((info.boundsHeight + info.boundsOriginY) / scale);
             float px = ForgeSnap(originX + (positions[j].x / scale), scale);
             float py = ForgeSnap(y + logical_baseline - box_top_from_baseline, scale);
 
@@ -705,6 +927,7 @@ void forge_mac_create_window(const char* title, int width, int height) {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         ForgeMTKView *mtkView = [[ForgeMTKView alloc] initWithFrame:frame device:device];
         mtkView.clearColor = MTLClearColorMake(0.1, 0.1, 0.15, 1.0);
+        mtkView.preferredFramesPerSecond = 120; // Support ProMotion 120Hz displays
         
         window.acceptsMouseMovedEvents = YES;
         
@@ -759,7 +982,7 @@ void forge_mac_set_cursor(int type) {
 void forge_mac_flush_batch(void) {
     if (!g_renderer || !g_renderer.currentEncoder || g_renderer.vertexCount == 0) return;
     
-    [g_renderer.currentEncoder setFragmentTexture:g_renderer.atlas.texture atIndex:0];
+    [g_renderer.currentEncoder setFragmentTexture:g_renderer.currentTexture atIndex:0];
     [g_renderer.currentEncoder setVertexBuffer:g_renderer.vertexBuffer offset:0 atIndex:0];
     
     vector_float2 vp = g_renderer.viewportSize;
@@ -801,7 +1024,51 @@ void forge_mac_clear_clip_rect(void) {
     [g_renderer.currentEncoder setScissorRect:rect];
 }
 
+
+void forge_mac_draw_svg(const char* svg_string, float x, float y, float w, float h, float r, float g, float b, float a) {
+    if (!g_renderer) return;
+    
+    if (g_renderer.currentTexture != g_renderer.iconAtlas.texture) {
+        forge_mac_flush_batch();
+        g_renderer.currentTexture = g_renderer.iconAtlas.texture;
+    }
+    
+    ForgeIconInfo info = [g_renderer.iconAtlas getIconInfo:svg_string width:(int)w height:(int)h];
+    if (info.gw == 0) return;
+    
+    ForgeEnsureVertexCapacity(6);
+    Vertex *v = (Vertex *)[g_renderer.vertexBuffer contents] + g_renderer.vertexOffset + g_renderer.vertexCount;
+    
+    float x1 = x;
+    float y1 = y;
+    float x2 = x + w;
+    float y2 = y + h;
+    
+    float u1 = info.uvX;
+    float v1 = info.uvY;
+    float u2 = info.uvX + (info.gw / 2048.0);
+    float v2 = info.uvY + (info.gh / 2048.0);
+    
+    vector_float4 color = {r, g, b, a};
+    vector_float4 no_sdf = {0,0,0,0};
+    vector_float4 no_sdf2 = {0,0,0,0};
+    
+    v[0] = (Vertex){{x1, y1}, {u1, v1}, color, no_sdf, no_sdf2};
+    v[1] = (Vertex){{x2, y1}, {u2, v1}, color, no_sdf, no_sdf2};
+    v[2] = (Vertex){{x1, y2}, {u1, v2}, color, no_sdf, no_sdf2};
+    v[3] = (Vertex){{x2, y1}, {u2, v1}, color, no_sdf, no_sdf2};
+    v[4] = (Vertex){{x1, y2}, {u1, v2}, color, no_sdf, no_sdf2};
+    v[5] = (Vertex){{x2, y2}, {u2, v2}, color, no_sdf, no_sdf2};
+    
+    g_renderer.vertexCount += 6;
+}
+
 void forge_mac_draw_rect(float x, float y, float w, float h, float r, float g, float b, float a) {
+    if (g_renderer && g_renderer.currentTexture != g_renderer.atlas.texture) {
+        forge_mac_flush_batch();
+        g_renderer.currentTexture = g_renderer.atlas.texture;
+    }
+
     if (!g_renderer || !g_renderer.currentEncoder) return;
     
     ForgeEnsureVertexCapacity(6);
@@ -828,6 +1095,11 @@ void forge_mac_draw_rect(float x, float y, float w, float h, float r, float g, f
 }
 
 void forge_mac_draw_rounded_rect(float x, float y, float w, float h, float r, float g, float b, float a, float cornerRadius) {
+    if (g_renderer && g_renderer.currentTexture != g_renderer.atlas.texture) {
+        forge_mac_flush_batch();
+        g_renderer.currentTexture = g_renderer.atlas.texture;
+    }
+
     if (!g_renderer || !g_renderer.currentEncoder) return;
     
     ForgeEnsureVertexCapacity(6);
@@ -922,11 +1194,9 @@ float forge_mac_measure_text_width(const char* text, size_t len, float fontSize)
 
         NSString *nsText = [[NSString alloc] initWithBytes:text length:len encoding:NSUTF8StringEncoding];
         if (!nsText) return 0.0f;
-        NSDictionary *attributes = @{ (id)kCTFontAttributeName: (__bridge id)font };
-        NSAttributedString *attrString = [[NSAttributedString alloc] initWithString:nsText attributes:attributes];
-        CTLineRef line = CTLineCreateWithAttributedString((CFAttributedStringRef)attrString);
+        
+        CTLineRef line = ForgeGetCachedCTLine(nsText, font);
         double width = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
-        CFRelease(line);
         return (float)(width / scale);
     }
 }
@@ -937,6 +1207,11 @@ void forge_mac_draw_text(const char* text, float x, float y, float fontSize, flo
 }
 
 void forge_mac_draw_text_len(const char* text, size_t len, float x, float y, float fontSize, float r, float g, float b, float a) {
+    if (g_renderer && g_renderer.currentTexture != g_renderer.atlas.texture) {
+        forge_mac_flush_batch();
+        g_renderer.currentTexture = g_renderer.atlas.texture;
+    }
+
     if (!g_renderer || !g_renderer.currentEncoder || !text || len == 0) return;
     @autoreleasepool {
         CGFloat scale = ForgeBackingScale();
@@ -958,15 +1233,8 @@ void forge_mac_draw_text_len(const char* text, size_t len, float x, float y, flo
                 continue;
             }
 
-            NSDictionary *attributes = @{
-                (id)kCTFontAttributeName: (__bridge id)font,
-                (id)kCTForegroundColorAttributeName: (__bridge id)[NSColor whiteColor].CGColor
-            };
-
-            NSAttributedString *attrString = [[NSAttributedString alloc] initWithString:lineStr attributes:attributes];
-            CTLineRef line = CTLineCreateWithAttributedString((CFAttributedStringRef)attrString);
+            CTLineRef line = ForgeGetCachedCTLine(lineStr, font);
             ForgeDrawGlyphsFromCTLine(line, font, x, currentY, scale, color);
-            CFRelease(line);
             currentY += lineHeight;
         }
     }
@@ -974,6 +1242,11 @@ void forge_mac_draw_text_len(const char* text, size_t len, float x, float y, flo
 
 void forge_mac_draw_styled_text(const char* text, size_t len, float x, float y, float fontSize,
     const ForgeTextSpan* spans, size_t span_count) {
+    if (g_renderer && g_renderer.currentTexture != g_renderer.atlas.texture) {
+        forge_mac_flush_batch();
+        g_renderer.currentTexture = g_renderer.atlas.texture;
+    }
+
     if (!g_renderer || !g_renderer.currentEncoder || !text || len == 0 || !spans || span_count == 0) return;
     @autoreleasepool {
         CGFloat scale = ForgeBackingScale();
