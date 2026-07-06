@@ -117,7 +117,8 @@ pub fn run(
     var next_index: u32 = 1;
 
     const used_native_loop = blk: {
-        if (provider_handle.supportsToolLoop()) {
+        const llm = provider_handle.interface();
+        if (llm.supportsToolLoop()) {
             const NativeCtx = struct {
                 allocator: std.mem.Allocator,
                 steps: *std.ArrayList(Step),
@@ -130,10 +131,10 @@ pub fn run(
             };
             var native_ctx = NativeCtx{ .allocator = allocator, .steps = &steps, .config = config };
 
-            const explore = provider_handle.openToolExplore(allocator, io, &mcp) catch return error.ProviderFailed;
-            const session = explore orelse break :blk false;
-            defer allocator.free(session.declarations);
-            try runExploreLoop(allocator, session.transport, session.declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx);
+            var tool_binding = llm.toolLoopBinding(io, &mcp, config.cancel_token);
+            const declarations = llm.toolDeclarationsJson(allocator, &mcp) catch return error.ProviderFailed;
+            defer allocator.free(declarations);
+            try runExploreLoop(allocator, tool_binding.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx);
             break :blk true;
         }
         break :blk false;
@@ -482,6 +483,30 @@ fn formatSessionJson(
 fn resolveHomeDir(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
     if (environ_map) |map| return map.get("HOME");
     return null;
+}
+
+test "agent run uses fake tool loop when enabled" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge search\n");
+
+    const fake_response =
+        \\{"schema_version":1,"summary":"agent note","workspace_edit":{"files":[{"path":"agent.txt","operation":"create","edits":[{"start":0,"end":0,"replacement":"from agent\n"}]}]}}
+    ;
+
+    var result = try run(allocator, io, null, root, "search sample", .{
+        .max_steps = 4,
+        .provider_options = .{ .kind = .fake, .fake_response = fake_response, .fake_tool_loop = true },
+    });
+    defer deinitResult(allocator, &result);
+
+    try std.testing.expect(result.steps.len >= 2);
+    try std.testing.expect(result.final_run_id != null);
+    try std.testing.expect(result.proposal_rel != null);
 }
 
 test "agent run produces search and propose steps" {

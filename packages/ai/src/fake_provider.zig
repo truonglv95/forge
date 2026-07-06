@@ -2,6 +2,9 @@ const std = @import("std");
 const provider = @import("provider.zig");
 const kernel = @import("forge-kernel");
 const streaming = @import("streaming.zig");
+const agent_turn = @import("agent/turn.zig");
+const mcp_registry = @import("mcp_registry.zig");
+const fake_transport = @import("providers/fake/tool_transport.zig");
 
 pub const FakeProvider = struct {
     response: []const u8,
@@ -10,13 +13,14 @@ pub const FakeProvider = struct {
     meta: provider.ModelMetadata,
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
+    tool_loop_enabled: bool = false,
 
     pub fn init(
         response: []const u8,
         stream_callback: ?*const fn (?*anyopaque, []const u8) void,
         stream_context: ?*anyopaque,
     ) FakeProvider {
-        return initWithPlan(response, null, stream_callback, stream_context);
+        return initWithPlan(response, null, stream_callback, stream_context, false);
     }
 
     pub fn initWithPlan(
@@ -24,6 +28,7 @@ pub const FakeProvider = struct {
         plan_response: ?[]const u8,
         stream_callback: ?*const fn (?*anyopaque, []const u8) void,
         stream_context: ?*anyopaque,
+        tool_loop_enabled: bool,
     ) FakeProvider {
         return .{
             .response = response,
@@ -36,18 +41,40 @@ pub const FakeProvider = struct {
             },
             .stream_callback = stream_callback,
             .stream_context = stream_context,
+            .tool_loop_enabled = tool_loop_enabled,
         };
     }
 
     pub fn providerInterface(self: *FakeProvider) provider.Provider {
         return .{
             .ptr = self,
-            .vtable = &.{
+            .vtable = if (self.tool_loop_enabled) &.{
                 .ask = askImpl,
                 .metadata = metadataImpl,
                 .usage = usageImpl,
+                .supports_tool_loop = supportsToolLoopImpl,
+                .complete_turn = completeTurnImpl,
+                .tool_declarations_json = toolDeclarationsJsonImpl,
+                .append_tool_user_text = appendToolUserTextImpl,
+                .append_tool_call = appendToolCallImpl,
+                .append_tool_result = appendToolResultImpl,
+            } else &.{
+                .ask = askImpl,
+                .metadata = metadataImpl,
+                .usage = usageImpl,
+                .supports_tool_loop = provider.tool_loop_stubs.supports,
+                .complete_turn = provider.tool_loop_stubs.completeTurn,
+                .tool_declarations_json = provider.tool_loop_stubs.toolDeclarationsJson,
+                .append_tool_user_text = provider.tool_loop_stubs.appendToolUserText,
+                .append_tool_call = provider.tool_loop_stubs.appendToolCall,
+                .append_tool_result = provider.tool_loop_stubs.appendToolResult,
             },
         };
+    }
+
+    fn toolTransportState(self: *FakeProvider, mcp: ?*mcp_registry.Registry) fake_transport.FakeTransport {
+        _ = self;
+        return .{ .mcp = mcp };
     }
 
     fn askImpl(
@@ -83,6 +110,69 @@ pub const FakeProvider = struct {
     fn usageImpl(ptr: *const anyopaque) provider.TokenUsage {
         const self: *const FakeProvider = @ptrCast(@alignCast(ptr));
         return self.simulated_usage;
+    }
+
+    fn supportsToolLoopImpl(ptr: *const anyopaque) bool {
+        const self: *const FakeProvider = @ptrCast(@alignCast(ptr));
+        return self.tool_loop_enabled;
+    }
+
+    fn completeTurnImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        _: std.Io,
+        mcp: ?*mcp_registry.Registry,
+        conversation_json: []const u8,
+        tool_declarations_json: []const u8,
+        cancel_token: ?*const kernel.cancellation.CancellationToken,
+    ) provider.ProviderError!agent_turn.Completion {
+        const self: *FakeProvider = @ptrCast(@alignCast(ptr));
+        var transport_state = self.toolTransportState(mcp);
+        return transport_state.transport().complete(allocator, conversation_json, tool_declarations_json, cancel_token) catch |err| return provider.mapTransportError(err);
+    }
+
+    fn toolDeclarationsJsonImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        mcp: ?*mcp_registry.Registry,
+    ) provider.ProviderError![]const u8 {
+        const self: *FakeProvider = @ptrCast(@alignCast(ptr));
+        const transport_state = self.toolTransportState(mcp);
+        return transport_state.declarationsJson(allocator) catch return error.ProviderInternalError;
+    }
+
+    fn appendToolUserTextImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        conversation: *std.ArrayList(u8),
+        text: []const u8,
+    ) provider.ProviderError!void {
+        const self: *FakeProvider = @ptrCast(@alignCast(ptr));
+        var transport_state = self.toolTransportState(null);
+        return transport_state.transport().appendUserText(allocator, conversation, text) catch |err| return provider.mapTransportError(err);
+    }
+
+    fn appendToolCallImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        conversation: *std.ArrayList(u8),
+        call: agent_turn.ToolCall,
+    ) provider.ProviderError!void {
+        const self: *FakeProvider = @ptrCast(@alignCast(ptr));
+        var transport_state = self.toolTransportState(null);
+        return transport_state.transport().appendToolCall(allocator, conversation, call) catch |err| return provider.mapTransportError(err);
+    }
+
+    fn appendToolResultImpl(
+        ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        conversation: *std.ArrayList(u8),
+        tool_name: []const u8,
+        result: []const u8,
+    ) provider.ProviderError!void {
+        const self: *FakeProvider = @ptrCast(@alignCast(ptr));
+        var transport_state = self.toolTransportState(null);
+        return transport_state.transport().appendToolResult(allocator, conversation, tool_name, result) catch |err| return provider.mapTransportError(err);
     }
 };
 
@@ -126,4 +216,60 @@ test "FakeProvider implements Provider interface correctly" {
 
     const meta = p.metadata();
     try std.testing.expectEqualStrings("fake", meta.provider_name);
+    try std.testing.expect(!p.supportsToolLoop());
+}
+
+test "FakeProvider tool loop returns search then text" {
+    var fake = FakeProvider.initWithPlan("{}", null, null, null, true);
+    const p = fake.providerInterface();
+    try std.testing.expect(p.supportsToolLoop());
+
+    const allocator = std.testing.allocator;
+    var binding = p.toolLoopBinding(std.testing.io, null, null);
+
+    const declarations = try p.toolDeclarationsJson(allocator, null);
+    defer allocator.free(declarations);
+    try std.testing.expect(std.mem.indexOf(u8, declarations, "\"name\":\"search\"") != null);
+
+    var first = try binding.transport().complete(allocator, "", declarations, null);
+    defer first.deinit(allocator);
+    try std.testing.expect(first == .tool_call);
+    try std.testing.expectEqualStrings("search", first.tool_call.name);
+
+    const call_copy = agent_turn.ToolCall{
+        .name = try allocator.dupe(u8, first.tool_call.name),
+        .args_json = try allocator.dupe(u8, first.tool_call.args_json),
+    };
+    defer {
+        allocator.free(call_copy.name);
+        allocator.free(call_copy.args_json);
+    }
+
+    var conversation: std.ArrayList(u8) = .empty;
+    defer conversation.deinit(allocator);
+    try binding.transport().appendUserText(allocator, &conversation, "explore");
+    try binding.transport().appendToolCall(allocator, &conversation, call_copy);
+    try binding.transport().appendToolResult(allocator, &conversation, call_copy.name, "found sample.txt");
+
+    var second = try binding.transport().complete(allocator, conversation.items, declarations, null);
+    defer second.deinit(allocator);
+    try std.testing.expect(second == .text);
+    try std.testing.expectEqualStrings("Exploration complete.", second.text);
+}
+
+test "FakeProvider tool loop honours cancellation" {
+    var fake = FakeProvider.initWithPlan("{}", null, null, null, true);
+    const p = fake.providerInterface();
+
+    const allocator = std.testing.allocator;
+    var binding = p.toolLoopBinding(std.testing.io, null, null);
+
+    const declarations = try p.toolDeclarationsJson(allocator, null);
+    defer allocator.free(declarations);
+
+    var cancel_src = try kernel.cancellation.CancellationTokenSource.init(allocator);
+    defer cancel_src.deinit();
+    cancel_src.cancel();
+
+    try std.testing.expectError(agent_turn.TransportError.Cancelled, binding.transport().complete(allocator, "", declarations, &cancel_src.getToken()));
 }

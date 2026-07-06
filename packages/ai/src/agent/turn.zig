@@ -1,4 +1,5 @@
 const std = @import("std");
+const kernel = @import("forge-kernel");
 const tool_args = @import("../tools/args.zig");
 
 pub const ToolCall = tool_args.ToolCall;
@@ -24,6 +25,7 @@ pub const Transport = struct {
         allocator: std.mem.Allocator,
         conversation_json: []const u8,
         tool_declarations_json: []const u8,
+        cancel_token: ?*const kernel.cancellation.CancellationToken,
     ) TransportError!Completion,
     append_user_text: *const fn (
         ptr: *anyopaque,
@@ -50,8 +52,9 @@ pub const Transport = struct {
         allocator: std.mem.Allocator,
         conversation_json: []const u8,
         tool_declarations_json: []const u8,
+        cancel_token: ?*const kernel.cancellation.CancellationToken,
     ) TransportError!Completion {
-        return self.complete_turn(self.ptr, allocator, conversation_json, tool_declarations_json);
+        return self.complete_turn(self.ptr, allocator, conversation_json, tool_declarations_json, cancel_token);
     }
 
     pub fn appendUserText(self: Transport, allocator: std.mem.Allocator, conversation: *std.ArrayList(u8), text: []const u8) TransportError!void {
@@ -68,6 +71,7 @@ pub const Transport = struct {
 };
 
 pub const TransportError = error{
+    Cancelled,
     ProviderFailed,
     MalformedResponse,
     OutOfMemory,
