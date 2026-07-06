@@ -34,6 +34,14 @@ pub fn providerOptionsFromFlags(mode: Mode, flags: args_mod.GlobalFlags) ai.prov
     };
 }
 
+pub fn agentProviderOptionsFromFlags(flags: args_mod.GlobalFlags) ai.provider_factory.Options {
+    var options = providerOptionsFromFlags(.ask, flags);
+    options.fake_tool_loop = true;
+    const max_steps = if (flags.max_steps > 0) flags.max_steps else 8;
+    options.fake_tool_loop_short = max_steps <= 2;
+    return options;
+}
+
 fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
     const ctx: *ProgressBridge = @ptrCast(@alignCast(context.?));
     ai.progress.emitIf(ctx.writer, ctx.json, phase);

@@ -27,6 +27,7 @@ pub const Options = struct {
     fake_response: []const u8,
     fake_plan_response: ?[]const u8 = null,
     fake_tool_loop: bool = false,
+    fake_tool_loop_short: bool = false,
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
     thinking_callback: ?*const fn (?*anyopaque, []const u8) void = null,
@@ -63,12 +64,13 @@ pub fn create(
     return switch (resolved) {
         .fake => .{
             .allocator = allocator,
-            .fake = fake_provider.FakeProvider.initWithPlan(
+            .fake = fake_provider.FakeProvider.initWithToolLoop(
                 options.fake_response,
                 options.fake_plan_response,
                 options.stream_callback,
                 options.stream_context,
                 options.fake_tool_loop,
+                options.fake_tool_loop_short,
             ),
         },
         .gemini => .{

@@ -379,12 +379,13 @@ const GenerateContext = struct {
     }
 };
 
-fn providerOptions(host: *const Host, fake_response: []const u8, fake_plan: ?[]const u8) ai.provider_factory.Options {
+fn providerOptions(host: *const Host, fake_response: []const u8, fake_plan: ?[]const u8, for_agent: bool) ai.provider_factory.Options {
     return .{
         .kind = ai.provider_factory.Kind.parse(host.ai_provider),
         .model = host.ai_model,
         .fake_response = fake_response,
         .fake_plan_response = fake_plan,
+        .fake_tool_loop = for_agent,
         .stream_callback = streamBridge,
         .stream_context = @ptrCast(@constCast(host)),
         .thinking_callback = thinkingBridge,
@@ -407,8 +408,8 @@ fn generateWorker(ctx: *GenerateContext) void {
     const fake_plan = if (mode == .plan) default_plan_markdown else null;
 
     const run_fn = switch (mode) {
-        .agent => agentRunInner(ctx, providerOptions(&ctx.host, fake_response, null)),
-        else => generateInner(ctx, providerOptions(&ctx.host, fake_response, fake_plan)),
+        .agent => agentRunInner(ctx, providerOptions(&ctx.host, fake_response, null, true)),
+        else => generateInner(ctx, providerOptions(&ctx.host, fake_response, fake_plan, false)),
     };
 
     run_fn catch |err| {
