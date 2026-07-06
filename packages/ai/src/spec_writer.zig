@@ -133,13 +133,15 @@ fn splitSections(markdown: []const u8) SectionMap {
     while (offset < markdown.len) {
         const line_end = std.mem.indexOfScalar(u8, markdown[offset..], '\n') orelse markdown.len - offset;
         const line = markdown[offset .. offset + line_end];
-        const is_heading = line.len >= 2 and line[0] == '#' and line[1] == ' ';
+        var heading_marks: usize = 0;
+        while (heading_marks < line.len and line[heading_marks] == '#') heading_marks += 1;
+        const is_heading = heading_marks > 0 and heading_marks < line.len and line[heading_marks] == ' ';
         if (is_heading) {
             if (current_heading) |heading| {
                 const body = std.mem.trim(u8, markdown[body_start..offset], &std.ascii.whitespace);
                 map.put(heading, body);
             }
-            current_heading = std.mem.trim(u8, line[2..], &std.ascii.whitespace);
+            current_heading = std.mem.trim(u8, line[heading_marks + 1 ..], &std.ascii.whitespace);
             body_start = offset + line_end + 1;
         }
         offset += line_end + 1;

@@ -23,6 +23,12 @@ pub fn embed(allocator: std.mem.Allocator, text: []const u8, out: *[dim]f32) !vo
         const bucket = h % dim;
         const sign: f32 = if ((h >> 32) & 1 == 1) 1.0 else -1.0;
         out[bucket] += sign;
+        if (token.len > 6) {
+            const stem_hash = std.hash.Wyhash.hash(1, token[0..6]);
+            const stem_bucket = stem_hash % dim;
+            const stem_sign: f32 = if ((stem_hash >> 32) & 1 == 1) 1.0 else -1.0;
+            out[stem_bucket] += stem_sign;
+        }
     }
 
     normalize(out);

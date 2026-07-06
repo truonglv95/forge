@@ -29,10 +29,6 @@ pub fn main(init: std.process.Init) !void {
 
     state.prompt_buffer = &wb.prompt_buffer;
     state.chat_history = &wb.chat_history;
-    if (wb.chat_history.items.len == 0) {
-        wb.appendChat(.user, "Forge workbench ready.") catch {};
-        wb.appendChat(.agent, "Try Cmd+Shift+P for command palette.") catch {};
-    }
 
     const kernel_thread = try std.Thread.spawn(.{}, backgroundKernelTask, .{workspace_path});
     _ = kernel_thread;

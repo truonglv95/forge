@@ -68,9 +68,9 @@ pub fn rerank(
     if (inputs.len == 0) return &.{};
 
     var merged: std.ArrayList(Merged) = .empty;
+    defer merged.deinit(allocator);
     errdefer {
         for (merged.items) |item| allocator.free(item.path);
-        merged.deinit(allocator);
     }
 
     for (inputs) |item| {
@@ -78,13 +78,13 @@ pub fn rerank(
     }
 
     var ranked: std.ArrayList(RankedHit) = .empty;
+    defer ranked.deinit(allocator);
     errdefer {
         for (ranked.items) |hit| {
             allocator.free(hit.path);
             allocator.free(hit.text);
             allocator.free(hit.detail);
         }
-        ranked.deinit(allocator);
     }
 
     for (merged.items) |item| {

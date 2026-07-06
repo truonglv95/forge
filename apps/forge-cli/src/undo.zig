@@ -23,7 +23,17 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
         return 2;
     }
 
-    try service.undo(&loaded.record);
+    service.undo(&loaded.record) catch |err| switch (err) {
+        error.UndoConflict => {
+            if (parsed.flags.json) {
+                try writer.print("{{\"status\":\"error\",\"type\":\"undo\",\"transaction_id\":{d},\"error\":\"undo_conflict\"}}\n", .{tx_id});
+            } else {
+                try writer.print("error: transaction {d} cannot be undone because affected files changed after apply\n", .{tx_id});
+            }
+            return 3;
+        },
+        else => return err,
+    };
     try workspace.history.updateEntryState(io, opened.root, tx_id, .undone);
 
     if (parsed.flags.json) {

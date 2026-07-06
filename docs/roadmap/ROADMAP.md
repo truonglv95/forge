@@ -129,13 +129,13 @@ demo, instrumentation, and exit evidence exist.
 
 | Milestone | Outcome | Priority | Status |
 |---|---|---:|---|
-| M0 | Reproducible foundation + renderer decision | P0 | **In progress** |
-| M1 | Safe shared workspace and execution engine | P0 | **In progress** |
-| M2 | Deterministic headless CLI vertical slice | P0 | **In progress** |
-| M3 | AI-assisted CLI proof | P0 | Not started |
-| M4 | Native IDE editing foundation | P1 | Not started |
-| M5 | AI-first IDE vertical slice | P1 | Not started |
-| M6 | Language intelligence + dogfood alpha | P2 | Not started |
+| M0 | Reproducible foundation + renderer decision | P0 | Implemented; audit pending |
+| M1 | Safe shared workspace and execution engine | P0 | Implemented; hardening |
+| M2 | Deterministic headless CLI vertical slice | P0 | Implemented; verification |
+| M3 | AI-assisted CLI proof | P0 | Implemented; evaluation pending |
+| M4 | Native IDE editing foundation | P1 | Implemented; hardening |
+| M5 | AI-first IDE vertical slice | P1 | Implemented; parity pending |
+| M6 | Language intelligence + dogfood alpha | P2 | **In progress** |
 | M7 | Beta hardening + extensibility decision | P2/P3 | Not started |
 
 Only one delivery milestone is in progress at a time. Explicitly named spikes

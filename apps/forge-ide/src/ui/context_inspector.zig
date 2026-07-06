@@ -11,7 +11,8 @@ pub const composer_pad = agent_composer.composer_pad;
 pub const strip_gap: f32 = 6;
 pub const header_h: f32 = 22;
 pub const row_h: f32 = 15;
-pub const max_visible_rows: usize = 7;
+pub const max_visible_rows: usize = 5;
+pub const detail_h: f32 = 36;
 pub const pill_h: f32 = 18;
 
 pub fn effectiveEntryCount(agent: *agent_session.Session, entry_count: usize) usize {
@@ -32,8 +33,9 @@ pub fn stripTop(
     attachment_count: usize,
     agent_w: f32,
     prompt: *const @import("forge-editor").Buffer,
+    has_detail: bool,
 ) f32 {
-    return composerTop(window_h, attachment_count, agent_w, prompt) - stripHeight(expanded, entry_count) - strip_gap;
+    return composerTop(window_h, attachment_count, agent_w, prompt) - stripHeight(expanded, entry_count, has_detail) - strip_gap;
 }
 
 pub const ToggleRect = struct {
@@ -47,11 +49,13 @@ pub const ToggleRect = struct {
     }
 };
 
-pub fn stripHeight(expanded: bool, entry_count: usize) f32 {
+pub fn stripHeight(expanded: bool, entry_count: usize, has_detail: bool) f32 {
     if (entry_count == 0) return header_h;
     if (!expanded) return header_h + pill_h + 6;
     const rows = @min(entry_count, max_visible_rows);
-    return header_h + pill_h + 6 + @as(f32, @floatFromInt(rows)) * row_h + 8;
+    var h = header_h + pill_h + 6 + @as(f32, @floatFromInt(rows)) * row_h + 8;
+    if (has_detail) h += detail_h + 4;
+    return h;
 }
 
 pub fn toggleRect(
@@ -62,7 +66,7 @@ pub fn toggleRect(
     attachment_count: usize,
     prompt: *const @import("forge-editor").Buffer,
 ) ToggleRect {
-    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt);
+    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false);
     return .{
         .x = agent_x + 10,
         .y = top,
@@ -78,10 +82,36 @@ pub fn hitToggle(
     entry_count: usize,
     attachment_count: usize,
     prompt: *const @import("forge-editor").Buffer,
+    has_detail: bool,
     x: f32,
     y: f32,
 ) bool {
-    return toggleRect(agent_x, agent_w, window_h, entry_count, attachment_count, prompt).contains(x, y);
+    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, has_detail);
+    return x >= agent_x + 10 and x < agent_x + agent_w - 10 and y >= top and y < top + header_h;
+}
+
+pub fn hitEntryRow(
+    agent_x: f32,
+    agent_w: f32,
+    window_h: f32,
+    entry_count: usize,
+    attachment_count: usize,
+    prompt: *const @import("forge-editor").Buffer,
+    scroll_y: f32,
+    x: f32,
+    y: f32,
+) ?usize {
+    if (entry_count == 0) return null;
+    const pad: f32 = 10;
+    const inner_x = agent_x + pad + 10;
+    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false);
+    const list_top = top + header_h + pill_h + 8 - scroll_y;
+    if (x < inner_x or x > agent_x + agent_w - pad) return null;
+    const rel = y - list_top;
+    if (rel < 0) return null;
+    const row = @as(usize, @intFromFloat(rel / row_h));
+    if (row >= entry_count or row >= max_visible_rows) return null;
+    return row;
 }
 
 fn formatBytes(buf: []u8, value: usize) []const u8 {
@@ -146,17 +176,20 @@ pub fn draw(
     expanded: bool,
     attachment_count: usize,
     prompt: *const @import("forge-editor").Buffer,
+    scroll_y: f32,
+    selected_index: ?usize,
 ) void {
     agent.lock();
     const has_scope = agent.scope_files.items.len > 0;
+    const has_detail = selected_index != null and expanded;
     agent.unlock();
     if (entry_count == 0 and used_bytes == 0 and !has_scope) return;
 
     const pad: f32 = 10;
     const inner_x = agent_x + pad + 10;
     const content_w = agent_w - pad * 2 - 20;
-    const top = stripTop(window_h, expanded, entry_count, attachment_count, agent_w, prompt);
-    const height = stripHeight(expanded, entry_count);
+    const top = stripTop(window_h, expanded, entry_count, attachment_count, agent_w, prompt, has_detail);
+    const height = stripHeight(expanded, entry_count, has_detail);
 
     renderer.Renderer.drawRoundedRect(agent_x + pad, top, agent_w - pad * 2, height, 8, .{
         .r = 0.11,
@@ -222,30 +255,37 @@ pub fn draw(
 
     if (!expanded) return;
 
-    var row_y = pill_y + pill_h + 8;
+    var row_y = pill_y + pill_h + 8 - scroll_y;
     var row_index: usize = 0;
     for (agent.context_entries.items) |entry| {
         if (row_index >= max_visible_rows) break;
-        var row_buf: [384:0]u8 = undefined;
-        const glyph = statusGlyph(entry.status);
-        const label = kindLabel(entry.kind);
-        const row_line = if (entry.reason) |reason| blk: {
-            break :blk std.fmt.bufPrint(&row_buf, "{s} [{s}] {s} — {s}", .{
-                glyph,
-                label,
-                entry.name,
-                reason,
-            }) catch continue;
-        } else blk: {
-            break :blk std.fmt.bufPrint(&row_buf, "{s} [{s}] {s} ({d} B)", .{
-                glyph,
-                label,
-                entry.name,
-                entry.bytes,
-            }) catch continue;
-        };
-        row_buf[row_line.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&row_buf), inner_x, row_y, 9.5, statusColor(entry.status));
+        if (row_y + row_h >= top and row_y <= top + height) {
+            if (selected_index) |sel| {
+                if (sel == row_index) {
+                    renderer.Renderer.drawRoundedRect(inner_x - 4, row_y - 1, content_w, row_h, 3, .{ .r = 0.18, .g = 0.24, .b = 0.34, .a = 1.0 });
+                }
+            }
+            var row_buf: [384:0]u8 = undefined;
+            const glyph = statusGlyph(entry.status);
+            const label = kindLabel(entry.kind);
+            const row_line = if (entry.reason) |reason| blk: {
+                break :blk std.fmt.bufPrint(&row_buf, "{s} [{s}] {s} — {s}", .{
+                    glyph,
+                    label,
+                    entry.name,
+                    reason,
+                }) catch continue;
+            } else blk: {
+                break :blk std.fmt.bufPrint(&row_buf, "{s} [{s}] {s} ({d} B)", .{
+                    glyph,
+                    label,
+                    entry.name,
+                    entry.bytes,
+                }) catch continue;
+            };
+            row_buf[row_line.len] = 0;
+            renderer.Renderer.drawText(@ptrCast(&row_buf), inner_x, row_y, 9.5, statusColor(entry.status));
+        }
         row_y += row_h;
         row_index += 1;
     }
@@ -255,5 +295,20 @@ pub fn draw(
         const more = std.fmt.bufPrint(&more_buf, "... +{d} more", .{agent.context_entries.items.len - max_visible_rows}) catch "...";
         more_buf[more.len] = 0;
         renderer.Renderer.drawText(@ptrCast(&more_buf), inner_x, row_y, 9.0, .{ .r = 0.5, .g = 0.55, .b = 0.65, .a = 1.0 });
+    }
+
+    if (selected_index) |sel| {
+        if (sel < agent.context_entries.items.len) {
+            const entry = agent.context_entries.items[sel];
+            const detail_y = top + height - detail_h;
+            renderer.Renderer.drawRoundedRect(agent_x + pad, detail_y, agent_w - pad * 2, detail_h, 6, .{ .r = 0.14, .g = 0.17, .b = 0.22, .a = 1.0 });
+            var detail_buf: [512:0]u8 = undefined;
+            const detail = if (entry.reason) |reason|
+                std.fmt.bufPrint(&detail_buf, "{s} · {s} · {s}", .{ entry.kind, entry.name, reason }) catch entry.name
+            else
+                std.fmt.bufPrint(&detail_buf, "{s} · {s} · {d} bytes", .{ entry.kind, entry.name, entry.bytes }) catch entry.name;
+            detail_buf[detail.len] = 0;
+            renderer.Renderer.drawText(@ptrCast(&detail_buf), inner_x, detail_y + 12, 9.5, .{ .r = 0.78, .g = 0.84, .b = 0.92, .a = 1.0 });
+        }
     }
 }

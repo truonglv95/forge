@@ -197,22 +197,31 @@ pub fn build(b: *std.Build) void {
     const modules = [_]*std.Build.Module{
         util, core, kernel, workspace, editor, renderer, lsp, ai, plugin,
     };
-    for (modules) |module| {
+    const module_names = [_][]const u8{
+        "util", "core", "kernel", "workspace", "editor", "renderer", "lsp", "ai", "plugin",
+    };
+    for (modules, module_names) |module, module_name| {
         const module_tests = b.addTest(.{ .root_module = module });
         if (module == util or module == kernel or module == lsp or module == ai) {
             module_tests.root_module.linkSystemLibrary("c", .{});
         }
         const run_tests = b.addRunArtifact(module_tests);
         test_step.dependOn(&run_tests.step);
+        const named_test_step = b.step(b.fmt("test-{s}", .{module_name}), b.fmt("Run {s} package tests", .{module_name}));
+        named_test_step.dependOn(&run_tests.step);
     }
 
     const cli_tests = b.addTest(.{ .root_module = cli.root_module });
     cli_tests.root_module.linkSystemLibrary("c", .{});
     const run_cli_tests = b.addRunArtifact(cli_tests);
     test_step.dependOn(&run_cli_tests.step);
+    const test_cli_step = b.step("test-cli", "Run Forge CLI tests");
+    test_cli_step.dependOn(&run_cli_tests.step);
 
     const ide_tests = b.addTest(.{ .root_module = ide.root_module });
     ide_tests.root_module.linkSystemLibrary("c", .{});
     const run_ide_tests = b.addRunArtifact(ide_tests);
     test_step.dependOn(&run_ide_tests.step);
+    const test_ide_step = b.step("test-ide", "Run Forge IDE tests");
+    test_ide_step.dependOn(&run_ide_tests.step);
 }

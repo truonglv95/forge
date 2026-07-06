@@ -66,6 +66,8 @@ test "collectWorkspaceDocs finds docs markdown" {
     defer tmp.cleanup();
     const root = workspace.WorkspaceRoot.init(tmp.dir);
 
+    try tmp.dir.createDirPath(io, "docs");
+    try tmp.dir.createDirPath(io, "src");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("docs/guide.md"), "# Guide\n");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/main.zig"), "main");
 

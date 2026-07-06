@@ -43,7 +43,11 @@ const SpawnContext = struct {
 fn worker(ctx: *SpawnContext) void {
     defer ctx.deinit();
 
-    const argv = taskArgv(ctx.task_name);
+    const argv = taskArgv(ctx.task_name) orelse {
+        ctx.on_line(ctx.context, "task rejected: only test, check, build, and fmt are allowed");
+        ctx.on_finished(ctx.context, 2);
+        return;
+    };
     ctx.on_line(ctx.context, "→ running task...");
 
     const result = process_spawn.runCapture(ctx.allocator, argv, .{
@@ -73,20 +77,29 @@ fn emitLines(ctx: *SpawnContext, bytes: []const u8) void {
     if (start < bytes.len) ctx.on_line(ctx.context, bytes[start..]);
 }
 
-fn taskArgv(task_name: []const u8) []const []const u8 {
+fn taskArgv(task_name: []const u8) ?[]const []const u8 {
     if (std.mem.eql(u8, task_name, "test")) {
         return &[_][]const u8{ "zig", "build", "test" };
     }
     if (std.mem.eql(u8, task_name, "check")) {
-        return &[_][]const u8{ "sh", "-c", "./scripts/check.sh" };
+        return &[_][]const u8{"./scripts/check.sh"};
     }
     if (std.mem.eql(u8, task_name, "build")) {
         return &[_][]const u8{ "zig", "build" };
     }
-    return &[_][]const u8{ "sh", "-c", task_name };
+    if (std.mem.eql(u8, task_name, "fmt")) {
+        return &[_][]const u8{ "zig", "fmt", "--check", "." };
+    }
+    return null;
 }
 
 test "task argv maps test name" {
-    const argv = taskArgv("test");
+    const argv = taskArgv("test").?;
     try std.testing.expectEqualStrings("zig", argv[0]);
+}
+
+test "task argv never falls back to a shell" {
+    try std.testing.expect(taskArgv("git status; rm -rf .") == null);
+    const check_argv = taskArgv("check").?;
+    try std.testing.expectEqualStrings("./scripts/check.sh", check_argv[0]);
 }

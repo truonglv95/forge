@@ -260,7 +260,8 @@ fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text:
 }
 
 pub fn needsRebuild(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !bool {
-    _ = readRelative(allocator, io, root, manifest_file) catch return true;
+    const manifest = readRelative(allocator, io, root, manifest_file) catch return true;
+    allocator.free(manifest);
     const hashes = readRelative(allocator, io, root, file_hashes_file) catch return true;
     defer allocator.free(hashes);
 

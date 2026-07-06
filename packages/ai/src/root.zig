@@ -69,3 +69,10 @@ test "only approved proposals may be applied" {
     try std.testing.expect(!mayApply(.draft));
     try std.testing.expect(!mayApply(.stale));
 }
+
+test {
+    // Keep every exported AI subsystem in the package test graph. Without this,
+    // Zig's lazy analysis can report a green package while most module tests
+    // were never compiled or executed.
+    std.testing.refAllDecls(@This());
+}

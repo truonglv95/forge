@@ -58,19 +58,7 @@ pub fn applyProposal(
     const workspace_edit = proposal.workspaceEdit();
     try workspace_edit.validate();
 
-    var service = workspace.TransactionService.init(allocator, io, opened.root);
-    const tx_id = try workspace.history.nextTransactionId(allocator, io, opened.root);
-
-    var record = workspace.TransactionRecord{
-        .id = tx_id,
-        .state = .approved,
-        .workspace_edit = workspace_edit,
-        .timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds(),
-    };
-    defer service.freeRecord(&record);
-
-    try service.apply(&record);
-    try workspace.history.persistApplied(allocator, io, opened.root, &record, proposal_path);
+    const tx_id = try workspace.execution.applyApproved(allocator, io, opened.root, workspace_edit, proposal_path);
 
     if (json) {
         try writer.print("{{\"status\":\"ok\",\"type\":\"apply\",\"transaction_id\":{d},\"state\":\"applied\"}}\n", .{tx_id});

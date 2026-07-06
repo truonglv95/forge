@@ -45,7 +45,11 @@ pub const GenerateOptions = struct {
     conversation: []const @import("conversation.zig").Turn = &.{},
     workspace_cwd: ?[]const u8 = null,
     recent_files: []const []const u8 = &.{},
-    enable_repair_loop: bool = true,
+    /// Repair trials currently apply into the supplied workspace before
+    /// restoring a checkpoint. Keep them disabled until they run in an
+    /// isolated sandbox/worktree; proposal generation must not mutate the user
+    /// workspace before approval.
+    enable_repair_loop: bool = false,
     max_repair_attempts: u8 = 2,
 };
 
@@ -58,16 +62,10 @@ pub const Result = struct {
 };
 
 pub fn validateProposalBody(allocator: std.mem.Allocator, proposal_body: []const u8) WorkflowError!void {
-    var parsed_proposal = workspace.OwnedProposal.parseJson(allocator, proposal_body) catch |err| {
-        std.log.err("JSON Parse error: {any}", .{err});
-        std.log.err("Proposal Body: {s}", .{proposal_body});
-        return error.InvalidProposal;
-    };
+    // Do not log raw model output here: proposals may contain source or secrets.
+    var parsed_proposal = workspace.OwnedProposal.parseJson(allocator, proposal_body) catch return error.InvalidProposal;
     defer parsed_proposal.deinit();
-    parsed_proposal.workspaceEdit().validate() catch |err| {
-        std.log.err("Validation error: {any}", .{err});
-        return error.InvalidProposal;
-    };
+    parsed_proposal.workspaceEdit().validate() catch return error.InvalidProposal;
 }
 
 pub fn emitProgress(options: GenerateOptions, phase: progress.Phase) void {
@@ -395,6 +393,53 @@ test "cli and ide surfaces produce identical proposal bodies" {
     );
 }
 
+test "cli and ide proposals have identical apply and undo outcomes" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var cli_tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer cli_tmp.cleanup();
+    var ide_tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer ide_tmp.cleanup();
+    const cli_root = workspace.WorkspaceRoot.init(cli_tmp.dir);
+    const ide_root = workspace.WorkspaceRoot.init(ide_tmp.dir);
+
+    const provider_options = provider_factory.Options{
+        .kind = .fake,
+        .fake_response = default_ask_response,
+    };
+    var cli_result = try generateAndPersist(allocator, io, null, cli_root, "create notes", &.{}, provider_options, .{ .surface = .cli });
+    defer deinitResult(allocator, &cli_result);
+    var ide_result = try generateAndPersist(allocator, io, null, ide_root, "create notes", &.{}, provider_options, .{ .surface = .ide });
+    defer deinitResult(allocator, &ide_result);
+
+    var cli_proposal = try workspace.OwnedProposal.parseJson(allocator, cli_result.proposal_body);
+    defer cli_proposal.deinit();
+    var ide_proposal = try workspace.OwnedProposal.parseJson(allocator, ide_result.proposal_body);
+    defer ide_proposal.deinit();
+
+    const cli_tx = try workspace.execution.applyApproved(allocator, io, cli_root, cli_proposal.workspaceEdit(), cli_result.proposal_rel);
+    const ide_tx = try workspace.execution.applyApproved(allocator, io, ide_root, ide_proposal.workspaceEdit(), ide_result.proposal_rel);
+    try std.testing.expectEqual(cli_tx, ide_tx);
+
+    var cli_after = try workspace.FileSnapshot.read(allocator, io, cli_root, try workspace.WorkspacePath.parse("notes.txt"));
+    defer cli_after.deinit();
+    var ide_after = try workspace.FileSnapshot.read(allocator, io, ide_root, try workspace.WorkspacePath.parse("notes.txt"));
+    defer ide_after.deinit();
+    try std.testing.expectEqualStrings(cli_after.content, ide_after.content);
+
+    var cli_loaded = try workspace.history.loadRecord(allocator, io, cli_root, cli_tx);
+    var cli_service = workspace.TransactionService.init(allocator, io, cli_root);
+    defer cli_loaded.deinit(&cli_service);
+    var ide_loaded = try workspace.history.loadRecord(allocator, io, ide_root, ide_tx);
+    var ide_service = workspace.TransactionService.init(allocator, io, ide_root);
+    defer ide_loaded.deinit(&ide_service);
+    try cli_service.undo(&cli_loaded.record);
+    try ide_service.undo(&ide_loaded.record);
+
+    try std.testing.expectError(error.FileNotFound, cli_root.dir.access(io, "notes.txt", .{}));
+    try std.testing.expectError(error.FileNotFound, ide_root.dir.access(io, "notes.txt", .{}));
+}
+
 test "project rules are included in context manifest" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -441,6 +486,7 @@ test "generateAndPersist with ollama when server is running" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     const ollama_provider = @import("ollama_provider.zig");
+    if (!liveTestsEnabled()) return error.SkipZigTest;
     if (!ollama_provider.isReachable(allocator, io, ollama_provider.default_host)) return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
@@ -472,6 +518,7 @@ test "generateAndPersist ollama via WorkspaceRoot.open path" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     const ollama_provider = @import("ollama_provider.zig");
+    if (!liveTestsEnabled()) return error.SkipZigTest;
     if (!ollama_provider.isReachable(allocator, io, ollama_provider.default_host)) return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
@@ -493,4 +540,8 @@ test "generateAndPersist ollama via WorkspaceRoot.open path" {
     var result = try generateAndPersist(allocator, io, null, opened_root, "add a comment to sample.txt", &.{}, provider_options, .{});
     defer deinitResult(allocator, &result);
     try std.testing.expect(result.proposal_rel.len > 0);
+}
+
+fn liveTestsEnabled() bool {
+    return false;
 }

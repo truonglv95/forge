@@ -46,6 +46,7 @@ pub const Parser = struct {
     callbacks: Callbacks,
     writer_buffer: [4096]u8 = undefined,
     writer: std.Io.Writer,
+    writer_initialized: bool = false,
     terminal_error: ?provider_mod.ProviderError = null,
     latest_usage: provider_mod.TokenUsage = .{},
 
@@ -67,6 +68,7 @@ pub const Parser = struct {
             .buffer = self.writer_buffer[0..],
             .vtable = &sse_writer_vtable,
         };
+        self.writer_initialized = true;
         sse_active_parser = self;
         return &self.writer;
     }
@@ -82,10 +84,12 @@ pub const Parser = struct {
     }
 
     pub fn finish(self: *Parser) ParseError!void {
-        try self.flushWriterBuffer(&self.writer);
+        if (self.writer_initialized) try self.flushWriterBuffer(&self.writer);
         if (self.pending.items.len > 0) {
-            self.feed(self.pending.items) catch return error.MalformedResponse;
+            const last_event = self.allocator.dupe(u8, std.mem.trim(u8, self.pending.items, "\r\n")) catch return error.MalformedResponse;
+            defer self.allocator.free(last_event);
             self.pending.clearRetainingCapacity();
+            if (last_event.len > 0) try self.handleEvent(last_event);
         }
         if (self.terminal_error) |err| switch (err) {
             error.AuthenticationFailed => return error.AuthenticationFailed,
@@ -105,7 +109,8 @@ pub const Parser = struct {
                 std.mem.indexOf(u8, self.pending.items, "\r\n\r\n");
             if (delim == null) break;
             const line_end = delim.?;
-            const raw_line = std.mem.trim(u8, self.pending.items[0..line_end], "\r\n");
+            const raw_line = self.allocator.dupe(u8, std.mem.trim(u8, self.pending.items[0..line_end], "\r\n")) catch return error.MalformedResponse;
+            defer self.allocator.free(raw_line);
             var consume: usize = line_end + 2;
             if (line_end < self.pending.items.len and self.pending.items[line_end] == '\r') {
                 consume = line_end + 4;
@@ -115,26 +120,28 @@ pub const Parser = struct {
             self.pending.clearRetainingCapacity();
             self.pending.appendSlice(self.allocator, rest) catch return error.MalformedResponse;
             if (raw_line.len == 0) continue;
-            if (!std.mem.startsWith(u8, raw_line, "data:")) continue;
-
-            var payload_buf: std.ArrayList(u8) = .empty;
-            defer payload_buf.deinit(self.allocator);
-
-            var line_it = std.mem.splitScalar(u8, raw_line, '\n');
-            while (line_it.next()) |line| {
-                var l = std.mem.trim(u8, line, "\r");
-                if (std.mem.startsWith(u8, l, "data:")) {
-                    l = std.mem.trim(u8, l["data:".len..], " ");
-                }
-                if (l.len > 0) {
-                    payload_buf.appendSlice(self.allocator, l) catch return error.MalformedResponse;
-                }
-            }
-
-            const payload = payload_buf.items;
-            if (payload.len == 0 or std.mem.eql(u8, payload, "[DONE]")) continue;
-            try self.handlePayload(payload);
+            try self.handleEvent(raw_line);
         }
+    }
+
+    fn handleEvent(self: *Parser, raw_line: []const u8) ParseError!void {
+        if (!std.mem.startsWith(u8, raw_line, "data:")) return;
+
+        var payload_buf: std.ArrayList(u8) = .empty;
+        defer payload_buf.deinit(self.allocator);
+
+        var line_it = std.mem.splitScalar(u8, raw_line, '\n');
+        while (line_it.next()) |line| {
+            var l = std.mem.trim(u8, line, "\r");
+            if (std.mem.startsWith(u8, l, "data:")) {
+                l = std.mem.trim(u8, l["data:".len..], " ");
+            }
+            if (l.len > 0) payload_buf.appendSlice(self.allocator, l) catch return error.MalformedResponse;
+        }
+
+        const payload = payload_buf.items;
+        if (payload.len == 0 or std.mem.eql(u8, payload, "[DONE]")) return;
+        try self.handlePayload(payload);
     }
 
     fn handlePayload(self: *Parser, payload: []const u8) ParseError!void {

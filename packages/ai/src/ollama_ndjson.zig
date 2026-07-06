@@ -23,30 +23,31 @@ pub const Parser = struct {
     callbacks: Callbacks,
     writer_buffer: [4096]u8 = undefined,
     writer: std.Io.Writer,
+    writer_initialized: bool = false,
     terminal_error: ?provider_mod.ProviderError = null,
     latest_usage: provider_mod.TokenUsage = .{},
 
     pub fn init(allocator: std.mem.Allocator, callbacks: Callbacks) Parser {
-        var self = Parser{
+        return Parser{
             .allocator = allocator,
             .callbacks = callbacks,
             .writer = undefined,
         };
+    }
+
+    pub fn ioWriter(self: *Parser) *std.Io.Writer {
         self.writer = std.Io.Writer{
             .buffer = self.writer_buffer[0..],
             .vtable = &ndjson_writer_vtable,
         };
-        return self;
+        self.writer_initialized = true;
+        ndjson_active_parser = self;
+        return &self.writer;
     }
 
     pub fn deinit(self: *Parser) void {
         self.pending.deinit(self.allocator);
         self.assembled.deinit(self.allocator);
-    }
-
-    pub fn ioWriter(self: *Parser) *std.Io.Writer {
-        ndjson_active_parser = self;
-        return &self.writer;
     }
 
     pub fn releaseWriter(self: *Parser) void {
@@ -60,10 +61,12 @@ pub const Parser = struct {
     }
 
     pub fn finish(self: *Parser) ParseError!void {
-        try self.flushWriterBuffer(&self.writer);
+        if (self.writer_initialized) try self.flushWriterBuffer(&self.writer);
         if (self.pending.items.len > 0) {
-            self.feed(self.pending.items) catch return error.MalformedResponse;
+            const last_line = self.allocator.dupe(u8, std.mem.trim(u8, self.pending.items, "\r\n")) catch return error.MalformedResponse;
+            defer self.allocator.free(last_line);
             self.pending.clearRetainingCapacity();
+            if (last_line.len > 0) try self.handleLine(last_line);
         }
         if (self.terminal_error != null) return error.MalformedResponse;
     }
@@ -76,7 +79,8 @@ pub const Parser = struct {
         self.pending.appendSlice(self.allocator, bytes) catch return error.MalformedResponse;
         while (true) {
             const line_end = std.mem.indexOfScalar(u8, self.pending.items, '\n') orelse break;
-            const raw_line = std.mem.trim(u8, self.pending.items[0..line_end], "\r");
+            const raw_line = self.allocator.dupe(u8, std.mem.trim(u8, self.pending.items[0..line_end], "\r")) catch return error.MalformedResponse;
+            defer self.allocator.free(raw_line);
             const rest = self.allocator.dupe(u8, self.pending.items[line_end + 1 ..]) catch return error.MalformedResponse;
             defer self.allocator.free(rest);
             self.pending.clearRetainingCapacity();

@@ -9,8 +9,10 @@
 > **Liên kết:** [PROJECT_VISION](../PROJECT_VISION.md) · [ROADMAP](../roadmap/ROADMAP.md)
 > · RFC-0001–0004
 
-**Cập nhật:** 2026-07-03 · **Trạng thái baseline:** M0–M2 đang triển khai (transaction
-engine + CLI workflow cơ bản đã có)
+**Cập nhật:** 2026-07-06 · **Trạng thái baseline:** phần lớn capability M0–M6 đã
+có implementation, nhưng mức verification/dogfood readiness không đồng đều.
+Theo dõi trạng thái thực tế tại [Capability Matrix](../CAPABILITY_MATRIX.md);
+checklist phase bên dưới mô tả dependency, không còn là bảng trạng thái code.
 
 ---
 
@@ -240,7 +242,9 @@ forge run show run_20260703_001 --json
 | Inline diagnostics (LSP) | P3 (M6) | Stale discard |
 | Keybindings, settings | P3 (M6) | |
 
-**Không làm sớm:** debugger, remote SSH, notebooks, extension marketplace.
+**Không mở rộng thêm trước quality gate:** debugger, extension runtime và MCP đã
+có implementation thử nghiệm; ưu tiên hiện tại là hardening, test và dogfood.
+Remote SSH, notebooks và extension marketplace vẫn deferred.
 
 ---
 
