@@ -56,6 +56,18 @@ pub fn freePaths(allocator: std.mem.Allocator, paths: []const []const u8) void {
     allocator.free(paths);
 }
 
+/// Returns the current git branch name, or null if not in a git repo.
+pub fn currentBranch(allocator: std.mem.Allocator, workspace_cwd: []const u8) !?[]const u8 {
+    const branch_out = process_spawn.runCapture(allocator, &.{
+        "git", "-C", workspace_cwd, "branch", "--show-current",
+    }, .{}) catch return null;
+    defer allocator.free(branch_out.output);
+    if (branch_out.exit_code != 0) return null;
+    const name = std.mem.trim(u8, branch_out.output, " \t\r\n");
+    if (name.len == 0) return null;
+    return try allocator.dupe(u8, name);
+}
+
 /// Returns a human-readable summary of uncommitted changes, or null if not a git repo.
 pub fn captureWorkingDiff(
     allocator: std.mem.Allocator,

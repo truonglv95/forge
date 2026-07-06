@@ -109,6 +109,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "forge-workspace", .module = workspace },
                 .{ .name = "forge-ai", .module = ai },
                 .{ .name = "forge-plugin", .module = plugin },
+                .{ .name = "forge-util", .module = util },
             },
         }),
     });

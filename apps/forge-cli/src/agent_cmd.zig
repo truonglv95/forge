@@ -14,8 +14,12 @@ pub fn run(
     writer: *std.Io.Writer,
 ) !u8 {
     if (parsed.positional.len == 0) {
-        try writer.writeAll("error: agent requires a subcommand (run|resume|list)\n");
-        return 2;
+        if (parsed.flags.json or parsed.flags.quiet or parsed.flags.non_interactive) {
+            try writer.writeAll("error: agent requires a subcommand (run|resume|list) in non-interactive mode\n");
+            return 2;
+        }
+        const agent_tui = @import("agent_tui.zig");
+        return agent_tui.run(allocator, io, environ_map, parsed);
     }
 
     const subcommand = parsed.positional[0];
