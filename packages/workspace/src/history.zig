@@ -11,6 +11,7 @@ pub const history_file = ".forge/history.jsonl";
 pub const active_marker = ".forge/active.tx";
 pub const proposals_dir = ".forge/proposals";
 pub const backups_dir = ".forge/backups";
+pub const backup_manifest = "manifest.json";
 
 pub const Entry = struct {
     id: u64,
@@ -157,6 +158,18 @@ pub fn persistBackups(
         const backup_rel = try std.fmt.bufPrint(&backup_path_buf, "{s}/{s}", .{ backup_root_rel, backup.path });
         try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(backup_rel), backup.content);
     }
+
+    const ManifestEntry = struct { path: []const u8, existed: bool };
+    var entries = try std.heap.page_allocator.alloc(ManifestEntry, record.backups.len);
+    defer std.heap.page_allocator.free(entries);
+    for (record.backups, 0..) |backup, index| {
+        entries[index] = .{ .path = backup.path, .existed = backup.existed };
+    }
+    const manifest_body = try std.json.Stringify.valueAlloc(std.heap.page_allocator, entries, .{});
+    defer std.heap.page_allocator.free(manifest_body);
+    var manifest_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const manifest_rel = try std.fmt.bufPrint(&manifest_path_buf, "{s}/{s}", .{ backup_root_rel, backup_manifest });
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(manifest_rel), manifest_body);
 }
 
 pub fn persistApplied(

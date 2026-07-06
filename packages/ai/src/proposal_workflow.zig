@@ -45,10 +45,8 @@ pub const GenerateOptions = struct {
     conversation: []const @import("conversation.zig").Turn = &.{},
     workspace_cwd: ?[]const u8 = null,
     recent_files: []const []const u8 = &.{},
-    /// Repair trials currently apply into the supplied workspace before
-    /// restoring a checkpoint. Keep them disabled until they run in an
-    /// isolated sandbox/worktree; proposal generation must not mutate the user
-    /// workspace before approval.
+    /// Repair trials run inside a disposable workspace snapshot. This protects
+    /// the authoritative tree from edits, but is not an OS security boundary.
     enable_repair_loop: bool = false,
     max_repair_attempts: u8 = 2,
 };

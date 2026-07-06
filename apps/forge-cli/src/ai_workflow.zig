@@ -82,6 +82,9 @@ pub fn generateAndPersist(
             .cancel_token = generate_options.cancel_token,
             .progress_callback = progressBridge,
             .progress_context = &bridge,
+            .workspace_cwd = opened.path,
+            .enable_repair_loop = provider_options.kind != .fake,
+            .max_repair_attempts = 2,
         },
     ) catch |err| switch (err) {
         error.MissingProviderCredentials => return error.MissingProviderCredentials,

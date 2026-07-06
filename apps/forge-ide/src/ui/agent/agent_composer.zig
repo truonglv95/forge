@@ -43,9 +43,9 @@ pub const ModeOption = struct {
 };
 
 pub const modes = [_]ModeOption{
-    .{ .mode = .ask, .label = "Ask" },
-    .{ .mode = .plan, .label = "Plan" },
-    .{ .mode = .agent, .label = "Agent" },
+    .{ .mode = .ask, .label = "Ask · read only" },
+    .{ .mode = .plan, .label = "Plan · spec only" },
+    .{ .mode = .agent, .label = "Agent · tools + edits" },
 };
 
 pub const Rect = struct {

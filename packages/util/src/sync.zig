@@ -31,6 +31,34 @@ pub const Mutex = struct {
     }
 };
 
+/// Condition variable paired with `Mutex` for worker/UI hand-offs.
+pub const Condition = struct {
+    inner: pthread.pthread_cond_t = undefined,
+    initialized: bool = false,
+
+    pub fn init(self: *Condition) void {
+        if (self.initialized) return;
+        _ = pthread.pthread_cond_init(&self.inner, null);
+        self.initialized = true;
+    }
+
+    pub fn deinit(self: *Condition) void {
+        if (!self.initialized) return;
+        _ = pthread.pthread_cond_destroy(&self.inner);
+        self.initialized = false;
+    }
+
+    pub fn wait(self: *Condition, mutex: *Mutex) void {
+        self.init();
+        _ = pthread.pthread_cond_wait(&self.inner, &mutex.inner);
+    }
+
+    pub fn signal(self: *Condition) void {
+        self.init();
+        _ = pthread.pthread_cond_signal(&self.inner);
+    }
+};
+
 test "mutex serializes counter updates" {
     const Counter = struct {
         value: usize = 0,

@@ -231,7 +231,18 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             const show_rollback = wb.agent.last_checkpoint_id != null;
             const show_approve_spec = wb.agent.spec_pending;
             const show_review = wb.agent.show_review;
+            const approval_pending = wb.agent.approval_decision == .pending;
             wb.agent.unlock();
+
+            if (approval_pending) {
+                if (agent_panel.hitApprovalAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, event.x, event.y)) |action| {
+                    switch (action) {
+                        .approve => wb.dispatch(.agent_approve_tool) catch {},
+                        .reject => wb.dispatch(.agent_reject_tool) catch {},
+                    }
+                    return;
+                }
+            }
 
             wb.agent.lock();
             const post_apply = wb.agent.post_apply_visible;

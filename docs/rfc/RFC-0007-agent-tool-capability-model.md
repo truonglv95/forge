@@ -19,27 +19,42 @@ read workspace state or propose edits; only explicit approval can apply changes.
 `apply_proposal` and `undo` require a separate human or CLI approval gate
 (`--yes`, IDE button). Agents never auto-apply unless explicitly approved.
 
+Mode mapping is fixed: Ask and Plan use `read_only`; Agent uses
+`propose_and_task`. Tool declarations are filtered before being sent to the
+provider and checked again during dispatch. MCP tools are Agent-only, high-risk,
+and require approval on every call.
+
 ## Tool surface (v1)
 
 ```text
-search(query)        → workspace content search
-list_tree()          → file/dir counts under root
-read_file(path)      → snapshot + hash summary
+search(query)        → bounded path + line + source snippet observations
+list_tree(path,depth)→ bounded workspace paths under a subtree
+read_file(path,range)→ numbered source content + snapshot hash
 run_task(name)       → zig build test|build|fmt (argv array, no shell)
-propose_edit()       → planner → proposal JSON on disk
+propose_edit()       → planner → reviewable proposal JSON on disk
 ```
 
-## Session schema (v1)
+Native tools also expose policy metadata (`low|medium|high` risk and
+`automatic|review|every_time` approval). Capability profiles control access;
+policy metadata controls the approval UX for an allowed call.
+
+## Session schema (v3)
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "session_id": "sess_1783113260319",
   "intent": "search sample",
   "capability_profile": "propose",
   "max_steps": 8,
   "run_ids": ["run_1783113260320"],
   "proposal_path": ".forge/proposals/run_1783113260320.json",
+  "execution_state": "proposal_ready",
+  "next_step_index": 3,
+  "pending_tool": "",
+  "pending_tool_args": "",
+  "conversation_json": "provider-native serialized turns",
+  "provider_kind": "gemini",
   "tool_calls": [
     { "index": 1, "tool": "search", "summary": "search 'search' -> 1 hits" },
     { "index": 2, "tool": "propose", "summary": "proposal at .forge/proposals/..." }
@@ -77,6 +92,15 @@ service after the approval gate passes.
 2. `run_task` uses `kernel.process` with fixed argv — no shell interpolation.
 3. Every tool call is logged in the session JSON.
 4. Cancellation token propagates to provider and child processes.
+5. IDE model callbacks cannot mutate editor buffers; edits cross the same
+   proposal/review/transaction boundary as CLI changes.
+6. Proposal validation runs after apply and persists a `validation_failed`
+   state when an allowlisted check fails.
+7. Resume restores the persisted capability at least privilege and rejects an
+   explicitly different provider transport.
+8. IDE tools marked `every_time` pause before execution and expose tool name,
+   arguments, and risk with explicit Approve once / Reject controls. Cancel
+   rejects and wakes a waiting worker.
 
 ## Implementation
 
@@ -93,4 +117,8 @@ service after the approval gate passes.
 - [x] Session persistence + resume
 - [x] `--yes` apply gate (no silent apply)
 - [x] SIGINT → cancel (macOS/Linux via `cancel_scope`)
-- [ ] IDE Agents window wiring (Phase 4)
+- [x] IDE Agents window wiring
+- [x] Structured read/search/tree observations
+- [x] Transaction-only IDE apply path and post-apply validation
+- [x] Exact provider-turn checkpoint/resume (conversation + pending tool args)
+- [x] IDE per-tool risk approval gate

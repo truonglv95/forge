@@ -125,6 +125,8 @@ fn runAgent(
         .cancel_token = &cancel_token,
         .progress_writer = progress_writer,
         .progress_json = parsed.flags.json,
+        .max_repair_attempts = if (provider_opts.kind == .fake) 0 else 2,
+        .approve_every_time_tools = workspace_cmd.approved(parsed),
     };
 
     var result = (if (is_resume)
@@ -159,13 +161,17 @@ fn runAgent(
     if (parsed.flags.json) {
         const event_type = if (is_resume) "agent_resume" else "agent_run";
         try writer.print(
-            "{{\"status\":\"ok\",\"type\":\"{s}\",\"session_id\":\"{s}\",\"run_id\":\"{s}\",\"proposal_path\":\"{s}\",\"steps\":{d}",
+            "{{\"status\":\"ok\",\"type\":\"{s}\",\"session_id\":\"{s}\",\"run_id\":\"{s}\",\"proposal_path\":\"{s}\",\"steps\":{d},\"repair_attempts\":{d},\"reported_tokens\":{{\"prompt\":{d},\"completion\":{d},\"total\":{d}}}",
             .{
                 event_type,
                 result.session_id,
                 result.final_run_id orelse "",
                 result.proposal_rel orelse "",
                 result.steps.len,
+                result.repair_attempts,
+                result.usage.prompt_tokens,
+                result.usage.completion_tokens,
+                result.usage.total_tokens,
             },
         );
     } else {
@@ -199,7 +205,7 @@ fn runAgent(
 }
 
 fn capabilityFromFlags(flags: args_mod.GlobalFlags) ai.tools.CapabilityProfile {
-    const value = flags.capability orelse return .propose;
+    const value = flags.capability orelse return ai.tools.profileForMode(.agent);
     if (std.mem.eql(u8, value, "read_only")) return .read_only;
     if (std.mem.eql(u8, value, "propose_and_task")) return .propose_and_task;
     return .propose;

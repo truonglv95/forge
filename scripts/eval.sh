@@ -117,4 +117,7 @@ bash "$ROOT/scripts/eval_corpus.sh"
 echo "== eval: agent fixture tasks =="
 bash "$ROOT/scripts/eval_agent.sh"
 
+echo "== eval: agent reliability baseline =="
+bash "$ROOT/scripts/eval_reliability.sh" --provider fake --min-success-rate 0.66
+
 echo "PASS: eval safety slice ($RUN_ID)"

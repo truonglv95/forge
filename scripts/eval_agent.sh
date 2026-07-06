@@ -35,9 +35,11 @@ if ! grep -q 'list_tree' "$WS/.forge/sessions/${SESSION}.json"; then
   exit 1
 fi
 
-echo "== agent fixture 3: read_only cannot propose =="
-if "$FORGE" agent run "search sample" --workspace "$WS" "${PROVIDER[@]}" --capability read_only --max-steps 8 --json --quiet 2>/dev/null; then
-  echo "FAIL: read_only should not complete propose"
+echo "== agent fixture 3: read_only answers without proposal =="
+READ_ONLY=$("$FORGE" agent run "search sample" --workspace "$WS" "${PROVIDER[@]}" --capability read_only --max-steps 8 --json --quiet)
+if ! printf '%s' "$READ_ONLY" | grep -q '"proposal_path":""'; then
+  echo "FAIL: read_only mode created a proposal"
+  echo "$READ_ONLY"
   exit 1
 fi
 

@@ -33,6 +33,7 @@ pub const Outcome = struct {
 pub const SearchOutcome = struct {
     summary: []const u8,
     first_match_path: ?[]const u8,
+    observation: []const u8,
 };
 
 pub const CodebaseSearchOutcome = struct {
@@ -58,13 +59,22 @@ pub fn search(ctx: Context, term: []const u8) AgentToolError!SearchOutcome {
     defer result.deinit();
 
     const summary = std.fmt.allocPrint(ctx.allocator, "search '{s}' -> {d} hits", .{ term, result.matches.len }) catch return error.WorkspaceFailed;
+    errdefer ctx.allocator.free(summary);
+
+    var observation: std.ArrayList(u8) = .empty;
+    errdefer observation.deinit(ctx.allocator);
+    const shown = @min(result.matches.len, 20);
+    appendPrint(ctx.allocator, &observation, "Search `{s}`: {d} hit(s), showing {d}\n", .{ term, result.matches.len, shown }) catch return error.WorkspaceFailed;
+    for (result.matches[0..shown]) |match| {
+        appendPrint(ctx.allocator, &observation, "\n{s}:{d}\n{s}\n", .{ match.path, match.line, match.line_text }) catch return error.WorkspaceFailed;
+    }
 
     const first_match_path = if (result.matches.len > 0)
         ctx.allocator.dupe(u8, result.matches[0].path) catch return error.WorkspaceFailed
     else
         null;
 
-    return .{ .summary = summary, .first_match_path = first_match_path };
+    return .{ .summary = summary, .first_match_path = first_match_path, .observation = observation.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed };
 }
 
 pub fn codebaseSearch(ctx: Context, query: []const u8) AgentToolError!CodebaseSearchOutcome {
@@ -164,21 +174,52 @@ pub fn fetchUrl(ctx: Context, url: []const u8) AgentToolError!FetchUrlOutcome {
     };
 }
 
-pub fn listTree(ctx: Context) AgentToolError!Outcome {
+pub fn listTree(ctx: Context, base_path: []const u8, max_depth: usize) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .list_tree);
 
     var tree = workspace.tree.scan(ctx.allocator, ctx.io, ctx.root, ".") catch return error.WorkspaceFailed;
     defer tree.deinit();
 
-    const summary = std.fmt.allocPrint(ctx.allocator, "list_tree -> {d} files, {d} dirs", .{
-        tree.file_count,
-        tree.dir_count,
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(ctx.allocator);
+    appendPrint(ctx.allocator, &output, "Tree `{s}` ({d} files, {d} dirs)\n", .{ base_path, tree.file_count, tree.dir_count }) catch return error.WorkspaceFailed;
+    var shown: usize = 0;
+    for (tree.entries) |entry| {
+        if (!pathUnderBase(entry.path, base_path)) continue;
+        if (relativeDepth(entry.path, base_path) > max_depth) continue;
+        appendPrint(ctx.allocator, &output, "{s}{s}\n", .{ entry.path, if (entry.kind == .directory) "/" else "" }) catch return error.WorkspaceFailed;
+        shown += 1;
+        if (shown >= 200) {
+            output.appendSlice(ctx.allocator, "... [tree truncated]\n") catch return error.WorkspaceFailed;
+            break;
+        }
+    }
+    const summary = std.fmt.allocPrint(ctx.allocator, "list_tree '{s}' -> {d} entries shown", .{
+        base_path,
+        shown,
     }) catch return error.WorkspaceFailed;
-    return .{ .summary = summary };
+    const rendered = output.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed;
+    ctx.allocator.free(summary);
+    return .{ .summary = rendered };
 }
 
-pub fn readFile(ctx: Context, rel_path: []const u8) AgentToolError!Outcome {
+fn pathUnderBase(path: []const u8, base_path: []const u8) bool {
+    if (std.mem.eql(u8, base_path, ".") or base_path.len == 0) return true;
+    if (std.mem.eql(u8, path, base_path)) return true;
+    return std.mem.startsWith(u8, path, base_path) and path.len > base_path.len and path[base_path.len] == std.fs.path.sep;
+}
+
+fn relativeDepth(path: []const u8, base_path: []const u8) usize {
+    const rel = if (std.mem.eql(u8, base_path, ".") or base_path.len == 0) path else if (path.len > base_path.len) path[base_path.len + 1 ..] else "";
+    var depth: usize = 0;
+    for (rel) |byte| if (byte == std.fs.path.sep) {
+        depth += 1;
+    };
+    return depth;
+}
+
+pub fn readFile(ctx: Context, rel_path: []const u8, start_line: ?usize, end_line: ?usize) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .read_file);
 
@@ -186,12 +227,29 @@ pub fn readFile(ctx: Context, rel_path: []const u8) AgentToolError!Outcome {
     var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return error.WorkspaceFailed;
     defer snap.deinit();
 
-    const summary = std.fmt.allocPrint(ctx.allocator, "read_file '{s}' -> {d} bytes (hash {x})", .{
-        rel_path,
-        snap.content.len,
-        snap.hash,
-    }) catch return error.WorkspaceFailed;
-    return .{ .summary = summary };
+    if (std.mem.indexOfScalar(u8, snap.content, 0) != null) return error.NotAllowed;
+    const first = @max(start_line orelse 1, 1);
+    const last = end_line orelse (first + 399);
+    var rendered: std.ArrayList(u8) = .empty;
+    errdefer rendered.deinit(ctx.allocator);
+    appendPrint(ctx.allocator, &rendered, "File `{s}` hash={x} bytes={d} lines={d}-{d}\n", .{ rel_path, snap.hash, snap.content.len, first, last }) catch return error.WorkspaceFailed;
+    var lines = std.mem.splitScalar(u8, snap.content, '\n');
+    var line_no: usize = 1;
+    var emitted_bytes: usize = 0;
+    while (lines.next()) |line| : (line_no += 1) {
+        if (line_no < first) continue;
+        if (line_no > last or emitted_bytes >= 64 * 1024) break;
+        appendPrint(ctx.allocator, &rendered, "{d: >6} | {s}\n", .{ line_no, line }) catch return error.WorkspaceFailed;
+        emitted_bytes += line.len + 10;
+    }
+    if (line_no <= last and emitted_bytes >= 64 * 1024) rendered.appendSlice(ctx.allocator, "... [file truncated]\n") catch return error.WorkspaceFailed;
+    return .{ .summary = rendered.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed };
+}
+
+fn appendPrint(allocator: std.mem.Allocator, out: *std.ArrayList(u8), comptime format: []const u8, args: anytype) !void {
+    const text = try std.fmt.allocPrint(allocator, format, args);
+    defer allocator.free(text);
+    try out.appendSlice(allocator, text);
 }
 
 pub fn runCommand(ctx: Context, command: []const u8) AgentToolError!Outcome {
@@ -293,12 +351,56 @@ test "tool executor search finds content" {
         .profile = .propose,
     }, "forge");
     defer allocator.free(outcome.summary);
+    defer allocator.free(outcome.observation);
     if (outcome.first_match_path) |path| {
         defer allocator.free(path);
     }
 
     try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "1 hits") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.observation, "sample.txt:1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.observation, "hello forge search") != null);
     try std.testing.expect(outcome.first_match_path != null);
+}
+
+test "read file returns bounded source with line numbers and hash" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("source.zig"), "one\ntwo\nthree\n");
+
+    const outcome = try readFile(.{
+        .allocator = allocator,
+        .io = io,
+        .root = root,
+        .cwd = ".",
+        .profile = .read_only,
+    }, "source.zig", 2, 3);
+    defer allocator.free(outcome.summary);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "hash=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "2 | two") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "1 | one") == null);
+}
+
+test "list tree returns workspace paths" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try tmp.dir.createDirPath(io, "src");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/main.zig"), "pub fn main() void {}\n");
+
+    const outcome = try listTree(.{
+        .allocator = allocator,
+        .io = io,
+        .root = root,
+        .cwd = ".",
+        .profile = .read_only,
+    }, "src", 2);
+    defer allocator.free(outcome.summary);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "src/main.zig") != null);
 }
 
 test "tool executor codebase_search returns semantic hits" {

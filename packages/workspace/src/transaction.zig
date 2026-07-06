@@ -81,6 +81,14 @@ pub const TransactionService = struct {
 
         record.state = .applying;
         try recovery.writeRecord(self.io, self.root, record);
+        errdefer {
+            // Ordinary errors run rollback below and must not masquerade as a
+            // process crash on the next launch. A real crash skips defers and
+            // intentionally leaves the active marker for startup recovery.
+            record.state = .approved;
+            recovery.writeRecord(self.io, self.root, record) catch {};
+            history.clearActiveMarker(self.io, self.root);
+        }
 
         for (record.workspace_edit.files) |file_edit| {
             const wp = try path_mod.WorkspacePath.parse(file_edit.path);
@@ -364,6 +372,8 @@ test "multi-file apply rolls back when a later file fails" {
     var restored = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse(first_path));
     defer restored.deinit();
     try std.testing.expectEqualStrings("alpha", restored.content);
+    try std.testing.expect((try history.readActiveMarker(io, root)) == null);
+    try std.testing.expectEqual(TransactionState.approved, record.state);
 }
 
 test "apply delete and undo restores deleted file" {

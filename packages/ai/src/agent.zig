@@ -7,6 +7,7 @@ const planner = @import("planner.zig");
 const context_loader = @import("context_loader.zig");
 const run_record = @import("run_record.zig");
 const tools = @import("tools.zig");
+const tool_registry = @import("tools/registry.zig");
 const tool_executor = @import("tool_executor.zig");
 const proposal_workflow = @import("proposal_workflow.zig");
 const conversation = @import("conversation.zig");
@@ -15,6 +16,7 @@ const agent_loop = @import("agent/loop.zig");
 const mcp_registry = @import("mcp_registry.zig");
 const progress = @import("progress.zig");
 const validation_hints = @import("validation_hints.zig");
+const repair_loop = @import("repair_loop.zig");
 const subagent = @import("subagent.zig");
 
 pub const Config = struct {
@@ -43,6 +45,16 @@ pub const Config = struct {
     edit_callback: ?*const fn (?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void = null,
     edit_context: ?*anyopaque = null,
     use_inline_edits: bool = false,
+    resume_conversation_json: []const u8 = "",
+    resume_next_step_index: u32 = 1,
+    resume_pending_tool: []const u8 = "",
+    resume_pending_tool_args: []const u8 = "",
+    resume_session_id: ?[]const u8 = null,
+    resume_steps: []const Step = &.{},
+    approval_callback: ?agent_loop.ApprovalCallback = null,
+    approval_context: ?*anyopaque = null,
+    approve_every_time_tools: bool = false,
+    max_repair_attempts: u8 = 0,
 };
 
 pub const Step = struct {
@@ -62,6 +74,9 @@ pub const Result = struct {
     steps: []Step,
     final_run_id: ?[]const u8,
     proposal_rel: ?[]const u8,
+    repair_attempts: u8 = 0,
+    usage: provider_mod.TokenUsage = .{},
+    response_text: ?[]const u8 = null,
 };
 
 pub const AgentError = error{
@@ -86,11 +101,26 @@ pub fn run(
     defer provider_handle.deinit();
 
     var steps: std.ArrayList(Step) = .empty;
-    errdefer deinitSteps(allocator, steps.items);
+    errdefer {
+        deinitSteps(allocator, steps.items);
+        steps.deinit(allocator);
+    }
+    for (config.resume_steps) |step| {
+        try appendStep(allocator, &steps, step.index, step.kind, step.summary, step.run_id, config);
+    }
 
     const timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
-    const session_id = workspace.sessions.makeSessionId(allocator, timestamp_ms) catch return error.WorkspaceFailed;
+    const session_id = if (config.resume_session_id) |existing|
+        allocator.dupe(u8, existing) catch return error.WorkspaceFailed
+    else
+        workspace.sessions.makeSessionId(allocator, timestamp_ms) catch return error.WorkspaceFailed;
     defer allocator.free(session_id);
+
+    if (config.resume_session_id == null) {
+        const session_index = workspace.sessions.formatIndexLine(allocator, session_id, intent, timestamp_ms) catch return error.WorkspaceFailed;
+        defer allocator.free(session_index);
+        workspace.sessions.appendIndex(allocator, io, root, session_index) catch return error.WorkspaceFailed;
+    }
 
     var ctx_builder = context_loader.build(allocator, io, root, .{
         .intent = intent,
@@ -125,25 +155,68 @@ pub fn run(
 
     var next_index: u32 = 1;
 
+    var explore_conversation: ?[]u8 = null;
+    defer if (explore_conversation) |json| allocator.free(json);
+    var explore_text: ?[]u8 = null;
+    defer if (explore_text) |text| allocator.free(text);
     const used_native_loop = blk: {
         const llm = provider_handle.interface();
         if (llm.supportsToolLoop()) {
             const NativeCtx = struct {
                 allocator: std.mem.Allocator,
+                io: std.Io,
+                root: workspace.WorkspaceRoot,
+                session_id: []const u8,
+                intent: []const u8,
                 steps: *std.ArrayList(Step),
                 config: Config,
+                provider_kind: []const u8,
 
                 fn onStep(ctx: ?*anyopaque, index: u32, kind: []const u8, summary: []const u8) void {
                     const self: *@This() = @ptrCast(@alignCast(ctx.?));
                     appendStep(self.allocator, self.steps, index, kind, summary, null, self.config) catch {};
                 }
+
+                fn onCheckpoint(ctx: ?*anyopaque, conversation_json: []const u8, next_step_index: u32, pending_tool: []const u8, pending_args_json: []const u8) bool {
+                    const self: *@This() = @ptrCast(@alignCast(ctx.?));
+                    const body = formatCheckpointSessionJson(
+                        self.allocator,
+                        self.session_id,
+                        self.intent,
+                        self.config,
+                        self.steps.items,
+                        conversation_json,
+                        next_step_index,
+                        pending_tool,
+                        pending_args_json,
+                        self.provider_kind,
+                        if (pending_tool.len > 0) "tool_pending" else "exploring",
+                    ) catch return false;
+                    defer self.allocator.free(body);
+                    workspace.sessions.persistSession(self.io, self.root, self.session_id, body) catch return false;
+                    return true;
+                }
             };
-            var native_ctx = NativeCtx{ .allocator = allocator, .steps = &steps, .config = config };
+            var native_ctx = NativeCtx{
+                .allocator = allocator,
+                .io = io,
+                .root = root,
+                .session_id = session_id,
+                .intent = intent,
+                .steps = &steps,
+                .config = config,
+                .provider_kind = llm.metadata().provider_name,
+            };
 
             var tool_binding = llm.toolLoopBinding(io, &mcp, config.cancel_token);
-            const declarations = llm.toolDeclarationsJson(allocator, &mcp) catch return error.ProviderFailed;
+            const raw_declarations = llm.toolDeclarationsJson(allocator, &mcp) catch return error.ProviderFailed;
+            defer allocator.free(raw_declarations);
+            const declarations = tool_registry.filterDeclarationsForProfile(allocator, raw_declarations, config.capability_profile) catch return error.ProviderFailed;
             defer allocator.free(declarations);
-            try runExploreLoop(allocator, tool_binding.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx);
+            var loop_state = try runExploreLoop(allocator, tool_binding.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx, NativeCtx.onCheckpoint, &native_ctx);
+            defer loop_state.deinit(allocator);
+            explore_conversation = allocator.dupe(u8, loop_state.conversation_json) catch return error.WorkspaceFailed;
+            if (loop_state.final_text) |text| explore_text = allocator.dupe(u8, text) catch return error.WorkspaceFailed;
             break :blk true;
         }
         break :blk false;
@@ -160,6 +233,7 @@ pub fn run(
         if (search_term.len > 0) {
             const search_out = tool_executor.search(tool_ctx, search_term) catch |err| return mapToolError(err);
             defer allocator.free(search_out.summary);
+            defer allocator.free(search_out.observation);
             first_match_path = search_out.first_match_path;
             try appendStep(allocator, &steps, next_index, "search", search_out.summary, null, config);
             next_index += 1;
@@ -167,7 +241,7 @@ pub fn run(
 
         if (config.max_steps >= 3 and tools.isAllowed(config.capability_profile, .list_tree)) {
             if (config.max_steps < next_index + 1) return error.StepLimitReached;
-            const tree_out = tool_executor.listTree(tool_ctx) catch |err| return mapToolError(err);
+            const tree_out = tool_executor.listTree(tool_ctx, ".", 3) catch |err| return mapToolError(err);
             defer allocator.free(tree_out.summary);
             try appendStep(allocator, &steps, next_index, "list_tree", tree_out.summary, null, config);
             next_index += 1;
@@ -176,12 +250,41 @@ pub fn run(
         if (config.max_steps >= 4 and tools.isAllowed(config.capability_profile, .read_file)) {
             if (first_match_path) |rel_path| {
                 if (config.max_steps < next_index + 1) return error.StepLimitReached;
-                const read_out = tool_executor.readFile(tool_ctx, rel_path) catch |err| return mapToolError(err);
+                const read_out = tool_executor.readFile(tool_ctx, rel_path, null, null) catch |err| return mapToolError(err);
                 defer allocator.free(read_out.summary);
                 try appendStep(allocator, &steps, next_index, "read_file", read_out.summary, null, config);
                 next_index += 1;
             }
         }
+    }
+
+    if (config.capability_profile == .read_only) {
+        const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
+        const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
+        const owned_response = allocator.dupe(u8, explore_text orelse "Exploration complete.") catch return error.WorkspaceFailed;
+        const completed_json = formatCheckpointSessionJson(
+            allocator,
+            session_id,
+            intent,
+            config,
+            owned_steps,
+            explore_conversation orelse "",
+            next_index,
+            "",
+            "",
+            provider_handle.interface().metadata().provider_name,
+            "completed",
+        ) catch return error.WorkspaceFailed;
+        defer allocator.free(completed_json);
+        workspace.sessions.persistSession(io, root, session_id, completed_json) catch return error.WorkspaceFailed;
+        return .{
+            .session_id = owned_session,
+            .steps = owned_steps,
+            .final_run_id = null,
+            .proposal_rel = null,
+            .usage = provider_handle.interface().usage(),
+            .response_text = owned_response,
+        };
     }
 
     if (config.max_steps < next_index) return error.StepLimitReached;
@@ -197,6 +300,7 @@ pub fn run(
             .steps = owned_steps,
             .final_run_id = null,
             .proposal_rel = null,
+            .usage = provider_handle.interface().usage(),
         };
     }
 
@@ -214,18 +318,48 @@ pub fn run(
     var local_token = cancel_src.getToken();
     const cancel_token: *const kernel.cancellation.CancellationToken = config.cancel_token orelse &local_token;
 
-    emitProgress(config, .sending);
-    planner_inst.plan(&response.writer, cancel_token) catch return error.ProviderFailed;
-    emitProgress(config, .streaming);
-    emitProgress(config, .parsing);
+    var final_proposal: ?[]u8 = null;
+    defer if (final_proposal) |body| allocator.free(body);
+    var validation_report: ?[]u8 = null;
+    defer if (validation_report) |report| allocator.free(report);
+    var repair_attempt: u8 = 0;
+    while (true) {
+        response.writer.end = 0;
+        if (repair_attempt == 0) {
+            emitProgress(config, .sending);
+            planner_inst.plan(&response.writer, cancel_token) catch return error.ProviderFailed;
+        } else {
+            emitProgress(config, .repairing);
+            planner_inst.planRepair(&response.writer, cancel_token, validation_report.?, final_proposal.?) catch return error.ProviderFailed;
+        }
+        emitProgress(config, .streaming);
+        emitProgress(config, .parsing);
+
+        const candidate = response.writer.buffer[0..response.writer.end];
+        proposal_workflow.validateProposalBody(allocator, candidate) catch return error.InvalidProposal;
+        const augmented = validation_hints.augmentProposalJson(allocator, candidate) catch return error.WorkspaceFailed;
+        if (final_proposal) |old| allocator.free(old);
+        final_proposal = augmented;
+
+        if (config.max_repair_attempts == 0) break;
+        const trial = repair_loop.trialApplyAndValidate(allocator, io, root, config.workspace_cwd, final_proposal.?) catch break;
+        if (trial.passed or repair_attempt >= config.max_repair_attempts) {
+            allocator.free(trial.report);
+            break;
+        }
+        if (validation_report) |old| allocator.free(old);
+        validation_report = allocator.dupe(u8, trial.report) catch {
+            allocator.free(trial.report);
+            return error.WorkspaceFailed;
+        };
+        allocator.free(trial.report);
+        repair_attempt += 1;
+    }
 
     const run_id = run_record.makeRunId(allocator, timestamp_ms + 1) catch return error.WorkspaceFailed;
     defer allocator.free(run_id);
 
-    const proposal_body = response.writer.buffer[0..response.writer.end];
-    proposal_workflow.validateProposalBody(allocator, proposal_body) catch return error.InvalidProposal;
-    const augmented_body = validation_hints.augmentProposalJson(allocator, proposal_body) catch return error.WorkspaceFailed;
-    defer allocator.free(augmented_body);
+    const augmented_body = final_proposal orelse return error.InvalidProposal;
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.WorkspaceFailed;
 
@@ -262,19 +396,27 @@ pub fn run(
     const owned_proposal = allocator.dupe(u8, proposal_rel) catch return error.WorkspaceFailed;
     const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
 
-    const session_json = formatSessionJson(allocator, owned_session, intent, config, owned_steps, owned_run_id, owned_proposal) catch return error.WorkspaceFailed;
+    const session_json = formatSessionJson(
+        allocator,
+        owned_session,
+        intent,
+        config,
+        owned_steps,
+        owned_run_id,
+        owned_proposal,
+        explore_conversation orelse "",
+        llm.metadata().provider_name,
+    ) catch return error.WorkspaceFailed;
     defer allocator.free(session_json);
     workspace.sessions.persistSession(io, root, owned_session, session_json) catch return error.WorkspaceFailed;
-
-    const session_index = workspace.sessions.formatIndexLine(allocator, owned_session, intent, timestamp_ms) catch return error.WorkspaceFailed;
-    defer allocator.free(session_index);
-    workspace.sessions.appendIndex(allocator, io, root, session_index) catch return error.WorkspaceFailed;
 
     return .{
         .session_id = owned_session,
         .steps = owned_steps,
         .final_run_id = owned_run_id,
         .proposal_rel = owned_proposal,
+        .repair_attempts = repair_attempt,
+        .usage = llm.usage(),
     };
 }
 
@@ -319,10 +461,47 @@ pub fn resumeSession(
             .steps = owned_steps,
             .final_run_id = owned_run_id,
             .proposal_rel = owned_proposal,
+            .repair_attempts = 0,
+            .usage = .{},
         };
     }
 
-    return run(allocator, io, environ_map, root, doc.intent, config);
+    var prior_steps = allocator.alloc(Step, doc.steps.len) catch return error.WorkspaceFailed;
+    defer allocator.free(prior_steps);
+    for (doc.steps, 0..) |step, index| {
+        prior_steps[index] = .{
+            .index = step.index,
+            .kind = step.kind,
+            .summary = step.summary,
+            .run_id = if (step.run_id.len > 0) step.run_id else null,
+        };
+    }
+
+    var resumed = config;
+    if (doc.provider_kind.len > 0 and config.provider_options.kind != .auto and
+        !std.mem.eql(u8, doc.provider_kind, @tagName(config.provider_options.kind)))
+    {
+        return error.ProviderFailed;
+    }
+    resumed.resume_session_id = doc.session_id;
+    resumed.resume_steps = prior_steps;
+    resumed.resume_conversation_json = doc.conversation_json;
+    resumed.resume_next_step_index = doc.next_step_index;
+    resumed.resume_pending_tool = doc.pending_tool;
+    resumed.resume_pending_tool_args = doc.pending_tool_args;
+    resumed.max_steps = @max(config.max_steps, doc.max_steps);
+    resumed.capability_profile = leastPrivilegeProfile(config.capability_profile, parseCapabilityProfile(doc.capability_profile));
+    return run(allocator, io, environ_map, root, doc.intent, resumed);
+}
+
+fn parseCapabilityProfile(value: []const u8) tools.CapabilityProfile {
+    if (std.mem.eql(u8, value, "read_only")) return .read_only;
+    if (std.mem.eql(u8, value, "propose_and_task")) return .propose_and_task;
+    return .propose;
+}
+
+fn leastPrivilegeProfile(a: tools.CapabilityProfile, b: tools.CapabilityProfile) tools.CapabilityProfile {
+    return if (@intFromEnum(a) < @intFromEnum(b)) a else b;
 }
 
 pub fn deinitResult(allocator: std.mem.Allocator, result: *Result) void {
@@ -331,6 +510,7 @@ pub fn deinitResult(allocator: std.mem.Allocator, result: *Result) void {
     allocator.free(result.steps);
     if (result.final_run_id) |id| allocator.free(id);
     if (result.proposal_rel) |path| allocator.free(path);
+    if (result.response_text) |text| allocator.free(text);
     result.* = undefined;
 }
 
@@ -387,7 +567,9 @@ fn runExploreLoop(
     config: Config,
     on_step: agent_loop.StepCallback,
     on_step_ctx: ?*anyopaque,
-) AgentError!void {
+    on_checkpoint: agent_loop.CheckpointCallback,
+    on_checkpoint_ctx: ?*anyopaque,
+) AgentError!agent_loop.RunState {
     const LoopBridge = struct {
         config: Config,
 
@@ -407,7 +589,7 @@ fn runExploreLoop(
     };
     var loop_bridge = LoopBridge{ .config = config };
 
-    agent_loop.run(allocator, transport, declarations, intent, ctx_builder, tool_ctx, mcp, .{
+    return agent_loop.run(allocator, transport, declarations, intent, ctx_builder, tool_ctx, mcp, .{
         .max_tool_steps = config.max_steps,
         .cancel_token = config.cancel_token,
         .turn_callback = if (config.turn_callback != null) LoopBridge.onTurn else null,
@@ -416,6 +598,15 @@ fn runExploreLoop(
         .step_begin_context = &loop_bridge,
         .step_callback = on_step,
         .step_context = on_step_ctx,
+        .checkpoint_callback = on_checkpoint,
+        .checkpoint_context = on_checkpoint_ctx,
+        .initial_conversation_json = config.resume_conversation_json,
+        .initial_step_index = config.resume_next_step_index,
+        .pending_tool = config.resume_pending_tool,
+        .pending_args_json = config.resume_pending_tool_args,
+        .approval_callback = config.approval_callback,
+        .approval_context = config.approval_context,
+        .approve_every_time_tools = config.approve_every_time_tools,
     }) catch |err| switch (err) {
         error.Cancelled => return error.Cancelled,
         error.StepLimitReached => return error.StepLimitReached,
@@ -444,6 +635,67 @@ fn emitProgress(config: Config, phase: progress.Phase) void {
     }
 }
 
+fn formatCheckpointSessionJson(
+    allocator: std.mem.Allocator,
+    session_id: []const u8,
+    intent: []const u8,
+    config: Config,
+    steps: []const Step,
+    conversation_json: []const u8,
+    next_step_index: u32,
+    pending_tool: []const u8,
+    pending_tool_args: []const u8,
+    provider_kind: []const u8,
+    execution_state: []const u8,
+) ![]u8 {
+    const StoredStep = struct {
+        index: u32,
+        kind: []const u8,
+        summary: []const u8,
+        run_id: []const u8,
+    };
+    var stored_steps = try allocator.alloc(StoredStep, steps.len);
+    defer allocator.free(stored_steps);
+    for (steps, 0..) |step, index| {
+        stored_steps[index] = .{
+            .index = step.index,
+            .kind = step.kind,
+            .summary = step.summary,
+            .run_id = step.run_id orelse "",
+        };
+    }
+
+    const CheckpointDoc = struct {
+        schema_version: u32 = 3,
+        session_id: []const u8,
+        intent: []const u8,
+        capability_profile: []const u8,
+        max_steps: u32,
+        run_ids: []const []const u8 = &.{},
+        proposal_path: []const u8 = "",
+        steps: []StoredStep,
+        execution_state: []const u8,
+        next_step_index: u32,
+        pending_tool: []const u8,
+        pending_tool_args: []const u8,
+        conversation_json: []const u8,
+        provider_kind: []const u8,
+    };
+    return std.json.Stringify.valueAlloc(allocator, CheckpointDoc{
+        .session_id = session_id,
+        .intent = intent,
+        .capability_profile = @tagName(config.capability_profile),
+        .max_steps = config.max_steps,
+        .steps = stored_steps,
+        .execution_state = execution_state,
+        .next_step_index = next_step_index,
+        .pending_tool = pending_tool,
+        .pending_tool_args = pending_tool_args,
+        .conversation_json = conversation_json,
+        .provider_kind = provider_kind,
+    }, .{});
+}
+
 fn formatSessionJson(
     allocator: std.mem.Allocator,
     session_id: []const u8,
@@ -452,6 +704,8 @@ fn formatSessionJson(
     steps: []Step,
     run_id: []const u8,
     proposal_rel: []const u8,
+    conversation_json: []const u8,
+    provider_kind: []const u8,
 ) ![]u8 {
     const SessionStep = struct {
         index: u32,
@@ -485,7 +739,7 @@ fn formatSessionJson(
     }
 
     const SessionDoc = struct {
-        schema_version: u32 = 1,
+        schema_version: u32 = 3,
         session_id: []const u8,
         intent: []const u8,
         capability_profile: []const u8,
@@ -494,6 +748,12 @@ fn formatSessionJson(
         proposal_path: []const u8,
         tool_calls: []ToolCall,
         steps: []SessionStep,
+        execution_state: []const u8,
+        next_step_index: u32,
+        pending_tool: []const u8,
+        pending_tool_args: []const u8,
+        conversation_json: []const u8,
+        provider_kind: []const u8,
     };
 
     const run_ids = try allocator.alloc([]const u8, 1);
@@ -509,6 +769,12 @@ fn formatSessionJson(
         .proposal_path = proposal_rel,
         .tool_calls = tool_items,
         .steps = step_items,
+        .execution_state = "proposal_ready",
+        .next_step_index = @intCast(steps.len + 1),
+        .pending_tool = "",
+        .pending_tool_args = "",
+        .conversation_json = conversation_json,
+        .provider_kind = provider_kind,
     }, .{});
 }
 
@@ -541,6 +807,36 @@ test "agent run uses fake tool loop when enabled" {
     try std.testing.expect(result.proposal_rel != null);
 }
 
+test "ask read-only mode explores and returns text without proposal" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello ask mode\n");
+
+    var result = try run(allocator, io, null, root, "Explain sample.txt", .{
+        .max_steps = 4,
+        .capability_profile = .read_only,
+        .provider_options = .{
+            .kind = .fake,
+            .fake_response = proposal_workflow.default_ask_response,
+            .fake_tool_loop = true,
+            .fake_tool_loop_short = true,
+        },
+    });
+    defer deinitResult(allocator, &result);
+    try std.testing.expect(result.final_run_id == null);
+    try std.testing.expect(result.proposal_rel == null);
+    try std.testing.expect(result.response_text != null);
+    try std.testing.expectEqualStrings("Exploration complete.", result.response_text.?);
+
+    var session = try workspace.sessions.loadSession(allocator, io, root, result.session_id);
+    defer workspace.sessions.deinitSession(allocator, &session);
+    try std.testing.expectEqualStrings("completed", session.execution_state);
+    try std.testing.expectEqualStrings("read_only", session.capability_profile);
+}
+
 test "agent run produces search and propose steps" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -563,4 +859,91 @@ test "agent run produces search and propose steps" {
     try std.testing.expectEqual(@as(usize, 2), result.steps.len);
     try std.testing.expect(result.final_run_id != null);
     try std.testing.expect(result.proposal_rel != null);
+}
+
+test "agent resumes exact transport conversation after step limit" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge search\n");
+
+    const fake_response =
+        \\{"schema_version":1,"summary":"resumed","workspace_edit":{"files":[{"path":"resumed.txt","operation":"create","edits":[{"start":0,"end":0,"replacement":"ok\\n"}]}]}}
+    ;
+    try std.testing.expectError(error.StepLimitReached, run(allocator, io, null, root, "search sample", .{
+        .max_steps = 1,
+        .provider_options = .{ .kind = .fake, .fake_response = fake_response, .fake_tool_loop = true },
+    }));
+
+    var sessions = try workspace.sessions.listEntries(allocator, io, root);
+    defer sessions.deinit();
+    try std.testing.expectEqual(@as(usize, 1), sessions.items.len);
+    const session_id = sessions.items[0].session_id;
+
+    var checkpoint = try workspace.sessions.loadSession(allocator, io, root, session_id);
+    defer workspace.sessions.deinitSession(allocator, &checkpoint);
+    try std.testing.expectEqualStrings("exploring", checkpoint.execution_state);
+    try std.testing.expect(checkpoint.conversation_json.len > 0);
+    try std.testing.expectEqual(@as(u32, 2), checkpoint.next_step_index);
+
+    var result = try resumeSession(allocator, io, null, root, session_id, .{
+        .max_steps = 4,
+        .provider_options = .{ .kind = .fake, .fake_response = fake_response, .fake_tool_loop = true },
+    });
+    defer deinitResult(allocator, &result);
+    try std.testing.expectEqualStrings(session_id, result.session_id);
+    try std.testing.expect(result.proposal_rel != null);
+    try std.testing.expect(result.steps.len >= 3);
+}
+
+test "agent recovers crash checkpoint between tool call and tool result" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello pending tool\n");
+
+    const conversation_json =
+        \\{"role":"user","parts":[{"text":"search sample"}]},{"role":"model","parts":[{"functionCall":{"name":"search","args":{"term":"sample"}}}]}
+    ;
+    const CrashCheckpoint = struct {
+        schema_version: u32 = 3,
+        session_id: []const u8 = "sess_crash_pending",
+        intent: []const u8 = "search sample",
+        capability_profile: []const u8 = "propose",
+        max_steps: u32 = 4,
+        run_ids: []const []const u8 = &.{},
+        proposal_path: []const u8 = "",
+        steps: []const workspace.sessions.SessionStep = &.{},
+        execution_state: []const u8 = "tool_pending",
+        next_step_index: u32 = 1,
+        pending_tool: []const u8 = "search",
+        pending_tool_args: []const u8 = "{\"term\":\"sample\"}",
+        conversation_json: []const u8 = conversation_json,
+        provider_kind: []const u8 = "fake",
+    };
+    const checkpoint_body = try std.json.Stringify.valueAlloc(allocator, CrashCheckpoint{}, .{});
+    defer allocator.free(checkpoint_body);
+    try workspace.sessions.persistSession(io, root, "sess_crash_pending", checkpoint_body);
+
+    const fake_response =
+        \\{"schema_version":1,"summary":"recovered","workspace_edit":{"files":[{"path":"recovered.txt","operation":"create","edits":[{"start":0,"end":0,"replacement":"ok\\n"}]}]}}
+    ;
+    var result = try resumeSession(allocator, io, null, root, "sess_crash_pending", .{
+        .max_steps = 4,
+        .provider_options = .{
+            .kind = .fake,
+            .fake_response = fake_response,
+            .fake_tool_loop = true,
+            .fake_tool_loop_short = true,
+        },
+    });
+    defer deinitResult(allocator, &result);
+    try std.testing.expectEqualStrings("sess_crash_pending", result.session_id);
+    try std.testing.expect(result.proposal_rel != null);
+    try std.testing.expect(result.steps.len >= 2);
+    try std.testing.expectEqualStrings("explore", result.steps[0].kind);
 }

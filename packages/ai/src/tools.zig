@@ -7,6 +7,15 @@ pub const CapabilityProfile = enum {
     propose_and_task,
 };
 
+pub const Mode = enum { ask, plan, agent };
+
+pub fn profileForMode(mode: Mode) CapabilityProfile {
+    return switch (mode) {
+        .ask, .plan => .read_only,
+        .agent => .propose_and_task,
+    };
+}
+
 pub const ToolId = enum {
     read_file,
     search,
@@ -85,4 +94,10 @@ test "capability profiles gate destructive tools" {
     try std.testing.expect(!isAllowed(.propose, .apply_proposal));
     try std.testing.expect(isAllowed(.propose_and_task, .run_task));
     try std.testing.expect(!isAllowed(.propose_and_task, .apply_proposal));
+}
+
+test "AI modes map to least-privilege tool profiles" {
+    try std.testing.expectEqual(CapabilityProfile.read_only, profileForMode(.ask));
+    try std.testing.expectEqual(CapabilityProfile.read_only, profileForMode(.plan));
+    try std.testing.expectEqual(CapabilityProfile.propose_and_task, profileForMode(.agent));
 }
