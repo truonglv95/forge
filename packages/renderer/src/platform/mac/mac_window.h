@@ -38,6 +38,7 @@ float forge_mac_measure_text_width(const char *text, size_t len, float fontSize)
 void forge_mac_get_window_size(float* w, float* h);
 void forge_mac_set_clip_rect(float x, float y, float w, float h);
 void forge_mac_clear_clip_rect(void);
+void forge_mac_flush_batch(void);
 void forge_mac_set_clipboard_text(const char* text, size_t len);
 size_t forge_mac_get_clipboard_text(char* out, size_t cap);
 int forge_mac_save_clipboard_png(const char* out_path);

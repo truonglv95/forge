@@ -354,8 +354,8 @@ test "manifest parses themes keybindings and languages" {
         \\
         \\[[languages]]
         \\id = "zig"
-        \\server = "zig"
-        \\args = "language-server"
+        \\server = "zls"
+        \\args = ""
         \\file_pattern = "*.zig"
     );
     defer manifest.deinit(allocator);

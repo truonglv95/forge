@@ -121,8 +121,8 @@ test "registry matches glob file patterns" {
 
     try registry.add(allocator, .{
         .language_id = "zig",
-        .server = "zig",
-        .args = "language-server",
+        .server = "zls",
+        .args = "",
         .file_pattern = "*.zig",
         .extension_id = "forge.lsp.zig",
     });

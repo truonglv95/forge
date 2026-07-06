@@ -81,13 +81,15 @@ pub fn run(
     var prompt = std.Io.Writer.Allocating.init(allocator);
     defer prompt.deinit();
     prompt.writer.print(
-        "You are a coding agent. Explore the workspace using tools before proposing edits.\nIntent: {s}\n\nContext summary:\n",
+        "You are a coding agent. Explore the workspace using tools before answering.\n" ++
+            "Use search, list_tree, and read_file to gather facts. Do not guess file contents.\n" ++
+            "Call tools as needed. Only respond with plain text when you have enough evidence.\n" ++
+            "Intent: {s}\n\nContext summary:\n",
         .{intent},
     ) catch return error.ProviderFailed;
     for (ctx_builder.blocks.items) |block| {
         prompt.writer.print("[{s}] {s}\n", .{ @tagName(block.block_type), block.name }) catch return error.ProviderFailed;
     }
-    prompt.writer.writeAll("\nCall tools as needed. When you have enough information, respond with brief text only (no tool call).\n") catch return error.ProviderFailed;
 
     if (config.initial_conversation_json.len > 0) {
         conversation.appendSlice(allocator, config.initial_conversation_json) catch return error.ProviderFailed;

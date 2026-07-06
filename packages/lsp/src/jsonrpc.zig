@@ -19,6 +19,7 @@ pub const ReadError = error{
     InvalidContentLength,
     PayloadTooLarge,
     OutOfMemory,
+    ReadTimeout,
 };
 
 pub fn readMessage(
@@ -62,9 +63,25 @@ pub fn readMessageFd(
 fn readExact(fd: std.posix.fd_t, buf: []u8) ReadError!void {
     var total: usize = 0;
     while (total < buf.len) {
+        if (!waitReadable(fd, 5_000)) return error.ReadTimeout;
         const n = std.posix.read(fd, buf[total..]) catch return error.EndOfStream;
         if (n == 0) return error.EndOfStream;
         total += n;
+    }
+}
+
+fn waitReadable(fd: std.posix.fd_t, timeout_ms: i32) bool {
+    var fds = [1]std.posix.pollfd{.{
+        .fd = fd,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+    while (true) {
+        const rc = std.posix.poll(&fds, timeout_ms) catch return false;
+        if (rc == 0) return false;
+        const revents = fds[0].revents;
+        if (revents & std.posix.POLL.IN != 0) return true;
+        if (revents & (std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL) != 0) return false;
     }
 }
 

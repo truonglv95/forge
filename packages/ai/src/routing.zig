@@ -38,20 +38,42 @@ pub fn intentLabel(intent: TaskIntent) []const u8 {
 pub fn classify(input: RouteInput) TaskIntent {
     if (input.mode == .plan) return .plan_change;
 
-    if (containsAny(input.intent, &.{ "fix", "bug", "error", "fail", "failing", "broken", "crash", "debug", "regression", "validation failed" }))
+    if (containsAny(input.intent, &.{ "fix", "bug", "error", "fail", "failing", "broken", "crash", "debug", "regression", "validation failed", "lỗi", "sửa lỗi", "hỏng" }))
         return .debug_failure;
 
-    if (input.mode == .agent and containsAny(input.intent, &.{ "implement", "change", "update", "refactor", "add ", "remove", "modify", "rewrite", "create ", "edit ", "patch", "replace " }))
+    if (input.mode == .agent and containsAny(input.intent, &.{
+        "implement", "change", "update", "refactor", "add ", "remove", "modify", "rewrite", "create ", "edit ", "patch", "replace ",
+        "sửa",
+        "thêm",
+        "tạo",
+        "xóa",
+        "chỉnh",
+        "cập nhật",
+        "viết",
+        "làm",
+        "triển khai",
+    }))
         return .edit_code;
 
     if (containsAny(input.intent, &.{ "plan", "design", "architecture", "spec", "roadmap", "approach", "strategy", "proposal for" }))
         return .plan_change;
 
-    if (containsAny(input.intent, &.{ "search", "find", "where", "list", "explore", "locate", "show me", "grep", "scan" }))
+    if (containsAny(input.intent, &.{ "search", "find", "where", "list", "explore", "locate", "show me", "grep", "scan", "tìm", "ở đâu" }))
         return .explore_codebase;
 
     if (input.mode == .ask) return .answer_question;
-    if (input.mode == .agent and (input.has_active_file or input.has_selection)) return .edit_code;
+
+    // Agent mode defaults to edit_code so edit/run tools stay available unless the
+    // user clearly asked a read-only explanation question.
+    if (input.mode == .agent) {
+        if (containsAny(input.intent, &.{ "explain", "what is", "why does", "what are", "tell me about", "describe ", "giải thích", "là gì", "tại sao" }) and
+            !containsAny(input.intent, &.{ "implement", "fix", "add", "change", "create", "edit", "run", "build", "sửa", "thêm", "tạo", "chạy", "làm", "viết" }))
+        {
+            return .answer_question;
+        }
+        return .edit_code;
+    }
+
     return .explore_codebase;
 }
 
@@ -124,10 +146,10 @@ pub fn wireAllowedForIntent(wire_name: []const u8, intent: TaskIntent, intent_te
         return intentNeedsWeb(intent_text) or intent == .plan_change;
     }
     if (std.mem.eql(u8, wire_name, "run_command")) {
-        return intent == .debug_failure or intent == .edit_code;
+        return intent == .debug_failure or intent == .edit_code or intent == .plan_change;
     }
     if (std.mem.eql(u8, wire_name, "replace_file_content")) {
-        return intent == .edit_code or intent == .debug_failure;
+        return intent == .edit_code or intent == .debug_failure or intent == .plan_change;
     }
     for (observationWires()) |wire| {
         if (std.mem.eql(u8, wire, wire_name)) return true;
@@ -274,6 +296,11 @@ test "classify maps ask mode to answer_question" {
 
 test "classify maps agent edit verbs to edit_code" {
     const intent = classify(.{ .mode = .agent, .intent = "Refactor workflow.zig to simplify resume" });
+    try std.testing.expectEqual(TaskIntent.edit_code, intent);
+}
+
+test "classify defaults agent mode without file to edit_code" {
+    const intent = classify(.{ .mode = .agent, .intent = "Update the chat panel scroll behavior" });
     try std.testing.expectEqual(TaskIntent.edit_code, intent);
 }
 

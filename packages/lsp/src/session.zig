@@ -4,6 +4,10 @@ const registry = @import("registry.zig");
 const diagnostics = @import("diagnostics.zig");
 const process_spawn = @import("forge-util").process_spawn;
 
+const c = @cImport({
+    @cInclude("sys/wait.h");
+});
+
 pub const SessionError = error{
     SpawnFailed,
     WriteFailed,
@@ -40,12 +44,16 @@ pub const Session = struct {
             }
         }
 
-        const child = process_spawn.spawn(allocator, argv.items, .{
+        var child = process_spawn.spawn(allocator, argv.items, .{
             .cwd = workspace_path,
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .inherit,
         }) catch return error.SpawnFailed;
+        if (childExited(child.pid)) {
+            child.deinit();
+            return error.SpawnFailed;
+        }
 
         return .{
             .allocator = allocator,
@@ -84,6 +92,8 @@ pub const Session = struct {
         }
 
         try self.writeMessage(request_json);
+        if (!expectsResponse(request_json)) return 0;
+
         const response = try self.readResponse(response_out.len);
         defer self.allocator.free(response);
         if (response.len > response_out.len) return error.ResponseTooLarge;
@@ -101,7 +111,19 @@ pub const Session = struct {
         return jsonrpc.readMessageFd(self.child.stdout_fd, self.allocator, max_payload) catch |err| switch (err) {
             error.PayloadTooLarge => error.ResponseTooLarge,
             error.OutOfMemory => error.OutOfMemory,
+            error.ReadTimeout => error.ReadFailed,
             else => error.ReadFailed,
         };
+    }
+
+    fn childExited(pid: c.pid_t) bool {
+        if (pid <= 0) return true;
+        var status: c_int = 0;
+        const waited = c.waitpid(pid, &status, c.WNOHANG);
+        return waited != 0;
+    }
+
+    fn expectsResponse(payload: []const u8) bool {
+        return std.mem.indexOf(u8, payload, "\"id\":") != null;
     }
 };

@@ -142,44 +142,9 @@ pub fn clampBottomPanelScroll(wb: anytype, panel_h: f32) void {
 }
 
 pub fn clampChatScroll(wb: anytype, agent_h: f32) void {
-    const panel_scroll = @import("../ui/core/panel_scroll.zig");
-    const layout_mod = @import("../ui/core/layout.zig");
-    const context_inspector_mod = @import("../ui/agent/context_inspector.zig");
-    const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
-    const chat_bubble_mod = @import("../ui/agent/chat_bubble.zig");
-    const content_w = @max(40, wb.agent_panel_width - 40);
-    var estimated_lines: usize = 0;
-    for (wb.chat_history.items) |msg| {
-        if (!agent_panel_mod.chatHasVisibleContent(msg.content)) continue;
-        const msg_h = chat_bubble_mod.historyMessageHeight(msg.role == .user, msg.content, content_w);
-        estimated_lines += @max(1, @as(usize, @intFromFloat(std.math.ceil(msg_h / chat_bubble_mod.line_h))));
-    }
-    wb.agent.lock();
-    if (wb.agent.worker_running) {
-        estimated_lines += chat_bubble_mod.estimateLiveLines(
-            wb.agent.thinking_text.items,
-            wb.agent.stream_text.items,
-            true,
-            content_w,
-        );
-        const tool_step_card_mod = @import("../ui/agent/tool_step_card.zig");
-        const steps_h = tool_step_card_mod.totalStepsHeight(wb.agent.agent_steps.items, content_w, wb.agent.mode);
-        estimated_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
-    }
-    const entry_count = wb.agent.context_entries.items.len;
-    const expanded = wb.agent.context_inspector_expanded;
-    const has_detail = wb.agent.context_selected_index != null and expanded;
-    const attachment_count = wb.agent.attachments.items.len;
-    wb.agent.unlock();
-    const has_routing = wb.agent.hasRoutingPreview();
-    const bottom = agent_panel_mod.bottomReserved(attachment_count, wb.agent_panel_width, &wb.prompt_buffer) + context_inspector_mod.stripHeight(expanded, entry_count, has_detail, has_routing);
-    const viewport = @max(0, agent_h - layout_mod.status_height - 90 - bottom);
-    wb.chat_scroll_y = panel_scroll.clampScrollY(
-        wb.chat_scroll_y,
-        estimated_lines,
-        viewport,
-        chat_bubble_mod.line_h,
-    );
+    _ = agent_h;
+    wb.chat_follow_stream = false;
+    wb.chat_scroll_y = std.math.clamp(wb.chat_scroll_y, 0, wb.chat_layout.max_scroll);
 }
 
 pub fn clampReviewScroll(wb: anytype, agent_h: f32) void {

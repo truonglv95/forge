@@ -408,7 +408,6 @@ static ForgeRenderCallback g_renderCallback = NULL;
 static const NSUInteger kMaxVertices = 512000;
 
 @class ForgeRenderer;
-static void forge_mac_flush_batch(void);
 static void ForgeEnsureVertexCapacity(NSUInteger needed);
 static CTFontRef ForgeGetFont(CGFloat pixelSize);
 static void ForgeInvalidateFontCache(void);

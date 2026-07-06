@@ -77,7 +77,7 @@ pub const Session = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     mutex: forge_util.sync.Mutex = .{},
-    mode: Mode = .ask,
+    mode: Mode = .agent,
     phase: Phase = .idle,
     run_id: ?[]const u8 = null,
     proposal_rel: ?[]const u8 = null,
