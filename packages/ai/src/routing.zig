@@ -249,6 +249,11 @@ fn toLowerBounded(text: []const u8, buf: []u8) []const u8 {
     return buf[0..n];
 }
 
+test "classify uses has_selection for agent edit_code hint" {
+    const intent = classify(.{ .mode = .agent, .intent = "simplify this", .has_selection = true });
+    try std.testing.expectEqual(TaskIntent.edit_code, intent);
+}
+
 test "formatToolsSummary omits edit tools for ask explore intent" {
     var buf: [256]u8 = undefined;
     const summary = formatToolsSummary(&buf, .read_only, .explore_codebase, "find all session helpers");

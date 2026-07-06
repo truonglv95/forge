@@ -421,6 +421,7 @@ pub fn agentHost(wb: anytype) agent_workflow.Host {
         .free_recent_files_snapshot = bridgeFreeRecentFilesSnapshot,
         .snapshot_context_supplement = bridgeSnapshotContextSupplement,
         .free_context_supplement = bridgeFreeContextSupplement,
+        .snapshot_editor_selection = bridgeSnapshotEditorSelection,
     };
 }
 
@@ -554,6 +555,22 @@ pub fn bridgeSnapshotContextSupplement(context: ?*anyopaque, allocator: std.mem.
 pub fn bridgeFreeContextSupplement(context: ?*anyopaque, allocator: std.mem.Allocator, supplement: ai.context_supplement.Supplement) void {
     _ = context;
     ai.context_supplement.freeSupplement(allocator, supplement);
+}
+
+pub fn snapshotEditorSelection(wb: anytype, allocator: std.mem.Allocator) !?[]const u8 {
+    const doc = wb.tabs.activeDoc() orelse return null;
+    if (!doc.buffer.hasSelection()) return null;
+    const selected = try doc.buffer.selectedText(allocator);
+    if (selected.len == 0) {
+        allocator.free(selected);
+        return null;
+    }
+    return selected;
+}
+
+pub fn bridgeSnapshotEditorSelection(context: ?*anyopaque, allocator: std.mem.Allocator) ?[]const u8 {
+    const wb: *Workbench = @ptrCast(@alignCast(context.?));
+    return snapshotEditorSelection(wb, allocator) catch null;
 }
 
 pub fn snapshotRecentTabPaths(wb: anytype, allocator: std.mem.Allocator) ![]const []const u8 {

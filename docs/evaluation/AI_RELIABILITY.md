@@ -11,12 +11,13 @@ provider-reported tokens, and wall-clock latency.
 zig build
 ./scripts/eval_reliability.sh \
   --provider fake \
-  --min-success-rate 0.66 \
+  --min-success-rate 1.0 \
   --output .forge/evals/fake.jsonl
 ```
 
-The fake baseline intentionally scores 2/3: it proves the evaluator rejects a
-valid proposal that does not satisfy the requested file postcondition.
+The fake baseline runs three fixture tasks end-to-end: create, modify, and
+proposal-only contract checks. Intent-aware fake responses keep the suite
+deterministic without live model calls.
 
 ## Live provider trial
 

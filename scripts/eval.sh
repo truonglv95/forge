@@ -118,7 +118,7 @@ echo "== eval: agent fixture tasks =="
 bash "$ROOT/scripts/eval_agent.sh"
 
 echo "== eval: agent reliability baseline =="
-bash "$ROOT/scripts/eval_reliability.sh" --provider fake --min-success-rate 0.66
+bash "$ROOT/scripts/eval_reliability.sh" --provider fake --min-success-rate 1.0
 
 echo "== eval: routing policy =="
 bash "$ROOT/scripts/eval_routing.sh"

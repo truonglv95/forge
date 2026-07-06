@@ -31,6 +31,7 @@ pub const Host = struct {
     free_recent_files_snapshot: *const fn (?*anyopaque, std.mem.Allocator, []const []const u8) void,
     snapshot_context_supplement: *const fn (?*anyopaque, std.mem.Allocator) ai.context_supplement.Supplement,
     free_context_supplement: *const fn (?*anyopaque, std.mem.Allocator, ai.context_supplement.Supplement) void,
+    snapshot_editor_selection: *const fn (?*anyopaque, std.mem.Allocator) ?[]const u8,
 };
 
 pub const default_ask_response = ai.proposal_workflow.default_ask_response;
@@ -777,6 +778,35 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     const recent_files = collectRecentFiles(host) catch &.{};
     defer if (recent_files.len > 0) host.free_recent_files_snapshot(host.context, host.allocator, recent_files);
 
+    const selection_text = host.snapshot_editor_selection(host.context, host.allocator);
+    defer if (selection_text) |text| host.allocator.free(text);
+    const has_selection = selection_text != null and selection_text.?.len > 0;
+
+    var effective_attachments = attachments;
+    var selection_attachment: ?ai.context_loader.AttachmentInput = null;
+    if (has_selection) {
+        selection_attachment = .{
+            .kind = .text_snippet,
+            .label = host.allocator.dupe(u8, "editor_selection") catch return error.ProviderFailed,
+            .text = host.allocator.dupe(u8, selection_text.?) catch return error.ProviderFailed,
+            .stored_path = null,
+        };
+        const merged = host.allocator.alloc(ai.context_loader.AttachmentInput, attachments.len + 1) catch return error.ProviderFailed;
+        errdefer host.allocator.free(merged);
+        @memcpy(merged[0..attachments.len], attachments);
+        merged[attachments.len] = selection_attachment.?;
+        effective_attachments = merged;
+    }
+    defer {
+        if (has_selection) {
+            host.allocator.free(effective_attachments);
+            if (selection_attachment) |attachment| {
+                host.allocator.free(attachment.label);
+                if (attachment.text) |text| host.allocator.free(text);
+            }
+        }
+    }
+
     var result = ai.agent.run(
         host.allocator,
         host.io,
@@ -790,7 +820,8 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .capability_profile = capability_profile,
             .explicit_files = ctx.scope_files,
             .active_file = ctx.active_file,
-            .attachments = attachments,
+            .has_selection = has_selection,
+            .attachments = effective_attachments,
             .conversation = ctx.conversation,
             .surface = .ide,
             .cancel_token = &cancel_token,
@@ -1061,16 +1092,46 @@ fn buildContext(
     const mode: ai.tools.Mode = @enumFromInt(@intFromEnum(host.agent.mode));
     host.agent.unlock();
 
+    const selection_text = host.snapshot_editor_selection(host.context, host.allocator);
+    defer if (selection_text) |text| host.allocator.free(text);
+    const has_selection = selection_text != null and selection_text.?.len > 0;
+
+    var effective_attachments = attachments;
+    var selection_attachment: ?ai.context_loader.AttachmentInput = null;
+    if (has_selection) {
+        selection_attachment = .{
+            .kind = .text_snippet,
+            .label = host.allocator.dupe(u8, "editor_selection") catch return error.ProviderFailed,
+            .text = host.allocator.dupe(u8, selection_text.?) catch return error.ProviderFailed,
+            .stored_path = null,
+        };
+        const merged = host.allocator.alloc(ai.context_loader.AttachmentInput, attachments.len + 1) catch return error.ProviderFailed;
+        errdefer host.allocator.free(merged);
+        @memcpy(merged[0..attachments.len], attachments);
+        merged[attachments.len] = selection_attachment.?;
+        effective_attachments = merged;
+    }
+    defer {
+        if (has_selection) {
+            host.allocator.free(effective_attachments);
+            if (selection_attachment) |attachment| {
+                host.allocator.free(attachment.label);
+                if (attachment.text) |text| host.allocator.free(text);
+            }
+        }
+    }
+
     const intent_text = intent orelse "";
     const route = ai.routing.plan(.{
         .mode = mode,
         .intent = intent_text,
         .has_active_file = active_file != null,
+        .has_selection = has_selection,
     }, .{
         .intent = intent,
         .explicit_files = explicit_files,
         .active_file = active_file,
-        .attachments = attachments,
+        .attachments = effective_attachments,
         .include_project_rules = true,
         .workspace_cwd = host.workspace_path,
         .recent_files = recent,
@@ -1105,6 +1166,7 @@ fn buildContext(
             .mode = mode,
             .intent = intent_text,
             .has_active_file = active_file != null,
+            .has_selection = has_selection,
         }, route);
         builder.addBlock(.intent, "routing", summary) catch {};
     }
