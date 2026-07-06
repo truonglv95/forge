@@ -25,6 +25,10 @@ const StreamEvent = struct {
     const Part = struct {
         text: ?[]const u8 = null,
         thought: ?bool = null,
+        functionCall: ?struct {
+            name: ?[]const u8 = null,
+            args: ?std.json.Value = null,
+        } = null,
     };
 
     const UsageMetadata = struct {
@@ -49,6 +53,8 @@ pub const Parser = struct {
     writer_initialized: bool = false,
     terminal_error: ?provider_mod.ProviderError = null,
     latest_usage: provider_mod.TokenUsage = .{},
+    tool_call_name: ?[]u8 = null,
+    tool_call_args_json: ?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, callbacks: Callbacks) Parser {
         return Parser{
@@ -61,6 +67,19 @@ pub const Parser = struct {
     pub fn deinit(self: *Parser) void {
         self.pending.deinit(self.allocator);
         self.assembled.deinit(self.allocator);
+        if (self.tool_call_name) |name| self.allocator.free(name);
+        if (self.tool_call_args_json) |args| self.allocator.free(args);
+    }
+
+    pub fn takeToolCall(self: *Parser) ?struct {
+        name: []u8,
+        args_json: []u8,
+    } {
+        const name = self.tool_call_name orelse return null;
+        const args_json = self.tool_call_args_json orelse return null;
+        self.tool_call_name = null;
+        self.tool_call_args_json = null;
+        return .{ .name = name, .args_json = args_json };
     }
 
     pub fn ioWriter(self: *Parser) *std.Io.Writer {
@@ -186,6 +205,17 @@ pub const Parser = struct {
             const content = candidate.content orelse continue;
             const parts = content.parts orelse continue;
             for (parts) |part| {
+                if (part.functionCall) |fc| {
+                    const name = fc.name orelse continue;
+                    if (self.tool_call_name) |owned| self.allocator.free(owned);
+                    if (self.tool_call_args_json) |owned| self.allocator.free(owned);
+                    self.tool_call_name = self.allocator.dupe(u8, name) catch return error.MalformedResponse;
+                    self.tool_call_args_json = if (fc.args) |args_val|
+                        std.json.Stringify.valueAlloc(self.allocator, args_val, .{}) catch return error.MalformedResponse
+                    else
+                        self.allocator.dupe(u8, "{}") catch return error.MalformedResponse;
+                    continue;
+                }
                 const text = part.text orelse continue;
                 const kind: ChunkKind = if (part.thought == true) .thought else .text;
                 if (kind == .text) self.assembled.appendSlice(self.allocator, text) catch return error.MalformedResponse;
@@ -326,4 +356,25 @@ test "Parser io writer uses stable vtable" {
     try parser.ioWriter().writeAll(fixture);
     try parser.finish();
     try std.testing.expectEqualStrings("{\"ok\":true}", parser.assembledText());
+}
+
+test "Parser captures streamed functionCall" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator, .{});
+    defer parser.deinit();
+
+    const fixture =
+        \\data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"search","args":{"term":"sample"}}}]}}]}
+        \\
+    ;
+    try parser.feed(fixture);
+    try parser.finish();
+
+    const call = parser.takeToolCall() orelse return error.TestExpectedEqual;
+    defer {
+        allocator.free(call.name);
+        allocator.free(call.args_json);
+    }
+    try std.testing.expectEqualStrings("search", call.name);
+    try std.testing.expect(std.mem.indexOf(u8, call.args_json, "sample") != null);
 }

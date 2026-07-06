@@ -9,6 +9,12 @@ pub const Callbacks = struct {
 const StreamEvent = struct {
     message: ?struct {
         content: ?[]const u8 = null,
+        tool_calls: ?[]struct {
+            function: struct {
+                name: []const u8,
+                arguments: std.json.Value,
+            },
+        } = null,
     } = null,
     done: bool = false,
     prompt_eval_count: ?i64 = null,
@@ -26,6 +32,8 @@ pub const Parser = struct {
     writer_initialized: bool = false,
     terminal_error: ?provider_mod.ProviderError = null,
     latest_usage: provider_mod.TokenUsage = .{},
+    tool_call_name: ?[]u8 = null,
+    tool_call_args_json: ?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, callbacks: Callbacks) Parser {
         return Parser{
@@ -48,6 +56,19 @@ pub const Parser = struct {
     pub fn deinit(self: *Parser) void {
         self.pending.deinit(self.allocator);
         self.assembled.deinit(self.allocator);
+        if (self.tool_call_name) |name| self.allocator.free(name);
+        if (self.tool_call_args_json) |args| self.allocator.free(args);
+    }
+
+    pub fn takeToolCall(self: *Parser) ?struct {
+        name: []u8,
+        args_json: []u8,
+    } {
+        const name = self.tool_call_name orelse return null;
+        const args_json = self.tool_call_args_json orelse return null;
+        self.tool_call_name = null;
+        self.tool_call_args_json = null;
+        return .{ .name = name, .args_json = args_json };
     }
 
     pub fn releaseWriter(self: *Parser) void {
@@ -111,6 +132,15 @@ pub const Parser = struct {
         self.latest_usage.total_tokens = self.latest_usage.prompt_tokens + self.latest_usage.completion_tokens;
 
         const content = parsed.value.message orelse return;
+        if (content.tool_calls) |calls| {
+            if (calls.len > 0) {
+                const first = calls[0];
+                if (self.tool_call_name) |owned| self.allocator.free(owned);
+                if (self.tool_call_args_json) |owned| self.allocator.free(owned);
+                self.tool_call_name = self.allocator.dupe(u8, first.function.name) catch return error.MalformedResponse;
+                self.tool_call_args_json = std.json.Stringify.valueAlloc(self.allocator, first.function.arguments, .{}) catch return error.MalformedResponse;
+            }
+        }
         const chunk = content.content orelse return;
         if (chunk.len == 0) return;
 
@@ -220,4 +250,25 @@ test "Parser assembles streamed NDJSON chunks" {
     try std.testing.expectEqual(@as(usize, 2), chunks.items.len);
     try std.testing.expectEqual(@as(usize, 3), parser.latest_usage.prompt_tokens);
     try std.testing.expectEqual(@as(usize, 2), parser.latest_usage.completion_tokens);
+}
+
+test "Parser captures streamed tool_calls" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator, .{});
+    defer parser.deinit();
+
+    const fixture =
+        \\{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"search","arguments":{"term":"sample"}}}]},"done":true}
+        \\
+    ;
+    try parser.feed(fixture);
+    try parser.finish();
+
+    const call = parser.takeToolCall() orelse return error.TestExpectedEqual;
+    defer {
+        allocator.free(call.name);
+        allocator.free(call.args_json);
+    }
+    try std.testing.expectEqualStrings("search", call.name);
+    try std.testing.expect(std.mem.indexOf(u8, call.args_json, "sample") != null);
 }
