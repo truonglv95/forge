@@ -1,3 +1,0 @@
-[submodule "_submodule/vscode"]
-	path = _submodule/vscode
-	url = git@github.com:microsoft/vscode.git

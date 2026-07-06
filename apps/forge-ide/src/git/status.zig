@@ -23,6 +23,14 @@ pub const Entry = struct {
             else => "changed",
         };
     }
+
+    pub fn isStaged(self: Entry) bool {
+        return self.status[0] != ' ' and self.status[0] != '?';
+    }
+
+    pub fn isUnstaged(self: Entry) bool {
+        return self.status[1] != ' ' or self.status[0] == '?';
+    }
 };
 
 pub const Status = struct {

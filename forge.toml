@@ -19,6 +19,10 @@ ui_font_size = 12
 [ai]
 # AI edits must remain review-only. Direct apply is not a supported mode.
 apply_mode = "review"
-# Provider: auto | fake | gemini  (auto picks gemini when credentials exist)
-provider = "auto"
-# model = "gemini-2.5-flash"
+# Provider: auto | fake | gemini | ollama
+# auto prefers Gemini credentials, then Ollama, then fake
+provider = "gemini"
+model = "gemini-2.5-flash"
+# Enable MCP tools from .mcp.json (Cursor / VS Code compatible format)
+mcp = true
+# model = "qwen2.5-coder:7b"  # ollama

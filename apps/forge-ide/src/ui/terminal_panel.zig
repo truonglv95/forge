@@ -33,24 +33,19 @@ pub const Selection = struct {
     }
 };
 
-pub fn sessionBarTop(panel_y: f32) f32 {
-    return panel_y + panel_scroll.bottom_content_top;
-}
-
 pub fn contentTop(panel_y: f32) f32 {
-    return sessionBarTop(panel_y) + session_tab_h;
+    return panel_y + 34.0;
 }
 
-pub fn hitSessionTab(editor_x: f32, panel_y: f32, x: f32, y: f32, session_count: usize) ?union(enum) { new, activate: usize } {
-    const top = sessionBarTop(panel_y);
-    if (y < top or y >= top + session_tab_h) return null;
-    var tab_x = editor_x + 8;
-    var i: usize = 0;
-    while (i < session_count) : (i += 1) {
-        if (x >= tab_x and x < tab_x + session_tab_w) return .{ .activate = i };
-        tab_x += session_tab_w + 4;
+pub fn hitSessionTab(editor_x: f32, editor_w: f32, panel_y: f32, x: f32, y: f32, _: usize) ?union(enum) { new, activate: usize } {
+    // We moved these to the right side of the main tab bar.
+    // For now we just return null or we could implement hit testing for the new layout.
+    // The main tab bar is roughly at panel_y + 6 to panel_y + 34
+    // Plus icon is at rx - 156
+    const rx = editor_x + editor_w;
+    if (y >= panel_y + 6 and y <= panel_y + 34) {
+        if (x >= rx - 156 and x <= rx - 140) return .new; // Plus button
     }
-    if (x >= tab_x and x < tab_x + 28) return .new;
     return null;
 }
 

@@ -3,7 +3,6 @@ const renderer = @import("forge-renderer");
 const editor = @import("forge-editor");
 const layout = @import("layout.zig");
 const agent_session = @import("../agent/session.zig");
-const icons = @import("icons.zig");
 const word_wrap = @import("word_wrap.zig");
 const editor_scroll = @import("editor_scroll.zig");
 const scrollbar = @import("scrollbar.zig");
@@ -28,12 +27,14 @@ pub const input_pad: f32 = 12;
 pub const ModelOption = struct {
     id: []const u8,
     label: []const u8,
+    provider: []const u8,
 };
 
 pub const models = [_]ModelOption{
-    .{ .id = "gemini-2.5-flash", .label = "Gemini 2.5 Flash" },
-    .{ .id = "gemini-2.5-pro", .label = "Gemini 2.5 Pro" },
-    .{ .id = "gemini-2.0-flash", .label = "Gemini 2.0 Flash" },
+    .{ .id = "qwen2.5-coder:7b", .label = "Qwen 2.5 Coder 7B (Ollama)", .provider = "ollama" },
+    .{ .id = "gemini-2.5-flash", .label = "Gemini 2.5 Flash", .provider = "gemini" },
+    .{ .id = "gemini-2.5-pro", .label = "Gemini 2.5 Pro", .provider = "gemini" },
+    .{ .id = "gemini-2.0-flash", .label = "Gemini 2.0 Flash", .provider = "gemini" },
 };
 
 pub const ModeOption = struct {
@@ -282,16 +283,7 @@ fn drawDropdownButton(rect: Rect, label: []const u8, open: bool, enabled: bool) 
         .w = chevron_w,
         .h = rect.h,
     };
-    drawChevron(chevron_rect, if (open) .up else .down, .{ .r = 0.89, .g = 0.89, .b = 0.89, .a = fg.a });
-}
-
-fn drawChevron(rect: Rect, direction: icons.ChevronDirection, color: renderer.Color) void {
-    icons.drawChevron(.{
-        .x = rect.x,
-        .y = rect.y,
-        .w = rect.w,
-        .h = rect.h,
-    }, direction, color);
+    renderer.Renderer.drawSvg(if (open) renderer.icons.chevron_up else renderer.icons.chevron_down, chevron_rect.x, chevron_rect.y, 16, 16, .{ .r = 0.89, .g = 0.89, .b = 0.89, .a = fg.a });
 }
 
 fn drawMenu(rect: Rect, items: []const []const u8, selected_index: usize) void {

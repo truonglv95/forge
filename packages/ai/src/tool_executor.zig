@@ -2,6 +2,7 @@ const std = @import("std");
 const workspace = @import("forge-workspace");
 const kernel = @import("forge-kernel");
 const tools = @import("tools.zig");
+const builtin = @import("builtin");
 const codebase_search = @import("codebase_search.zig");
 const context_rerank = @import("context_rerank.zig");
 const context_retrieval = @import("context_retrieval.zig");
@@ -22,6 +23,8 @@ pub const Context = struct {
     profile: tools.CapabilityProfile,
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
     environ_map: ?*const std.process.Environ.Map = null,
+    edit_callback: ?*const fn (?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void = null,
+    edit_context: ?*anyopaque = null,
 };
 
 pub const Outcome = struct {
@@ -192,6 +195,70 @@ pub fn readFile(ctx: Context, rel_path: []const u8) AgentToolError!Outcome {
     return .{ .summary = summary };
 }
 
+pub fn runCommand(ctx: Context, command: []const u8) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .run_command);
+    if (!isAllowedCommand(command)) return error.NotAllowed;
+
+    var shell_argv: [3][]const u8 = undefined;
+    const argv = blk: {
+        if (builtin.os.tag == .windows) {
+            shell_argv = .{ "cmd", "/c", command };
+        } else {
+            shell_argv = .{ "sh", "-c", command };
+        }
+        break :blk &shell_argv;
+    };
+
+    const captured = kernel.process.runCapture(ctx.allocator, .{
+        .argv = argv,
+        .cwd = ctx.cwd,
+        .max_bytes = 24 * 1024,
+    }) catch return error.TaskFailed;
+    defer ctx.allocator.free(captured.output);
+
+    if (ctx.cancel_token) |token| {
+        if (token.isCancelled()) return error.Cancelled;
+    }
+
+    const clipped = if (captured.output.len > 1200) captured.output[0..1200] else captured.output;
+    const summary = std.fmt.allocPrint(ctx.allocator, "run_command exit {d}\n{s}", .{ captured.exit_code, clipped }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
+pub fn replaceFileContent(ctx: Context, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .propose_edit);
+
+    if (ctx.edit_callback) |cb| {
+        cb(ctx.edit_context, path, start_line, end_line, replacement);
+    }
+
+    const summary = std.fmt.allocPrint(ctx.allocator, "Proposed edit to {s} (lines {d}-{d})", .{ path, start_line, end_line }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
+fn isAllowedCommand(command: []const u8) bool {
+    const allowed_prefixes = [_][]const u8{
+        "zig build",
+        "zig fmt",
+        "git status",
+        "git diff",
+        "git log",
+        "ls",
+        "pwd",
+        "cat ",
+        "head ",
+        "tail ",
+        "wc ",
+        "find ",
+    };
+    for (allowed_prefixes) |prefix| {
+        if (std.mem.startsWith(u8, command, prefix)) return true;
+    }
+    return false;
+}
+
 pub fn runTask(ctx: Context, task_name: []const u8) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .run_task);
@@ -208,7 +275,7 @@ pub fn runTask(ctx: Context, task_name: []const u8) AgentToolError!Outcome {
     const term = kernel.process.run(ctx.allocator, ctx.io, .{
         .argv = argv,
         .cwd = ctx.cwd,
-        .token = if (ctx.cancel_token) |token| token else null,
+        .token = if (ctx.cancel_token) |token| token.* else null,
     }) catch return error.TaskFailed;
 
     const exit_code: u8 = switch (term) {

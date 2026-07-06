@@ -5,7 +5,7 @@ const scope_picker = @import("../agent/scope_picker.zig");
 
 pub const PanelMode = enum { installed, marketplace };
 
-pub const list_top: f32 = 128;
+pub const list_top: f32 = 163;
 pub const header_h: f32 = 52;
 pub const cmd_row_h: f32 = 18;
 pub const footer_h: f32 = 72;

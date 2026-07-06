@@ -54,6 +54,9 @@ pub const HistoryEntry = history.Entry;
 pub const HistoryEntryList = history.EntryList;
 pub const LoadedRecord = history.LoadedRecord;
 
+pub const checkpoint = @import("checkpoint.zig");
+pub const hooks = @import("hooks.zig");
+
 pub const runs = @import("runs.zig");
 pub const sessions = @import("sessions.zig");
 pub const agent_memory = @import("agent_memory.zig");
@@ -76,6 +79,7 @@ pub const Config = struct {
     ai_apply_mode: AiApplyMode = .review,
     ai_provider: []const u8 = "auto",
     ai_model: ?[]const u8 = null,
+    ai_mcp_enabled: bool = true,
     theme: theme_mod.ThemeSettings = .{},
     pub fn parse(source: []const u8) error{ InvalidSyntax, InvalidValue, UnknownKey }!Config {
         var config = Config{};
@@ -112,6 +116,8 @@ pub const Config = struct {
                 config.ai_provider = try parseString(value);
             } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "model")) {
                 config.ai_model = try parseString(value);
+            } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "mcp")) {
+                config.ai_mcp_enabled = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
             } else if (std.mem.eql(u8, section, "theme")) {
                 try config.theme.applyKey(key, value);
             } else {

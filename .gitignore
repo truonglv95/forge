@@ -5,3 +5,5 @@ zig-pkg
 fixtures/eval-workspace/
 /extension.o
 /main.wasm
+
+.env

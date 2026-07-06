@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "summary": "Add a 'Hello' message to the Forge IDE chat history.",
+  "assumptions": [
+    "The user wants a simple 'hello' message to appear in the IDE's chat interface upon startup."
+  ],
+  "validation_tasks": [
+    "zig build test"
+  ],
+  "workspace_edit": {
+    "files": [
+      {
+        "path": "apps/forge-ide/src/main.zig",
+        "operation": "modify",
+        "expected_hash": "757271879895029e0029b39226871a39641777085186b4f7380931165706599b",
+        "edits": [
+          {
+            "start": 1310,
+            "end": 1310,
+            "replacement": "    wb.appendChat(.agent, \"Hello from Forge IDE!\") catch {};\n"
+          }
+        ]
+      }
+    ]
+  }
+}

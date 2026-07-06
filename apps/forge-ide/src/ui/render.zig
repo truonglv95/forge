@@ -7,13 +7,15 @@ const activity_bar = @import("activity_bar.zig");
 const sidebar_view = @import("sidebar_view.zig");
 const extensions_panel = @import("extensions_panel.zig");
 const context_inspector = @import("context_inspector.zig");
+const chat_bubble = @import("chat_bubble.zig");
+const tool_step_card = @import("tool_step_card.zig");
 const agent_composer = @import("agent_composer.zig");
 const search_panel = @import("search_panel.zig");
-const activity_icons = @import("activity_icons.zig");
 const debug_panel = @import("debug_panel.zig");
 const git_panel = @import("git_panel.zig");
+const ai_settings_panel = @import("ai_settings_panel.zig");
+const header_toolbar = @import("header_toolbar.zig");
 const explorer_scroll = @import("explorer_scroll.zig");
-const icons = @import("icons.zig");
 const tabs_ui = @import("tabs.zig");
 const theme_loader = @import("../theme_loader.zig");
 const bracket_match = @import("bracket_match.zig");
@@ -186,7 +188,7 @@ pub fn onRenderFrame() void {
     var h: f32 = 0;
     renderer.Renderer.getWindowSize(&w, &h);
 
-    const geo = layout.compute(wb.shell_mode, w, h, wb.explorer_panel_width, wb.agent_panel_width, wb.bottom_panel_height);
+    const geo = wb.layoutGeometry(w, h);
     wb.clampEditorScroll(geo.editor_w, geo.editor_h);
     wb.clampTabScroll(geo.editor_w);
     wb.clampExplorerScroll(h);
@@ -194,13 +196,14 @@ pub fn onRenderFrame() void {
     wb.clampSearchScroll(h);
     wb.clampGitScroll(h);
     wb.clampRunScroll(h);
+    if (wb.ai_settings_open) wb.clampAiSettingsScroll(geo.editor_h);
     const side_h = geo.content_h;
 
     if (state.root_view) |rv| {
         rv.frame = .{ .x = 0, .y = 0, .w = w, .h = h };
         if (state.header_view) |v| v.frame = .{ .x = 0, .y = 0, .w = w, .h = layout.header_height };
-        if (state.activity_view) |v| v.frame = .{ .x = 0, .y = layout.header_height, .w = layout.activity_bar_width, .h = side_h };
-        if (state.explorer_view) |v| v.frame = .{ .x = geo.explorer_x, .y = layout.header_height, .w = geo.explorer_w, .h = side_h };
+        if (state.activity_view) |v| v.frame = .{ .x = 0, .y = layout.header_height, .w = geo.explorer_w, .h = layout.activity_bar_height };
+        if (state.explorer_view) |v| v.frame = .{ .x = geo.explorer_x, .y = layout.header_height + layout.activity_bar_height, .w = geo.explorer_w, .h = side_h - layout.activity_bar_height };
         if (state.editor_view) |v| v.frame = .{ .x = geo.editor_x, .y = layout.header_height, .w = geo.editor_w, .h = geo.editor_h };
         if (state.panel_view) |v| v.frame = .{ .x = geo.editor_x, .y = geo.task_panel_y, .w = geo.editor_w, .h = geo.task_panel_h };
         if (state.border_view) |v| v.frame = .{ .x = geo.editor_x, .y = geo.task_panel_y, .w = geo.editor_w, .h = 1 };
@@ -208,22 +211,40 @@ pub fn onRenderFrame() void {
         if (state.status_view) |v| v.frame = .{ .x = 0, .y = h - layout.status_height, .w = w, .h = layout.status_height };
 
         rv.render();
-        renderer.Renderer.drawText("Forge IDE", w / 2 - 40, 8, 14.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
+        header_toolbar.draw(w, wb.headerToolbarState(), state.header_hover_action, c(wb.theme.colors.header_bg));
+
+        const subtle_border = c(wb.theme.colors.border);
 
         if (geo.shell_mode == .ide) {
-            drawActivityBar(wb);
-            switch (wb.sidebar_view) {
-                .explorer => drawExplorerPanel(wb, geo.explorer_x, geo.explorer_w, h),
-                .search => drawSearchPanel(wb, geo.explorer_x, geo.explorer_w, h),
-                .git => drawGitPanel(wb, geo.explorer_x, geo.explorer_w, h),
-                .run => drawDebugPanel(wb, geo.explorer_x, geo.explorer_w, h),
-                .extensions => drawExtensionsPanel(wb, geo.explorer_x, geo.explorer_w, h),
+            if (wb.sidebar_visible and geo.explorer_w > 0) {
+                drawActivityBar(wb, geo.explorer_w);
+                renderer.Renderer.drawRect(geo.explorer_x - 1, layout.header_height, 1, side_h, subtle_border);
+                renderer.Renderer.drawRect(geo.editor_x - 1, layout.header_height, 1, side_h, subtle_border);
+                switch (wb.sidebar_view) {
+                    .explorer => drawExplorerPanel(wb, geo.explorer_x, geo.explorer_w, h),
+                    .search => drawSearchPanel(wb, geo.explorer_x, geo.explorer_w, h),
+                    .git => drawGitPanel(wb, geo.explorer_x, geo.explorer_w, h),
+                    .run => drawDebugPanel(wb, geo.explorer_x, geo.explorer_w, h),
+                    .extensions => drawExtensionsPanel(wb, geo.explorer_x, geo.explorer_w, h),
+                    .ai => ai_settings_panel.drawSidebarHint(
+                        geo.explorer_x,
+                        geo.explorer_w,
+                        layout.header_height + layout.activity_bar_height,
+                        side_h - layout.activity_bar_height,
+                    ),
+                }
             }
             drawEditorPanel(wb, editor_buf, geo.editor_x, geo.editor_w, geo.editor_h, w);
-            drawTaskPanel(wb, geo.editor_x, geo.editor_w, geo.task_panel_y, geo.task_panel_h);
+            if (wb.bottom_panel_visible and geo.task_panel_h > 0) {
+                drawTaskPanel(wb, geo.editor_x, geo.editor_w, geo.task_panel_y, geo.task_panel_h);
+            }
         }
-        drawAgentPanel(wb, geo.agent_x, geo.agent_w, h);
+        if (wb.agent_panel_visible and geo.agent_w > 0) {
+            renderer.Renderer.drawRect(geo.agent_x - 1, layout.header_height, 1, side_h, subtle_border);
+            drawAgentPanel(wb, geo.agent_x, geo.agent_w, h);
+        }
         drawStatusBar(wb, w, h, geo.shell_mode);
+        header_toolbar.drawHoverTooltip(w, wb.headerToolbarState(), state.header_hover_action);
 
         if (wb.palette.open) drawPalette(wb, w, h);
         if (wb.focused_panel == .conflict) drawConflictDialog(wb, w, h);
@@ -244,36 +265,54 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
     const snap = wb.agent.snapshot(&status_copy, &provider_copy);
     if (snap.worker_running) wb.clampChatScroll(h);
 
+    const chat_tab_x = agent_x;
+    const chat_tab_w = 120;
+    const chat_tab_y = layout.header_height; // 30
+    const chat_tab_h = 35; // Match editor tab_height
+    const subtle_border = c(wb.theme.colors.border);
+
+    // Fill the tab bar background for the agent header
+    renderer.Renderer.drawRect(agent_x, chat_tab_y, agent_w, chat_tab_h, c(wb.theme.colors.tab_bar_bg));
+
+    // Draw bottom border for the whole header
+    renderer.Renderer.drawRect(agent_x, chat_tab_y + chat_tab_h, agent_w, 1, subtle_border);
+
+    // Draw active tab shape for "Chat"
+    renderer.Renderer.drawRect(chat_tab_x, chat_tab_y, chat_tab_w, chat_tab_h + 1, c(wb.theme.colors.editor_bg)); // +1 to cover bottom border
+    renderer.Renderer.drawRect(chat_tab_x, chat_tab_y, chat_tab_w, 1, subtle_border); // top
+    renderer.Renderer.drawRect(chat_tab_x, chat_tab_y, 1, chat_tab_h, subtle_border); // left
+    renderer.Renderer.drawRect(chat_tab_x + chat_tab_w - 1, chat_tab_y, 1, chat_tab_h, subtle_border); // right
+
     var mode_buf: [64:0]u8 = undefined;
     const mode_label = std.fmt.bufPrint(&mode_buf, "Chat", .{}) catch "Chat";
     mode_buf[mode_label.len] = 0;
-    renderer.Renderer.drawText(@ptrCast(&mode_buf), inner_x, 42, 13.0, .{ .r = 0.82, .g = 0.84, .b = 0.9, .a = 1.0 });
+    renderer.Renderer.drawText(@ptrCast(&mode_buf), chat_tab_x + 16, 44, 13.0, .{ .r = 0.82, .g = 0.84, .b = 0.9, .a = 1.0 });
 
-    if (snap.worker_running) {
-        renderer.Renderer.drawRoundedRect(inner_x - 4, 58, content_w + 8, 20, 4, .{ .r = 0.15, .g = 0.28, .b = 0.42, .a = 1.0 });
+    const mx = state.last_mouse_x;
+    const my = state.last_mouse_y;
+
+    const icon_c = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
+    const hover_c = renderer.Color{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 };
+    var rx = inner_x + content_w - 20;
+
+    if (mx >= rx and mx < rx + 16 and my >= 32 and my < 52) {
+        renderer.Renderer.drawRoundedRect(rx - 2, 32, 20, 20, 4, hover_c);
     }
+    renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx - 8, 27, 16, 16, icon_c);
+    rx -= 24;
 
-    if (snap.status_line.len > 0) {
-        var status_buf: [320:0]u8 = undefined;
-        const spinner_frames = "|/-\\";
-        var prefix_len: usize = 0;
-        if (snap.worker_running) {
-            const frame_idx = @as(usize, @intFromFloat(@mod(state.time * 8.0, 4.0))) % spinner_frames.len;
-            prefix_len = 2;
-            status_buf[0] = spinner_frames[frame_idx];
-            status_buf[1] = ' ';
-        }
-        const clipped = if (snap.status_line.len > 319 - prefix_len) snap.status_line[0 .. 319 - prefix_len] else snap.status_line;
-        @memcpy(status_buf[prefix_len .. prefix_len + clipped.len], clipped);
-        status_buf[prefix_len + clipped.len] = 0;
-        const status_color = if (snap.worker_running)
-            renderer.Color{ .r = 0.85, .g = 0.95, .b = 1.0, .a = 1.0 }
-        else
-            renderer.Color{ .r = 0.75, .g = 0.85, .b = 1.0, .a = 1.0 };
-        renderer.Renderer.drawText(@ptrCast(&status_buf), inner_x, 62, 12.0, status_color);
+    if (mx >= rx and mx < rx + 16 and my >= 32 and my < 52) {
+        renderer.Renderer.drawRoundedRect(rx - 2, 32, 20, 20, 4, hover_c);
     }
+    renderer.Renderer.drawSvg(renderer.icons.sync, rx - 8, 27, 16, 16, icon_c);
+    rx -= 24;
 
-    var run_y: f32 = 72.0;
+    if (mx >= rx and mx < rx + 16 and my >= 32 and my < 52) {
+        renderer.Renderer.drawRoundedRect(rx - 2, 32, 20, 20, 4, hover_c);
+    }
+    renderer.Renderer.drawSvg(renderer.icons.plus, rx - 8, 27, 16, 16, icon_c);
+
+    var run_y: f32 = 60.0;
     wb.agent.lock();
     const run_count = wb.agent.run_history.items.len;
     const selected_run = wb.agent.selected_run_index;
@@ -365,97 +404,95 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
         }
         wb.agent.unlock();
     } else {
+        const user_style = chat_bubble.BubbleStyle{
+            .bg = .{ .r = 0.2, .g = 0.2, .b = 0.25, .a = 1.0 },
+            .fg = .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 },
+        };
+        const agent_style = chat_bubble.BubbleStyle{
+            .bg = .{ .r = 0.15, .g = 0.25, .b = 0.15, .a = 1.0 },
+            .fg = .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 },
+        };
         for (state.chat_history.?.items) |msg| {
-            if (content_y > chat_bottom) break;
-            const lines = @as(f32, @floatFromInt(std.mem.count(u8, msg.content, "\n") + 1));
-            const bubble_h = lines * 16.0 + 10.0;
-            const bubble_x = agent_x + 10;
-            if (msg.role == .user) {
-                renderer.Renderer.drawRoundedRect(bubble_x, content_y - 4, content_w, bubble_h, 8.0, .{ .r = 0.2, .g = 0.2, .b = 0.25, .a = 1.0 });
-                renderer.Renderer.drawText(msg.content, inner_x + 8, content_y, 14.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
-            } else {
-                renderer.Renderer.drawRoundedRect(bubble_x, content_y - 4, content_w, bubble_h, 8.0, .{ .r = 0.15, .g = 0.25, .b = 0.15, .a = 1.0 });
-                renderer.Renderer.drawText(msg.content, inner_x + 8, content_y, 14.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
-            }
-            content_y += bubble_h + 10.0;
+            const bubble_h = chat_bubble.bubbleHeight(msg.content, content_w, false);
+            if (content_y + bubble_h > chat_bottom and content_y > run_y + 8) break;
+            const style = if (msg.role == .user) user_style else agent_style;
+            const drawn = chat_bubble.drawBubble(wb.allocator, agent_x, inner_x, content_w, content_y, null, msg.content, style);
+            content_y += drawn;
         }
 
         if (snap.worker_running) {
             wb.agent.lock();
-            for (wb.agent.agent_steps.items) |step| {
-                if (content_y > chat_bottom) break;
-                var step_buf: [512]u8 = undefined;
-                const step_line = std.fmt.bufPrint(&step_buf, "{d}. {s}: {s}", .{ step.index, step.kind, step.summary }) catch continue;
-                const step_h = 18.0;
-                renderer.Renderer.drawRoundedRect(agent_x + 10, content_y - 2, content_w, step_h, 6, .{ .r = 0.16, .g = 0.18, .b = 0.22, .a = 1.0 });
-                renderer.Renderer.drawText(step_line, inner_x + 8, content_y, 11.0, .{ .r = 0.75, .g = 0.85, .b = 0.95, .a = 1.0 });
-                content_y += step_h + 6;
-            }
-            wb.agent.unlock();
+            defer wb.agent.unlock();
 
-            var thinking_copy: [2048]u8 = undefined;
-            var stream_copy: [2048]u8 = undefined;
-            var thinking_len: usize = 0;
-            var stream_len: usize = 0;
-            wb.agent.lock();
+            var step_i: usize = 0;
+            while (step_i < wb.agent.agent_steps.items.len) : (step_i += 1) {
+                if (content_y > chat_bottom) break;
+                const drawn = tool_step_card.drawStep(
+                    agent_x,
+                    inner_x,
+                    content_w,
+                    content_y,
+                    wb.agent.agent_steps.items,
+                    step_i,
+                    wb.allocator,
+                );
+                if (drawn > 0) content_y += drawn;
+            }
+
             const thinking_src = wb.agent.thinking_text.items;
             const stream_src = wb.agent.stream_text.items;
-            const thinking_take = @min(thinking_src.len, thinking_copy.len);
-            if (thinking_take > 0) {
-                const thinking_start = thinking_src.len - thinking_take;
-                @memcpy(thinking_copy[0..thinking_take], thinking_src[thinking_start..]);
-                thinking_len = thinking_take;
-            }
-            const stream_take = @min(stream_src.len, stream_copy.len);
-            if (stream_take > 0) {
-                const stream_start = stream_src.len - stream_take;
-                @memcpy(stream_copy[0..stream_take], stream_src[stream_start..]);
-                stream_len = stream_take;
-            }
-            wb.agent.unlock();
 
-            if (thinking_len > 0) {
-                content_y = drawLiveBubble(
+            if (thinking_src.len > 0) {
+                const drawn = chat_bubble.drawBubble(
+                    wb.allocator,
                     agent_x,
-                    content_w,
                     inner_x,
+                    content_w,
                     content_y,
                     "Thinking",
-                    thinking_copy[0..thinking_len],
-                    .{ .r = 0.14, .g = 0.18, .b = 0.28, .a = 1.0 },
-                    .{ .r = 0.75, .g = 0.82, .b = 0.95, .a = 1.0 },
+                    thinking_src,
+                    .{
+                        .bg = .{ .r = 0.14, .g = 0.18, .b = 0.28, .a = 1.0 },
+                        .fg = .{ .r = 0.75, .g = 0.82, .b = 0.95, .a = 1.0 },
+                    },
                 );
-            } else if (stream_len == 0) {
-                var waiting_buf: [384:0]u8 = undefined;
-                if (std.fmt.bufPrint(
-                    &waiting_buf,
-                    "Thinking ({s})...\n{s}",
-                    .{ snap.provider_label, snap.status_line },
-                )) |waiting| {
-                    waiting_buf[waiting.len] = 0;
-                    content_y = drawLiveBubble(
-                        agent_x,
-                        content_w,
-                        inner_x,
-                        content_y,
-                        "",
-                        waiting_buf[0..waiting.len],
-                        .{ .r = 0.12, .g = 0.22, .b = 0.32, .a = 1.0 },
-                        .{ .r = 0.8, .g = 0.95, .b = 0.85, .a = 1.0 },
-                    );
-                } else |_| {}
+                content_y += drawn;
+            } else if (stream_src.len == 0) {
+                var live_buf: [256:0]u8 = undefined;
+                const live_text = if (snap.status_line.len > 0)
+                    std.fmt.bufPrint(&live_buf, "{s}", .{snap.status_line}) catch "Working..."
+                else
+                    std.fmt.bufPrint(&live_buf, "Working...", .{}) catch "Working...";
+                live_buf[live_text.len] = 0;
+                const drawn = chat_bubble.drawBubble(
+                    wb.allocator,
+                    agent_x,
+                    inner_x,
+                    content_w,
+                    content_y,
+                    null,
+                    live_text,
+                    .{
+                        .bg = .{ .r = 0.12, .g = 0.22, .b = 0.32, .a = 1.0 },
+                        .fg = .{ .r = 0.8, .g = 0.95, .b = 0.85, .a = 1.0 },
+                    },
+                );
+                content_y += drawn;
             }
 
-            if (stream_len > 0) {
-                _ = drawLiveBubble(
+            if (stream_src.len > 0) {
+                _ = chat_bubble.drawBubble(
+                    wb.allocator,
                     agent_x,
-                    content_w,
                     inner_x,
+                    content_w,
                     content_y,
-                    "Generating",
-                    stream_copy[0..stream_len],
-                    .{ .r = 0.12, .g = 0.24, .b = 0.18, .a = 1.0 },
-                    .{ .r = 0.85, .g = 0.95, .b = 0.88, .a = 1.0 },
+                    if (thinking_src.len > 0) "Response" else null,
+                    stream_src,
+                    .{
+                        .bg = .{ .r = 0.12, .g = 0.24, .b = 0.18, .a = 1.0 },
+                        .fg = .{ .r = 0.85, .g = 0.95, .b = 0.88, .a = 1.0 },
+                    },
                 );
             }
         }
@@ -482,12 +519,23 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
     } else {
         var chat_lines: usize = 0;
         for (state.chat_history.?.items) |msg| {
-            chat_lines += std.mem.count(u8, msg.content, "\n") + 4;
+            chat_lines += chat_bubble.visualLineCount(msg.content, content_w) + 1;
         }
-        if (snap.worker_running) chat_lines += 6;
+        if (snap.worker_running) {
+            wb.agent.lock();
+            chat_lines += chat_bubble.estimateLiveLines(
+                wb.agent.thinking_text.items,
+                wb.agent.stream_text.items,
+                true,
+                content_w,
+            );
+            const steps_h = tool_step_card.totalStepsHeight(wb.agent.agent_steps.items, content_w);
+            chat_lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble.line_h)));
+            wb.agent.unlock();
+        }
         const chat_top = run_y + 8;
         const chat_viewport = @max(0, chat_bottom - chat_top);
-        const chat_content = @as(f32, @floatFromInt(@max(1, chat_lines))) * 16;
+        const chat_content = @as(f32, @floatFromInt(@max(1, chat_lines))) * chat_bubble.line_h;
         const chat_max = @max(0, chat_content - chat_viewport);
         const show_chat_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, chat_top, agent_w, chat_viewport);
         scrollbar.drawVertical(
@@ -528,11 +576,13 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
     );
 
     if (snap.show_review) {
-        const agent_actions = @import("agent_panel.zig").reviewActions(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer);
         wb.agent.lock();
+        const show_rollback = wb.agent.last_checkpoint_id != null;
+        const show_approve_spec = wb.agent.spec_pending;
         const accepted = wb.agent.review.acceptedCount();
         const total = wb.agent.review.hunks.len;
         wb.agent.unlock();
+        const agent_actions = @import("agent_panel.zig").reviewActions(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer, show_rollback, show_approve_spec);
         renderer.Renderer.drawRoundedRect(agent_actions.apply.x, agent_actions.apply.y, agent_actions.apply.w, agent_actions.apply.h, 6, .{ .r = 0.2, .g = 0.55, .b = 0.35, .a = 1.0 });
         var apply_buf: [32:0]u8 = undefined;
         const apply_label = std.fmt.bufPrint(&apply_buf, "Apply ({d}/{d})", .{ accepted, total }) catch "Apply";
@@ -540,48 +590,23 @@ fn drawAgentPanel(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agen
         renderer.Renderer.drawText(@ptrCast(&apply_buf), agent_actions.apply.x + 8, agent_actions.apply.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
         renderer.Renderer.drawRoundedRect(agent_actions.reject.x, agent_actions.reject.y, agent_actions.reject.w, agent_actions.reject.h, 6, .{ .r = 0.45, .g = 0.2, .b = 0.2, .a = 1.0 });
         renderer.Renderer.drawText("Reject all", agent_actions.reject.x + 10, agent_actions.reject.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+        if (agent_actions.rollback.w > 0) {
+            renderer.Renderer.drawRoundedRect(agent_actions.rollback.x, agent_actions.rollback.y, agent_actions.rollback.w, agent_actions.rollback.h, 6, .{ .r = 0.35, .g = 0.35, .b = 0.45, .a = 1.0 });
+            renderer.Renderer.drawText("Rollback", agent_actions.rollback.x + 12, agent_actions.rollback.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+        }
+        if (agent_actions.approve_spec.w > 0) {
+            renderer.Renderer.drawRoundedRect(agent_actions.approve_spec.x, agent_actions.approve_spec.y, agent_actions.approve_spec.w, agent_actions.approve_spec.h, 6, .{ .r = 0.2, .g = 0.4, .b = 0.7, .a = 1.0 });
+            renderer.Renderer.drawText("Approve spec", agent_actions.approve_spec.x + 8, agent_actions.approve_spec.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+        }
         const hint_y = agent_actions.apply.y - 14;
         renderer.Renderer.drawText("Click hunks to accept/reject — Apply selected", inner_x, hint_y, 10.0, .{ .r = 0.65, .g = 0.65, .b = 0.65, .a = 1.0 });
+    } else if (snap.spec_pending) {
+        const agent_actions = @import("agent_panel.zig").reviewActions(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer, snap.last_checkpoint_id != null, true);
+        if (agent_actions.approve_spec.w > 0) {
+            renderer.Renderer.drawRoundedRect(agent_actions.approve_spec.x, agent_actions.approve_spec.y, agent_actions.approve_spec.w, agent_actions.approve_spec.h, 6, .{ .r = 0.2, .g = 0.4, .b = 0.7, .a = 1.0 });
+            renderer.Renderer.drawText("Approve spec", agent_actions.approve_spec.x + 8, agent_actions.approve_spec.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+        }
     }
-}
-
-fn drawLiveBubble(
-    agent_x: f32,
-    content_w: f32,
-    inner_x: f32,
-    content_y: f32,
-    title: []const u8,
-    text: []const u8,
-    bg: renderer.Color,
-    fg: renderer.Color,
-) f32 {
-    const tail_chars: usize = 1400;
-    const shown = if (text.len > tail_chars) text[text.len - tail_chars ..] else text;
-    var line_count: usize = if (title.len > 0) 1 else 0;
-    line_count += std.mem.count(u8, shown, "\n") + 1;
-    const bubble_h = @as(f32, @floatFromInt(line_count)) * 14.0 + 14.0;
-    const bubble_x = agent_x + 10;
-    renderer.Renderer.drawRoundedRect(bubble_x, content_y - 4, content_w, bubble_h, 8.0, bg);
-
-    var y = content_y;
-    if (title.len > 0) {
-        var title_buf: [64:0]u8 = undefined;
-        const title_line = std.fmt.bufPrint(&title_buf, "{s}", .{title}) catch title;
-        title_buf[title_line.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&title_buf), inner_x + 8, y, 11.0, .{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 0.85 });
-        y += 16.0;
-    }
-
-    var line_it = std.mem.splitScalar(u8, shown, '\n');
-    while (line_it.next()) |line| {
-        var line_buf: [512:0]u8 = undefined;
-        const clipped = if (line.len > 511) line[0..511] else line;
-        @memcpy(line_buf[0..clipped.len], clipped);
-        line_buf[clipped.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&line_buf), inner_x + 8, y, 11.0, fg);
-        y += 14.0;
-    }
-    return content_y + bubble_h + 10.0;
 }
 
 fn drawScopePicker(wb: *@import("../workbench.zig").Workbench, agent_x: f32, agent_w: f32, h: f32) void {
@@ -638,37 +663,53 @@ fn drawScopePicker(wb: *@import("../workbench.zig").Workbench, agent_x: f32, age
         var line_buf: [384:0]u8 = undefined;
         var label_buf: [384]u8 = undefined;
         const label = ai.scope_resolver.displayLabel(path, &label_buf);
-        @memcpy(line_buf[0..label.len], label);
-        line_buf[label.len] = 0;
+        const n = @min(label.len, line_buf.len - 1);
+        @memcpy(line_buf[0..n], label[0..n]);
+        line_buf[n] = 0;
         renderer.Renderer.drawText(@ptrCast(&line_buf), box_x + 14, row_y, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
         row_y += 20;
     }
 }
 
-fn drawActivityBar(wb: *@import("../workbench.zig").Workbench) void {
+fn drawActivityBar(wb: *@import("../workbench.zig").Workbench, w: f32) void {
     const theme = &wb.theme;
     const accent = c(theme.colors.accent);
 
+    // Draw bottom border for activity bar
+    renderer.Renderer.drawRect(0, layout.header_height + layout.activity_bar_height - 1, w, 1, c(theme.colors.border));
+
     for (sidebar_view.all) |view| {
-        const y = activity_bar.iconY(view);
+        const x = activity_bar.iconX(view);
+        const y = layout.header_height;
         const selected = wb.sidebar_view == view;
         if (selected) {
-            renderer.Renderer.drawRect(0, y + 6, 3, activity_bar.icon_h - 12, accent);
-            renderer.Renderer.drawRoundedRect(6, y + 2, 38, activity_bar.icon_h - 4, 4, .{ .r = 0.28, .g = 0.32, .b = 0.38, .a = 1.0 });
+            // Draw top highlight for selected horizontal tab
+            renderer.Renderer.drawRect(x + 6, y, activity_bar.icon_w - 12, 2, accent);
         }
         const color = if (selected)
             renderer.Color{ .r = 1, .g = 1, .b = 1, .a = 1 }
         else
             renderer.Color{ .r = 0.65, .g = 0.65, .b = 0.65, .a = 1 };
-        const center = activity_bar.iconCenter(view);
-        activity_icons.draw(view, center.x, center.y, color);
+        const center = activity_bar.iconCenter(view, w);
+
+        const svg = switch (view) {
+            .explorer => renderer.icons.file_directory,
+            .search => renderer.icons.search,
+            .git => renderer.icons.git_branch,
+            .run => renderer.icons.gear,
+            .extensions => renderer.icons.plus, // placeholder for extensions
+            .ai => renderer.icons.sparkle,
+        };
+        renderer.Renderer.drawSvg(svg, center.x - 8, center.y - 8, 16, 16, color);
     }
 }
 
 fn drawSearchPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const theme = &wb.theme;
-    renderer.Renderer.setClipRect(panel_x, 30, panel_w, h - 52);
-    renderer.Renderer.drawText("SEARCH", panel_x + 20, 45, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    const panel_y = layout.header_height + layout.activity_bar_height;
+    renderer.Renderer.setClipRect(panel_x, panel_y, panel_w, h - panel_y - layout.status_height);
+    renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + 8, panel_y + 14, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    renderer.Renderer.drawText("SEARCH", panel_x + 22, panel_y + 15, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
 
     const query_y = search_panel.list_top - 32;
     renderer.Renderer.drawRoundedRect(panel_x + 12, query_y, panel_w - 24, search_panel.query_box_h, 4, .{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 });
@@ -684,7 +725,7 @@ fn drawSearchPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, pan
     if (wb.search_results) |results| {
         for (results.matches, 0..) |match, index| {
             if (y + search_panel.row_h >= 65 and y < h - layout.status_height) {
-                renderer.Renderer.drawRoundedRect(panel_x + 8, y, panel_w - 16, search_panel.row_h - 4, 4, c(theme.colors.selection));
+                renderer.Renderer.drawRect(panel_x, y, panel_w, search_panel.row_h - 4, c(theme.colors.selection));
                 var path_buf: [160:0]u8 = undefined;
                 @memcpy(path_buf[0..@min(match.path.len, path_buf.len - 1)], match.path[0..@min(match.path.len, path_buf.len - 1)]);
                 path_buf[@min(match.path.len, path_buf.len - 1)] = 0;
@@ -708,54 +749,233 @@ fn drawSearchPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, pan
     drawSidebarScrollbar(panel_x, panel_w, search_panel.list_top, h, wb.search_scroll_y, result_count, search_panel.row_h);
 }
 
+fn countLines(text: ?[]const u8) usize {
+    const value = text orelse return 1;
+    if (value.len == 0) return 1;
+    var count: usize = 1;
+    for (value) |ch| {
+        if (ch == '\n') count += 1;
+    }
+    return count;
+}
+
 fn drawGitPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_w: f32, h: f32) void {
-    const theme = &wb.theme;
-    renderer.Renderer.setClipRect(panel_x, 30, panel_w, h - 52);
-    renderer.Renderer.drawText("SOURCE CONTROL", panel_x + 20, 45, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    const panel_y = layout.header_height + layout.activity_bar_height;
+    renderer.Renderer.setClipRect(panel_x, panel_y, panel_w, h - panel_y - layout.status_height);
 
-    const btn_y = git_panel.list_top - 32;
-    renderer.Renderer.drawRoundedRect(panel_x + 12, btn_y, panel_w - 24, 18, 4, c(theme.colors.accent_soft));
-    renderer.Renderer.drawText("Refresh git status", panel_x + 20, btn_y + 3, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+    const icon_c = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
+    const hover_c = renderer.Color{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 };
+    const my = state.last_mouse_y;
+    const mx = state.last_mouse_x;
+    const is_hovering_panel = mx >= panel_x and mx < panel_x + panel_w;
 
-    var y = git_panel.list_top - wb.git_scroll_y + 28;
+    // Header CHANGES
+    renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + 8, panel_y + 8, 16, 16, icon_c);
+    renderer.Renderer.drawText("CHANGES", panel_x + 22, panel_y + 9, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
+
+    const header_action_y = panel_y + 5;
+    // more, refresh, commit, tree
+    if (is_hovering_panel and my >= header_action_y and my < header_action_y + 20) {
+        if (mx >= panel_x + panel_w - 24 and mx < panel_x + panel_w - 8) {
+            renderer.Renderer.drawRoundedRect(panel_x + panel_w - 26, header_action_y, 20, 20, 4, hover_c);
+        } else if (mx >= panel_x + panel_w - 48 and mx < panel_x + panel_w - 32) {
+            renderer.Renderer.drawRoundedRect(panel_x + panel_w - 50, header_action_y, 20, 20, 4, hover_c);
+        } else if (mx >= panel_x + panel_w - 72 and mx < panel_x + panel_w - 56) {
+            renderer.Renderer.drawRoundedRect(panel_x + panel_w - 74, header_action_y, 20, 20, 4, hover_c);
+        } else if (mx >= panel_x + panel_w - 96 and mx < panel_x + panel_w - 80) {
+            renderer.Renderer.drawRoundedRect(panel_x + panel_w - 98, header_action_y, 20, 20, 4, hover_c);
+        }
+    }
+    renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, panel_x + panel_w - 24, header_action_y + 3, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.icons.sync, panel_x + panel_w - 48, header_action_y + 3, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.icons.check, panel_x + panel_w - 72, header_action_y + 3, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.icons.repo, panel_x + panel_w - 96, header_action_y + 3, 16, 16, icon_c);
+
+    var y = panel_y + 36;
+    y -= wb.git_scroll_y;
+
+    // Input Box
+    const input_h = 32.0;
+    const is_input_focused = wb.focused_panel == .git;
+    const input_bg = if (is_input_focused) renderer.Color{ .r = 0.15, .g = 0.15, .b = 0.18, .a = 1.0 } else renderer.Color{ .r = 0.1, .g = 0.1, .b = 0.12, .a = 1.0 };
+    const input_border = if (is_input_focused) renderer.Color{ .r = 0.3, .g = 0.4, .b = 0.6, .a = 1.0 } else renderer.Color{ .r = 0.2, .g = 0.2, .b = 0.25, .a = 1.0 };
+
+    renderer.Renderer.drawRoundedRect(panel_x + 8, y, panel_w - 16, input_h, 4, input_border);
+    renderer.Renderer.drawRoundedRect(panel_x + 9, y + 1, panel_w - 18, input_h - 2, 4, input_bg);
+
+    var commit_msg_buf: [1024]u8 = undefined;
+    const msg = wb.git_commit_msg.content() catch "";
+    defer if (msg.len > 0) wb.allocator.free(msg);
+
+    if (msg.len == 0) {
+        renderer.Renderer.drawText("Message (Cmd+Enter to commit)", panel_x + 16, y + 8, 12.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
+    } else {
+        const display_msg = if (msg.len > 120) msg[0..120] else msg;
+        @memcpy(commit_msg_buf[0..display_msg.len], display_msg);
+        commit_msg_buf[display_msg.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&commit_msg_buf), panel_x + 16, y + 8, 12.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+    }
+
+    if (is_input_focused) {
+        const cursor_x = panel_x + 16 + renderer.Renderer.measureText(msg, 12.0);
+        if (@mod(state.time, 1.0) < 0.5) {
+            renderer.Renderer.drawRect(cursor_x, y + 8, 2, 14, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
+        }
+    }
+
+    renderer.Renderer.drawSvg(renderer.icons.sparkle, panel_x + panel_w - 28, y + 8, 16, 16, icon_c);
+
+    y += 40;
+
+    // Commit Button
+    const btn_bg = renderer.Color{ .r = 0.25, .g = 0.45, .b = 0.65, .a = 1.0 };
+    renderer.Renderer.drawRoundedRect(panel_x + 8, y, panel_w - 16, 26, 4, btn_bg);
+    renderer.Renderer.drawSvg(renderer.icons.check, panel_x + panel_w / 2 - 30, y + 5, 16, 16, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+    renderer.Renderer.drawText("Commit", panel_x + panel_w / 2 - 16, y + 5, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+
+    y += 34;
+
     if (wb.git_status) |status| {
         if (!status.is_repo) {
-            renderer.Renderer.drawText("Not a git repository.", panel_x + 16, git_panel.list_top + 8, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+            renderer.Renderer.drawText("Not a git repository.", panel_x + 16, y, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
         } else if (status.entries.len == 0) {
-            renderer.Renderer.drawText("Working tree clean.", panel_x + 16, git_panel.list_top + 8, 11.0, .{ .r = 0.6, .g = 0.8, .b = 0.6, .a = 1.0 });
+            renderer.Renderer.drawText("Working tree clean.", panel_x + 16, y, 12.0, .{ .r = 0.6, .g = 0.8, .b = 0.6, .a = 1.0 });
         } else {
-            for (status.entries) |entry| {
-                if (y + git_panel.row_h >= 65 and y < h - layout.status_height) {
-                    var status_buf: [8:0]u8 = undefined;
-                    status_buf[0] = entry.status[0];
-                    status_buf[1] = entry.status[1];
-                    status_buf[2] = 0;
-                    renderer.Renderer.drawText(@ptrCast(&status_buf), panel_x + 16, y + 2, 11.0, c(theme.colors.warning));
-                    var path_buf: [160:0]u8 = undefined;
-                    @memcpy(path_buf[0..@min(entry.path.len, path_buf.len - 1)], entry.path[0..@min(entry.path.len, path_buf.len - 1)]);
-                    path_buf[@min(entry.path.len, path_buf.len - 1)] = 0;
-                    renderer.Renderer.drawText(@ptrCast(&path_buf), panel_x + 40, y + 2, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
-                    var label_buf: [64:0]u8 = undefined;
-                    const label = std.fmt.bufPrint(&label_buf, "{s}", .{entry.label()}) catch "";
-                    label_buf[label.len] = 0;
-                    renderer.Renderer.drawText(@ptrCast(&label_buf), panel_x + 40, y + 14, 9.0, .{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 });
-                }
-                y += git_panel.row_h;
+            var staged_count: usize = 0;
+            var changes_count: usize = 0;
+            for (status.entries) |e| {
+                if (e.isStaged()) staged_count += 1;
+                if (e.isUnstaged()) changes_count += 1;
             }
+
+            const drawSection = struct {
+                fn draw(py: *f32, count: usize, title: [:0]const u8, is_collapsed: bool, entries: []const @import("../git/status.zig").Entry, is_staged_section: bool, px: f32, pw: f32, ch: f32, my_y: f32, mx_x: f32, hc: renderer.Color) void {
+                    if (count == 0) return;
+
+                    if (mx_x >= px and mx_x < px + pw and my_y >= py.* and my_y < py.* + 24) {
+                        renderer.Renderer.drawRect(px, py.*, pw, 24, hc);
+                    }
+
+                    const svg = if (is_collapsed) renderer.icons.chevron_right else renderer.icons.chevron_down;
+                    renderer.Renderer.drawSvg(svg, px + 8, py.* + 4, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+                    renderer.Renderer.drawText(title, px + 22, py.* + 5, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+
+                    var badge_buf: [16:0]u8 = undefined;
+                    const badge_str = std.fmt.bufPrintZ(&badge_buf, "{d}", .{count}) catch "0";
+                    const badge_w = @as(f32, @floatFromInt(badge_str.len)) * 6.5 + 8;
+                    const badge_x = px + pw - badge_w - 12;
+                    renderer.Renderer.drawRoundedRect(badge_x, py.* + 4, badge_w, 16, 8, .{ .r = 0.3, .g = 0.5, .b = 0.5, .a = 1.0 });
+                    renderer.Renderer.drawText(badge_str, badge_x + 4, py.* + 5, 10.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+
+                    py.* += 24;
+
+                    if (!is_collapsed) {
+                        for (entries) |entry| {
+                            if ((is_staged_section and !entry.isStaged()) or (!is_staged_section and !entry.isUnstaged())) continue;
+                            if (py.* + 22 >= 65 and py.* < ch - layout.status_height) {
+                                const is_hovered = mx_x >= px and mx_x < px + pw and my_y >= py.* and my_y < py.* + 22;
+                                if (is_hovered) {
+                                    renderer.Renderer.drawRect(px, py.*, pw, 22, hc);
+                                    if (is_staged_section) {
+                                        renderer.Renderer.drawSvg(renderer.icons.dash, px + pw - 34, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                                    } else {
+                                        renderer.Renderer.drawSvg(renderer.icons.plus, px + pw - 34, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                                    }
+                                }
+
+                                const basename = std.fs.path.basename(entry.path);
+                                var dir_path: []const u8 = "";
+                                if (entry.path.len > basename.len) {
+                                    dir_path = entry.path[0 .. entry.path.len - basename.len];
+                                    if (dir_path.len > 0 and (dir_path[dir_path.len - 1] == '/' or dir_path[dir_path.len - 1] == '\\')) {
+                                        dir_path = dir_path[0 .. dir_path.len - 1];
+                                    }
+                                }
+
+                                var display_path_buf: [256:0]u8 = undefined;
+                                var display_len: usize = basename.len;
+                                @memcpy(display_path_buf[0..@min(display_len, 255)], basename[0..@min(display_len, 255)]);
+                                if (dir_path.len > 0) {
+                                    const combined = std.fmt.bufPrint(&display_path_buf, "{s} {s}", .{ basename, dir_path }) catch display_path_buf[0..display_len];
+                                    display_len = combined.len;
+                                }
+                                display_path_buf[display_len] = 0;
+
+                                const max_w = pw - 60;
+                                while (display_len > 0 and renderer.Renderer.measureText(display_path_buf[0..display_len], 11.0) > max_w) {
+                                    display_len -= 1;
+                                    display_path_buf[display_len] = 0;
+                                    if (display_len > 3) {
+                                        display_path_buf[display_len - 1] = '.';
+                                        display_path_buf[display_len - 2] = '.';
+                                        display_path_buf[display_len - 3] = '.';
+                                    }
+                                }
+
+                                renderer.Renderer.drawText("≡", px + 16, py.* + 2, 12.0, .{ .r = 0.4, .g = 0.4, .b = 0.4, .a = 1.0 });
+
+                                const text_color = if (entry.status[0] == 'M' or entry.status[1] == 'M')
+                                    renderer.Color{ .r = 0.8, .g = 0.65, .b = 0.45, .a = 1.0 }
+                                else if (entry.status[0] == 'A')
+                                    renderer.Color{ .r = 0.5, .g = 0.8, .b = 0.5, .a = 1.0 }
+                                else if (entry.status[0] == '?')
+                                    renderer.Color{ .r = 0.5, .g = 0.8, .b = 0.5, .a = 1.0 }
+                                else
+                                    renderer.Color{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 };
+
+                                renderer.Renderer.drawText(@ptrCast(&display_path_buf), px + 30, py.* + 2, 11.0, text_color);
+
+                                if (entry.status[0] == 'M' or entry.status[1] == 'M') {
+                                    renderer.Renderer.drawText("M", px + pw - 16, py.* + 2, 11.0, text_color);
+                                } else if (entry.status[0] == 'A') {
+                                    renderer.Renderer.drawText("A", px + pw - 16, py.* + 2, 11.0, text_color);
+                                } else if (entry.status[0] == '?') {
+                                    renderer.Renderer.drawText("U", px + pw - 16, py.* + 2, 11.0, text_color);
+                                } else {
+                                    renderer.Renderer.drawText("M", px + pw - 16, py.* + 2, 11.0, text_color);
+                                }
+                            }
+                            py.* += 22;
+                        }
+                    }
+                }
+            }.draw;
+
+            drawSection(&y, staged_count, "Staged Changes", wb.git_staged_collapsed, status.entries, true, panel_x, panel_w, h, my, mx, hover_c);
+            drawSection(&y, changes_count, "Changes", wb.git_changes_collapsed, status.entries, false, panel_x, panel_w, h, my, mx, hover_c);
         }
-    } else {
-        renderer.Renderer.drawText("Click Refresh to load status.", panel_x + 16, git_panel.list_top + 8, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
     }
+
     renderer.Renderer.clearClipRect();
-    const git_count = if (wb.git_status) |status| if (status.is_repo) status.entries.len else 0 else 0;
-    drawSidebarScrollbar(panel_x, panel_w, git_panel.list_top, h, wb.git_scroll_y, git_count, git_panel.row_h);
+
+    // Calculate total height for scrollbar
+    var total_entries: usize = 0;
+    if (wb.git_status) |status| {
+        if (status.is_repo) {
+            var sc: usize = 0;
+            var cc: usize = 0;
+            for (status.entries) |e| {
+                if (e.isStaged()) sc += 1;
+                if (e.isUnstaged()) cc += 1;
+            }
+            if (sc > 0) total_entries += 1 + if (wb.git_staged_collapsed) 0 else sc;
+            if (cc > 0) total_entries += 1 + if (wb.git_changes_collapsed) 0 else cc;
+        }
+    }
+    // const total_h = 36 + 32 + 40 + 34 + @as(f32, @floatFromInt(total_entries)) * 24; // approx
+    // Using git_panel.maxScrollY logic roughly:
+    // ... we need to make maxScrollY reflect this total_h. Wait, maxScrollY depends on total_h!
+
+    drawSidebarScrollbar(panel_x, panel_w, layout.header_height + layout.activity_bar_height, h, wb.git_scroll_y, total_entries, 24);
 }
 
 fn drawDebugPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const theme = &wb.theme;
     const debug_active = wb.debug_lldb.isActive();
-    renderer.Renderer.setClipRect(panel_x, 30, panel_w, h - 52);
-    renderer.Renderer.drawText("RUN AND DEBUG", panel_x + 20, 45, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    const panel_y = layout.header_height + layout.activity_bar_height;
+    renderer.Renderer.setClipRect(panel_x, panel_y, panel_w, h - panel_y - layout.status_height);
+    renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + 8, panel_y + 14, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    renderer.Renderer.drawText("RUN AND DEBUG", panel_x + 22, panel_y + 15, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
 
     var y = debug_panel.list_top - wb.run_scroll_y;
     if (y + 22 >= 65 and y < h - layout.status_height) {
@@ -836,8 +1056,10 @@ fn drawDebugPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, pane
 fn drawExtensionsPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const theme = &wb.theme;
     const host = &wb.extension_host;
-    renderer.Renderer.setClipRect(panel_x, 30, panel_w, h - 52);
-    renderer.Renderer.drawText("EXTENSIONS", panel_x + 20, 45, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    const panel_y = layout.header_height + layout.activity_bar_height;
+    renderer.Renderer.setClipRect(panel_x, panel_y, panel_w, h - panel_y - layout.status_height);
+    renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + 8, panel_y + 14, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    renderer.Renderer.drawText("EXTENSIONS", panel_x + 22, panel_y + 15, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
 
     const filter_y = extensions_panel.list_top - 20;
     renderer.Renderer.drawRoundedRect(panel_x + 12, filter_y, panel_w - 24, 18, 4, .{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 });
@@ -1006,8 +1228,55 @@ fn drawExtensionsPanel(wb: *@import("../workbench.zig").Workbench, panel_x: f32,
 
 fn drawExplorerPanel(wb: *@import("../workbench.zig").Workbench, explorer_x: f32, explorer_panel_width: f32, h: f32) void {
     const theme = &wb.theme;
-    renderer.Renderer.setClipRect(explorer_x, 30, explorer_panel_width, h - 52);
-    renderer.Renderer.drawText("EXPLORER", explorer_x + 20, 45, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    const panel_y = layout.header_height + layout.activity_bar_height;
+    renderer.Renderer.setClipRect(explorer_x, panel_y, explorer_panel_width, h - panel_y - layout.status_height);
+
+    // Draw "v FORGE" header
+    var ws_name_buf: [128:0]u8 = undefined;
+    const basename = std.fs.path.basename(wb.workspace_path);
+    var name_len: usize = 0;
+    for (basename) |ch| {
+        if (name_len >= ws_name_buf.len - 1) break;
+        ws_name_buf[name_len] = std.ascii.toUpper(ch);
+        name_len += 1;
+    }
+    ws_name_buf[name_len] = 0;
+
+    // Draw chevron for workspace
+    renderer.Renderer.drawSvg(renderer.icons.chevron_down, explorer_x + 8, panel_y + 14, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    renderer.Renderer.drawText(@ptrCast(&ws_name_buf), explorer_x + 22, panel_y + 15, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
+
+    const icon_c = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
+    const hover_c = renderer.Color{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 };
+    var rx = explorer_x + explorer_panel_width - 24;
+    const my = state.last_mouse_y;
+    const mx = state.last_mouse_x;
+
+    const action_y = panel_y + 6;
+    const action_icon_y = panel_y + 9;
+
+    if (mx >= rx and mx < rx + 16 and my >= action_y and my < action_y + 20) {
+        renderer.Renderer.drawRoundedRect(rx - 2, action_y, 20, 20, 4, hover_c);
+    }
+    renderer.Renderer.drawSvg(renderer.icons.chevron_down, rx, action_icon_y, 16, 16, icon_c);
+    rx -= 24;
+
+    if (mx >= rx and mx < rx + 16 and my >= action_y and my < action_y + 20) {
+        renderer.Renderer.drawRoundedRect(rx - 2, action_y, 20, 20, 4, hover_c);
+    }
+    renderer.Renderer.drawSvg(renderer.icons.sync, rx, action_icon_y, 16, 16, icon_c);
+    rx -= 24;
+
+    if (mx >= rx and mx < rx + 16 and my >= action_y and my < action_y + 20) {
+        renderer.Renderer.drawRoundedRect(rx - 2, action_y, 20, 20, 4, hover_c);
+    }
+    renderer.Renderer.drawSvg(renderer.icons.file_directory, rx, action_icon_y, 16, 16, icon_c);
+    rx -= 24;
+
+    if (mx >= rx and mx < rx + 16 and my >= action_y and my < action_y + 20) {
+        renderer.Renderer.drawRoundedRect(rx - 2, action_y, 20, 20, 4, hover_c);
+    }
+    renderer.Renderer.drawSvg(renderer.icons.file, rx, action_icon_y, 16, 16, icon_c);
 
     var visible: std.ArrayList(@import("../explorer/tree.zig").VisibleEntry) = .empty;
     defer visible.deinit(state.gpa);
@@ -1023,25 +1292,22 @@ fn drawExplorerPanel(wb: *@import("../workbench.zig").Workbench, explorer_x: f32
         const row_h = explorer_scroll.row_height;
         if (file_y + row_h >= 65 and file_y < h - layout.status_height) {
             const hovered = state.explorer_hover_row == row_index and !row.selected and !row.active;
+
+            // Full-width highlights
             if (hovered) {
-                renderer.Renderer.drawRoundedRect(explorer_x + 8, file_y - 2, explorer_panel_width - 16, 18, 3, .{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 });
+                renderer.Renderer.drawRect(explorer_x, file_y, explorer_panel_width, row_h, .{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 });
             } else if (row.active) {
-                renderer.Renderer.drawRoundedRect(explorer_x + 8, file_y - 2, explorer_panel_width - 16, 18, 3, c(theme.colors.accent));
+                renderer.Renderer.drawRect(explorer_x, file_y, explorer_panel_width, row_h, c(theme.colors.accent));
             } else if (row.selected) {
-                renderer.Renderer.drawRoundedRect(explorer_x + 8, file_y - 2, explorer_panel_width - 16, 18, 3, c(theme.colors.selection));
+                renderer.Renderer.drawRect(explorer_x, file_y, explorer_panel_width, row_h, c(theme.colors.selection));
             }
 
             if (row.kind == .directory) {
                 const chevron_color = if (row.selected or row.active)
-                    icons.chevron_color
+                    renderer.Color{ .r = 0.89, .g = 0.89, .b = 0.89, .a = 1.0 }
                 else
                     renderer.Color{ .r = 0.62, .g = 0.64, .b = 0.68, .a = 1.0 };
-                icons.drawChevron(.{
-                    .x = explorer_x + 20 + indent,
-                    .y = file_y + 1,
-                    .w = chevron_slot_w,
-                    .h = row_h - 2,
-                }, if (row.expanded) .down else .right, chevron_color);
+                renderer.Renderer.drawSvg(if (row.expanded) renderer.icons.chevron_down else renderer.icons.chevron_right, explorer_x + 20 + indent, file_y + 1, chevron_slot_w, row_h - 2, chevron_color);
             }
 
             if (wb.renaming and row.selected) {
@@ -1055,13 +1321,66 @@ fn drawExplorerPanel(wb: *@import("../workbench.zig").Workbench, explorer_x: f32
                 const max_name = @min(name.len, label_buf.len - 1);
                 @memcpy(label_buf[0..max_name], name[0..max_name]);
                 label_buf[max_name] = 0;
-                const color = if (row.active)
+
+                // Determine color based on git status
+                var is_modified = false;
+                var is_added = false;
+                var is_untracked = false;
+
+                if (wb.git_status) |*status| {
+                    if (std.mem.startsWith(u8, row.path, wb.workspace_path)) {
+                        var rel_path = row.path[wb.workspace_path.len..];
+                        if (rel_path.len > 0 and (rel_path[0] == '/' or rel_path[0] == '\\')) {
+                            rel_path = rel_path[1..];
+                        }
+
+                        for (status.entries) |entry| {
+                            if (std.mem.eql(u8, entry.path, rel_path)) {
+                                if (entry.status[0] == 'M' or entry.status[1] == 'M') is_modified = true;
+                                if (entry.status[0] == 'A') is_added = true;
+                                if (entry.status[0] == '?') is_untracked = true;
+                            } else if (row.kind == .directory and std.mem.startsWith(u8, entry.path, rel_path) and entry.path.len > rel_path.len and (entry.path[rel_path.len] == '/' or entry.path[rel_path.len] == '\\')) {
+                                if (entry.status[0] == 'M' or entry.status[1] == 'M') is_modified = true;
+                                if (entry.status[0] == 'A') is_added = true;
+                                if (entry.status[0] == '?') is_untracked = true;
+                            }
+                        }
+                    }
+                }
+
+                var color = if (row.active)
                     renderer.Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 }
                 else if (row.selected)
                     renderer.Color{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 }
                 else
                     renderer.Color{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 };
+
+                if (!row.active and !row.selected) {
+                    if (is_modified) {
+                        color = .{ .r = 0.8, .g = 0.65, .b = 0.45, .a = 1.0 };
+                    } else if (is_added or is_untracked) {
+                        color = .{ .r = 0.5, .g = 0.8, .b = 0.5, .a = 1.0 };
+                    }
+                }
+
                 renderer.Renderer.drawText(@ptrCast(&label_buf), label_x, file_y, 13.0, color);
+
+                // Draw git status indicator on the far right
+                if (row.kind == .file) {
+                    if (is_modified) {
+                        renderer.Renderer.drawText("M", explorer_x + explorer_panel_width - 16, file_y + 1, 11.0, .{ .r = 0.8, .g = 0.65, .b = 0.45, .a = 1.0 });
+                    } else if (is_added) {
+                        renderer.Renderer.drawText("A", explorer_x + explorer_panel_width - 16, file_y + 1, 11.0, .{ .r = 0.5, .g = 0.8, .b = 0.5, .a = 1.0 });
+                    } else if (is_untracked) {
+                        renderer.Renderer.drawText("U", explorer_x + explorer_panel_width - 16, file_y + 1, 11.0, .{ .r = 0.5, .g = 0.8, .b = 0.5, .a = 1.0 });
+                    }
+                } else if (row.kind == .directory) {
+                    if (is_modified) {
+                        renderer.Renderer.drawRect(explorer_x + explorer_panel_width - 12, file_y + 8, 4, 4, .{ .r = 0.8, .g = 0.65, .b = 0.45, .a = 1.0 });
+                    } else if (is_added or is_untracked) {
+                        renderer.Renderer.drawRect(explorer_x + explorer_panel_width - 12, file_y + 8, 4, 4, .{ .r = 0.5, .g = 0.8, .b = 0.5, .a = 1.0 });
+                    }
+                }
             }
         }
         file_y += row_h;
@@ -1086,6 +1405,31 @@ fn drawBracketHighlight(
     const mut = renderer.Color{ .r = hl.r, .g = hl.g, .b = hl.b, .a = 0.35 };
     highlightBracketAt(editor_buf, match.from, buf_line, start_col, end_col, text_x, line_y, line_h, font_size, mut);
     highlightBracketAt(editor_buf, match.to, buf_line, start_col, end_col, text_x, line_y, line_h, font_size, mut);
+}
+
+fn drawSelectionInSegment(
+    editor_buf: *@import("forge-editor").Buffer,
+    buf_line: usize,
+    seg_start_col: usize,
+    seg_end_col: usize,
+    seg_text_x: f32,
+    line_y: f32,
+    line_h: f32,
+    font_size: f32,
+    color: renderer.Color,
+) void {
+    if (!editor_buf.hasSelection()) return;
+    const ord = editor_buf.selectionOrdered();
+    if (buf_line < ord.start.row or buf_line > ord.end.row) return;
+    const line = editor_buf.lineAt(buf_line);
+    const sel_start: usize = if (buf_line == ord.start.row) ord.start.col else 0;
+    const sel_end: usize = if (buf_line == ord.end.row) @min(ord.end.col, line.len) else line.len;
+    const start_col = @max(seg_start_col, sel_start);
+    const end_col = @min(seg_end_col, sel_end);
+    if (start_col >= end_col) return;
+    const x0 = seg_text_x + editor_scroll.cursorX(line, start_col, font_size) - editor_scroll.cursorX(line, seg_start_col, font_size);
+    const x1 = seg_text_x + editor_scroll.cursorX(line, end_col, font_size) - editor_scroll.cursorX(line, seg_start_col, font_size);
+    renderer.Renderer.drawRect(x0, line_y, @max(2, x1 - x0), line_h, color);
 }
 
 fn highlightBracketAt(
@@ -1179,6 +1523,31 @@ fn drawReviewLineOverlay(
                 const ins_x = text_x + editor_scroll.cursorX(line, start_col, font_size);
                 const ins_w = @as(f32, @floatFromInt(preview.len)) * editor_scroll.charWidth(theme);
                 renderer.Renderer.drawRect(ins_x, line_y, @max(4, ins_w), line_h, .{ .r = 0.2, .g = 0.65, .b = 0.3, .a = 0.35 });
+            }
+        }
+    }
+}
+
+fn drawDecorations(
+    editor_buf: *@import("forge-editor").Buffer,
+    buf_line: usize,
+    text_x: f32,
+    line_y: f32,
+    line_h: f32,
+    viewport_w: f32,
+) void {
+    for (editor_buf.decorations.items) |dec| {
+        if (dec.row == buf_line) {
+            const color = if (dec.kind == .addition)
+                renderer.Color{ .r = 0.2, .g = 0.7, .b = 0.3, .a = 0.25 }
+            else
+                renderer.Color{ .r = 0.9, .g = 0.3, .b = 0.3, .a = 0.25 };
+
+            renderer.Renderer.drawRect(text_x - 4, line_y, viewport_w, line_h, color);
+
+            if (dec.kind == .deletion) {
+                // Strike-through
+                renderer.Renderer.drawRect(text_x, line_y + line_h / 2, viewport_w - 16, 1.5, .{ .r = 0.95, .g = 0.25, .b = 0.25, .a = 0.85 });
             }
         }
     }
@@ -1349,6 +1718,8 @@ fn drawEditorViewport(
                 if (debug_here) {
                     renderer.Renderer.drawRect(seg_text_x - 4, line_num_y, viewport_w, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
                 }
+                drawDecorations(editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, viewport_w);
+                drawSelectionInSegment(editor_buf, seg.buf_line, seg.start_col, seg.end_col, seg_text_x, line_num_y, line_h, font_size, .{ .r = 0.35, .g = 0.55, .b = 0.95, .a = 0.35 });
                 drawReviewLineOverlay(wb, theme, editor_buf, file_path, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
                 drawFindHighlights(wb, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
                 drawHighlightedLine(slice, seg_text_x, line_num_y, theme);
@@ -1393,6 +1764,8 @@ fn drawEditorViewport(
                 if (debug_here) {
                     renderer.Renderer.drawRect(text_x - 4, line_num_y, content_w + 8, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
                 }
+                drawDecorations(editor_buf, idx, text_x, line_num_y, line_h, content_w);
+                drawSelectionInSegment(editor_buf, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, .{ .r = 0.35, .g = 0.55, .b = 0.95, .a = 0.35 });
                 drawReviewLineOverlay(wb, theme, editor_buf, file_path, idx, text_x, line_num_y, line_h, font_size);
                 drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
                 drawHighlightedLine(editor_buf.lineAt(idx), text_x, line_num_y, theme);
@@ -1451,9 +1824,14 @@ fn drawEditorViewport(
 }
 
 fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@import("forge-editor").Buffer, editor_x: f32, editor_w: f32, editor_h: f32, _: f32) void {
+    if (wb.ai_settings_open) {
+        ai_settings_panel.draw(wb, editor_x, editor_w, editor_h);
+        return;
+    }
     const theme = &wb.theme;
     const ui_size = theme.ui_font_size;
     renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top, editor_w, tabs_ui.tab_bar_height, c(theme.colors.tab_bar_bg));
+    renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top + tabs_ui.tab_bar_height - 1, editor_w, 1, c(theme.colors.border));
     renderer.Renderer.setClipRect(editor_x, tabs_ui.tab_bar_top, editor_w, tabs_ui.tab_bar_height);
 
     var tab_layouts: std.ArrayList(tabs_ui.TabLayout) = .empty;
@@ -1468,7 +1846,21 @@ fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@im
         const is_active = tab_index == wb.tabs.active;
 
         if (is_active) {
-            renderer.Renderer.drawRoundedRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, tabs_ui.tab_height, 6.0, c(theme.colors.tab_active_bg));
+            // Draw the active tab background (overwriting the tab bar border)
+            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, tabs_ui.tab_height + 1, c(theme.colors.editor_bg));
+
+            // Draw subtle borders: top, left, right
+            const border = c(theme.colors.border);
+            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, 1, border); // top
+            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, 1, tabs_ui.tab_height, border); // left
+            renderer.Renderer.drawRect(tab_layout.x + tab_layout.width - 1, tabs_ui.tab_y, 1, tabs_ui.tab_height, border); // right
+        } else {
+            // Optional: Draw a separator line between inactive tabs
+            const border = c(theme.colors.border);
+            // Draw a subtle left separator for inactive tabs (unless it's the first tab)
+            if (tab_index > 0 and tab_index - 1 != wb.tabs.active) {
+                renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y + 8, 1, tabs_ui.tab_height - 16, .{ .r = border.r, .g = border.g, .b = border.b, .a = border.a * 0.5 });
+            }
         }
         var tab_label_buf: [128:0]u8 = undefined;
         const max_label_chars = @min(label.len, tab_label_buf.len - 1);
@@ -1493,6 +1885,23 @@ fn drawEditorPanel(wb: *@import("../workbench.zig").Workbench, editor_buf: ?*@im
         const bar_x = editor_x + scroll_ratio * (editor_w - bar_w);
         renderer.Renderer.drawRoundedRect(bar_x, tabs_ui.tab_bar_top + tabs_ui.tab_bar_height - 4, bar_w, 3, 1.5, .{ .r = 0.35, .g = 0.35, .b = 0.35, .a = 0.7 });
     }
+
+    const icon_c = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
+    const hover_c = renderer.Color{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 };
+    var rx = editor_x + editor_w - 24;
+    const my = state.last_mouse_y;
+    const mx = state.last_mouse_x;
+
+    if (mx >= rx and mx < rx + 16 and my >= layout.header_height + 4 and my < layout.header_height + 24) {
+        renderer.Renderer.drawRoundedRect(rx - 2, layout.header_height + 4, 20, 20, 4, hover_c);
+    }
+    renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx, layout.header_height + 7, 16, 16, icon_c);
+    rx -= 24;
+
+    if (mx >= rx and mx < rx + 16 and my >= layout.header_height + 4 and my < layout.header_height + 24) {
+        renderer.Renderer.drawRoundedRect(rx - 2, layout.header_height + 4, 20, 20, 4, hover_c);
+    }
+    renderer.Renderer.drawSvg(renderer.icons.repo, rx, layout.header_height + 7, 16, 16, icon_c);
 
     renderer.Renderer.clearClipRect();
 
@@ -1726,21 +2135,43 @@ fn drawTaskPanel(wb: *@import("../workbench.zig").Workbench, editor_x: f32, edit
     const tab_y = bottom_panel.tabBarTop(panel_y);
     for (bottom_panel.tabs) |tab| {
         const selected = wb.bottom_panel_mode == tab.mode;
-        const bg = if (selected)
-            renderer.Color{ .r = 0.22, .g = 0.25, .b = 0.3, .a = 1.0 }
-        else
-            renderer.Color{ .r = 0.16, .g = 0.16, .b = 0.18, .a = 1.0 };
         const tab_x = editor_x + tab.x_offset;
-        renderer.Renderer.drawRoundedRect(tab_x, tab_y, tab.w, bottom_panel.tab_h, 4, bg);
+
         var label_buf: [32:0]u8 = undefined;
-        if (tab.mode == .problems) {
-            const prob = std.fmt.bufPrint(&label_buf, "PROB {d}", .{wb.diagnostics.list.items.len}) catch tab.label;
+        if (tab.mode == .problems and wb.diagnostics.list.items.len > 0) {
+            const prob = std.fmt.bufPrint(&label_buf, "{s} {d}", .{ tab.label, wb.diagnostics.list.items.len }) catch tab.label;
             label_buf[prob.len] = 0;
         } else {
             @memcpy(label_buf[0..tab.label.len], tab.label);
             label_buf[tab.label.len] = 0;
         }
-        renderer.Renderer.drawText(@ptrCast(&label_buf), tab_x + 8, tab_y + 4, 10.0, .{ .r = 0.75, .g = 0.75, .b = 0.75, .a = 1.0 });
+
+        const text_color = if (selected)
+            renderer.Color{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 }
+        else
+            renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
+
+        renderer.Renderer.drawText(@ptrCast(&label_buf), tab_x, tab_y + 3, 11.0, text_color);
+
+        if (selected) {
+            renderer.Renderer.drawRect(tab_x, tab_y + bottom_panel.tab_h + 2, tab.w - 8, 1.0, text_color);
+        }
+    }
+
+    if (wb.bottom_panel_mode == .terminal) {
+        const rx = editor_x + editor_w;
+        const icon_y = tab_y + 3;
+        const icon_color = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
+
+        renderer.Renderer.drawSvg(renderer.icons.x, rx - 24, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.icons.chevron_up, rx - 44, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx - 64, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.icons.trash, rx - 88, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.icons.split, rx - 112, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.icons.chevron_down, rx - 136, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.icons.plus, rx - 156, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawText("zsh", rx - 188, icon_y + 3, 11.0, icon_color);
+        renderer.Renderer.drawSvg(renderer.icons.terminal, rx - 208, icon_y, 16, 16, icon_color);
     }
 
     switch (wb.bottom_panel_mode) {
@@ -1815,27 +2246,10 @@ fn drawTaskPanel(wb: *@import("../workbench.zig").Workbench, editor_x: f32, edit
             const terminal = wb.activeTerminal();
             terminal.lock();
             defer terminal.unlock();
-            const session_top = terminal_panel.sessionBarTop(panel_y);
-            var tab_x = editor_x + 8;
-            var i: usize = 0;
-            while (i < wb.terminals.sessions.items.len) : (i += 1) {
-                const selected = i == wb.terminals.active;
-                const bg = if (selected)
-                    renderer.Color{ .r = 0.22, .g = 0.25, .b = 0.3, .a = 1.0 }
-                else
-                    renderer.Color{ .r = 0.16, .g = 0.16, .b = 0.18, .a = 1.0 };
-                renderer.Renderer.drawRoundedRect(tab_x, session_top, terminal_panel.session_tab_w, terminal_panel.session_tab_h, 4, bg);
-                var label_buf: [8:0]u8 = undefined;
-                const label = std.fmt.bufPrint(&label_buf, "{d}", .{i + 1}) catch "1";
-                label_buf[label.len] = 0;
-                renderer.Renderer.drawText(@ptrCast(&label_buf), tab_x + 16, session_top + 4, 10.0, .{ .r = 0.75, .g = 0.75, .b = 0.75, .a = 1.0 });
-                tab_x += terminal_panel.session_tab_w + 4;
-            }
-            renderer.Renderer.drawRoundedRect(tab_x, session_top, 28, terminal_panel.session_tab_h, 4, .{ .r = 0.16, .g = 0.16, .b = 0.18, .a = 1.0 });
-            renderer.Renderer.drawText("+", tab_x + 10, session_top + 3, 12.0, .{ .r = 0.75, .g = 0.75, .b = 0.75, .a = 1.0 });
 
-            const content_top = terminal_panel.contentTop(panel_y);
-            const content_h = panel_h - (content_top - panel_y);
+            // In Cursor design, terminal contents start directly below the main tab bar
+            const content_top = panel_y + 34.0;
+            const content_h = panel_h - 34.0;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             const git_ptr: ?*const @import("../git/status.zig").Status = if (wb.git_status) |*status| status else null;
             const show_cursor = @mod(state.time, 1.0) < 0.5;

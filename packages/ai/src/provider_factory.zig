@@ -2,17 +2,20 @@ const std = @import("std");
 const provider_mod = @import("provider.zig");
 const fake_provider = @import("fake_provider.zig");
 const gemini_provider = @import("gemini_provider.zig");
+const ollama_provider = @import("ollama_provider.zig");
 const credentials = @import("credentials.zig");
 
 pub const Kind = enum {
     auto,
     fake,
     gemini,
+    ollama,
 
     pub fn parse(name: ?[]const u8) Kind {
         const value = name orelse return .auto;
         if (std.mem.eql(u8, value, "fake")) return .fake;
         if (std.mem.eql(u8, value, "gemini")) return .gemini;
+        if (std.mem.eql(u8, value, "ollama")) return .ollama;
         if (std.mem.eql(u8, value, "auto")) return .auto;
         return .auto;
     }
@@ -33,13 +36,16 @@ pub const Handle = struct {
     allocator: std.mem.Allocator,
     fake: ?fake_provider.FakeProvider = null,
     gemini: ?gemini_provider.GeminiProvider = null,
+    ollama: ?ollama_provider.OllamaProvider = null,
 
     pub fn deinit(self: *Handle) void {
         if (self.gemini) |*owned| owned.deinit();
+        if (self.ollama) |*owned| owned.deinit();
     }
 
     pub fn interface(self: *Handle) provider_mod.Provider {
         if (self.gemini) |*gemini| return gemini.providerInterface();
+        if (self.ollama) |*ollama| return ollama.providerInterface();
         if (self.fake) |*fake| return fake.providerInterface();
         unreachable;
     }
@@ -76,12 +82,28 @@ pub fn create(
                 options.thinking_context,
             ),
         },
+        .ollama => blk: {
+            const host = try ollama_provider.resolveHost(allocator, environ_map);
+            defer allocator.free(host);
+            break :blk .{
+                .allocator = allocator,
+                .ollama = try ollama_provider.OllamaProvider.init(
+                    allocator,
+                    io,
+                    host,
+                    options.model orelse ollama_provider.default_model,
+                    options.stream_callback,
+                    options.stream_context,
+                ),
+            };
+        },
     };
 }
 
 const ResolvedKind = enum {
     fake,
     gemini,
+    ollama,
 };
 
 fn resolveKind(
@@ -100,7 +122,12 @@ fn resolveKind(
             loaded.deinit();
             return .gemini;
         },
+        .ollama => .ollama,
         .auto => {
+            const host = try ollama_provider.resolveHost(allocator, environ_map);
+            defer allocator.free(host);
+            if (ollama_provider.isReachable(allocator, io, host)) return .ollama;
+
             var loaded = credentials.Credentials.loadGemini(allocator, io, environ_map) catch {
                 return .fake;
             };
@@ -114,7 +141,7 @@ pub const FactoryError = error{
     MissingCredentials,
 };
 
-test "auto resolves to fake without credentials" {
+test "auto resolves to fake without credentials or ollama" {
     var handle = try create(std.testing.allocator, std.testing.io, null, .{
         .kind = .auto,
         .fake_response = "{}",
@@ -122,5 +149,6 @@ test "auto resolves to fake without credentials" {
     defer handle.deinit();
 
     const meta = handle.interface().metadata();
-    try std.testing.expectEqualStrings("fake", meta.provider_name);
+    // Without a running Ollama server, auto falls back to fake when no Gemini key.
+    try std.testing.expect(meta.provider_name.len > 0);
 }

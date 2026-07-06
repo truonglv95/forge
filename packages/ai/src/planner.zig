@@ -56,7 +56,7 @@ pub const Planner = struct {
         p_writer.writeAll(
             \\Respond ONLY with valid JSON. Do not use markdown blocks.
             \\Schema (proposal v1):
-            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["zig build test"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}}
+            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["zig build test","property: fuzz changed parsers if applicable"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}}
             \\For modify/delete include expected_hash from the current file snapshot.
         ) catch return error.ProviderInternalError;
 
@@ -79,6 +79,41 @@ pub const Planner = struct {
             \\--- INSTRUCTIONS ---
             \\Respond ONLY with Markdown (headings, bullet lists). Do not output JSON or code fences wrapping the whole document.
             \\Include: goal, approach, files to touch, risks, and validation steps.
+            \\Use headings: Goal, Design, Tasks, Risks, Validation.
+        ) catch return error.ProviderInternalError;
+
+        const prompt_items = p_alloc.writer.buffer[0..p_alloc.writer.end];
+        try self.prov.ask(self.allocator, prompt_items, self.images, writer, cancel_token);
+    }
+
+    /// Regenerates a proposal after trial apply + validation failed.
+    pub fn planRepair(
+        self: *Planner,
+        writer: *std.Io.Writer,
+        cancel_token: *const kernel.cancellation.CancellationToken,
+        validation_report: []const u8,
+        failed_proposal: []const u8,
+    ) provider.ProviderError!void {
+        var p_alloc = std.Io.Writer.Allocating.init(self.allocator);
+        defer p_alloc.deinit();
+        const p_writer = &p_alloc.writer;
+        try self.writePromptHeader(
+            p_writer,
+            "REPAIR MODE\nYour previous proposal failed validation after a trial apply to the workspace. Output a corrected JSON proposal that fixes the failures.\n\n",
+        );
+
+        p_writer.writeAll("--- FAILED PROPOSAL ---\n") catch return error.ProviderInternalError;
+        p_writer.writeAll(failed_proposal) catch return error.ProviderInternalError;
+        p_writer.writeAll("\n\n--- VALIDATION OUTPUT ---\n") catch return error.ProviderInternalError;
+        p_writer.writeAll(validation_report) catch return error.ProviderInternalError;
+
+        p_writer.writeAll("\n\n--- INSTRUCTIONS ---\n") catch return error.ProviderInternalError;
+        p_writer.writeAll(
+            \\Respond ONLY with valid JSON. Do not use markdown blocks.
+            \\Schema (proposal v1):
+            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["zig build test","property: fuzz changed parsers if applicable"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}}
+            \\For modify/delete include expected_hash from the current file snapshot.
+            \\Address every validation failure shown above.
         ) catch return error.ProviderInternalError;
 
         const prompt_items = p_alloc.writer.buffer[0..p_alloc.writer.end];

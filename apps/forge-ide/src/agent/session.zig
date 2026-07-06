@@ -51,6 +51,11 @@ pub const AgentStep = struct {
     index: u32,
     kind: []const u8,
     summary: []const u8,
+    expanded: bool = false,
+    parent_index: ?usize = null,
+    child_count: usize = 0,
+    is_thought: bool = false,
+    content: ?[]const u8 = null,
 };
 
 pub const Session = struct {
@@ -86,6 +91,10 @@ pub const Session = struct {
     thinking_text: std.ArrayList(u8) = .empty,
     stream_live: bool = false,
     last_transaction_id: ?u64 = null,
+    last_checkpoint_id: ?u64 = null,
+    spec_run_id: ?[]const u8 = null,
+    spec_pending: bool = false,
+    proposal_only_run_id: ?[]const u8 = null,
     run_active_file: ?[]const u8 = null,
     agent_steps: std.ArrayList(AgentStep),
     attachments: std.ArrayList(Attachment),
@@ -198,22 +207,81 @@ pub const Session = struct {
         for (self.agent_steps.items) |step| {
             self.allocator.free(step.kind);
             self.allocator.free(step.summary);
+            if (step.content) |c| self.allocator.free(c);
         }
         self.agent_steps.clearRetainingCapacity();
     }
 
     pub fn appendAgentStep(self: *Session, index: u32, kind: []const u8, summary: []const u8) !void {
+        self.lock();
+
+        // Convert accumulated thinking text to a step
+        if (self.thinking_text.items.len > 0) {
+            const thought_content = try self.allocator.dupe(u8, self.thinking_text.items);
+            const parent_kind = try self.allocator.dupe(u8, "thought");
+            try self.agent_steps.append(self.allocator, .{
+                .index = index, // or some other counter
+                .kind = parent_kind,
+                .summary = try self.allocator.dupe(u8, ""),
+                .content = thought_content,
+                .is_thought = true,
+                .child_count = 0,
+            });
+            self.thinking_text.clearRetainingCapacity();
+        }
+
+        self.unlock();
+
         const owned_kind = try self.allocator.dupe(u8, kind);
         errdefer self.allocator.free(owned_kind);
         const owned_summary = try self.allocator.dupe(u8, summary);
         errdefer self.allocator.free(owned_summary);
+
         self.lock();
         defer self.unlock();
-        try self.agent_steps.append(self.allocator, .{
-            .index = index,
-            .kind = owned_kind,
-            .summary = owned_summary,
-        });
+
+        var parent_idx: ?usize = null;
+        if (self.agent_steps.items.len > 0) {
+            var i = self.agent_steps.items.len;
+            while (i > 0) : (i -= 1) {
+                const step = &self.agent_steps.items[i - 1];
+                if (step.parent_index == null and !step.is_thought) {
+                    if (std.mem.eql(u8, step.kind, kind)) {
+                        parent_idx = i - 1;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (parent_idx) |p_idx| {
+            // Add as child to existing parent
+            const p_step = &self.agent_steps.items[p_idx];
+            p_step.child_count += 1;
+            try self.agent_steps.append(self.allocator, .{
+                .index = index,
+                .kind = owned_kind,
+                .summary = owned_summary,
+                .parent_index = p_idx,
+            });
+        } else {
+            // Create a new parent step
+            const new_p_idx = self.agent_steps.items.len;
+            const parent_kind = try self.allocator.dupe(u8, kind);
+            try self.agent_steps.append(self.allocator, .{
+                .index = index,
+                .kind = parent_kind,
+                .summary = try self.allocator.dupe(u8, ""),
+                .child_count = 1,
+            });
+            // And add the actual step as its child
+            try self.agent_steps.append(self.allocator, .{
+                .index = index,
+                .kind = owned_kind,
+                .summary = owned_summary,
+                .parent_index = new_p_idx,
+            });
+        }
     }
 
     fn clearAttachmentsUnlocked(self: *Session) void {
@@ -400,6 +468,8 @@ pub const Session = struct {
         context_used_bytes: usize,
         context_max_bytes: usize,
         context_inspector_expanded: bool,
+        spec_pending: bool,
+        last_checkpoint_id: ?u64,
     } {
         self.lock();
         defer self.unlock();
@@ -428,6 +498,8 @@ pub const Session = struct {
             .context_used_bytes = self.context_used_bytes,
             .context_max_bytes = self.context_max_bytes,
             .context_inspector_expanded = self.context_inspector_expanded,
+            .spec_pending = self.spec_pending,
+            .last_checkpoint_id = self.last_checkpoint_id,
         };
     }
 };

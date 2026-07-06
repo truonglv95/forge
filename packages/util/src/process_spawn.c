@@ -46,9 +46,10 @@ static int forge_add_stdio_action(
     }
 }
 
-int forge_process_spawn(
+static int forge_process_spawn_impl(
     const char *cwd,
     const char *const argv[],
+    char *const envp[],
     forge_stdio_mode stdin_mode,
     forge_stdio_mode stdout_mode,
     forge_stdio_mode stderr_mode,
@@ -98,8 +99,9 @@ int forge_process_spawn(
     }
 
     pid_t pid = -1;
+    const char *const *use_env = (envp != NULL) ? (const char *const *)envp : (const char *const *)environ;
     const int spawn_err = (setup_err == 0)
-        ? posix_spawn(&pid, argv[0], &actions, NULL, (char *const *)argv, environ)
+        ? posix_spawnp(&pid, argv[0], &actions, NULL, (char *const *)argv, (char *const *)use_env)
         : setup_err;
     posix_spawn_file_actions_destroy(&actions);
 
@@ -135,6 +137,29 @@ int forge_process_spawn(
     forge_close_pipe_pair(stdout_pipe);
     forge_close_pipe_pair(stderr_pipe);
     return 0;
+}
+
+int forge_process_spawn(
+    const char *cwd,
+    const char *const argv[],
+    forge_stdio_mode stdin_mode,
+    forge_stdio_mode stdout_mode,
+    forge_stdio_mode stderr_mode,
+    forge_process_child *out
+) {
+    return forge_process_spawn_impl(cwd, argv, NULL, stdin_mode, stdout_mode, stderr_mode, out);
+}
+
+int forge_process_spawn_env(
+    const char *cwd,
+    const char *const argv[],
+    char *const envp[],
+    forge_stdio_mode stdin_mode,
+    forge_stdio_mode stdout_mode,
+    forge_stdio_mode stderr_mode,
+    forge_process_child *out
+) {
+    return forge_process_spawn_impl(cwd, argv, envp, stdin_mode, stdout_mode, stderr_mode, out);
 }
 
 int forge_process_wait(pid_t pid) {

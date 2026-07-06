@@ -93,7 +93,7 @@ pub fn generateAndPersist(
 pub fn writeError(writer: *std.Io.Writer, err: WorkflowError) !u8 {
     switch (err) {
         error.MissingProviderCredentials => {
-            try writer.writeAll("error: gemini provider requires GEMINI_API_KEY, GOOGLE_API_KEY, or macOS Keychain entry (service forge-gemini)\n");
+            try writer.writeAll("error: provider requires credentials (gemini) or a running Ollama server (ollama)\n");
             return 2;
         },
         error.Cancelled => return 130,

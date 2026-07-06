@@ -172,10 +172,16 @@ pub const GeminiProvider = struct {
             const parsed = parseStreamResult(self, allocator, &sse_parser, writer) catch |err| switch (err) {
                 error.AuthenticationFailed => return provider.ProviderError.AuthenticationFailed,
                 error.RateLimitExceeded => return provider.ProviderError.RateLimitExceeded,
-                error.MalformedResponse => return provider.ProviderError.MalformedResponse,
+                error.MalformedResponse => {
+                    std.log.err("parseStreamResult returned MalformedResponse. Assembled text length: {d}", .{sse_parser.assembled.items.len});
+                    return provider.ProviderError.MalformedResponse;
+                },
             };
             defer allocator.free(parsed);
-            if (parsed.len == 0) return provider.ProviderError.MalformedResponse;
+            if (parsed.len == 0) {
+                std.log.err("Parsed response length is 0. Raw assembled text: {s}", .{sse_parser.assembled.items});
+                return provider.ProviderError.MalformedResponse;
+            }
             return;
         }
     }

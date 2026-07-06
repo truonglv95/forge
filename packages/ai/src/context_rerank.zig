@@ -266,9 +266,15 @@ fn selectWithDiversity(allocator: std.mem.Allocator, ranked: []RankedHit, option
     }
 
     for (ranked) |hit| {
-        const count = per_file.get(hit.path) orelse 0;
-        if (count >= options.max_per_file) continue;
-        try per_file.put(try allocator.dupe(u8, hit.path), count + 1);
+        const owned_path = try allocator.dupe(u8, hit.path);
+        const gop = try per_file.getOrPut(owned_path);
+        if (gop.found_existing) {
+            allocator.free(owned_path);
+            if (gop.value_ptr.* >= options.max_per_file) continue;
+            gop.value_ptr.* += 1;
+        } else {
+            gop.value_ptr.* = 1;
+        }
         try out.append(allocator, .{
             .path = try allocator.dupe(u8, hit.path),
             .line_start = hit.line_start,

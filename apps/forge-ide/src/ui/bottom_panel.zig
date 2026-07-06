@@ -12,12 +12,11 @@ pub const Tab = struct {
 };
 
 pub const tabs = [_]Tab{
-    .{ .label = "OUTPUT", .mode = .output, .x_offset = 12, .w = 72 },
-    .{ .label = "PROBLEMS", .mode = .problems, .x_offset = 88, .w = 92 },
-    .{ .label = "TERMINAL", .mode = .terminal, .x_offset = 184, .w = 82 },
-    .{ .label = "DEBUG", .mode = .debug_console, .x_offset = 268, .w = 72 },
-    .{ .label = "VARS", .mode = .debug_variables, .x_offset = 344, .w = 52 },
-    .{ .label = "STACK", .mode = .debug_callstack, .x_offset = 400, .w = 64 },
+    .{ .label = "Problems", .mode = .problems, .x_offset = 12, .w = 64 },
+    .{ .label = "Output", .mode = .output, .x_offset = 84, .w = 52 },
+    .{ .label = "Debug Console", .mode = .debug_console, .x_offset = 144, .w = 90 },
+    .{ .label = "Terminal", .mode = .terminal, .x_offset = 242, .w = 60 },
+    .{ .label = "Ports", .mode = .debug_variables, .x_offset = 310, .w = 40 },
 };
 
 pub fn tabBarTop(panel_y: f32) f32 {

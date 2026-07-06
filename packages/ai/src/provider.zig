@@ -74,12 +74,12 @@ pub const Provider = struct {
 
     pub fn errorMessage(err: ProviderError) []const u8 {
         return switch (err) {
-            error.AuthenticationFailed => "Gemini API key invalid or expired — check GEMINI_API_KEY",
-            error.RateLimitExceeded => "Gemini quota exceeded — try gemini-2.5-flash or enable billing",
-            error.ContextLengthExceeded => "Prompt too large for Gemini model",
-            error.NetworkError => "Network error calling Gemini",
-            error.MalformedResponse => "Gemini returned an unexpected response",
-            error.ProviderInternalError => "Gemini provider error",
+            error.AuthenticationFailed => "AI provider authentication failed — check API key or Ollama access",
+            error.RateLimitExceeded => "AI provider quota exceeded",
+            error.ContextLengthExceeded => "Prompt too large for the selected model",
+            error.NetworkError => "Network error calling AI provider — is Ollama running on localhost:11434?",
+            error.MalformedResponse => "AI provider returned an unexpected response",
+            error.ProviderInternalError => "AI provider error",
         };
     }
 };

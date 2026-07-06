@@ -8,6 +8,17 @@ pub const ProcessOptions = struct {
     token: ?cancellation.CancellationToken = null,
 };
 
+pub const CaptureOptions = struct {
+    argv: []const []const u8,
+    cwd: ?[]const u8 = null,
+    max_bytes: usize = 32 * 1024,
+};
+
+pub const CaptureResult = struct {
+    output: []const u8,
+    exit_code: i32,
+};
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, options: ProcessOptions) !std.process.Child.Term {
     _ = io;
 
@@ -28,6 +39,17 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: ProcessOptions) !s
 
     const code = child.wait();
     return std.process.Child.Term{ .exited = @intCast(code) };
+}
+
+pub fn runCapture(allocator: std.mem.Allocator, options: CaptureOptions) !CaptureResult {
+    const result = try process_spawn.runCapture(allocator, options.argv, .{
+        .cwd = options.cwd,
+        .stdin = .ignore,
+    });
+    const clipped_len = @min(result.output.len, options.max_bytes);
+    const output = try allocator.dupe(u8, result.output[0..clipped_len]);
+    allocator.free(result.output);
+    return .{ .output = output, .exit_code = result.exit_code };
 }
 
 test "Process runner struct compiles" {

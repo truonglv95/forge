@@ -12,13 +12,17 @@ const proposal_workflow = @import("proposal_workflow.zig");
 const conversation = @import("conversation.zig");
 const multimodal = @import("multimodal.zig");
 const gemini_agent = @import("gemini_agent.zig");
+const mcp_registry = @import("mcp_registry.zig");
 const progress = @import("progress.zig");
+const validation_hints = @import("validation_hints.zig");
+const subagent = @import("subagent.zig");
 
 pub const Config = struct {
     max_steps: u32 = 8,
     provider_options: provider_factory.Options,
     capability_profile: tools.CapabilityProfile = .propose,
     workspace_cwd: []const u8 = ".",
+    mcp_enabled: bool = true,
     explicit_files: []const []const u8 = &.{},
     active_file: ?[]const u8 = null,
     attachments: []const context_loader.AttachmentInput = &.{},
@@ -32,6 +36,9 @@ pub const Config = struct {
     progress_context: ?*anyopaque = null,
     step_callback: ?*const fn (?*anyopaque, Step) void = null,
     step_context: ?*anyopaque = null,
+    edit_callback: ?*const fn (?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void = null,
+    edit_context: ?*anyopaque = null,
+    use_inline_edits: bool = false,
 };
 
 pub const Step = struct {
@@ -88,6 +95,13 @@ pub fn run(
     defer ctx_builder.deinit();
     emitProgress(config, .context_built);
 
+    var mcp = mcp_registry.Registry.load(allocator, io, root, config.workspace_cwd, config.mcp_enabled, resolveHomeDir(environ_map), environ_map) catch return error.WorkspaceFailed;
+    defer mcp.deinit();
+    ctx_builder.addBlock(.intent, "mcp", mcp.status_lines) catch {};
+    if (mcp.instructions_text.len > 0) ctx_builder.addBlock(.rules, "mcp_instructions", mcp.instructions_text) catch {};
+    if (mcp.resources_summary.len > 0) ctx_builder.addBlock(.retrieval, "mcp_resources", mcp.resources_summary) catch {};
+    if (mcp.prompts_summary.len > 0) ctx_builder.addBlock(.docs, "mcp_prompts", mcp.prompts_summary) catch {};
+
     const tool_ctx = tool_executor.Context{
         .allocator = allocator,
         .io = io,
@@ -96,6 +110,8 @@ pub fn run(
         .profile = config.capability_profile,
         .cancel_token = config.cancel_token,
         .environ_map = environ_map,
+        .edit_callback = config.edit_callback,
+        .edit_context = config.edit_context,
     };
 
     var next_index: u32 = 1;
@@ -112,7 +128,7 @@ pub fn run(
             }
         };
         var native_ctx = NativeCtx{ .allocator = allocator, .steps = &steps, .config = config };
-        gemini_agent.exploreWithGemini(allocator, io, gemini, intent, &ctx_builder, tool_ctx, .{
+        gemini_agent.exploreWithGemini(allocator, io, gemini, intent, &ctx_builder, tool_ctx, &mcp, .{
             .max_tool_steps = config.max_steps,
             .cancel_token = config.cancel_token,
             .step_callback = NativeCtx.onStep,
@@ -159,6 +175,19 @@ pub fn run(
     if (config.max_steps < next_index) return error.StepLimitReached;
     if (!tools.isAllowed(config.capability_profile, .propose_edit)) return error.StepLimitReached;
 
+    if (config.use_inline_edits) {
+        const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
+        const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
+
+        // Return without a final proposal run
+        return .{
+            .session_id = owned_session,
+            .steps = owned_steps,
+            .final_run_id = null,
+            .proposal_rel = null,
+        };
+    }
+
     const llm = provider_handle.interface();
     const images = multimodal.loadImages(allocator, io, root, config.attachments) catch &[_]provider_mod.ImagePart{};
     defer if (images.len > 0) multimodal.freeImages(allocator, images);
@@ -183,11 +212,13 @@ pub fn run(
 
     const proposal_body = response.writer.buffer[0..response.writer.end];
     proposal_workflow.validateProposalBody(allocator, proposal_body) catch return error.InvalidProposal;
+    const augmented_body = validation_hints.augmentProposalJson(allocator, proposal_body) catch return error.WorkspaceFailed;
+    defer allocator.free(augmented_body);
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.WorkspaceFailed;
 
     workspace.history.ensureLayout(io, root) catch return error.WorkspaceFailed;
-    workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.WorkspaceFailed, proposal_body) catch return error.WorkspaceFailed;
+    workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.WorkspaceFailed, augmented_body) catch return error.WorkspaceFailed;
 
     const meta = llm.metadata();
     const record = run_record.Record{
@@ -316,16 +347,17 @@ fn appendStep(
     config: Config,
 ) AgentError!void {
     if (config.step_callback) |callback| {
+        const display_kind = subagent.classifyTool(kind).label();
         callback(config.step_context, .{
             .index = index,
-            .kind = kind,
+            .kind = display_kind,
             .summary = summary,
             .run_id = run_id,
         });
     }
     steps.append(allocator, .{
         .index = index,
-        .kind = allocator.dupe(u8, kind) catch return error.WorkspaceFailed,
+        .kind = allocator.dupe(u8, subagent.classifyTool(kind).label()) catch return error.WorkspaceFailed,
         .summary = allocator.dupe(u8, summary) catch return error.WorkspaceFailed,
         .run_id = if (run_id) |id| allocator.dupe(u8, id) catch return error.WorkspaceFailed else null,
     }) catch return error.WorkspaceFailed;
@@ -418,6 +450,11 @@ fn formatSessionJson(
         .tool_calls = tool_items,
         .steps = step_items,
     }, .{});
+}
+
+fn resolveHomeDir(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
+    if (environ_map) |map| return map.get("HOME");
+    return null;
 }
 
 test "agent run produces search and propose steps" {

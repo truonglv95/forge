@@ -15,6 +15,7 @@ pub const ToolId = enum {
     fetch_url,
     list_tree,
     run_task,
+    run_command,
     propose_edit,
     apply_proposal,
     undo,
@@ -28,7 +29,7 @@ pub fn isAllowed(profile: CapabilityProfile, tool: ToolId) bool {
             else => false,
         },
         .propose => switch (tool) {
-            .read_file, .search, .codebase_search, .fetch_url, .list_tree, .show_context, .propose_edit, .remember => true,
+            .read_file, .search, .codebase_search, .fetch_url, .list_tree, .show_context, .propose_edit, .remember, .run_command => true,
             else => false,
         },
         .propose_and_task => switch (tool) {
@@ -47,6 +48,7 @@ pub fn name(tool: ToolId) []const u8 {
         .fetch_url => "fetch_url",
         .list_tree => "list_tree",
         .run_task => "run_task",
+        .run_command => "run_command",
         .propose_edit => "propose_edit",
         .apply_proposal => "apply_proposal",
         .undo => "undo",

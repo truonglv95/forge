@@ -8,6 +8,7 @@ pub const view = @import("view.zig");
 pub const View = view.View;
 pub const Rect = view.Rect;
 pub const Color = view.Color;
+pub const icons = @import("octicons.zig");
 
 pub const TextSpan = extern struct {
     offset: usize,
@@ -141,6 +142,10 @@ pub const Renderer = struct {
             return;
         }
         mac.forge_mac_draw_styled_text(@ptrCast(text.ptr), text.len, x, y, font_size, @ptrCast(spans.ptr), spans.len);
+    }
+
+    pub fn drawSvg(svg_string: [:0]const u8, x: f32, y: f32, w: f32, h: f32, color: Color) void {
+        mac.forge_mac_draw_svg(svg_string.ptr, x, y, w, h, color.r, color.g, color.b, color.a);
     }
 
     pub fn getResolvedFontName(buf: []u8) void {

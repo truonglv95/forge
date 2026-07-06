@@ -21,6 +21,13 @@ pub const Op = union(enum) {
         phase: agent_session.Phase,
         message: []const u8,
     },
+    refresh_context_preview,
+    propose_edit: struct {
+        path: []const u8,
+        start_line: usize,
+        end_line: usize,
+        replacement: []const u8,
+    },
 
     pub fn deinit(self: *Op, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -40,6 +47,11 @@ pub const Op = union(enum) {
                 if (payload.plan_text) |text| allocator.free(text);
             },
             .run_failed => |*payload| allocator.free(payload.message),
+            .refresh_context_preview => {},
+            .propose_edit => |*payload| {
+                allocator.free(payload.path);
+                allocator.free(payload.replacement);
+            },
         }
     }
 };
