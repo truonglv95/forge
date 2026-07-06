@@ -112,7 +112,7 @@ fn runAgent(
         }
     }
 
-    const provider_opts = ai_workflow.providerOptionsFromFlags(.ask, parsed.flags);
+    const provider_opts = ai_workflow.agentProviderOptionsFromFlags(parsed.flags);
     const max_steps = if (parsed.flags.max_steps > 0) parsed.flags.max_steps else 8;
     const progress_writer: ?*std.Io.Writer = if (parsed.flags.quiet or parsed.flags.json) null else writer;
     var cancel_token = scope.token();

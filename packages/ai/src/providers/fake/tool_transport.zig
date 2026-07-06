@@ -7,6 +7,7 @@ const turn = @import("../../agent/turn.zig");
 
 pub const FakeTransport = struct {
     mcp: ?*mcp_registry.Registry,
+    short_script: bool = false,
 
     pub fn transport(self: *FakeTransport) turn.Transport {
         return .{
@@ -32,20 +33,34 @@ pub const FakeTransport = struct {
         tool_declarations_json: []const u8,
         cancel_token: ?*const kernel.cancellation.CancellationToken,
     ) turn.TransportError!turn.Completion {
-        _ = ptr;
+        const self: *FakeTransport = @ptrCast(@alignCast(ptr));
         _ = tool_declarations_json;
         if (cancel_token) |token| {
             if (token.isCancelled()) return error.Cancelled;
         }
 
-        if (std.mem.indexOf(u8, conversation_json, "functionResponse") != null) {
-            return .{ .text = try allocator.dupe(u8, "Exploration complete.") };
+        const response_count = countFunctionResponses(conversation_json);
+        if (self.short_script) {
+            return switch (response_count) {
+                0 => .{ .tool_call = .{
+                    .name = try allocator.dupe(u8, "search"),
+                    .args_json = try allocator.dupe(u8, "{\"term\":\"sample\"}"),
+                } },
+                else => .{ .text = try allocator.dupe(u8, "Exploration complete.") },
+            };
         }
 
-        return .{ .tool_call = .{
-            .name = try allocator.dupe(u8, "search"),
-            .args_json = try allocator.dupe(u8, "{\"term\":\"sample\"}"),
-        } };
+        return switch (response_count) {
+            0 => .{ .tool_call = .{
+                .name = try allocator.dupe(u8, "search"),
+                .args_json = try allocator.dupe(u8, "{\"term\":\"sample\"}"),
+            } },
+            1 => .{ .tool_call = .{
+                .name = try allocator.dupe(u8, "list_tree"),
+                .args_json = try allocator.dupe(u8, "{}"),
+            } },
+            else => .{ .text = try allocator.dupe(u8, "Exploration complete.") },
+        };
     }
 
     fn appendUserTurn(
@@ -92,6 +107,17 @@ pub const FakeTransport = struct {
         try conversation.appendSlice(allocator, piece);
     }
 };
+
+fn countFunctionResponses(conversation_json: []const u8) usize {
+    const needle = "functionResponse";
+    var count: usize = 0;
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, conversation_json, start, needle)) |idx| {
+        count += 1;
+        start = idx + needle.len;
+    }
+    return count;
+}
 
 fn jsonString(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;

@@ -14,6 +14,7 @@ pub const FakeProvider = struct {
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
     tool_loop_enabled: bool = false,
+    tool_loop_short: bool = false,
 
     pub fn init(
         response: []const u8,
@@ -30,6 +31,17 @@ pub const FakeProvider = struct {
         stream_context: ?*anyopaque,
         tool_loop_enabled: bool,
     ) FakeProvider {
+        return initWithToolLoop(response, plan_response, stream_callback, stream_context, tool_loop_enabled, false);
+    }
+
+    pub fn initWithToolLoop(
+        response: []const u8,
+        plan_response: ?[]const u8,
+        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
+        stream_context: ?*anyopaque,
+        tool_loop_enabled: bool,
+        tool_loop_short: bool,
+    ) FakeProvider {
         return .{
             .response = response,
             .plan_response = plan_response,
@@ -42,6 +54,7 @@ pub const FakeProvider = struct {
             .stream_callback = stream_callback,
             .stream_context = stream_context,
             .tool_loop_enabled = tool_loop_enabled,
+            .tool_loop_short = tool_loop_short,
         };
     }
 
@@ -73,8 +86,10 @@ pub const FakeProvider = struct {
     }
 
     fn toolTransportState(self: *FakeProvider, mcp: ?*mcp_registry.Registry) fake_transport.FakeTransport {
-        _ = self;
-        return .{ .mcp = mcp };
+        return .{
+            .mcp = mcp,
+            .short_script = self.tool_loop_short,
+        };
     }
 
     fn askImpl(
@@ -253,8 +268,24 @@ test "FakeProvider tool loop returns search then text" {
 
     var second = try binding.transport().complete(allocator, conversation.items, declarations, null);
     defer second.deinit(allocator);
-    try std.testing.expect(second == .text);
-    try std.testing.expectEqualStrings("Exploration complete.", second.text);
+    try std.testing.expect(second == .tool_call);
+    try std.testing.expectEqualStrings("list_tree", second.tool_call.name);
+
+    const tree_copy = agent_turn.ToolCall{
+        .name = try allocator.dupe(u8, second.tool_call.name),
+        .args_json = try allocator.dupe(u8, second.tool_call.args_json),
+    };
+    defer {
+        allocator.free(tree_copy.name);
+        allocator.free(tree_copy.args_json);
+    }
+    try binding.transport().appendToolCall(allocator, &conversation, tree_copy);
+    try binding.transport().appendToolResult(allocator, &conversation, tree_copy.name, "tree listed");
+
+    var third = try binding.transport().complete(allocator, conversation.items, declarations, null);
+    defer third.deinit(allocator);
+    try std.testing.expect(third == .text);
+    try std.testing.expectEqualStrings("Exploration complete.", third.text);
 }
 
 test "FakeProvider tool loop honours cancellation" {
