@@ -192,6 +192,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                     wb.agent.agent_steps.items,
                     step_i,
                     wb.allocator,
+                    state.time,
                 );
                 if (drawn > 0) content_y += drawn;
             }
@@ -202,13 +203,22 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
             if (thinking_src.len > 0) {
                 content_y += chat_bubble.drawThinkingLine(inner_x, content_y, thinking_src);
             } else if (stream_src.len == 0) {
-                var live_buf: [256:0]u8 = undefined;
-                const live_text = if (snap.status_line.len > 0)
-                    std.fmt.bufPrint(&live_buf, "{s}", .{snap.status_line}) catch "Working..."
-                else
-                    std.fmt.bufPrint(&live_buf, "Working...", .{}) catch "Working...";
-                live_buf[live_text.len] = 0;
-                content_y += chat_bubble.drawStatusLine(inner_x, content_y, live_buf[0..live_text.len :0]);
+                var has_running_step = false;
+                for (wb.agent.agent_steps.items) |step| {
+                    if (step.running and step.parent_index == null) {
+                        has_running_step = true;
+                        break;
+                    }
+                }
+                if (!has_running_step) {
+                    var live_buf: [256:0]u8 = undefined;
+                    const live_text = if (snap.status_line.len > 0)
+                        std.fmt.bufPrint(&live_buf, "{s}", .{snap.status_line}) catch "Working..."
+                    else
+                        std.fmt.bufPrint(&live_buf, "Working...", .{}) catch "Working...";
+                    live_buf[live_text.len] = 0;
+                    content_y += chat_bubble.drawStatusLine(inner_x, content_y, live_buf[0..live_text.len :0]);
+                }
             }
 
             if (stream_src.len > 0) {

@@ -669,7 +669,14 @@ pub fn flushAgentUi(wb: anytype) !void {
                 try wb.agent.appendStreamChunk(text);
                 wb.scrollChatToEnd(768);
             },
-            .append_step => |payload| try wb.agent.appendAgentStep(payload.index, payload.kind, payload.summary),
+            .begin_step => |payload| {
+                try wb.agent.beginAgentStep(payload.index, payload.kind, payload.label);
+                wb.scrollChatToEnd(768);
+            },
+            .append_step => |payload| {
+                try wb.agent.appendAgentStep(payload.index, payload.kind, payload.summary);
+                wb.scrollChatToEnd(768);
+            },
             .set_phase => |payload| {
                 if (payload.phase == .sending) {
                     wb.agent.clearStreamText();

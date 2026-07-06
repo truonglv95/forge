@@ -565,6 +565,10 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .progress_context = host,
             .step_callback = stepBridge,
             .step_context = host,
+            .step_begin_callback = stepBeginBridge,
+            .step_begin_context = host,
+            .turn_callback = turnBridge,
+            .turn_context = host,
             .edit_callback = editBridge,
             .edit_context = host,
             .use_inline_edits = true,
@@ -722,6 +726,32 @@ fn stepBridge(context: ?*anyopaque, step: ai.agent.Step) void {
             .summary = summary_owned,
         },
     });
+}
+
+fn stepBeginBridge(context: ?*anyopaque, begin: ai.agent.StepBegin) void {
+    const host: *Host = @ptrCast(@alignCast(context.?));
+    const kind = ai.subagent.classifyTool(begin.tool_name).label();
+    const label = ai.subagent.toolActionLabel(begin.tool_name);
+    const kind_owned = host.allocator.dupe(u8, kind) catch return;
+    const label_owned = host.allocator.dupe(u8, label) catch {
+        host.allocator.free(kind_owned);
+        return;
+    };
+    host.enqueue_ui(host.context, .{
+        .begin_step = .{
+            .index = begin.index,
+            .kind = kind_owned,
+            .label = label_owned,
+        },
+    });
+}
+
+fn turnBridge(context: ?*anyopaque, index: u32) void {
+    const host: *Host = @ptrCast(@alignCast(context.?));
+    var buf: [96]u8 = undefined;
+    const label = std.fmt.bufPrint(&buf, "Step {d}: calling model...", .{index}) catch return;
+    const owned = host.allocator.dupe(u8, label) catch return;
+    host.enqueue_ui(host.context, .{ .set_status = owned });
 }
 
 fn editBridge(context: ?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void {

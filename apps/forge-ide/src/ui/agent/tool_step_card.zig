@@ -95,6 +95,7 @@ pub fn drawStep(
     steps: []agent_session.AgentStep,
     step_i: usize,
     allocator: std.mem.Allocator,
+    anim_time: f32,
 ) f32 {
     const step = &steps[step_i];
     if (step.parent_index != null) return 0;
@@ -102,13 +103,27 @@ pub fn drawStep(
     const accent = kindAccent(step.kind);
     const card_x = agent_x + 8;
     const card_w = content_w;
-    renderer.Renderer.drawRoundedRect(card_x, y, card_w, card_h, 6, .{ .r = 0.16, .g = 0.18, .b = 0.22, .a = 1.0 });
-    renderer.Renderer.drawRect(card_x + 2, y + 4, 2, card_h - 4, .{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 0.35 });
+    const card_bg: renderer.Color = if (step.running)
+        .{ .r = 0.18, .g = 0.2, .b = 0.26, .a = 1.0 }
+    else
+        .{ .r = 0.16, .g = 0.18, .b = 0.22, .a = 1.0 };
+    renderer.Renderer.drawRoundedRect(card_x, y, card_w, card_h, 6, card_bg);
+    renderer.Renderer.drawRect(card_x + 2, y + 4, 2, card_h - 4, .{ .r = accent.r, .g = accent.g, .b = accent.b, .a = if (step.running) 0.55 else 0.35 });
     renderer.Renderer.drawRoundedRect(card_x + 6, y + 6, 14, 14, 7, accent);
-    var idx_buf: [8:0]u8 = undefined;
-    const idx_text = std.fmt.bufPrint(&idx_buf, "{d}", .{step.index + 1}) catch "?";
-    idx_buf[idx_text.len] = 0;
-    renderer.Renderer.drawText(@ptrCast(&idx_buf), card_x + 9, y + 8, 9.0, .{ .r = 0.1, .g = 0.12, .b = 0.14, .a = 1.0 });
+    if (step.running) {
+        const pulse = 0.45 + 0.35 * @sin(anim_time * 6.0);
+        renderer.Renderer.drawRoundedRect(card_x + 9, y + 9, 8, 8, 4, .{
+            .r = accent.r,
+            .g = accent.g,
+            .b = accent.b,
+            .a = pulse,
+        });
+    } else {
+        var idx_buf: [8:0]u8 = undefined;
+        const idx_text = std.fmt.bufPrint(&idx_buf, "{d}", .{step.index}) catch "?";
+        idx_buf[idx_text.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&idx_buf), card_x + 9, y + 8, 9.0, .{ .r = 0.1, .g = 0.12, .b = 0.14, .a = 1.0 });
+    }
     renderer.Renderer.drawRoundedRect(card_x + 24, y + 8, 4, 12, 2, accent);
 
     const is_parent = step.child_count > 0 or step.is_thought;
@@ -118,9 +133,21 @@ pub fn drawStep(
     }
 
     var title_buf: [384:0]u8 = undefined;
-    const title = formatTitle(step, steps, step_i, &title_buf);
-    title_buf[@min(title.len, title_buf.len - 1)] = 0;
-    renderer.Renderer.drawText(title, inner_x + 30, y + 7, 12.0, .{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 });
+    const title = if (step.running) blk: {
+        const n = @min(step.summary.len, title_buf.len - 1);
+        @memcpy(title_buf[0..n], step.summary[0..n]);
+        title_buf[n] = 0;
+        break :blk title_buf[0..n :0];
+    } else blk: {
+        const formatted = formatTitle(step, steps, step_i, &title_buf);
+        title_buf[@min(formatted.len, title_buf.len - 1)] = 0;
+        break :blk formatted;
+    };
+    const title_fg = if (step.running)
+        renderer.Color{ .r = 0.72, .g = 0.78, .b = 0.86, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 };
+    renderer.Renderer.drawText(title, inner_x + 30, y + 7, 12.0, title_fg);
 
     var content_y = y + card_h + card_gap;
 

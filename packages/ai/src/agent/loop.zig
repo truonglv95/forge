@@ -9,10 +9,16 @@ const subagent = @import("../subagent.zig");
 const turn = @import("turn.zig");
 
 pub const StepCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
+pub const StepBeginCallback = *const fn (?*anyopaque, u32, []const u8) void;
+pub const TurnCallback = *const fn (?*anyopaque, u32) void;
 
 pub const Config = struct {
     max_tool_steps: u32 = 6,
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
+    turn_callback: ?TurnCallback = null,
+    turn_context: ?*anyopaque = null,
+    step_begin_callback: ?StepBeginCallback = null,
+    step_begin_context: ?*anyopaque = null,
     step_callback: ?StepCallback = null,
     step_context: ?*anyopaque = null,
 };
@@ -58,6 +64,10 @@ pub fn run(
             if (token.isCancelled()) return error.Cancelled;
         }
 
+        if (config.turn_callback) |callback| {
+            callback(config.turn_context, step_index);
+        }
+
         var completion = transport.complete(allocator, conversation.items, tool_declarations_json, config.cancel_token) catch |err| return switch (err) {
             error.Cancelled => error.Cancelled,
             else => error.ProviderFailed,
@@ -67,6 +77,10 @@ pub fn run(
         switch (completion) {
             .tool_call => |call| {
                 if (!tool_registry.isToolAllowed(call.name, tool_ctx.profile, mcp)) return error.NotAllowed;
+
+                if (config.step_begin_callback) |callback| {
+                    callback(config.step_begin_context, step_index, call.name);
+                }
 
                 const summary = tool_dispatch.execute(allocator, tool_ctx, mcp, call) catch |err| return mapDispatch(err);
                 defer allocator.free(summary);
