@@ -8,6 +8,7 @@ pub const Command = union(enum) {
     mode_cycle,
     context,
     diff,
+    events: ?[]const u8,
     help,
     exit_app,
     resume_session: ?[]const u8,
@@ -31,6 +32,13 @@ pub fn parseSlashCommand(input: []const u8) Command {
     if (matchesSlash(input, "help") or matchesSlash(input, "?")) return .help;
     if (matchesSlash(input, "quit") or matchesSlash(input, "exit")) return .exit_app;
     if (matchesSlash(input, "sessions") or matchesSlash(input, "list")) return .sessions;
+    if (matchesSlash(input, "events") or matchesSlash(input, "ev")) {
+        if (std.mem.eql(u8, input, "/events") or std.mem.eql(u8, input, "/ev")) return .{ .events = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .events = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        if (args.len == 0) return .{ .events = null };
+        return .{ .events = args };
+    }
 
     if (input.len >= 5 and input[0] == '/' and input[1] == 'm' and input[2] == 'o' and input[3] == 'd' and input[4] == 'e') {
         if (input.len == 5) return .mode_cycle;
@@ -82,8 +90,8 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear|/cls /policy /mode [ask|plan|agent] /context /diff /resume [id] /sessions /help /quit
-    \\Keys: Tab policy | Ctrl+M mode | Ctrl+R review tool output | PgUp/PgDn scroll | d/a/n proposal | Ctrl+C cancel/quit
+    \\Commands: /clear|/cls /policy /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /resume [id] /sessions /help /quit
+    \\Keys: Tab policy | Ctrl+M mode | Ctrl+R review tool output | Esc close events | PgUp/PgDn scroll | d/a/n proposal | Ctrl+C cancel/quit
     ;
 }
 
@@ -102,6 +110,16 @@ test "parse slash commands" {
     try std.testing.expect(parseSlashCommand("/help") == .help);
     try std.testing.expect(parseSlashCommand("/quit") == .exit_app);
     try std.testing.expect(parseSlashCommand("/sessions") == .sessions);
+    {
+        const cmd = parseSlashCommand("/events");
+        try std.testing.expect(cmd == .events);
+        try std.testing.expect(cmd.events == null);
+    }
+    {
+        const cmd = parseSlashCommand("/events sess_1");
+        try std.testing.expect(cmd == .events);
+        try std.testing.expectEqualStrings("sess_1", cmd.events.?);
+    }
     try std.testing.expect(parseSlashCommand("/mode") == .mode_cycle);
     try std.testing.expect(parseSlashCommand("hello") == .not_command);
 }

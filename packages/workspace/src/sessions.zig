@@ -4,6 +4,7 @@ const atomic = @import("atomic.zig");
 
 pub const sessions_dir = ".forge/sessions";
 pub const sessions_index = ".forge/sessions/index.jsonl";
+pub const session_events_suffix = ".events.jsonl";
 
 pub const SessionStep = struct {
     index: u32,
@@ -217,6 +218,53 @@ pub fn persistSession(io: std.Io, root: path_mod.WorkspaceRoot, session_id: []co
     var path_buf: [128]u8 = undefined;
     const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}.json", .{ sessions_dir, session_id });
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(rel), json_body);
+}
+
+pub fn appendEvent(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, session_id: []const u8, line: []const u8) !void {
+    try ensureLayout(io, root);
+
+    var path_buf: [160]u8 = undefined;
+    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}{s}", .{ sessions_dir, session_id, session_events_suffix });
+
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(allocator);
+
+    const existing = readRelativeFile(allocator, io, root, rel) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    if (existing) |bytes| {
+        defer allocator.free(bytes);
+        try buffer.appendSlice(allocator, bytes);
+        if (bytes.len > 0 and bytes[bytes.len - 1] != '\n') try buffer.append(allocator, '\n');
+    }
+
+    try buffer.appendSlice(allocator, line);
+    if (line.len > 0 and line[line.len - 1] != '\n') try buffer.append(allocator, '\n');
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(rel), buffer.items);
+}
+
+pub fn readEvents(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, session_id: []const u8) ![]u8 {
+    var path_buf: [160]u8 = undefined;
+    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}{s}", .{ sessions_dir, session_id, session_events_suffix });
+    return try readRelativeFile(allocator, io, root, rel);
+}
+
+test "sessions append events under .forge/sessions" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+
+    try appendEvent(allocator, io, root, "sess_events", "{\"schema_version\":1,\"type\":\"run_started\"}");
+    try appendEvent(allocator, io, root, "sess_events", "{\"schema_version\":1,\"type\":\"run_completed\"}");
+
+    const body = try readEvents(allocator, io, root, "sess_events");
+    defer allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "run_started") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "run_completed") != null);
 }
 
 pub fn makeSessionId(allocator: std.mem.Allocator, timestamp_ms: i64) ![]u8 {

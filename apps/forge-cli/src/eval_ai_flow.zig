@@ -1,0 +1,621 @@
+const std = @import("std");
+const ai = @import("forge-ai");
+const kernel = @import("forge-kernel");
+const workspace = @import("forge-workspace");
+
+const args_mod = @import("args.zig");
+const ai_workflow = @import("ai_workflow.zig");
+
+pub const EvalError = error{
+    InvalidCorpus,
+    WorkspaceFailed,
+    ProviderFailed,
+    OutOfMemory,
+};
+
+const TaskExpect = struct {
+    proposal_only: bool = false,
+    path: []const u8 = "",
+    contains: []const u8 = "",
+    min_steps: u32 = 0,
+};
+
+const Task = struct {
+    id: []const u8,
+    intent: []const u8,
+    workspace_files: std.StringHashMapUnmanaged([]const u8) = .{},
+    expect: TaskExpect = .{},
+
+    fn deinit(self: *Task, allocator: std.mem.Allocator) void {
+        var it = self.workspace_files.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.workspace_files.deinit(allocator);
+        allocator.free(self.id);
+        allocator.free(self.intent);
+        if (self.expect.path.len > 0) allocator.free(self.expect.path);
+        if (self.expect.contains.len > 0) allocator.free(self.expect.contains);
+        self.* = undefined;
+    }
+};
+
+const Record = struct {
+    task_id: []const u8,
+    repetition: u32,
+    provider: []const u8,
+    model: []const u8,
+    latency_ms: f64,
+    command_success: bool,
+    proposal_valid: bool,
+    apply_success: bool,
+    validation_pass: bool,
+    task_success: bool,
+    steps: usize,
+    repair_attempts: u8,
+    reported_tokens: struct {
+        prompt: usize = 0,
+        completion: usize = 0,
+        total: usize = 0,
+    },
+    reason: []const u8,
+};
+
+const Summary = struct {
+    schema_version: u32 = 1,
+    generated_at: []const u8,
+    provider: []const u8,
+    model: []const u8,
+    tasks: usize,
+    successes: usize,
+    success_rate: f64,
+    proposal_valid_rate: f64,
+    validation_pass_rate: f64,
+    average_steps: f64,
+    average_repairs: f64,
+    reported_tokens_total: u64,
+    latency_ms_p50: f64,
+    latency_ms_p95: f64,
+    results_jsonl: []const u8,
+    git_commit: []const u8,
+    baseline: ?[]const u8 = null,
+    success_rate_delta: ?f64 = null,
+};
+
+pub fn run(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    flags: args_mod.GlobalFlags,
+    writer: *std.Io.Writer,
+) EvalError!u8 {
+    const corpus_path = flags.corpus orelse "fixtures/eval/agent_reliability.json";
+    const out_path = flags.output orelse ".forge/evals/latest.jsonl";
+    const repeat = if (flags.repeat == 0) 1 else flags.repeat;
+    const max_steps = if (flags.max_steps > 0) flags.max_steps else 8;
+    const provider_name = flags.provider orelse "fake";
+    const model_name = flags.model orelse "default";
+
+    const tasks = loadCorpus(allocator, io, corpus_path) catch return error.InvalidCorpus;
+    defer freeTasks(allocator, tasks);
+
+    var records: std.ArrayList(Record) = .empty;
+    defer {
+        for (records.items) |rec| {
+            allocator.free(rec.task_id);
+            allocator.free(rec.provider);
+            allocator.free(rec.model);
+            allocator.free(rec.reason);
+        }
+        records.deinit(allocator);
+    }
+
+    var latencies: std.ArrayList(f64) = .empty;
+    defer latencies.deinit(allocator);
+
+    var token_total: u64 = 0;
+
+    for (1..repeat + 1) |rep| {
+        const rep_u32: u32 = @intCast(rep);
+        for (tasks) |task| {
+            const start_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
+            var eval_ws = EvalWorkspace.create(allocator, io) catch return error.WorkspaceFailed;
+            defer eval_ws.deinit();
+
+            seedWorkspace(allocator, io, eval_ws.root, task.workspace_files) catch return error.WorkspaceFailed;
+
+            const provider_opts = ai_workflow.agentProviderOptionsFromFlags(flags, task.intent);
+            var result = ai.agent.run(allocator, io, environ_map, eval_ws.root, task.intent, .{
+                .max_steps = max_steps,
+                .provider_options = provider_opts,
+                .workspace_cwd = ".",
+                .mode = .agent,
+                .capability_profile = .propose,
+                .max_repair_attempts = if (provider_opts.kind == .fake) 0 else 2,
+            }) catch {
+                const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
+                try latencies.append(allocator, latency_ms);
+                try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "agent run failed"));
+                continue;
+            };
+            defer ai.agent.deinitResult(allocator, &result);
+
+            const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
+            try latencies.append(allocator, latency_ms);
+
+            const proposal_ok, const proposal_reason, const proposal_rel = proposalStatus(allocator, io, eval_ws.root, result.proposal_rel) catch {
+                try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "proposal missing or malformed"));
+                continue;
+            };
+
+            if (!proposal_ok) {
+                try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, proposal_reason));
+                continue;
+            }
+
+            var apply_success = false;
+            var validation_pass = false;
+            var reason: []const u8 = "unknown";
+
+            if (task.expect.proposal_only) {
+                apply_success = true;
+                validation_pass = true;
+                reason = "proposal contract satisfied";
+            } else {
+                apply_success = applyProposalInPlace(allocator, io, eval_ws.root, proposal_rel) catch false;
+                if (!apply_success) {
+                    reason = "proposal failed transaction apply";
+                } else {
+                    const ok, const why = postconditionOk(allocator, io, eval_ws.root, task.expect) catch .{ false, "postcondition check failed" };
+                    validation_pass = ok;
+                    reason = why;
+                }
+            }
+
+            const steps_count = result.steps.len;
+            if (steps_count < task.expect.min_steps) {
+                try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "insufficient tool exploration"));
+                continue;
+            }
+
+            const success = apply_success and validation_pass;
+            token_total += @intCast(result.usage.total_tokens);
+            try records.append(allocator, try makeRecord(
+                allocator,
+                task.id,
+                rep_u32,
+                provider_name,
+                model_name,
+                latency_ms,
+                true,
+                true,
+                apply_success,
+                validation_pass,
+                success,
+                steps_count,
+                result.repair_attempts,
+                result.usage,
+                reason,
+            ));
+        }
+    }
+
+    persistRecords(allocator, io, out_path, records.items) catch return error.WorkspaceFailed;
+
+    const success_count = countSuccess(records.items);
+    const success_rate = if (records.items.len == 0) 0 else @as(f64, @floatFromInt(success_count)) / @as(f64, @floatFromInt(records.items.len));
+    const proposal_rate = rateBool(records.items, "proposal_valid");
+    const validation_rate = rateBool(records.items, "validation_pass");
+    const avg_steps = avgUsize(records.items, "steps");
+    const avg_repairs = avgU8(records.items, "repair_attempts");
+    const p50 = percentile(latencies.items, 0.50);
+    const p95 = percentile(latencies.items, 0.95);
+    const git_commit = gitCommitShort(allocator, io) catch try allocator.dupe(u8, "unknown");
+    defer allocator.free(git_commit);
+
+    const generated_at = timestampIsoUtc(allocator, io) catch try allocator.dupe(u8, "");
+    defer allocator.free(generated_at);
+
+    var summary = Summary{
+        .generated_at = generated_at,
+        .provider = provider_name,
+        .model = model_name,
+        .tasks = records.items.len,
+        .successes = success_count,
+        .success_rate = round4(success_rate),
+        .proposal_valid_rate = round4(proposal_rate),
+        .validation_pass_rate = round4(validation_rate),
+        .average_steps = round2(avg_steps),
+        .average_repairs = round2(avg_repairs),
+        .reported_tokens_total = token_total,
+        .latency_ms_p50 = p50,
+        .latency_ms_p95 = p95,
+        .results_jsonl = out_path,
+        .git_commit = git_commit,
+    };
+
+    var regression_ok = true;
+    if (flags.baseline) |baseline_path| {
+        const baseline = loadBaseline(allocator, io, baseline_path) catch null;
+        if (baseline) |rate| {
+            const delta = round4(summary.success_rate - rate);
+            summary.baseline = baseline_path;
+            summary.success_rate_delta = delta;
+            regression_ok = delta >= -flags.max_success_regression;
+        }
+    }
+
+    persistSummary(allocator, io, out_path, summary) catch return error.WorkspaceFailed;
+
+    const json = std.json.Stringify.valueAlloc(allocator, summary, .{}) catch return error.OutOfMemory;
+    defer allocator.free(json);
+    writer.writeAll(json) catch return error.WorkspaceFailed;
+    writer.writeAll("\n") catch return error.WorkspaceFailed;
+
+    const meets_min = summary.success_rate >= flags.min_success_rate;
+    return if (meets_min and regression_ok) 0 else 2;
+}
+
+fn loadCorpus(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]Task {
+    var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
+    const size: usize = @intCast(stat.size);
+    const buf = try allocator.alloc(u8, size);
+    defer allocator.free(buf);
+    _ = try file.readPositionalAll(io, buf, 0);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, buf, .{});
+    defer parsed.deinit();
+
+    if (parsed.value != .array) return error.InvalidCorpus;
+    var tasks: std.ArrayList(Task) = .empty;
+    errdefer {
+        for (tasks.items) |*task| task.deinit(allocator);
+        tasks.deinit(allocator);
+    }
+
+    for (parsed.value.array.items) |item| {
+        if (item != .object) return error.InvalidCorpus;
+        const obj = item.object;
+        const id_val = obj.get("id") orelse return error.InvalidCorpus;
+        const intent_val = obj.get("intent") orelse return error.InvalidCorpus;
+        if (id_val != .string or intent_val != .string) return error.InvalidCorpus;
+
+        var task = Task{
+            .id = try allocator.dupe(u8, id_val.string),
+            .intent = try allocator.dupe(u8, intent_val.string),
+        };
+        errdefer task.deinit(allocator);
+
+        if (obj.get("workspace_files")) |wf| {
+            if (wf != .object) return error.InvalidCorpus;
+            var it = wf.object.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* != .string) return error.InvalidCorpus;
+                try task.workspace_files.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*.string));
+            }
+        }
+
+        if (obj.get("expect")) |ex| {
+            if (ex != .object) return error.InvalidCorpus;
+            if (ex.object.get("proposal_only")) |v| {
+                if (v == .bool) task.expect.proposal_only = v.bool;
+            }
+            if (ex.object.get("path")) |v| {
+                if (v == .string) task.expect.path = try allocator.dupe(u8, v.string);
+            }
+            if (ex.object.get("contains")) |v| {
+                if (v == .string) task.expect.contains = try allocator.dupe(u8, v.string);
+            }
+            if (ex.object.get("min_steps")) |v| {
+                if (v == .integer) task.expect.min_steps = @intCast(v.integer);
+            }
+        }
+
+        try tasks.append(allocator, task);
+    }
+
+    return try tasks.toOwnedSlice(allocator);
+}
+
+fn freeTasks(allocator: std.mem.Allocator, tasks: []Task) void {
+    for (tasks) |*task| task.deinit(allocator);
+    allocator.free(tasks);
+}
+
+const EvalWorkspace = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    parent_dir: std.Io.Dir,
+    directory_name: []u8,
+    absolute_path: []u8,
+    root: workspace.WorkspaceRoot,
+
+    fn create(allocator: std.mem.Allocator, io: std.Io) !EvalWorkspace {
+        const timestamp = std.Io.Timestamp.now(io, .real).toMilliseconds();
+        const directory_name = try std.fmt.allocPrint(allocator, ".zig-cache/eval/forge-ai-flow-{d}-{d}", .{ timestamp, std.Thread.getCurrentId() });
+        errdefer allocator.free(directory_name);
+        var parent_dir = std.Io.Dir.cwd();
+        parent_dir.deleteTree(io, directory_name) catch {};
+        try parent_dir.createDirPath(io, directory_name);
+        errdefer parent_dir.deleteTree(io, directory_name) catch {};
+        var dir = try parent_dir.openDir(io, directory_name, .{ .access_sub_paths = true, .iterate = true });
+        errdefer dir.close(io);
+        const root = workspace.WorkspaceRoot.init(dir);
+
+        var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const abs_len = try root.dir.realPath(io, &abs_buf);
+        const absolute_path = try allocator.dupe(u8, abs_buf[0..abs_len]);
+        errdefer allocator.free(absolute_path);
+
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .parent_dir = parent_dir,
+            .directory_name = directory_name,
+            .absolute_path = absolute_path,
+            .root = root,
+        };
+    }
+
+    fn deinit(self: *EvalWorkspace) void {
+        self.root.close(self.io);
+        self.parent_dir.deleteTree(self.io, self.directory_name) catch {};
+        self.allocator.free(self.directory_name);
+        self.allocator.free(self.absolute_path);
+        self.* = undefined;
+    }
+};
+
+fn seedWorkspace(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, files: std.StringHashMapUnmanaged([]const u8)) !void {
+    var it = files.iterator();
+    while (it.next()) |entry| {
+        const path = try workspace.WorkspacePath.parse(entry.key_ptr.*);
+        try workspace.atomic.replaceFile(io, root, path, entry.value_ptr.*);
+    }
+    _ = allocator;
+}
+
+fn proposalStatus(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    proposal_rel: ?[]const u8,
+) !struct { bool, []const u8, []const u8 } {
+    const rel = proposal_rel orelse return error.InvalidCorpus;
+    var proposal = workspace.OwnedProposal.readPath(allocator, io, root, rel) catch return error.InvalidCorpus;
+    defer proposal.deinit();
+    const edit = proposal.workspaceEdit();
+    edit.validate() catch return .{ false, "proposal missing or malformed", rel };
+    if (edit.files.len == 0) return .{ false, "proposal missing or malformed", rel };
+    return .{ true, "ok", rel };
+}
+
+fn applyProposalInPlace(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, proposal_rel: []const u8) !bool {
+    var proposal = workspace.OwnedProposal.readPath(allocator, io, root, proposal_rel) catch return false;
+    defer proposal.deinit();
+    const edit = proposal.workspaceEdit();
+    edit.validate() catch return false;
+    _ = workspace.execution.applyApproved(allocator, io, root, edit, proposal_rel) catch return false;
+    return true;
+}
+
+fn postconditionOk(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    expect: TaskExpect,
+) !struct { bool, []const u8 } {
+    if (expect.path.len == 0) return .{ true, "postcondition satisfied" };
+    var snap = workspace.FileSnapshot.read(allocator, io, root, try workspace.WorkspacePath.parse(expect.path)) catch {
+        return .{ false, "missing expected file" };
+    };
+    defer snap.deinit();
+    if (expect.contains.len > 0 and std.mem.indexOf(u8, snap.content, expect.contains) == null) {
+        return .{ false, "expected content not found" };
+    }
+    return .{ true, "postcondition satisfied" };
+}
+
+fn persistRecords(allocator: std.mem.Allocator, io: std.Io, out_path: []const u8, records: []const Record) !void {
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), io, std.fs.path.dirname(out_path) orelse ".forge/evals");
+    var file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, out_path, .{ .truncate = true });
+    defer file.close(io);
+    var buf: [16 * 1024]u8 = undefined;
+    var out = file.writer(io, &buf);
+    for (records) |rec| {
+        const line = try std.json.Stringify.valueAlloc(allocator, rec, .{});
+        defer allocator.free(line);
+        try out.interface.writeAll(line);
+        try out.interface.writeAll("\n");
+    }
+    try out.interface.flush();
+}
+
+fn persistSummary(allocator: std.mem.Allocator, io: std.Io, results_path: []const u8, summary: Summary) !void {
+    const base = if (std.mem.endsWith(u8, results_path, ".jsonl"))
+        results_path[0 .. results_path.len - ".jsonl".len]
+    else
+        results_path;
+    const summary_path = try std.fmt.allocPrint(allocator, "{s}.summary.json", .{base});
+    defer allocator.free(summary_path);
+    var file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, summary_path, .{ .truncate = true });
+    defer file.close(io);
+    var buf: [16 * 1024]u8 = undefined;
+    var out = file.writer(io, &buf);
+    const json = try std.json.Stringify.valueAlloc(allocator, summary, .{ .whitespace = .indent_2 });
+    defer allocator.free(json);
+    try out.interface.writeAll(json);
+    try out.interface.writeAll("\n");
+    try out.interface.flush();
+}
+
+fn loadBaseline(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !?f64 {
+    var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
+    const size: usize = @intCast(stat.size);
+    const buf = try allocator.alloc(u8, size);
+    defer allocator.free(buf);
+    _ = try file.readPositionalAll(io, buf, 0);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, buf, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    if (parsed.value.object.get("success_rate")) |v| {
+        return switch (v) {
+            .float => v.float,
+            .integer => @floatFromInt(v.integer),
+            else => null,
+        };
+    }
+    return null;
+}
+
+fn timestampIsoUtc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
+    // Best-effort stable timestamp without pulling in heavy formatting; keep ms.
+    return std.fmt.allocPrint(allocator, "{d}", .{ms});
+}
+
+fn gitCommitShort(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    _ = io;
+    const captured = try kernel.process.runCapture(allocator, .{
+        .argv = &.{ "git", "rev-parse", "--short", "HEAD" },
+        .cwd = ".",
+        .max_bytes = 64,
+    });
+    defer allocator.free(captured.output);
+    const trimmed = std.mem.trim(u8, captured.output, &std.ascii.whitespace);
+    return try allocator.dupe(u8, trimmed);
+}
+
+fn countSuccess(records: []const Record) usize {
+    var n: usize = 0;
+    for (records) |r| {
+        if (r.task_success) n += 1;
+    }
+    return n;
+}
+
+fn rateBool(records: []const Record, comptime field: []const u8) f64 {
+    var n: usize = 0;
+    for (records) |r| {
+        const v = @field(r, field);
+        if (v) n += 1;
+    }
+    return if (records.len == 0) 0 else @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(records.len));
+}
+
+fn avgUsize(records: []const Record, comptime field: []const u8) f64 {
+    var total: usize = 0;
+    for (records) |r| total += @field(r, field);
+    return if (records.len == 0) 0 else @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(records.len));
+}
+
+fn avgU8(records: []const Record, comptime field: []const u8) f64 {
+    var total: usize = 0;
+    for (records) |r| total += @intCast(@field(r, field));
+    return if (records.len == 0) 0 else @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(records.len));
+}
+
+fn percentile(values: []const f64, fraction: f64) f64 {
+    if (values.len == 0) return 0;
+    const tmp = std.heap.page_allocator.alloc(f64, values.len) catch return values[0];
+    defer std.heap.page_allocator.free(tmp);
+    @memcpy(tmp, values);
+    std.mem.sort(f64, tmp, {}, comptime std.sort.asc(f64));
+    const n: f64 = @floatFromInt(values.len);
+    const raw_pos = @ceil(n * fraction) - 1.0;
+    var idx_i64: i64 = @intFromFloat(raw_pos);
+    if (idx_i64 < 0) idx_i64 = 0;
+    var idx: usize = @intCast(idx_i64);
+    if (idx >= values.len) idx = values.len - 1;
+    return tmp[idx];
+}
+
+fn round4(v: f64) f64 {
+    return @as(f64, @floatFromInt(@as(i64, @intFromFloat(@round(v * 10000.0))))) / 10000.0;
+}
+
+fn round2(v: f64) f64 {
+    return @as(f64, @floatFromInt(@as(i64, @intFromFloat(@round(v * 100.0))))) / 100.0;
+}
+
+fn millisDelta(start_ms: i64, end_ms: i64) f64 {
+    if (end_ms <= start_ms) return 0;
+    return @floatFromInt(end_ms - start_ms);
+}
+
+fn makeFailedRecord(
+    allocator: std.mem.Allocator,
+    task_id: []const u8,
+    repetition: u32,
+    provider: []const u8,
+    model: []const u8,
+    latency_ms: f64,
+    reason: []const u8,
+) !Record {
+    return makeRecord(allocator, task_id, repetition, provider, model, latency_ms, false, false, false, false, false, 0, 0, .{}, reason);
+}
+
+fn makeRecord(
+    allocator: std.mem.Allocator,
+    task_id: []const u8,
+    repetition: u32,
+    provider: []const u8,
+    model: []const u8,
+    latency_ms: f64,
+    command_success: bool,
+    proposal_valid: bool,
+    apply_success: bool,
+    validation_pass: bool,
+    task_success: bool,
+    steps: usize,
+    repair_attempts: u8,
+    usage: ai.provider.TokenUsage,
+    reason: []const u8,
+) !Record {
+    return .{
+        .task_id = try allocator.dupe(u8, task_id),
+        .repetition = repetition,
+        .provider = try allocator.dupe(u8, provider),
+        .model = try allocator.dupe(u8, model),
+        .latency_ms = latency_ms,
+        .command_success = command_success,
+        .proposal_valid = proposal_valid,
+        .apply_success = apply_success,
+        .validation_pass = validation_pass,
+        .task_success = task_success,
+        .steps = steps,
+        .repair_attempts = repair_attempts,
+        .reported_tokens = .{
+            .prompt = usage.prompt_tokens,
+            .completion = usage.completion_tokens,
+            .total = usage.total_tokens,
+        },
+        .reason = try allocator.dupe(u8, reason),
+    };
+}
+
+test "ai-flow evaluator loads corpus and writes summary" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+
+    var buffer: [4096]u8 = undefined;
+    var out = std.Io.Writer.fixed(&buffer);
+
+    const code = try run(allocator, io, &environ, .{
+        .provider = "fake",
+        .repeat = 1,
+        .max_steps = 4,
+        .output = ".zig-cache/eval/test.jsonl",
+        .corpus = "fixtures/eval/agent_reliability.json",
+        .min_success_rate = 1.0,
+    }, &out);
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "\"success_rate\"") != null);
+}
