@@ -2,10 +2,12 @@ const std = @import("std");
 const path_mod = @import("path.zig");
 const atomic = @import("atomic.zig");
 const toolchain_probe = @import("toolchain_probe.zig");
+const parser_catalog = @import("parser_catalog.zig");
+const parser_sync = @import("parser_sync.zig");
 
 pub const parser_lock_file = ".forge/parser_lock.json";
 
-pub const tree_sitter_core_tag = "0.20.8";
+pub const tree_sitter_core_tag = parser_catalog.tree_sitter_core_tag;
 
 pub const ResolvedGrammar = struct {
     language: []const u8,
@@ -39,40 +41,33 @@ pub const ParserSet = struct {
     }
 };
 
-const Version = struct {
-    major: u32,
-    minor: u32,
-    patch: u32,
-
-    fn parse(raw: []const u8) Version {
-        var parts: [3]u32 = .{ 0, 0, 0 };
-        var count: usize = 0;
-        var it = std.mem.splitScalar(u8, raw, '.');
-        while (it.next()) |part| : (count += 1) {
-            if (count >= parts.len) break;
-            parts[count] = std.fmt.parseInt(u32, part, 10) catch 0;
-        }
-        return .{ .major = parts[0], .minor = parts[1], .patch = parts[2] };
+fn selectGrammar(language: []const u8, project_version: ?[]const u8) []const u8 {
+    const catalog = parser_catalog.load();
+    if (parser_catalog.selectGrammar(catalog, language, project_version)) |entry| {
+        return entry.tag;
     }
+    return defaultGrammarTag(language);
+}
 
-    fn gte(self: Version, other: Version) bool {
-        if (self.major != other.major) return self.major > other.major;
-        if (self.minor != other.minor) return self.minor > other.minor;
-        return self.patch >= other.patch;
+fn defaultGrammarTag(language: []const u8) []const u8 {
+    if (std.mem.eql(u8, language, "python")) return "v0.23.6";
+    if (std.mem.eql(u8, language, "typescript") or std.mem.eql(u8, language, "tsx")) return "v0.20.5";
+    return "unknown";
+}
+
+fn formatParserSetId(allocator: std.mem.Allocator, grammars: []const ResolvedGrammar) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "core@");
+    try buf.appendSlice(allocator, tree_sitter_core_tag);
+    for (grammars) |grammar| {
+        try buf.append(allocator, ';');
+        try buf.appendSlice(allocator, grammar.language);
+        try buf.append(allocator, '@');
+        try buf.appendSlice(allocator, grammar.grammar_tag);
     }
-};
-
-const GrammarCandidate = struct {
-    language: []const u8,
-    tag: []const u8,
-    min_version: Version,
-};
-
-const catalog = [_]GrammarCandidate{
-    .{ .language = "python", .tag = "v0.23.6", .min_version = .{ .major = 3, .minor = 8, .patch = 0 } },
-    .{ .language = "typescript", .tag = "v0.20.5", .min_version = .{ .major = 5, .minor = 0, .patch = 0 } },
-    .{ .language = "tsx", .tag = "v0.20.5", .min_version = .{ .major = 5, .minor = 0, .patch = 0 } },
-};
+    return try buf.toOwnedSlice(allocator);
+}
 
 pub fn resolve(allocator: std.mem.Allocator, report: toolchain_probe.ToolchainReport) !ParserSet {
     var grammars: std.ArrayList(ResolvedGrammar) = .empty;
@@ -128,42 +123,6 @@ fn findDetected(report: toolchain_probe.ToolchainReport, id: []const u8) ?toolch
     return null;
 }
 
-fn selectGrammar(language: []const u8, project_version: ?[]const u8) []const u8 {
-    const project = if (project_version) |raw| Version.parse(raw) else null;
-    var best: ?[]const u8 = null;
-    var best_min = Version{ .major = 0, .minor = 0, .patch = 0 };
-    for (catalog) |candidate| {
-        if (!std.mem.eql(u8, candidate.language, language)) continue;
-        if (project) |version| {
-            if (!version.gte(candidate.min_version)) continue;
-        }
-        if (best == null or candidate.min_version.gte(best_min)) {
-            best = candidate.tag;
-            best_min = candidate.min_version;
-        }
-    }
-    return best orelse if (std.mem.eql(u8, language, "python"))
-        "v0.23.6"
-    else if (std.mem.eql(u8, language, "typescript") or std.mem.eql(u8, language, "tsx"))
-        "v0.20.5"
-    else
-        "unknown";
-}
-
-fn formatParserSetId(allocator: std.mem.Allocator, grammars: []const ResolvedGrammar) ![]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(allocator);
-    try buf.appendSlice(allocator, "core@");
-    try buf.appendSlice(allocator, tree_sitter_core_tag);
-    for (grammars) |grammar| {
-        try buf.append(allocator, ';');
-        try buf.appendSlice(allocator, grammar.language);
-        try buf.append(allocator, '@');
-        try buf.appendSlice(allocator, grammar.grammar_tag);
-    }
-    return try buf.toOwnedSlice(allocator);
-}
-
 pub fn compute(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -186,6 +145,8 @@ pub fn ensure(
     errdefer set.deinit(allocator);
 
     try persist(allocator, io, root, report, set);
+    var sync_report = try parser_sync.sync(allocator, io, root, set);
+    sync_report.deinit(allocator);
     return set;
 }
 

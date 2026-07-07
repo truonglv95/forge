@@ -18,6 +18,7 @@ const plan_cmd = @import("plan.zig");
 const doctor_cmd = @import("doctor_cmd.zig");
 const run_cmd = @import("run_cmd.zig");
 const agent_cmd = @import("agent_cmd.zig");
+const parsers_cmd = @import("parsers_cmd.zig");
 const ext_cmd = @import("ext_cmd.zig");
 
 const Io = std.Io;
@@ -102,6 +103,9 @@ fn run(
         .plan => {
             return plan_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
+        .parsers => {
+            return parsers_cmd.run(allocator, io, parsed, writer) catch 2;
+        },
         .ext => {
             if (parsed.positional.len == 0) {
                 try writer.print("usage: forge ext <list|install|uninstall> [id]\n", .{});
@@ -145,6 +149,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  run        List or show AI run records (list|show)
         \\  agent      Multi-step agent (interactive, or run|resume|list)
         \\  plan       Plan a proposal using AI
+        \\  parsers    Sync Tree-sitter parser lock for the workspace (sync)
         \\  ext        Manage extensions (list|install|uninstall)
         \\  help       Show this help
         \\
