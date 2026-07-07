@@ -18,6 +18,7 @@ const TaskExpect = struct {
     path: []const u8 = "",
     contains: []const u8 = "",
     min_steps: u32 = 0,
+    has_import_neighbors: bool = false,
 };
 
 const Task = struct {
@@ -126,10 +127,16 @@ pub fn run(
             seedWorkspace(allocator, io, eval_ws.root, task.workspace_files) catch return error.WorkspaceFailed;
 
             const provider_opts = ai_workflow.agentProviderOptionsFromFlags(flags, task.intent);
+            const active_file: ?[]const u8 = blk: {
+                if (!task.expect.has_import_neighbors) break :blk null;
+                if (task.workspace_files.get("main.zig") != null) break :blk "main.zig";
+                break :blk null;
+            };
             var result = ai.agent.run(allocator, io, environ_map, eval_ws.root, task.intent, .{
                 .max_steps = max_steps,
                 .provider_options = provider_opts,
                 .workspace_cwd = ".",
+                .active_file = active_file,
                 .mode = .agent,
                 .capability_profile = .propose,
                 .max_repair_attempts = if (provider_opts.kind == .fake) 0 else 2,
@@ -143,6 +150,40 @@ pub fn run(
 
             const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
             try latencies.append(allocator, latency_ms);
+
+            if (task.expect.has_import_neighbors) {
+                var ctx_builder = ai.context_loader.build(allocator, io, eval_ws.root, .{
+                    .max_bytes = 256 * 1024,
+                    .intent = task.intent,
+                    .active_file = active_file,
+                    .include_import_graph = true,
+                    .include_semantic_search = false,
+                    .auto_semantic_search = false,
+                    .include_web = false,
+                    .include_recent_files = false,
+                    .include_git_diff = false,
+                    .include_project_rules = false,
+                    .include_agent_memory = false,
+                    .include_diagnostics = false,
+                    .include_lsp_context = false,
+                }) catch {
+                    try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "context build failed"));
+                    continue;
+                };
+                defer ctx_builder.deinit();
+
+                var found_imports = false;
+                for (ctx_builder.blocks.items) |block| {
+                    if (block.block_type == .imports) {
+                        found_imports = true;
+                        break;
+                    }
+                }
+                if (!found_imports) {
+                    try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "missing import neighbors in context"));
+                    continue;
+                }
+            }
 
             const proposal_ok, const proposal_reason, const proposal_rel = proposalStatus(allocator, io, eval_ws.root, result.proposal_rel) catch {
                 try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "proposal missing or malformed"));
@@ -311,6 +352,9 @@ fn loadCorpus(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]Tas
             }
             if (ex.object.get("min_steps")) |v| {
                 if (v == .integer) task.expect.min_steps = @intCast(v.integer);
+            }
+            if (ex.object.get("has_import_neighbors")) |v| {
+                if (v == .bool) task.expect.has_import_neighbors = v.bool;
             }
         }
 

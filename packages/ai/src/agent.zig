@@ -400,6 +400,20 @@ pub fn run(
     defer if (final_proposal) |body| allocator.free(body);
     var validation_report: ?[]u8 = null;
     defer if (validation_report) |report| allocator.free(report);
+    if (maybeRunPlannerSubagent(
+        allocator,
+        io,
+        environ_map,
+        &planner_inst,
+        cancel_token,
+        &ctx_builder,
+        &event_logger,
+    )) |plan_text_opt| {
+        if (plan_text_opt) |plan_text| {
+            defer allocator.free(plan_text);
+            ctx_builder.addBlock(.retrieval, "subagent:plan", plan_text) catch {};
+        }
+    } else |_| {}
     var repair_attempt: u8 = 0;
     while (true) {
         response.writer.end = 0;
@@ -420,18 +434,79 @@ pub fn run(
         final_proposal = augmented;
 
         if (config.max_repair_attempts == 0) break;
+        if (maybeRunReviewerSubagent(
+            allocator,
+            io,
+            environ_map,
+            llm,
+            &mcp,
+            effective_config,
+            cancel_token,
+            augmented,
+            &event_logger,
+        )) |review_text_opt| {
+            if (review_text_opt) |review_text| {
+                defer allocator.free(review_text);
+            }
+            // Feed review findings into the subsequent repair prompt via validation_report.
+            if (validation_report) |old| allocator.free(old);
+            validation_report = std.fmt.allocPrint(allocator, "review:\n{s}\n", .{review_text_opt orelse ""}) catch null;
+        } else |_| {}
         event_logger.validationStarted(repair_attempt + 1) catch {};
         const trial = repair_loop.trialApplyAndValidate(allocator, io, root, config.workspace_cwd, final_proposal.?) catch break;
-        event_logger.validationResult(repair_attempt + 1, trial.passed, trial.report) catch {};
+        event_logger.validationResult(repair_attempt + 1, trial.passed, trial.task_count, trial.failed_count, trial.hint_paths, trial.report) catch {};
         if (trial.passed or repair_attempt >= config.max_repair_attempts) {
+            if (trial.hint_paths.len > 0) {
+                for (trial.hint_paths) |p| allocator.free(p);
+                allocator.free(trial.hint_paths);
+            }
             allocator.free(trial.report);
             break;
         }
         if (validation_report) |old| allocator.free(old);
-        validation_report = allocator.dupe(u8, trial.report) catch {
+        var evidence: ?[]const u8 = null;
+        defer if (evidence) |e| allocator.free(e);
+        if (trial.hint_paths.len > 0 and tools.isAllowed(effective_config.capability_profile, .read_file)) {
+            if (effective_config.max_steps >= next_index + 1) {
+                if (tool_executor.readFile(tool_ctx, trial.hint_paths[0], null, null)) |read_out| {
+                    evidence = read_out.summary;
+                    try appendStep(allocator, &steps, next_index, "read_file", evidence.?, null, effective_config);
+                    next_index += 1;
+                } else |_| {}
+            }
+        }
+
+        var prompt_report: []const u8 = trial.report;
+        defer if (prompt_report.ptr != trial.report.ptr) allocator.free(prompt_report);
+        if (evidence) |ev| {
+            prompt_report = std.fmt.allocPrint(allocator, "evidence (current workspace):\n{s}\n\n{s}", .{ ev, trial.report }) catch trial.report;
+        }
+
+        const augmented_report = maybeAugmentValidationReportWithSubagents(
+            allocator,
+            io,
+            environ_map,
+            llm,
+            &mcp,
+            tool_ctx,
+            &event_logger,
+            effective_config,
+            route.intent,
+            prompt_report,
+        ) catch null;
+        defer if (augmented_report) |rep| allocator.free(rep);
+        validation_report = allocator.dupe(u8, augmented_report orelse trial.report) catch {
+            if (trial.hint_paths.len > 0) {
+                for (trial.hint_paths) |p| allocator.free(p);
+                allocator.free(trial.hint_paths);
+            }
             allocator.free(trial.report);
             return error.WorkspaceFailed;
         };
+        if (trial.hint_paths.len > 0) {
+            for (trial.hint_paths) |p| allocator.free(p);
+            allocator.free(trial.hint_paths);
+        }
         allocator.free(trial.report);
         repair_attempt += 1;
     }
@@ -507,6 +582,179 @@ pub fn run(
         .repair_attempts = repair_attempt,
         .usage = llm.usage(),
     };
+}
+
+fn maybeAugmentValidationReportWithSubagents(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    llm: anytype,
+    mcp: *mcp_registry.Registry,
+    tool_ctx: tool_executor.Context,
+    event_logger: *EventLogger,
+    config: Config,
+    task_intent: routing.TaskIntent,
+    report: []const u8,
+) !?[]u8 {
+    // Default-off. Enable with FORGE_SUBAGENTS=1, and only for debug_failure intent.
+    if (task_intent != .debug_failure) return null;
+    const enabled = blk: {
+        const map = environ_map orelse break :blk false;
+        const value = map.get("FORGE_SUBAGENTS") orelse break :blk false;
+        break :blk std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "yes");
+    };
+    if (!enabled) return null;
+
+    const specs = subagent.repairSpecs();
+    if (specs.len == 0) return null;
+
+    const clipped_report = if (report.len > 4096) report[0..4096] else report;
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try out.writer.writeAll(clipped_report);
+
+    var binding = llm.toolLoopBinding(io, mcp, config.cancel_token);
+    const raw_declarations = llm.toolDeclarationsJson(allocator, mcp) catch return null;
+    defer allocator.free(raw_declarations);
+
+    const preloaded_retrieval = false;
+    var spec_index: usize = 0;
+    while (spec_index < specs.len) : (spec_index += 1) {
+        const spec = specs[spec_index];
+        event_logger.subagentStarted(spec.role.label(), spec.label) catch {};
+        const sub_intent = std.fmt.allocPrint(allocator, "{s}\n\n# Validation report\n{s}\n", .{ spec.prompt, clipped_report }) catch continue;
+        defer allocator.free(sub_intent);
+
+        const sub_route = routing.plan(.{
+            .mode = .agent,
+            .intent = sub_intent,
+            .has_active_file = config.active_file != null,
+            .has_selection = config.has_selection,
+        }, .{
+            .intent = sub_intent,
+            .explicit_files = config.explicit_files,
+            .active_file = config.active_file,
+            .attachments = &.{},
+            .include_project_rules = true,
+            .workspace_cwd = config.workspace_cwd,
+            .recent_files = &.{},
+            .max_bytes = spec.max_bytes,
+        });
+        var sub_ctx_builder = context_loader.build(allocator, io, tool_ctx.root, sub_route.context) catch continue;
+        defer sub_ctx_builder.deinit();
+
+        const declarations = routing.filterDeclarationsForRoute(
+            allocator,
+            raw_declarations,
+            .read_only,
+            sub_route.intent,
+            sub_intent,
+            preloaded_retrieval,
+        ) catch continue;
+        defer allocator.free(declarations);
+
+        var sub_tool_ctx = tool_ctx;
+        sub_tool_ctx.profile = .read_only;
+
+        const Noop = struct {
+            fn onStep(_: ?*anyopaque, _: u32, _: []const u8, _: []const u8) void {}
+            fn onCheckpoint(_: ?*anyopaque, _: []const u8, _: u32, _: []const u8, _: []const u8) bool {
+                return false;
+            }
+        };
+        var loop_state = runExploreLoop(
+            allocator,
+            binding.transport(),
+            declarations,
+            sub_intent,
+            &sub_ctx_builder,
+            sub_tool_ctx,
+            mcp,
+            .{
+                .max_steps = spec.max_steps,
+                .provider_options = config.provider_options,
+                .mode = .agent,
+                .capability_profile = .read_only,
+                .workspace_cwd = config.workspace_cwd,
+                .cancel_token = config.cancel_token,
+                .max_repair_attempts = 0,
+                .mcp_enabled = false,
+            },
+            .debug_failure,
+            preloaded_retrieval,
+            Noop.onStep,
+            null,
+            Noop.onCheckpoint,
+            null,
+        ) catch continue;
+        defer loop_state.deinit(allocator);
+
+        if (loop_state.final_text) |text| {
+            event_logger.subagentResult(spec.role.label(), spec.label, text) catch {};
+            try out.writer.print("\n\n# {s}\n{s}\n", .{ spec.label, text });
+        }
+    }
+
+    return try allocator.dupe(u8, out.writer.buffered());
+}
+
+fn multiAgentEnabled(environ_map: ?*const std.process.Environ.Map) bool {
+    const map = environ_map orelse return false;
+    const value = map.get("FORGE_MULTI_AGENT") orelse return false;
+    return std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "yes");
+}
+
+fn maybeRunPlannerSubagent(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    planner_inst: *planner.Planner,
+    cancel_token: *const kernel.cancellation.CancellationToken,
+    ctx_builder: *const context.ContextBuilder,
+    event_logger: *EventLogger,
+) !?[]u8 {
+    _ = io;
+    _ = ctx_builder;
+    if (!multiAgentEnabled(environ_map)) return null;
+    const spec = subagent.plannerSpec();
+    event_logger.subagentStarted(spec.role.label(), spec.label) catch {};
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    planner_inst.planMarkdown(&out.writer, cancel_token) catch return null;
+    const text = out.writer.buffered();
+    event_logger.subagentResult(spec.role.label(), spec.label, text) catch {};
+    return try allocator.dupe(u8, text);
+}
+
+fn maybeRunReviewerSubagent(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    llm: provider_mod.Provider,
+    mcp: *mcp_registry.Registry,
+    config: Config,
+    cancel_token: *const kernel.cancellation.CancellationToken,
+    proposal_json: []const u8,
+    event_logger: *EventLogger,
+) !?[]u8 {
+    _ = mcp;
+    _ = config;
+    if (!multiAgentEnabled(environ_map)) return null;
+    const spec = subagent.reviewerSpec();
+    event_logger.subagentStarted(spec.role.label(), spec.label) catch {};
+
+    var prompt = std.Io.Writer.Allocating.init(allocator);
+    defer prompt.deinit();
+    try prompt.writer.print("{s}\n\n--- PROPOSAL JSON ---\n{s}\n", .{ spec.prompt, proposal_json });
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    llm.ask(allocator, prompt.writer.buffered(), &.{}, &out.writer, cancel_token) catch return null;
+    const text = out.writer.buffered();
+    event_logger.subagentResult(spec.role.label(), spec.label, text) catch {};
+    _ = io;
+    return try allocator.dupe(u8, text);
 }
 
 pub fn resumeSession(
@@ -758,17 +1006,26 @@ const EventLogger = struct {
     }
 
     fn contextManifestBuilt(self: *EventLogger, builder: *const context.ContextBuilder) !void {
+        var has_import_neighbors = false;
+        for (builder.blocks.items) |block| {
+            if (block.block_type == .imports) {
+                has_import_neighbors = true;
+                break;
+            }
+        }
         const Json = struct {
             schema_version: u32 = agent_event.schema_version,
             type: []const u8 = agent_event.typeName(.context_manifest_built),
             budget_bytes: usize,
             used_bytes: usize,
             blocks: usize,
+            has_import_neighbors: bool,
         };
         const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
             .budget_bytes = builder.max_bytes,
             .used_bytes = builder.used_bytes,
             .blocks = builder.blocks.items.len,
+            .has_import_neighbors = has_import_neighbors,
         }, .{});
         defer self.allocator.free(json);
         try self.appendJson(json);
@@ -838,18 +1095,56 @@ const EventLogger = struct {
         try self.appendJson(json);
     }
 
-    fn validationResult(self: *EventLogger, attempt: u8, passed: bool, report: []const u8) !void {
+    fn validationResult(self: *EventLogger, attempt: u8, passed: bool, task_count: u32, failed_count: u32, hint_paths: []const []const u8, report: []const u8) !void {
         const Json = struct {
             schema_version: u32 = agent_event.schema_version,
             type: []const u8 = agent_event.typeName(.validation_result),
             attempt: u8,
             passed: bool,
+            task_count: u32,
+            failed_count: u32,
+            hint_paths: []const []const u8,
             report: []const u8,
         };
         const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
             .attempt = attempt,
             .passed = passed,
+            .task_count = task_count,
+            .failed_count = failed_count,
+            .hint_paths = hint_paths,
             .report = if (report.len > 2048) report[0..2048] else report,
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn subagentStarted(self: *EventLogger, role: []const u8, label: []const u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.subagent_started),
+            role: []const u8,
+            label: []const u8,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .role = role,
+            .label = label,
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn subagentResult(self: *EventLogger, role: []const u8, label: []const u8, text: []const u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.subagent_result),
+            role: []const u8,
+            label: []const u8,
+            text_preview: []const u8,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .role = role,
+            .label = label,
+            .text_preview = if (text.len > 2048) text[0..2048] else text,
         }, .{});
         defer self.allocator.free(json);
         try self.appendJson(json);

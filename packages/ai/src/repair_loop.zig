@@ -11,6 +11,9 @@ pub const TrialError = error{
 pub const TrialResult = struct {
     passed: bool,
     report: []const u8,
+    task_count: u32 = 0,
+    failed_count: u32 = 0,
+    hint_paths: []const []const u8 = &.{},
     isolation: Isolation = .snapshot,
 };
 
@@ -153,20 +156,55 @@ pub fn trialApplyAndValidate(
         return .{ .passed = false, .report = report };
     };
 
-    const results = validation_runner.runTasks(allocator, trial_workspace.absolute_path, tasks) catch {
+    const results = validation_runner.runTasks(allocator, io, trial_workspace.absolute_path, tasks) catch {
         const report = try allocator.dupe(u8, "validation runner failed");
         return .{ .passed = false, .report = report };
     };
     defer validation_runner.freeResults(allocator, results);
 
+    const task_count: u32 = @intCast(results.len);
+    var failed_count: u32 = 0;
+    for (results) |item| {
+        if (!item.skipped and item.exit_code != 0) failed_count += 1;
+    }
+
     const validation_report = validation_runner.formatLines(allocator, results) catch return error.OutOfMemory;
     defer allocator.free(validation_report);
-    const report = std.fmt.allocPrint(
-        allocator,
-        "isolation: snapshot (disposable workspace; not an OS security boundary)\n{s}",
-        .{validation_report},
-    ) catch return error.OutOfMemory;
-    return .{ .passed = !hasFailures(results), .report = report };
+    var hint_paths: []const []const u8 = &.{};
+    if (validation_runner.extractFailureHints(allocator, results, 4)) |owned| {
+        if (owned.len == 0) {
+            allocator.free(owned);
+        } else {
+            hint_paths = owned;
+        }
+    } else |_| {}
+    errdefer {
+        if (hint_paths.len > 0) {
+            for (hint_paths) |p| allocator.free(p);
+            allocator.free(hint_paths);
+        }
+    }
+
+    var report_buf: std.ArrayList(u8) = .empty;
+    errdefer report_buf.deinit(allocator);
+    try report_buf.appendSlice(allocator, "isolation: snapshot (disposable workspace; not an OS security boundary)\n");
+    if (hint_paths.len > 0) {
+        try report_buf.appendSlice(allocator, "hints:\n");
+        for (hint_paths) |p| {
+            try report_buf.appendSlice(allocator, " - ");
+            try report_buf.appendSlice(allocator, p);
+            try report_buf.appendSlice(allocator, "\n");
+        }
+    }
+    try report_buf.appendSlice(allocator, validation_report);
+    const report = try report_buf.toOwnedSlice(allocator);
+    return .{
+        .passed = failed_count == 0,
+        .report = report,
+        .task_count = task_count,
+        .failed_count = failed_count,
+        .hint_paths = hint_paths,
+    };
 }
 
 test "hasFailures detects non-zero exit" {

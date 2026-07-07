@@ -6,6 +6,9 @@ fixtures/eval-workspace/
 /extension.o
 /main.wasm
 .forge/evals/
+.forge/
+fixtures/**/.forge/
+test_map
 scripts/__pycache__/
 
 .env

@@ -266,10 +266,18 @@ pub fn generateAndPersist(
 
         const trial = repair_loop.trialApplyAndValidate(allocator, io, root, workspace_cwd, owned_body.?) catch break;
         if (trial.passed) {
+            if (trial.hint_paths.len > 0) {
+                for (trial.hint_paths) |p| allocator.free(p);
+                allocator.free(trial.hint_paths);
+            }
             allocator.free(trial.report);
             break;
         }
         if (attempt >= max_repair) {
+            if (trial.hint_paths.len > 0) {
+                for (trial.hint_paths) |p| allocator.free(p);
+                allocator.free(trial.hint_paths);
+            }
             allocator.free(trial.report);
             break;
         }
@@ -282,9 +290,17 @@ pub fn generateAndPersist(
         plan_inst = planner.Planner.init(allocator, llm, &ctx_builder, options.conversation, images);
         if (last_validation_report) |old| allocator.free(old);
         last_validation_report = allocator.dupe(u8, trial.report) catch {
+            if (trial.hint_paths.len > 0) {
+                for (trial.hint_paths) |p| allocator.free(p);
+                allocator.free(trial.hint_paths);
+            }
             allocator.free(trial.report);
             return error.ProviderFailed;
         };
+        if (trial.hint_paths.len > 0) {
+            for (trial.hint_paths) |p| allocator.free(p);
+            allocator.free(trial.hint_paths);
+        }
         allocator.free(trial.report);
         attempt += 1;
     }

@@ -961,7 +961,7 @@ fn loadImportGraphBlock(
     }
 
     for (neighbors) |path| {
-        try builder.addManifestExtra(.imports, path, "import graph neighbor (1-2 hop)", 0);
+        try builder.addManifestExtra(.imports, path, "imports:auto-neighbors", 0);
         const wp = workspace.WorkspacePath.parse(path) catch {
             try previews.append(allocator, try allocator.dupe(u8, ""));
             continue;
@@ -985,7 +985,7 @@ fn loadImportGraphBlock(
     if (block) |text| {
         defer allocator.free(text);
         var detail_buf: [64]u8 = undefined;
-        const detail = std.fmt.bufPrint(&detail_buf, "{d} import neighbor(s)", .{neighbors.len}) catch "import neighbors";
+        const detail = std.fmt.bufPrint(&detail_buf, "{d} import neighbor(s) (auto)", .{neighbors.len}) catch "imports:auto-neighbors";
         try builder.addBlockWithDetail(.imports, "imports:neighbors", text, detail);
     }
 }
@@ -1067,6 +1067,46 @@ test "collectManifest includes blocks and rejections" {
         }
     }
     try std.testing.expect(found_rules and found_env_reject and found_missing);
+}
+
+test "import graph auto-neighbors respect budget" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("main.zig"),
+        \\const helper = @import("helper.zig");
+        \\pub fn main() void { _ = helper.answer; }
+    );
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("helper.zig"),
+        \\pub const answer: u32 = 42;
+    );
+
+    var builder = try build(allocator, io, root, .{
+        .max_bytes = 8 * 1024,
+        .intent = "use helper",
+        .active_file = "main.zig",
+        .include_import_graph = true,
+        .include_semantic_search = false,
+        .auto_semantic_search = false,
+        .include_web = false,
+        .include_recent_files = false,
+        .include_git_diff = false,
+        .include_project_rules = false,
+        .include_agent_memory = false,
+        .include_diagnostics = false,
+        .include_lsp_context = false,
+    });
+    defer builder.deinit();
+
+    try std.testing.expect(builder.used_bytes <= builder.max_bytes);
+    var found = false;
+    for (builder.blocks.items) |block| {
+        if (block.block_type == .imports and std.mem.eql(u8, block.name, "imports:neighbors")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "active file is included when not already scoped" {

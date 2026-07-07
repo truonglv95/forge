@@ -5,6 +5,7 @@ const args_mod = @import("args.zig");
 const workspace_cmd = @import("workspace_cmd.zig");
 const ai_workflow = @import("ai_workflow.zig");
 const cancel_scope_mod = @import("cancel_scope.zig");
+const events_render = @import("events_render.zig");
 
 pub fn run(
     allocator: std.mem.Allocator,
@@ -129,68 +130,11 @@ fn runEvents(
         const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
         if (trimmed.len == 0) continue;
         count += 1;
-        try renderEventLine(allocator, trimmed, writer);
+        const rendered = events_render.renderPreviewAlloc(allocator, trimmed) catch continue;
+        defer allocator.free(rendered);
+        try writer.print("  {s}\n", .{rendered});
     }
     if (count == 0) try writer.writeAll("  (no events)\n");
-    return 0;
-}
-
-fn renderEventLine(allocator: std.mem.Allocator, line: []const u8, writer: *std.Io.Writer) !void {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
-        try writer.print("  ? {s}\n", .{line});
-        return;
-    };
-    defer parsed.deinit();
-    if (parsed.value != .object) {
-        try writer.print("  ? {s}\n", .{line});
-        return;
-    }
-    const obj = parsed.value.object;
-    const type_str = if (obj.get("type")) |v| (if (v == .string) v.string else "?") else "?";
-
-    if (std.mem.eql(u8, type_str, "session_started")) {
-        try writer.print("  session_started  intent={s}\n", .{jsonStr(obj, "intent")});
-    } else if (std.mem.eql(u8, type_str, "context_manifest_built")) {
-        try writer.print("  context_manifest  used_bytes={d} blocks={d}\n", .{ jsonInt(obj, "used_bytes"), jsonInt(obj, "blocks") });
-    } else if (std.mem.eql(u8, type_str, "run_started")) {
-        try writer.print("  run_started\n", .{});
-    } else if (std.mem.eql(u8, type_str, "tool_call")) {
-        try writer.print("  [{d}] tool_call  {s}  ({s})\n", .{ jsonInt(obj, "step"), jsonStr(obj, "tool"), jsonStr(obj, "reason") });
-    } else if (std.mem.eql(u8, type_str, "tool_result")) {
-        try writer.print("  [{d}] tool_result  {s}  {s}\n", .{ jsonInt(obj, "step"), jsonStr(obj, "kind"), jsonStr(obj, "summary") });
-    } else if (std.mem.eql(u8, type_str, "validation_started")) {
-        try writer.print("  validation_started  attempt={d}\n", .{jsonInt(obj, "attempt")});
-    } else if (std.mem.eql(u8, type_str, "validation_result")) {
-        const passed = if (obj.get("passed")) |v| (v == .bool and v.bool) else false;
-        try writer.print("  validation_result  attempt={d} passed={}\n", .{ jsonInt(obj, "attempt"), passed });
-    } else if (std.mem.eql(u8, type_str, "proposal_created")) {
-        try writer.print("  proposal_created  {s}\n", .{jsonStr(obj, "proposal_path")});
-    } else if (std.mem.eql(u8, type_str, "final_answer")) {
-        try writer.print("  final_answer\n", .{});
-    } else if (std.mem.eql(u8, type_str, "run_completed")) {
-        try writer.print("  run_completed  steps={d} repairs={d}\n", .{ jsonInt(obj, "steps"), jsonInt(obj, "repair_attempts") });
-    } else if (std.mem.eql(u8, type_str, "error")) {
-        try writer.print("  error  {s}\n", .{jsonStr(obj, "code")});
-    } else {
-        try writer.print("  {s}\n", .{type_str});
-    }
-}
-
-fn jsonStr(obj: std.json.ObjectMap, key: []const u8) []const u8 {
-    if (obj.get(key)) |v| {
-        if (v == .string) return v.string;
-    }
-    return "";
-}
-
-fn jsonInt(obj: std.json.ObjectMap, key: []const u8) i64 {
-    if (obj.get(key)) |v| {
-        return switch (v) {
-            .integer => v.integer,
-            .float => @intFromFloat(v.float),
-            else => 0,
-        };
-    }
     return 0;
 }
 

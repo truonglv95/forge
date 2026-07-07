@@ -33,5 +33,18 @@
       "proposal_only": true,
       "min_steps": 2
     }
+  },
+  {
+    "id": "import-neighbor-context",
+    "intent": "Inspect main.zig and propose a tiny refactor",
+    "workspace_files": {
+      "main.zig": "const helper = @import(\"helper.zig\");\npub fn main() void { _ = helper.answer; }\n",
+      "helper.zig": "pub const answer: u32 = 42;\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2,
+      "has_import_neighbors": true
+    }
   }
 ]

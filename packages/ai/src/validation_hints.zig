@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const default_tasks = [_][]const u8{
-    "zig build test",
+    "auto:test",
     "property: add fuzz/property tests for changed parsers when applicable",
 };
 
@@ -62,6 +62,6 @@ test "augmentProposalJson appends default validation tasks" {
     ;
     const out = try augmentProposalJson(allocator, body);
     defer allocator.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "zig build test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "auto:test") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "custom check") != null);
 }
