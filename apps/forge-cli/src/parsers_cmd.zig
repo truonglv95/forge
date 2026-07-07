@@ -10,14 +10,16 @@ pub fn run(
     writer: *std.Io.Writer,
 ) !u8 {
     if (parsed.positional.len == 0 or !std.mem.eql(u8, parsed.positional[0], "sync")) {
-        try writer.writeAll("usage: forge parsers sync [--workspace <path>] [--json]\n");
+        try writer.writeAll("usage: forge parsers sync [--workspace <path>] [--fetch] [--json]\n");
         return 2;
     }
 
     var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
     defer opened.close(io);
 
-    var set = try workspace.parser_resolver.ensure(allocator, io, opened.root);
+    var set = try workspace.parser_resolver.ensureWithOptions(allocator, io, opened.root, .{
+        .allow_fetch = parsed.flags.fetch,
+    });
     defer set.deinit(allocator);
 
     if (parsed.flags.json) {
@@ -25,11 +27,13 @@ pub fn run(
             type: []const u8 = "parser_sync",
             parser_set_id: []const u8,
             toolchain_fingerprint: u64,
+            fetch_enabled: bool,
             sync_file: []const u8 = workspace.parser_sync.sync_file,
         };
         const line = try std.json.Stringify.valueAlloc(allocator, Json{
             .parser_set_id = set.parser_set_id,
             .toolchain_fingerprint = set.toolchain_fingerprint,
+            .fetch_enabled = parsed.flags.fetch,
         }, .{});
         defer allocator.free(line);
         try writer.print("{s}\n", .{line});
@@ -38,6 +42,7 @@ pub fn run(
 
     try writer.print("parser set: {s}\n", .{set.parser_set_id});
     try writer.print("toolchain fingerprint: {d}\n", .{set.toolchain_fingerprint});
+    try writer.print("fetch enabled: {s}\n", .{if (parsed.flags.fetch) "yes (stub)" else "no"});
     try writer.print("wrote {s}\n", .{workspace.parser_sync.sync_file});
     return 0;
 }

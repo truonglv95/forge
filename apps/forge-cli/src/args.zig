@@ -11,6 +11,7 @@ pub const GlobalFlags = struct {
     once: bool = false,
     max_polls: u32 = 0,
     max_steps: u32 = 0,
+    fetch: bool = false,
     files: []const []const u8 = &.{},
     provider: ?[]const u8 = null,
     model: ?[]const u8 = null,
@@ -84,6 +85,8 @@ pub const CliArgs = struct {
                 } else if (std.mem.eql(u8, arg, "--max-steps")) {
                     i += 1;
                     if (i < args.len) flags.max_steps = try std.fmt.parseInt(u32, args[i], 10);
+                } else if (std.mem.eql(u8, arg, "--fetch")) {
+                    flags.fetch = true;
                 } else if (std.mem.eql(u8, arg, "--workspace")) {
                     i += 1;
                     if (i < args.len) {

@@ -167,6 +167,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --once               Single watch poll (for tests)
         \\  --max-polls <n>      Limit watch polling iterations
         \\  --max-steps <n>      Limit agent steps (default: 8)
+        \\  --fetch              Allow parser sync to resolve fetchable parser packs (stub)
         \\
     );
 }

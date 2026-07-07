@@ -6,8 +6,11 @@ pub const Entry = struct {
     language: []const u8,
     tag: []const u8,
     min_version: []const u8,
+    origin: []const u8 = "bundled",
     bundled: bool = false,
     vendor_path: ?[]const u8 = null,
+    artifact_url: ?[]const u8 = null,
+    sha256: ?[]const u8 = null,
 };
 
 pub const Catalog = struct {
@@ -20,22 +23,28 @@ const grammars = [_]Entry{
         .language = "python",
         .tag = "v0.23.6",
         .min_version = "3.8.0",
+        .origin = "bundled",
         .bundled = true,
         .vendor_path = "third_party/tree-sitter-python",
+        .sha256 = "bundled",
     },
     .{
         .language = "typescript",
         .tag = "v0.20.5",
         .min_version = "5.0.0",
+        .origin = "bundled",
         .bundled = true,
         .vendor_path = "third_party/tree-sitter-typescript/typescript",
+        .sha256 = "bundled",
     },
     .{
         .language = "tsx",
         .tag = "v0.20.5",
         .min_version = "5.0.0",
+        .origin = "bundled",
         .bundled = true,
         .vendor_path = "third_party/tree-sitter-typescript/tsx",
+        .sha256 = "bundled",
     },
 };
 
@@ -69,13 +78,13 @@ const Version = struct {
     }
 };
 
-pub fn selectGrammar(catalog: Catalog, language: []const u8, project_version: ?[]const u8) ?Entry {
+pub fn selectGrammar(catalog: Catalog, language: []const u8, project_version: ?[]const u8, allow_fetch: bool) ?Entry {
     const project = if (project_version) |raw| Version.parse(raw) else null;
     var best: ?Entry = null;
     var best_min = Version{ .major = 0, .minor = 0, .patch = 0 };
     for (catalog.grammars) |entry| {
         if (!std.mem.eql(u8, entry.language, language)) continue;
-        if (!entry.bundled) continue;
+        if (!entry.bundled and !allow_fetch) continue;
         const min = Version.parse(entry.min_version);
         if (project) |version| {
             if (!version.gte(min)) continue;
@@ -100,6 +109,6 @@ pub fn findEntry(catalog: Catalog, language: []const u8, tag: []const u8) ?Entry
 test "parser catalog loads bundled grammars" {
     const catalog = load();
     try std.testing.expectEqualStrings("0.20.8", catalog.tree_sitter_core);
-    try std.testing.expect(selectGrammar(catalog, "python", "3.12.0") != null);
-    try std.testing.expectEqualStrings("v0.23.6", selectGrammar(catalog, "python", "3.12.0").?.tag);
+    try std.testing.expect(selectGrammar(catalog, "python", "3.12.0", false) != null);
+    try std.testing.expectEqualStrings("v0.23.6", selectGrammar(catalog, "python", "3.12.0", false).?.tag);
 }
