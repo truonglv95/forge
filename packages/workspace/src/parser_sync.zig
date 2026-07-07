@@ -6,11 +6,18 @@ const parser_resolver = @import("parser_resolver.zig");
 
 pub const sync_file = ".forge/parsers/sync.json";
 
+pub const SyncOptions = struct {
+    allow_fetch: bool = false,
+};
+
 pub const SyncEntry = struct {
     language: []const u8,
     grammar_tag: []const u8,
+    origin: []const u8,
     status: []const u8,
     vendor_path: ?[]const u8 = null,
+    artifact_url: ?[]const u8 = null,
+    sha256: ?[]const u8 = null,
     project_version: ?[]const u8 = null,
 };
 
@@ -27,8 +34,11 @@ pub const SyncReport = struct {
         for (self.entries) |entry| {
             allocator.free(entry.language);
             allocator.free(entry.grammar_tag);
+            allocator.free(entry.origin);
             allocator.free(entry.status);
             if (entry.vendor_path) |path| allocator.free(path);
+            if (entry.artifact_url) |url| allocator.free(url);
+            if (entry.sha256) |hash| allocator.free(hash);
             if (entry.project_version) |version| allocator.free(version);
         }
         allocator.free(self.entries);
@@ -42,14 +52,27 @@ pub fn sync(
     root: path_mod.WorkspaceRoot,
     set: parser_resolver.ParserSet,
 ) !SyncReport {
+    return syncWithOptions(allocator, io, root, set, .{});
+}
+
+pub fn syncWithOptions(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+    set: parser_resolver.ParserSet,
+    options: SyncOptions,
+) !SyncReport {
     const catalog = parser_catalog.load();
     var entries: std.ArrayList(SyncEntry) = .empty;
     errdefer {
         for (entries.items) |entry| {
             allocator.free(entry.language);
             allocator.free(entry.grammar_tag);
+            allocator.free(entry.origin);
             allocator.free(entry.status);
             if (entry.vendor_path) |path| allocator.free(path);
+            if (entry.artifact_url) |url| allocator.free(url);
+            if (entry.sha256) |hash| allocator.free(hash);
             if (entry.project_version) |version| allocator.free(version);
         }
         entries.deinit(allocator);
@@ -57,18 +80,34 @@ pub fn sync(
 
     for (set.grammars) |grammar| {
         const catalog_entry = parser_catalog.findEntry(catalog, grammar.language, grammar.grammar_tag);
-        const status: []const u8 = if (catalog_entry != null and catalog_entry.?.bundled) "bundled" else "missing";
+        const origin = if (catalog_entry) |entry| entry.origin else grammar.origin;
+        const status: []const u8 = if (catalog_entry != null and catalog_entry.?.bundled)
+            "bundled"
+        else if (std.mem.eql(u8, origin, "fetch") and options.allow_fetch)
+            "fetch_pending"
+        else if (std.mem.eql(u8, origin, "fetch"))
+            "fetch_disabled"
+        else
+            "missing";
         try entries.append(allocator, .{
             .language = try allocator.dupe(u8, grammar.language),
             .grammar_tag = try allocator.dupe(u8, grammar.grammar_tag),
+            .origin = try allocator.dupe(u8, origin),
             .status = try allocator.dupe(u8, status),
             .vendor_path = if (catalog_entry) |entry|
                 if (entry.vendor_path) |path| try allocator.dupe(u8, path) else null
-            else
-                null,
+            else if (grammar.vendor_path) |path| try allocator.dupe(u8, path) else null,
+            .artifact_url = if (catalog_entry) |entry|
+                if (entry.artifact_url) |url| try allocator.dupe(u8, url) else null
+            else if (grammar.artifact_url) |url| try allocator.dupe(u8, url) else null,
+            .sha256 = if (catalog_entry) |entry|
+                if (entry.sha256) |hash| try allocator.dupe(u8, hash) else null
+            else if (grammar.sha256) |hash| try allocator.dupe(u8, hash) else null,
             .project_version = if (grammar.project_version) |version| try allocator.dupe(u8, version) else null,
         });
-        if (!std.mem.eql(u8, status, "bundled")) return error.MissingBundledGrammar;
+        if (std.mem.eql(u8, status, "missing") or std.mem.eql(u8, status, "fetch_disabled")) {
+            return error.MissingBundledGrammar;
+        }
     }
 
     const report = SyncReport{
