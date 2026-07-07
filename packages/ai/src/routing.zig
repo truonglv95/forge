@@ -122,8 +122,8 @@ pub fn applyContextPolicy(
         .debug_failure => {
             out.include_git_diff = true;
             out.include_diagnostics = true;
-            out.include_semantic_search = false;
-            out.auto_semantic_search = false;
+            out.include_semantic_search = true;
+            out.auto_semantic_search = true;
             out.include_import_graph = input.has_active_file;
             out.retrieval_max_chunks = 10;
         },
@@ -163,6 +163,7 @@ pub fn filterDeclarationsForRoute(
     profile: tools.CapabilityProfile,
     intent: TaskIntent,
     intent_text: []const u8,
+    suppress_codebase_search: bool,
 ) ![]u8 {
     const Decl = struct {
         name: []const u8,
@@ -174,6 +175,7 @@ pub fn filterDeclarationsForRoute(
     var allowed: std.ArrayList(Decl) = .empty;
     defer allowed.deinit(allocator);
     for (parsed.value) |decl| {
+        if (suppress_codebase_search and std.mem.eql(u8, decl.name, "codebase_search")) continue;
         const native_allowed = tool_registry.allowedNativeTool(decl.name, profile) and
             wireAllowedForIntent(decl.name, intent, intent_text);
         const mcp_allowed = tools.idFromWire(decl.name) == null and
@@ -323,6 +325,7 @@ test "route filters edit tools out of ask declarations" {
         .read_only,
         .answer_question,
         "explain this file",
+        false,
     );
     defer allocator.free(filtered);
     try std.testing.expect(std.mem.indexOf(u8, filtered, "read_file") != null);
@@ -338,8 +341,24 @@ test "route keeps edit tools for agent edit_code" {
         .propose_and_task,
         .edit_code,
         "implement feature",
+        false,
     );
     defer allocator.free(filtered);
     try std.testing.expect(std.mem.indexOf(u8, filtered, "replace_file_content") != null);
     try std.testing.expect(std.mem.indexOf(u8, filtered, "run_command") != null);
+}
+
+test "route suppresses codebase_search when retrieval preloaded" {
+    const allocator = std.testing.allocator;
+    const filtered = try filterDeclarationsForRoute(
+        allocator,
+        tool_registry.native_declarations_json,
+        .propose_and_task,
+        .explore_codebase,
+        "find auth handler",
+        true,
+    );
+    defer allocator.free(filtered);
+    try std.testing.expect(std.mem.indexOf(u8, filtered, "codebase_search") == null);
+    try std.testing.expect(std.mem.indexOf(u8, filtered, "read_file") != null);
 }

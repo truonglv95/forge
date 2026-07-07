@@ -6,6 +6,9 @@ const tool_registry = @import("../tools/registry.zig");
 const tool_dispatch = @import("../tools/dispatch.zig");
 const mcp_registry = @import("../mcp_registry.zig");
 const subagent = @import("../subagent.zig");
+const tool_observation = @import("../tool_observation.zig");
+const loop_prompt = @import("loop_prompt.zig");
+const routing = @import("../routing.zig");
 const turn = @import("turn.zig");
 
 pub const StepCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
@@ -43,6 +46,8 @@ pub const Config = struct {
     approval_callback: ?ApprovalCallback = null,
     approval_context: ?*anyopaque = null,
     approve_every_time_tools: bool = false,
+    task_intent: routing.TaskIntent = .explore_codebase,
+    preloaded_retrieval: bool = false,
 };
 
 pub const RunState = struct {
@@ -78,23 +83,16 @@ pub fn run(
     var conversation: std.ArrayList(u8) = .empty;
     defer conversation.deinit(allocator);
 
-    var prompt = std.Io.Writer.Allocating.init(allocator);
-    defer prompt.deinit();
-    prompt.writer.print(
-        "You are a coding agent. Explore the workspace using tools before answering.\n" ++
-            "Use search, list_tree, and read_file to gather facts. Do not guess file contents.\n" ++
-            "Call tools as needed. Only respond with plain text when you have enough evidence.\n" ++
-            "Intent: {s}\n\nContext summary:\n",
-        .{intent},
-    ) catch return error.ProviderFailed;
-    for (ctx_builder.blocks.items) |block| {
-        prompt.writer.print("[{s}] {s}\n", .{ @tagName(block.block_type), block.name }) catch return error.ProviderFailed;
-    }
+    const prompt = loop_prompt.buildExplorePrompt(allocator, intent, ctx_builder, .{
+        .task_intent = config.task_intent,
+        .preloaded_retrieval = config.preloaded_retrieval,
+    }) catch return error.ProviderFailed;
+    defer allocator.free(prompt);
 
     if (config.initial_conversation_json.len > 0) {
         conversation.appendSlice(allocator, config.initial_conversation_json) catch return error.ProviderFailed;
     } else {
-        transport.appendUserText(allocator, &conversation, prompt.writer.buffer[0..prompt.writer.end]) catch return error.ProviderFailed;
+        transport.appendUserText(allocator, &conversation, prompt) catch return error.ProviderFailed;
     }
 
     var step_index: u32 = config.initial_step_index;
@@ -170,11 +168,15 @@ fn executeTool(
 
     const summary = tool_dispatch.execute(allocator, tool_ctx, mcp, call) catch |err| return mapDispatch(err);
     defer allocator.free(summary);
-    transport.appendToolResult(allocator, conversation, call.name, summary) catch return error.ProviderFailed;
+
+    const bounded = tool_observation.bound(allocator, call.name, summary) catch return error.ProviderFailed;
+    defer allocator.free(bounded);
+
+    transport.appendToolResult(allocator, conversation, call.name, bounded) catch return error.ProviderFailed;
 
     if (config.step_callback) |callback| {
         const kind = subagent.classifyTool(call.name).label();
-        callback(config.step_context, step_index, kind, summary);
+        callback(config.step_context, step_index, kind, bounded);
     }
     if (config.checkpoint_callback) |checkpoint| {
         if (!checkpoint(config.checkpoint_context, conversation.items, step_index + 1, "", "")) return error.ProviderFailed;

@@ -67,15 +67,30 @@ fn tokenize(allocator: std.mem.Allocator, text: []const u8, out: *std.ArrayList(
         if (end > start) {
             const raw = text[start..end];
             if (raw.len >= 2) {
-                const lower = try allocator.dupe(u8, raw);
-                for (lower) |*c| c.* = std.ascii.toLower(c.*);
-                try out.append(allocator, lower);
+                try appendLowerToken(allocator, out, raw);
+                var segment_start: usize = 0;
+                for (raw, 0..) |char, index| {
+                    if (index > segment_start and std.ascii.isUpper(char) and std.ascii.isLower(raw[index - 1])) {
+                        if (index - segment_start >= 2) try appendLowerToken(allocator, out, raw[segment_start..index]);
+                        segment_start = index;
+                    }
+                }
+                if (segment_start > 0 and raw.len - segment_start >= 2) {
+                    try appendLowerToken(allocator, out, raw[segment_start..]);
+                }
             }
         }
         if (end >= text.len) break;
         start = end + 1;
         while (start < text.len and isBoundary(text[start])) : (start += 1) {}
     }
+}
+
+fn appendLowerToken(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8), raw: []const u8) !void {
+    const lower = try allocator.dupe(u8, raw);
+    errdefer allocator.free(lower);
+    for (lower) |*char| char.* = std.ascii.toLower(char.*);
+    try out.append(allocator, lower);
 }
 
 fn isBoundary(c: u8) bool {
@@ -91,4 +106,15 @@ test "similar texts score higher than unrelated" {
     try embed(allocator, "authentication login handler", &login);
     try embed(allocator, "render sidebar tabs layout", &unrelated);
     try std.testing.expect(cosine(&auth, &login) > cosine(&auth, &unrelated));
+}
+
+test "camelCase symbols contribute searchable subtokens" {
+    const allocator = std.testing.allocator;
+    var symbol: [dim]f32 = undefined;
+    var query: [dim]f32 = undefined;
+    var unrelated: [dim]f32 = undefined;
+    try embed(allocator, "pub fn authenticateUserSession", &symbol);
+    try embed(allocator, "user authentication session", &query);
+    try embed(allocator, "renderer color layout", &unrelated);
+    try std.testing.expect(cosine(&symbol, &query) > cosine(&symbol, &unrelated));
 }

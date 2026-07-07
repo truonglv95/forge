@@ -1152,8 +1152,9 @@ fn buildContext(
     });
     var context_opts = route.context;
     if (preview_only) {
-        context_opts.include_semantic_search = false;
-        context_opts.prefer_gemini_embeddings = false;
+        context_opts.allow_rebuild = false;
+        context_opts.include_import_graph = false;
+        context_opts.auto_semantic_search = false;
     }
 
     var tools_buf: [256]u8 = undefined;

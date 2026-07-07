@@ -6,6 +6,9 @@ const codebase_search = @import("codebase_search.zig");
 const context_rerank = @import("context_rerank.zig");
 const context_retrieval = @import("context_retrieval.zig");
 const web_fetcher = @import("web_fetcher.zig");
+const tool_cache_mod = @import("tool_cache.zig");
+
+pub const ToolCache = tool_cache_mod.Cache;
 
 pub const AgentToolError = error{
     Cancelled,
@@ -24,6 +27,7 @@ pub const Context = struct {
     environ_map: ?*const std.process.Environ.Map = null,
     edit_callback: ?*const fn (?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void = null,
     edit_context: ?*anyopaque = null,
+    cache: ?*ToolCache = null,
 };
 
 pub const Outcome = struct {
@@ -55,6 +59,16 @@ pub fn search(ctx: Context, term: []const u8) AgentToolError!SearchOutcome {
     try checkCancel(ctx);
     try requireTool(ctx, .search);
 
+    if (ctx.cache) |cache| {
+        const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "search", term) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(key);
+        if (cache.get(key)) |cached| {
+            const summary = std.fmt.allocPrint(ctx.allocator, "search '{s}' -> cache hit", .{term}) catch return error.WorkspaceFailed;
+            const observation = ctx.allocator.dupe(u8, cached) catch return error.WorkspaceFailed;
+            return .{ .summary = summary, .first_match_path = null, .observation = observation };
+        }
+    }
+
     var result = workspace.search.searchContent(ctx.allocator, ctx.io, ctx.root, ".", term) catch return error.WorkspaceFailed;
     defer result.deinit();
 
@@ -74,12 +88,33 @@ pub fn search(ctx: Context, term: []const u8) AgentToolError!SearchOutcome {
     else
         null;
 
-    return .{ .summary = summary, .first_match_path = first_match_path, .observation = observation.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed };
+    const observation_owned = observation.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed;
+
+    if (ctx.cache) |cache| {
+        const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "search", term) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(key);
+        cache.put(key, observation_owned) catch {};
+    }
+
+    return .{ .summary = summary, .first_match_path = first_match_path, .observation = observation_owned };
 }
 
 pub fn codebaseSearch(ctx: Context, query: []const u8) AgentToolError!CodebaseSearchOutcome {
     try checkCancel(ctx);
     try requireTool(ctx, .codebase_search);
+
+    const args_json = std.fmt.allocPrint(ctx.allocator, "{{\"query\":\"{s}\"}}", .{query}) catch return error.WorkspaceFailed;
+    defer ctx.allocator.free(args_json);
+
+    if (ctx.cache) |cache| {
+        const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "codebase_search", args_json) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(key);
+        if (cache.get(key)) |cached| {
+            const summary = std.fmt.allocPrint(ctx.allocator, "codebase_search '{s}' -> cache hit", .{query}) catch return error.WorkspaceFailed;
+            const formatted = ctx.allocator.dupe(u8, cached) catch return error.WorkspaceFailed;
+            return .{ .summary = summary, .formatted = formatted };
+        }
+    }
 
     const results = codebase_search.search(ctx.allocator, ctx.io, ctx.root, query, &.{}, .{
         .top_k = 16,
@@ -96,6 +131,7 @@ pub fn codebaseSearch(ctx: Context, query: []const u8) AgentToolError!CodebaseSe
             .line_start = item.line_start,
             .line_end = item.line_end,
             .text = item.text,
+            .symbol = item.symbol orelse "",
             .source = .semantic,
             .source_score = item.score,
             .source_rank = rank,
@@ -116,6 +152,14 @@ pub fn codebaseSearch(ctx: Context, query: []const u8) AgentToolError!CodebaseSe
         query,
         hits.len,
     }) catch return error.WorkspaceFailed;
+
+    if (ctx.cache) |cache| {
+        if (formatted) |text| {
+            const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "codebase_search", args_json) catch return error.WorkspaceFailed;
+            defer ctx.allocator.free(key);
+            cache.put(key, text) catch {};
+        }
+    }
 
     return .{ .summary = summary, .formatted = formatted };
 }
@@ -223,6 +267,18 @@ pub fn readFile(ctx: Context, rel_path: []const u8, start_line: ?usize, end_line
     try checkCancel(ctx);
     try requireTool(ctx, .read_file);
 
+    const cache_key = std.fmt.allocPrint(ctx.allocator, "{{\"path\":\"{s}\",\"start\":{?},\"end\":{?}}}", .{ rel_path, start_line, end_line }) catch return error.WorkspaceFailed;
+    defer ctx.allocator.free(cache_key);
+
+    if (ctx.cache) |cache| {
+        const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "read_file", cache_key) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(key);
+        if (cache.get(key)) |cached| {
+            const summary = ctx.allocator.dupe(u8, cached) catch return error.WorkspaceFailed;
+            return .{ .summary = summary };
+        }
+    }
+
     const wp = workspace.WorkspacePath.parse(rel_path) catch return error.WorkspaceFailed;
     var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return error.WorkspaceFailed;
     defer snap.deinit();
@@ -243,7 +299,15 @@ pub fn readFile(ctx: Context, rel_path: []const u8, start_line: ?usize, end_line
         emitted_bytes += line.len + 10;
     }
     if (line_no <= last and emitted_bytes >= 64 * 1024) rendered.appendSlice(ctx.allocator, "... [file truncated]\n") catch return error.WorkspaceFailed;
-    return .{ .summary = rendered.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed };
+    const summary = rendered.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed;
+
+    if (ctx.cache) |cache| {
+        const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "read_file", cache_key) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(key);
+        cache.put(key, summary) catch {};
+    }
+
+    return .{ .summary = summary };
 }
 
 fn appendPrint(allocator: std.mem.Allocator, out: *std.ArrayList(u8), comptime format: []const u8, args: anytype) !void {

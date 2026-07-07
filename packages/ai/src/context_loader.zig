@@ -42,6 +42,7 @@ pub const LoadOptions = struct {
     supplement: context_supplement.Supplement = .{},
     prefer_gemini_embeddings: bool = true,
     environ_map: ?*const std.process.Environ.Map = null,
+    allow_rebuild: bool = true,
     retrieval_max_chunks: usize = 12,
     recent_file_limit: usize = 5,
     recent_file_preview_bytes: usize = 4096,
@@ -582,6 +583,7 @@ fn appendOwnedRerankInput(
         .line_start = item.line_start,
         .line_end = item.line_end,
         .text = try allocator.dupe(u8, item.text),
+        .symbol = if (item.symbol.len > 0) try allocator.dupe(u8, item.symbol) else "",
         .source = item.source,
         .source_score = item.source_score,
         .source_rank = item.source_rank,
@@ -612,6 +614,7 @@ fn loadFusedBlock(
         for (inputs.items) |item| {
             allocator.free(item.path);
             allocator.free(item.text);
+            if (item.symbol.len > 0) allocator.free(item.symbol);
         }
         inputs.deinit(allocator);
     }
@@ -643,6 +646,7 @@ fn loadFusedBlock(
             .top_k = pool_k,
             .prefer_gemini = options.prefer_gemini_embeddings,
             .environ_map = options.environ_map,
+            .allow_rebuild = options.allow_rebuild,
         }) catch @as([]codebase_search.ScoredChunk, &.{});
         defer if (semantic.len > 0) codebase_search.freeResults(allocator, semantic);
 
@@ -652,6 +656,7 @@ fn loadFusedBlock(
                 .line_start = item.line_start,
                 .line_end = item.line_end,
                 .text = item.text,
+                .symbol = item.symbol orelse "",
                 .source = .semantic,
                 .source_score = item.score,
                 .source_rank = rank,
@@ -665,6 +670,7 @@ fn loadFusedBlock(
         for (inputs.items) |item| {
             allocator.free(item.path);
             allocator.free(item.text);
+            if (item.symbol.len > 0) allocator.free(item.symbol);
         }
         inputs.deinit(allocator);
     }
@@ -738,6 +744,7 @@ fn loadSemanticBlock(
         .top_k = options.retrieval_max_chunks,
         .prefer_gemini = options.prefer_gemini_embeddings,
         .environ_map = options.environ_map,
+        .allow_rebuild = options.allow_rebuild,
     }) catch return;
     defer codebase_search.freeResults(allocator, results);
 

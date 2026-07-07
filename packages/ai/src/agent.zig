@@ -19,6 +19,7 @@ const validation_hints = @import("validation_hints.zig");
 const repair_loop = @import("repair_loop.zig");
 const subagent = @import("subagent.zig");
 const routing = @import("routing.zig");
+const context_manifest = @import("context_manifest.zig");
 
 pub const Config = struct {
     max_steps: u32 = 8,
@@ -154,6 +155,9 @@ pub fn run(
     }
     emitProgress(config, .context_built);
 
+    var tool_cache = tool_executor.ToolCache.init(allocator);
+    defer tool_cache.deinit();
+
     var mcp = mcp_registry.Registry.load(allocator, io, root, config.workspace_cwd, config.mcp_enabled, resolveHomeDir(environ_map), environ_map) catch return error.WorkspaceFailed;
     defer mcp.deinit();
     ctx_builder.addBlock(.intent, "mcp", mcp.status_lines) catch {};
@@ -171,6 +175,7 @@ pub fn run(
         .environ_map = environ_map,
         .edit_callback = config.edit_callback,
         .edit_context = config.edit_context,
+        .cache = &tool_cache,
     };
 
     var next_index: u32 = 1;
@@ -231,15 +236,32 @@ pub fn run(
             var tool_binding = llm.toolLoopBinding(io, &mcp, config.cancel_token);
             const raw_declarations = llm.toolDeclarationsJson(allocator, &mcp) catch return error.ProviderFailed;
             defer allocator.free(raw_declarations);
+            const preloaded_retrieval = context_manifest.hasPreloadedRetrieval(&ctx_builder);
             const declarations = routing.filterDeclarationsForRoute(
                 allocator,
                 raw_declarations,
                 config.capability_profile,
                 route.intent,
                 intent,
+                preloaded_retrieval,
             ) catch return error.ProviderFailed;
             defer allocator.free(declarations);
-            var loop_state = try runExploreLoop(allocator, tool_binding.transport(), declarations, intent, &ctx_builder, tool_ctx, &mcp, config, NativeCtx.onStep, &native_ctx, NativeCtx.onCheckpoint, &native_ctx);
+            var loop_state = try runExploreLoop(
+                allocator,
+                tool_binding.transport(),
+                declarations,
+                intent,
+                &ctx_builder,
+                tool_ctx,
+                &mcp,
+                config,
+                route.intent,
+                preloaded_retrieval,
+                NativeCtx.onStep,
+                &native_ctx,
+                NativeCtx.onCheckpoint,
+                &native_ctx,
+            );
             defer loop_state.deinit(allocator);
             explore_conversation = allocator.dupe(u8, loop_state.conversation_json) catch return error.WorkspaceFailed;
             if (loop_state.final_text) |text| explore_text = allocator.dupe(u8, text) catch return error.WorkspaceFailed;
@@ -591,6 +613,8 @@ fn runExploreLoop(
     tool_ctx: tool_executor.Context,
     mcp: *mcp_registry.Registry,
     config: Config,
+    task_intent: routing.TaskIntent,
+    preloaded_retrieval: bool,
     on_step: agent_loop.StepCallback,
     on_step_ctx: ?*anyopaque,
     on_checkpoint: agent_loop.CheckpointCallback,
@@ -633,6 +657,8 @@ fn runExploreLoop(
         .approval_callback = config.approval_callback,
         .approval_context = config.approval_context,
         .approve_every_time_tools = config.approve_every_time_tools,
+        .task_intent = task_intent,
+        .preloaded_retrieval = preloaded_retrieval,
     }) catch |err| switch (err) {
         error.Cancelled => return error.Cancelled,
         error.StepLimitReached => return error.StepLimitReached,

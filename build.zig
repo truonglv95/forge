@@ -41,6 +41,39 @@ pub fn build(b: *std.Build) void {
             .{ .name = "forge-util", .module = util },
         },
     });
+    workspace.addIncludePath(b.path("third_party/tree-sitter/lib/include"));
+    workspace.addIncludePath(b.path("third_party/tree-sitter-python/src"));
+    workspace.addIncludePath(b.path("third_party/tree-sitter-typescript/typescript/src"));
+    workspace.addIncludePath(b.path("third_party/tree-sitter-typescript/tsx/src"));
+    workspace.addCSourceFile(.{
+        .file = b.path("third_party/tree-sitter/lib/src/lib.c"),
+        .flags = &.{"-std=c11"},
+    });
+    workspace.addCSourceFile(.{
+        .file = b.path("third_party/tree-sitter-python/src/parser.c"),
+        .flags = &.{"-std=c11"},
+    });
+    workspace.addCSourceFile(.{
+        .file = b.path("third_party/tree-sitter-python/src/scanner.c"),
+        .flags = &.{"-std=c11"},
+    });
+    workspace.addCSourceFile(.{
+        .file = b.path("third_party/tree-sitter-typescript/typescript/src/parser.c"),
+        .flags = &.{"-std=c11"},
+    });
+    workspace.addCSourceFile(.{
+        .file = b.path("third_party/tree-sitter-typescript/typescript/src/scanner.c"),
+        .flags = &.{"-std=c11"},
+    });
+    workspace.addCSourceFile(.{
+        .file = b.path("third_party/tree-sitter-typescript/tsx/src/parser.c"),
+        .flags = &.{"-std=c11"},
+    });
+    workspace.addCSourceFile(.{
+        .file = b.path("third_party/tree-sitter-typescript/tsx/src/scanner.c"),
+        .flags = &.{"-std=c11"},
+    });
+    workspace.linkSystemLibrary("c", .{});
     const editor = b.addModule("forge-editor", .{
         .root_source_file = b.path("packages/editor/src/root.zig"),
         .target = target,

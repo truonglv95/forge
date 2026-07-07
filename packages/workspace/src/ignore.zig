@@ -15,6 +15,7 @@ pub const IgnoreRules = struct {
             ".git",
             ".zig-cache",
             "zig-out",
+            "zig-pkg",
             "node_modules",
             ".DS_Store",
             ".forge",

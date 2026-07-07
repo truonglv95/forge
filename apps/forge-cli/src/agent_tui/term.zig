@@ -13,12 +13,15 @@ pub const Key = union(enum) {
     right,
     home,
     end,
+    page_up,
+    page_down,
     tab,
     ctrl_a,
     ctrl_c,
     ctrl_d,
     ctrl_e,
     ctrl_l,
+    ctrl_m,
     ctrl_u,
     ctrl_w,
     none,
@@ -53,13 +56,20 @@ pub const Terminal = struct {
         self.restore();
     }
 
-    pub fn size(self: *const Terminal) struct { rows: u16, cols: u16 } {
+    pub const Size = struct { rows: u16, cols: u16 };
+
+    pub fn size(self: *const Terminal) Size {
         _ = self;
         if (builtin.os.tag == .windows) return .{ .rows = 25, .cols = 80 };
         var ws: std.posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
         const rc = std.c.ioctl(std.posix.STDOUT_FILENO, std.c.T.IOCGWINSZ, @intFromPtr(&ws));
         if (rc >= 0 and ws.row > 0 and ws.col > 0) return .{ .rows = ws.row, .cols = ws.col };
         return .{ .rows = 25, .cols = 80 };
+    }
+
+    pub fn sizeChanged(self: *const Terminal, previous: Size) bool {
+        const current = self.size();
+        return current.rows != previous.rows or current.cols != previous.cols;
     }
 
     pub fn clearScreen(self: *const Terminal) void {
@@ -99,6 +109,7 @@ pub const Terminal = struct {
         if (buf[0] == 4) return .ctrl_d;
         if (buf[0] == 5) return .ctrl_e;
         if (buf[0] == 12) return .ctrl_l;
+        if (buf[0] == 13) return .ctrl_m;
         if (buf[0] == 21) return .ctrl_u;
         if (buf[0] == 23) return .ctrl_w;
         if (buf[0] == '\r' or buf[0] == '\n') return .enter;
@@ -115,6 +126,8 @@ pub const Terminal = struct {
                     '1' => if (n >= 4 and buf[3] == '~') .home else .escape,
                     '4' => if (n >= 4 and buf[3] == '~') .end else .escape,
                     '3' => if (n >= 4 and buf[3] == '~') .delete else .escape,
+                    '5' => if (n >= 4 and buf[3] == '~') .page_up else .escape,
+                    '6' => if (n >= 4 and buf[3] == '~') .page_down else .escape,
                     else => .escape,
                 };
             }
@@ -272,7 +285,7 @@ pub fn wrapLines(allocator: std.mem.Allocator, text: []const u8, width: usize) !
         if (std.mem.lastIndexOfScalar(u8, slice[0..break_at], ' ')) |space| {
             if (space > 0) break_at = space;
         }
-        try lines.append(allocator, try allocator.dupe(u8, std.mem.trim(u8, &std.ascii.whitespace, slice[0..break_at])));
+        try lines.append(allocator, try allocator.dupe(u8, std.mem.trim(u8, slice[0..break_at], &std.ascii.whitespace)));
         start += break_at;
         while (start < text.len and text[start] == ' ') start += 1;
     }
