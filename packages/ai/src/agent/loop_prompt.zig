@@ -29,6 +29,7 @@ pub fn buildExplorePrompt(
         \\Tool loop contract:
         \\- If the current context is insufficient, call exactly one focused tool to get the missing fact.
         \\- Prefer codebase_search for unknown symbols/concepts, search for exact text, list_tree for structure, and read_file for line-level evidence.
+        \\- If an imports/import-graph block is present, prefer read_file on those neighbor files when chasing definitions or call sites.
         \\- After each tool result, decide whether you have enough evidence; continue only when another specific fact is missing.
         \\- Do not repeat equivalent tool calls unless the previous observation was insufficient or stale.
         \\- Finish with a concise answer or a proposal once the task is complete.

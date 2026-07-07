@@ -98,9 +98,37 @@ pub fn extractImports(
         try extractZigImports(allocator, io, root, file_path, content, &out);
     } else if (endsWithAny(file_path, &.{ ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs" })) {
         try extractJsImports(allocator, io, root, file_path, content, &out);
+    } else if (endsWithAny(file_path, &.{ ".c", ".h", ".cc", ".cpp", ".hpp" })) {
+        try extractCIncludes(allocator, io, root, file_path, content, &out);
     }
 
     return try out.toOwnedSlice(allocator);
+}
+
+fn extractCIncludes(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    file_path: []const u8,
+    content: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    _ = io;
+    _ = root;
+    const base_dir = std.fs.path.dirname(file_path) orelse ".";
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+        if (!std.mem.startsWith(u8, trimmed, "#include")) continue;
+        const first_quote = std.mem.indexOfScalar(u8, trimmed, '"') orelse continue;
+        const rest = trimmed[first_quote + 1 ..];
+        const second_quote = std.mem.indexOfScalar(u8, rest, '"') orelse continue;
+        const include_name = rest[0..second_quote];
+        if (include_name.len == 0) continue;
+        const joined = try std.fs.path.join(allocator, &.{ base_dir, include_name });
+        errdefer allocator.free(joined);
+        try out.append(allocator, joined);
+    }
 }
 
 fn extractZigImports(
@@ -273,6 +301,24 @@ test "extract zig imports" {
     const imports = try extractImports(allocator, io, root, "apps/main.zig", content);
     defer freeImports(allocator, imports);
     try std.testing.expect(imports.len >= 1);
+}
+
+test "extract C includes" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try tmp.dir.createDirPath(io, "src");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/main.c"),
+        \\#include "util.h"
+        \\#include <stdio.h>
+        \\int main() { return 0; }
+    );
+    const imports = try extractImports(allocator, io, root, "src/main.c", "#include \"util.h\"\n");
+    defer freeImports(allocator, imports);
+    try std.testing.expectEqual(@as(usize, 1), imports.len);
+    try std.testing.expectEqualStrings("src/util.h", imports[0]);
 }
 
 test "collectNeighborPaths does not use freed import keys in seen set" {
