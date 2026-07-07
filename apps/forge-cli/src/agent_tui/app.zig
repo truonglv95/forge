@@ -75,6 +75,7 @@ pub const App = struct {
     history: std.ArrayList([]const u8) = .empty,
     history_pos: ?usize = null,
     scroll: usize = 0,
+    events_scroll: usize = 0,
     agent_busy: bool = false,
     quit: bool = false,
     tool_policy: ToolRunPolicy = .agent_default,
@@ -98,6 +99,9 @@ pub const App = struct {
     session_files: std.ArrayList([]const u8) = .empty,
     agent_mode: ai.tools.Mode = .agent,
     resume_session_id: ?[]u8 = null,
+    last_session_id: ?[]u8 = null,
+    show_events: bool = false,
+    events_lines: std.ArrayList(ChatLine) = .empty,
     terminal_size: term.Terminal.Size = .{ .rows = 25, .cols = 80 },
     active_tool: [96]u8 = undefined,
     active_tool_len: usize = 0,
@@ -106,7 +110,7 @@ pub const App = struct {
     last_tool_review_kind: ?[]u8 = null,
     command_index: usize = 0,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/resume", "/sessions", "/help", "/quit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/events", "/resume", "/sessions", "/help", "/quit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -151,6 +155,7 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         if (self.worker) |thread| thread.join();
         self.freeLines();
+        self.freeEventsLines();
         self.input.deinit(self.allocator);
         for (self.conversation.items) |turn| self.allocator.free(turn.content);
         self.conversation.deinit(self.allocator);
@@ -166,6 +171,7 @@ pub const App = struct {
         if (self.worker_err) |msg| self.allocator.free(msg);
         if (self.pending_proposal) |prop| self.allocator.free(prop);
         if (self.resume_session_id) |id| self.allocator.free(id);
+        if (self.last_session_id) |id| self.allocator.free(id);
         if (self.last_tool_review) |text| self.allocator.free(text);
         if (self.last_tool_review_kind) |kind| self.allocator.free(kind);
         self.frame.deinit();
@@ -290,6 +296,7 @@ pub const App = struct {
             },
             .escape => {
                 self.mutex.lock();
+                if (self.show_events) self.show_events = false;
                 self.focus_action = false;
                 self.markDirty();
                 self.mutex.unlock();
@@ -620,6 +627,7 @@ pub const App = struct {
             .exit_app => self.quit = true,
             .sessions => try self.listSessions(),
             .resume_session => |session_id| try self.resumeSession(session_id),
+            .events => |session_id| try self.showEvents(session_id),
         }
     }
 
@@ -837,6 +845,14 @@ pub const App = struct {
 
         switch (result) {
             .ok => |payload| {
+                self.mutex.lock();
+                if (self.last_session_id) |old| self.allocator.free(old);
+                if (payload.session_id.len > 0) {
+                    self.last_session_id = self.allocator.dupe(u8, payload.session_id) catch null;
+                } else {
+                    self.last_session_id = null;
+                }
+                self.mutex.unlock();
                 if (payload.response_text) |text| {
                     self.finalizeStreamedResponse(text) catch {};
                     self.appendConversation(.agent, text) catch {};
@@ -962,6 +978,184 @@ pub const App = struct {
         }
     }
 
+    const EventsQuery = struct {
+        session_id: ?[]const u8 = null,
+        tail: usize = 0,
+        type_filter: ?[]const u8 = null,
+    };
+
+    fn parseEventsArgs(args: ?[]const u8) EventsQuery {
+        var query = EventsQuery{};
+        const raw = args orelse return query;
+        var it = std.mem.tokenizeScalar(u8, raw, ' ');
+        while (it.next()) |token| {
+            if (std.mem.eql(u8, token, "--tail")) {
+                if (it.next()) |value| query.tail = std.fmt.parseInt(usize, value, 10) catch 0;
+            } else if (std.mem.eql(u8, token, "--type")) {
+                if (it.next()) |value| query.type_filter = value;
+            } else if (!std.mem.startsWith(u8, token, "-") and query.session_id == null) {
+                query.session_id = token;
+            }
+        }
+        return query;
+    }
+
+    fn showEvents(self: *App, args: ?[]const u8) !void {
+        const query = parseEventsArgs(args);
+
+        // Toggle off when already showing and no explicit args were given.
+        if (args == null and self.show_events) {
+            self.mutex.lock();
+            self.show_events = false;
+            self.markDirty();
+            self.mutex.unlock();
+            return;
+        }
+
+        const session_id = blk: {
+            if (query.session_id) |id| break :blk id;
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            if (self.last_session_id) |id| break :blk id;
+            if (self.resume_session_id) |id| break :blk id;
+            break :blk "";
+        };
+        if (session_id.len == 0) {
+            try self.pushSystem("No session id yet. Run the agent or /resume first, or use /events <session_id>.");
+            return;
+        }
+
+        const body = workspace.sessions.readEvents(self.allocator, self.io, self.opened.root, session_id) catch {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "No event log for {s}", .{session_id}) catch "No event log";
+            try self.pushSystem(msg);
+            return;
+        };
+        defer self.allocator.free(body);
+
+        self.mutex.lock();
+        self.freeEventsLines();
+        self.show_events = true;
+        self.events_scroll = 0;
+        self.mutex.unlock();
+
+        var header_buf: [256]u8 = undefined;
+        const header = std.fmt.bufPrint(&header_buf, "--- session events: {s}{s}{s} ---", .{
+            session_id,
+            if (query.type_filter != null) " type=" else "",
+            query.type_filter orelse "",
+        }) catch "--- session events ---";
+        try self.pushEventsLine(.system, try self.allocator.dupe(u8, header));
+
+        // Collect matching rendered lines, then apply tail if requested.
+        var rendered_lines: std.ArrayList([]u8) = .empty;
+        defer rendered_lines.deinit(self.allocator);
+        var lines = std.mem.splitScalar(u8, body, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+            if (trimmed.len == 0) continue;
+            if (query.type_filter) |want| {
+                if (!eventTypeMatches(trimmed, want)) continue;
+            }
+            const rendered = renderEventPreview(self.allocator, trimmed) catch continue;
+            rendered_lines.append(self.allocator, rendered) catch {
+                self.allocator.free(rendered);
+                continue;
+            };
+        }
+
+        const total = rendered_lines.items.len;
+        const start = if (query.tail > 0 and total > query.tail) total - query.tail else 0;
+        if (start > 0) {
+            var skip_buf: [64]u8 = undefined;
+            const skip_msg = std.fmt.bufPrint(&skip_buf, "… {d} earlier events hidden (--tail {d})", .{ start, query.tail }) catch "… earlier events hidden";
+            try self.pushEventsLine(.system, try self.allocator.dupe(u8, skip_msg));
+        }
+        for (rendered_lines.items, 0..) |rendered, idx| {
+            if (idx < start) {
+                self.allocator.free(rendered);
+                continue;
+            }
+            try self.pushEventsLine(.tool, rendered);
+        }
+        if (total == 0) try self.pushEventsLine(.system, try self.allocator.dupe(u8, "(no matching events)"));
+        self.markDirty();
+    }
+
+    fn eventTypeMatches(line: []const u8, want: []const u8) bool {
+        var needle_buf: [96]u8 = undefined;
+        const needle = std.fmt.bufPrint(&needle_buf, "\"type\":\"{s}\"", .{want}) catch return false;
+        return std.mem.indexOf(u8, line, needle) != null;
+    }
+
+    fn pushEventsLine(self: *App, kind: LineKind, text: []u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.events_lines.append(self.allocator, .{ .kind = kind, .text = text }) catch {
+            self.allocator.free(text);
+            return;
+        };
+        self.events_scroll = std.math.maxInt(usize);
+    }
+
+    fn renderEventPreview(allocator: std.mem.Allocator, line: []const u8) ![]u8 {
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) return allocator.dupe(u8, line);
+        const obj = parsed.value.object;
+        const type_str = jsonStr(obj, "type");
+        if (std.mem.eql(u8, type_str, "session_started")) {
+            return std.fmt.allocPrint(allocator, "session_started  intent={s}", .{jsonStr(obj, "intent")});
+        }
+        if (std.mem.eql(u8, type_str, "context_manifest_built")) {
+            return std.fmt.allocPrint(allocator, "context_manifest  used_bytes={d} blocks={d}", .{ jsonInt(obj, "used_bytes"), jsonInt(obj, "blocks") });
+        }
+        if (std.mem.eql(u8, type_str, "tool_call")) {
+            return std.fmt.allocPrint(allocator, "[{d}] tool_call  {s}  ({s})", .{ jsonInt(obj, "step"), jsonStr(obj, "tool"), jsonStr(obj, "reason") });
+        }
+        if (std.mem.eql(u8, type_str, "tool_result")) {
+            const clipped = clip(jsonStr(obj, "summary"), 220);
+            return std.fmt.allocPrint(allocator, "[{d}] tool_result  {s}  {s}", .{ jsonInt(obj, "step"), jsonStr(obj, "kind"), clipped });
+        }
+        if (std.mem.eql(u8, type_str, "proposal_created")) {
+            return std.fmt.allocPrint(allocator, "proposal_created  {s}", .{jsonStr(obj, "proposal_path")});
+        }
+        if (std.mem.eql(u8, type_str, "validation_started")) {
+            return std.fmt.allocPrint(allocator, "validation_started  attempt={d}", .{jsonInt(obj, "attempt")});
+        }
+        if (std.mem.eql(u8, type_str, "validation_result")) {
+            const passed = if (obj.get("passed")) |v| (v == .bool and v.bool) else false;
+            return std.fmt.allocPrint(allocator, "validation_result  attempt={d} passed={}", .{ jsonInt(obj, "attempt"), passed });
+        }
+        if (std.mem.eql(u8, type_str, "run_completed")) {
+            return std.fmt.allocPrint(allocator, "run_completed  steps={d} repairs={d}", .{ jsonInt(obj, "steps"), jsonInt(obj, "repair_attempts") });
+        }
+        if (type_str.len > 0) return allocator.dupe(u8, type_str);
+        return allocator.dupe(u8, line);
+    }
+
+    fn jsonStr(obj: std.json.ObjectMap, key: []const u8) []const u8 {
+        if (obj.get(key)) |v| {
+            if (v == .string) return v.string;
+        }
+        return "";
+    }
+
+    fn jsonInt(obj: std.json.ObjectMap, key: []const u8) i64 {
+        if (obj.get(key)) |v| {
+            return switch (v) {
+                .integer => v.integer,
+                .float => @intFromFloat(v.float),
+                else => 0,
+            };
+        }
+        return 0;
+    }
+
+    fn clip(s: []const u8, max: usize) []const u8 {
+        return if (s.len > max) s[0..max] else s;
+    }
+
     fn applyPendingProposal(self: *App) !void {
         const prop_rel = blk: {
             self.mutex.lock();
@@ -1027,6 +1221,11 @@ pub const App = struct {
     fn freeLines(self: *App) void {
         for (self.lines.items) |line| self.allocator.free(line.text);
         self.lines.clearRetainingCapacity();
+    }
+
+    fn freeEventsLines(self: *App) void {
+        for (self.events_lines.items) |line| self.allocator.free(line.text);
+        self.events_lines.clearRetainingCapacity();
     }
 
     fn refreshStatus(self: *App) !void {
@@ -1285,7 +1484,10 @@ pub const App = struct {
         defer display_lines.deinit(self.allocator);
 
         const width = @max(20, @as(usize, size.cols) - 2);
-        for (self.lines.items) |line| {
+        const source_lines = if (self.show_events) self.events_lines.items else self.lines.items;
+        const source_scroll_ptr: *usize = if (self.show_events) &self.events_scroll else &self.scroll;
+
+        for (source_lines) |line| {
             const decorated = decorateLine(self.allocator, line.kind, line.text) catch continue;
             defer self.allocator.free(decorated);
             const wrapped = term.wrapLines(self.allocator, decorated, width) catch continue;
@@ -1316,8 +1518,8 @@ pub const App = struct {
 
         const total = display_lines.items.len;
         const max_scroll = if (total > chat_rows) total - chat_rows else 0;
-        if (self.scroll > max_scroll) self.scroll = max_scroll;
-        const start = if (total > chat_rows) total - chat_rows - self.scroll else 0;
+        if (source_scroll_ptr.* > max_scroll) source_scroll_ptr.* = max_scroll;
+        const start = if (total > chat_rows) total - chat_rows - source_scroll_ptr.* else 0;
         const end = @min(total, start + chat_rows);
 
         var row: u16 = 1;
@@ -1476,10 +1678,12 @@ const WorkerResult = union(enum) {
     const OkPayload = struct {
         response_text: ?[]const u8,
         proposal_rel: ?[]const u8,
+        session_id: []const u8,
 
         fn deinit(self: OkPayload, allocator: std.mem.Allocator) void {
             if (self.response_text) |text| allocator.free(text);
             if (self.proposal_rel) |prop| allocator.free(prop);
+            allocator.free(self.session_id);
         }
     };
 };
@@ -1585,6 +1789,7 @@ fn workerMain(ctx: *WorkerCtx) void {
     const payload = WorkerResult.OkPayload{
         .response_text = if (result.response_text) |text| app.allocator.dupe(u8, text) catch null else null,
         .proposal_rel = if (result.proposal_rel) |prop| app.allocator.dupe(u8, prop) catch null else null,
+        .session_id = app.allocator.dupe(u8, result.session_id) catch app.allocator.dupe(u8, "") catch "",
     };
     var mutable = result;
     ai.agent.deinitResult(app.allocator, &mutable);

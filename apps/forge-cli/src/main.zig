@@ -20,6 +20,7 @@ const run_cmd = @import("run_cmd.zig");
 const agent_cmd = @import("agent_cmd.zig");
 const parsers_cmd = @import("parsers_cmd.zig");
 const ext_cmd = @import("ext_cmd.zig");
+const eval_cmd = @import("eval_cmd.zig");
 
 const Io = std.Io;
 
@@ -106,6 +107,9 @@ fn run(
         .parsers => {
             return parsers_cmd.run(allocator, io, parsed, writer) catch 2;
         },
+        .eval => {
+            return eval_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
         .ext => {
             if (parsed.positional.len == 0) {
                 try writer.print("usage: forge ext <list|install|uninstall> [id]\n", .{});
@@ -147,9 +151,10 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  context    Preview AI context preparation
         \\  ask        Ask AI to propose a change (no auto-apply)
         \\  run        List or show AI run records (list|show)
-        \\  agent      Multi-step agent (interactive, or run|resume|list)
+        \\  agent      Multi-step agent (interactive, or run|resume|list|events)
         \\  plan       Plan a proposal using AI
         \\  parsers    Sync Tree-sitter parser lock for the workspace (sync)
+        \\  eval       Run evaluation suites (ai-flow)
         \\  ext        Manage extensions (list|install|uninstall)
         \\  help       Show this help
         \\
@@ -169,6 +174,12 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --max-polls <n>      Limit watch polling iterations
         \\  --max-steps <n>      Limit agent steps (default: 8)
         \\  --fetch              Allow parser sync to resolve fetchable parser packs (stub)
+        \\  --repeat <n>         Repeat eval suite runs (default: 1)
+        \\  --output <path>      Write eval results JSONL (default: .forge/evals/latest.jsonl)
+        \\  --corpus <path>      Eval corpus JSON (default: fixtures/eval/agent_reliability.json)
+        \\  --min-success-rate <f> Fail if success rate below threshold
+        \\  --baseline <path>    Compare success rate to prior .summary.json
+        \\  --max-success-regression <f> Fail if success rate regresses beyond delta
         \\
     );
 }
@@ -187,7 +198,7 @@ test "CLI exposes subcommands" {
         allocator.destroy(environ);
     }
 
-    var buffer: [2048]u8 = undefined;
+    var buffer: [8192]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
 
     try std.testing.expectEqual(@as(u8, 0), try run(allocator, std.testing.io, environ, &.{ "forge", "version" }, &writer));
@@ -202,7 +213,7 @@ test "CLI returns error for unknown command" {
         allocator.destroy(environ);
     }
 
-    var buffer: [2048]u8 = undefined;
+    var buffer: [8192]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
     try std.testing.expectEqual(@as(u8, 2), try run(allocator, std.testing.io, environ, &.{ "forge", "wat" }, &writer));
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "unknown command") != null);

@@ -34,7 +34,17 @@ jobs:
       - name: Agent reliability eval (fake)
         run: |
           zig build
-          ./scripts/eval_reliability.sh --provider fake --min-success-rate 1.0
+          ./zig-out/bin/forge eval ai-flow --provider fake --min-success-rate 1.0 --output .forge/evals/ci.jsonl
+
+      - name: Upload eval summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-flow-eval
+          path: |
+            .forge/evals/ci.jsonl
+            .forge/evals/ci.summary.json
+          if-no-files-found: warn
 
       - name: Routing policy eval
         run: |

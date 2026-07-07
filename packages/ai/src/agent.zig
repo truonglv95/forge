@@ -4,6 +4,7 @@ const kernel = @import("forge-kernel");
 const provider_mod = @import("provider.zig");
 const provider_factory = @import("provider_factory.zig");
 const planner = @import("planner.zig");
+const context = @import("context.zig");
 const context_loader = @import("context_loader.zig");
 const run_record = @import("run_record.zig");
 const tools = @import("tools.zig");
@@ -20,6 +21,7 @@ const repair_loop = @import("repair_loop.zig");
 const subagent = @import("subagent.zig");
 const routing = @import("routing.zig");
 const context_manifest = @import("context_manifest.zig");
+const agent_event = @import("agent_event.zig");
 
 pub const Config = struct {
     max_steps: u32 = 8,
@@ -94,6 +96,8 @@ pub const AgentError = error{
     WorkspaceFailed,
     Cancelled,
     InvalidProposal,
+    DuplicateLoop,
+    NoProgress,
 };
 
 pub fn run(
@@ -125,25 +129,43 @@ pub fn run(
         workspace.sessions.makeSessionId(allocator, timestamp_ms) catch return error.WorkspaceFailed;
     defer allocator.free(session_id);
 
+    var event_logger = EventLogger.init(allocator, io, root, session_id);
+    defer event_logger.deinit();
+
+    var effective_config = config;
+    var event_ctx = EventCtx{
+        .logger = &event_logger,
+        .step_begin_callback = config.step_begin_callback,
+        .step_begin_context = config.step_begin_context,
+        .step_callback = config.step_callback,
+        .step_context = config.step_context,
+    };
+    effective_config.step_begin_callback = EventCtx.onStepBegin;
+    effective_config.step_begin_context = &event_ctx;
+    effective_config.step_callback = EventCtx.onStep;
+    effective_config.step_context = &event_ctx;
+
     if (config.resume_session_id == null) {
         const session_index = workspace.sessions.formatIndexLine(allocator, session_id, intent, timestamp_ms) catch return error.WorkspaceFailed;
         defer allocator.free(session_index);
         workspace.sessions.appendIndex(allocator, io, root, session_index) catch return error.WorkspaceFailed;
     }
 
+    event_logger.sessionStarted(effective_config, intent) catch {};
+
     const route = routing.plan(.{
-        .mode = config.mode,
+        .mode = effective_config.mode,
         .intent = intent,
-        .has_active_file = config.active_file != null,
-        .has_selection = config.has_selection,
+        .has_active_file = effective_config.active_file != null,
+        .has_selection = effective_config.has_selection,
     }, .{
         .intent = intent,
-        .explicit_files = config.explicit_files,
-        .active_file = config.active_file,
-        .attachments = config.attachments,
+        .explicit_files = effective_config.explicit_files,
+        .active_file = effective_config.active_file,
+        .attachments = effective_config.attachments,
         .include_project_rules = true,
-        .workspace_cwd = config.workspace_cwd,
-        .recent_files = config.recent_files,
+        .workspace_cwd = effective_config.workspace_cwd,
+        .recent_files = effective_config.recent_files,
     });
 
     var ctx_builder = context_loader.build(allocator, io, root, route.context) catch return error.WorkspaceFailed;
@@ -158,12 +180,13 @@ pub fn run(
         }, route);
         ctx_builder.addBlock(.intent, "routing", summary) catch {};
     }
-    emitProgress(config, .context_built);
+    emitProgress(effective_config, .context_built);
+    event_logger.contextManifestBuilt(&ctx_builder) catch {};
 
     var tool_cache = tool_executor.ToolCache.init(allocator);
     defer tool_cache.deinit();
 
-    var mcp = mcp_registry.Registry.load(allocator, io, root, config.workspace_cwd, config.mcp_enabled, resolveHomeDir(environ_map), environ_map) catch return error.WorkspaceFailed;
+    var mcp = mcp_registry.Registry.load(allocator, io, root, effective_config.workspace_cwd, effective_config.mcp_enabled, resolveHomeDir(environ_map), environ_map) catch return error.WorkspaceFailed;
     defer mcp.deinit();
     ctx_builder.addBlock(.intent, "mcp", mcp.status_lines) catch {};
     if (mcp.instructions_text.len > 0) ctx_builder.addBlock(.rules, "mcp_instructions", mcp.instructions_text) catch {};
@@ -174,12 +197,12 @@ pub fn run(
         .allocator = allocator,
         .io = io,
         .root = root,
-        .cwd = config.workspace_cwd,
-        .profile = config.capability_profile,
-        .cancel_token = config.cancel_token,
+        .cwd = effective_config.workspace_cwd,
+        .profile = effective_config.capability_profile,
+        .cancel_token = effective_config.cancel_token,
         .environ_map = environ_map,
-        .edit_callback = config.edit_callback,
-        .edit_context = config.edit_context,
+        .edit_callback = effective_config.edit_callback,
+        .edit_context = effective_config.edit_context,
         .cache = &tool_cache,
     };
 
@@ -234,18 +257,18 @@ pub fn run(
                 .session_id = session_id,
                 .intent = intent,
                 .steps = &steps,
-                .config = config,
+                .config = effective_config,
                 .provider_kind = llm.metadata().provider_name,
             };
 
-            var tool_binding = llm.toolLoopBinding(io, &mcp, config.cancel_token);
+            var tool_binding = llm.toolLoopBinding(io, &mcp, effective_config.cancel_token);
             const raw_declarations = llm.toolDeclarationsJson(allocator, &mcp) catch return error.ProviderFailed;
             defer allocator.free(raw_declarations);
             const preloaded_retrieval = context_manifest.hasPreloadedRetrieval(&ctx_builder);
             const declarations = routing.filterDeclarationsForRoute(
                 allocator,
                 raw_declarations,
-                config.capability_profile,
+                effective_config.capability_profile,
                 route.intent,
                 intent,
                 preloaded_retrieval,
@@ -259,7 +282,7 @@ pub fn run(
                 &ctx_builder,
                 tool_ctx,
                 &mcp,
-                config,
+                effective_config,
                 route.intent,
                 preloaded_retrieval,
                 NativeCtx.onStep,
@@ -288,30 +311,30 @@ pub fn run(
             defer allocator.free(search_out.summary);
             defer allocator.free(search_out.observation);
             first_match_path = search_out.first_match_path;
-            try appendStep(allocator, &steps, next_index, "search", search_out.summary, null, config);
+            try appendStep(allocator, &steps, next_index, "search", search_out.summary, null, effective_config);
             next_index += 1;
         }
 
-        if (config.max_steps >= 3 and tools.isAllowed(config.capability_profile, .list_tree)) {
-            if (config.max_steps < next_index + 1) return error.StepLimitReached;
+        if (effective_config.max_steps >= 3 and tools.isAllowed(effective_config.capability_profile, .list_tree)) {
+            if (effective_config.max_steps < next_index + 1) return error.StepLimitReached;
             const tree_out = tool_executor.listTree(tool_ctx, ".", 3) catch |err| return mapToolError(err);
             defer allocator.free(tree_out.summary);
-            try appendStep(allocator, &steps, next_index, "list_tree", tree_out.summary, null, config);
+            try appendStep(allocator, &steps, next_index, "list_tree", tree_out.summary, null, effective_config);
             next_index += 1;
         }
 
-        if (config.max_steps >= 4 and tools.isAllowed(config.capability_profile, .read_file)) {
+        if (effective_config.max_steps >= 4 and tools.isAllowed(effective_config.capability_profile, .read_file)) {
             if (first_match_path) |rel_path| {
-                if (config.max_steps < next_index + 1) return error.StepLimitReached;
+                if (effective_config.max_steps < next_index + 1) return error.StepLimitReached;
                 const read_out = tool_executor.readFile(tool_ctx, rel_path, null, null) catch |err| return mapToolError(err);
                 defer allocator.free(read_out.summary);
-                try appendStep(allocator, &steps, next_index, "read_file", read_out.summary, null, config);
+                try appendStep(allocator, &steps, next_index, "read_file", read_out.summary, null, effective_config);
                 next_index += 1;
             }
         }
     }
 
-    if (config.capability_profile == .read_only) {
+    if (effective_config.capability_profile == .read_only) {
         const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
         const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
         const owned_response = allocator.dupe(u8, explore_text orelse "Exploration complete.") catch return error.WorkspaceFailed;
@@ -319,7 +342,7 @@ pub fn run(
             allocator,
             session_id,
             intent,
-            config,
+            effective_config,
             owned_steps,
             explore_conversation orelse "",
             next_index,
@@ -330,6 +353,8 @@ pub fn run(
         ) catch return error.WorkspaceFailed;
         defer allocator.free(completed_json);
         workspace.sessions.persistSession(io, root, session_id, completed_json) catch return error.WorkspaceFailed;
+        event_logger.finalAnswer(owned_response) catch {};
+        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = owned_response, .repair_attempts = 0, .usage = provider_handle.interface().usage() }) catch {};
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
@@ -340,10 +365,10 @@ pub fn run(
         };
     }
 
-    if (config.max_steps < next_index) return error.StepLimitReached;
-    if (!tools.isAllowed(config.capability_profile, .propose_edit)) return error.StepLimitReached;
+    if (effective_config.max_steps < next_index) return error.StepLimitReached;
+    if (!tools.isAllowed(effective_config.capability_profile, .propose_edit)) return error.StepLimitReached;
 
-    if (config.use_inline_edits) {
+    if (effective_config.use_inline_edits) {
         const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
         const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
 
@@ -361,7 +386,7 @@ pub fn run(
     const images = multimodal.loadImages(allocator, io, root, config.attachments) catch &[_]provider_mod.ImagePart{};
     defer if (images.len > 0) multimodal.freeImages(allocator, images);
 
-    var planner_inst = planner.Planner.init(allocator, llm, &ctx_builder, config.conversation, images);
+    var planner_inst = planner.Planner.init(allocator, llm, &ctx_builder, effective_config.conversation, images);
 
     var response = std.Io.Writer.Allocating.init(allocator);
     defer response.deinit();
@@ -369,7 +394,7 @@ pub fn run(
     var cancel_src = kernel.cancellation.CancellationTokenSource.init(allocator) catch return error.ProviderFailed;
     defer cancel_src.deinit();
     var local_token = cancel_src.getToken();
-    const cancel_token: *const kernel.cancellation.CancellationToken = config.cancel_token orelse &local_token;
+    const cancel_token: *const kernel.cancellation.CancellationToken = effective_config.cancel_token orelse &local_token;
 
     var final_proposal: ?[]u8 = null;
     defer if (final_proposal) |body| allocator.free(body);
@@ -379,14 +404,14 @@ pub fn run(
     while (true) {
         response.writer.end = 0;
         if (repair_attempt == 0) {
-            emitProgress(config, .sending);
+            emitProgress(effective_config, .sending);
             planner_inst.plan(&response.writer, cancel_token) catch return error.ProviderFailed;
         } else {
-            emitProgress(config, .repairing);
+            emitProgress(effective_config, .repairing);
             planner_inst.planRepair(&response.writer, cancel_token, validation_report.?, final_proposal.?) catch return error.ProviderFailed;
         }
-        emitProgress(config, .streaming);
-        emitProgress(config, .parsing);
+        emitProgress(effective_config, .streaming);
+        emitProgress(effective_config, .parsing);
 
         const candidate = response.writer.buffer[0..response.writer.end];
         proposal_workflow.validateProposalBody(allocator, candidate) catch return error.InvalidProposal;
@@ -395,7 +420,9 @@ pub fn run(
         final_proposal = augmented;
 
         if (config.max_repair_attempts == 0) break;
+        event_logger.validationStarted(repair_attempt + 1) catch {};
         const trial = repair_loop.trialApplyAndValidate(allocator, io, root, config.workspace_cwd, final_proposal.?) catch break;
+        event_logger.validationResult(repair_attempt + 1, trial.passed, trial.report) catch {};
         if (trial.passed or repair_attempt >= config.max_repair_attempts) {
             allocator.free(trial.report);
             break;
@@ -441,8 +468,8 @@ pub fn run(
 
     const propose_summary = std.fmt.allocPrint(allocator, "proposal at {s}", .{proposal_rel}) catch return error.WorkspaceFailed;
     defer allocator.free(propose_summary);
-    try appendStep(allocator, &steps, next_index, "propose", propose_summary, run_id, config);
-    emitProgress(config, .proposal_ready);
+    try appendStep(allocator, &steps, next_index, "propose", propose_summary, run_id, effective_config);
+    emitProgress(effective_config, .proposal_ready);
 
     const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
     const owned_run_id = allocator.dupe(u8, run_id) catch return error.WorkspaceFailed;
@@ -453,7 +480,7 @@ pub fn run(
         allocator,
         owned_session,
         intent,
-        config,
+        effective_config,
         owned_steps,
         owned_run_id,
         owned_proposal,
@@ -462,6 +489,15 @@ pub fn run(
     ) catch return error.WorkspaceFailed;
     defer allocator.free(session_json);
     workspace.sessions.persistSession(io, root, owned_session, session_json) catch return error.WorkspaceFailed;
+
+    event_logger.proposalCreated(owned_proposal) catch {};
+    event_logger.runCompleted(.{
+        .steps = owned_steps,
+        .proposal_rel = owned_proposal,
+        .response_text = null,
+        .repair_attempts = repair_attempt,
+        .usage = llm.usage(),
+    }) catch {};
 
     return .{
         .session_id = owned_session,
@@ -671,6 +707,8 @@ fn runExploreLoop(
         error.ContextLengthExceeded => return error.ContextLengthExceeded,
         error.NetworkError => return error.NetworkError,
         error.StepLimitReached => return error.StepLimitReached,
+        error.DuplicateLoop => return error.DuplicateLoop,
+        error.NoProgress => return error.NoProgress,
         else => return error.ProviderFailed,
     };
 }
@@ -683,6 +721,217 @@ fn mapToolError(err: tool_executor.AgentToolError) AgentError {
         error.TaskFailed => error.WorkspaceFailed,
     };
 }
+
+const EventLogger = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    session_id: []const u8,
+
+    fn init(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, session_id: []const u8) EventLogger {
+        return .{ .allocator = allocator, .io = io, .root = root, .session_id = session_id };
+    }
+
+    fn deinit(_: *EventLogger) void {}
+
+    fn appendJson(self: *EventLogger, json: []const u8) !void {
+        try workspace.sessions.appendEvent(self.allocator, self.io, self.root, self.session_id, json);
+    }
+
+    fn sessionStarted(self: *EventLogger, config: Config, intent: []const u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.session_started),
+            intent: []const u8,
+            mode: []const u8,
+            capability: []const u8,
+            max_steps: u32,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .intent = intent,
+            .mode = @tagName(config.mode),
+            .capability = @tagName(config.capability_profile),
+            .max_steps = config.max_steps,
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn contextManifestBuilt(self: *EventLogger, builder: *const context.ContextBuilder) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.context_manifest_built),
+            budget_bytes: usize,
+            used_bytes: usize,
+            blocks: usize,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .budget_bytes = builder.max_bytes,
+            .used_bytes = builder.used_bytes,
+            .blocks = builder.blocks.items.len,
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn toolCall(self: *EventLogger, step: u32, tool: []const u8, args_json: []const u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.tool_call),
+            step: u32,
+            tool: []const u8,
+            reason: []const u8,
+            args_preview: []const u8,
+            args_json: []const u8,
+        };
+        const preview = argsPreview(args_json);
+        const reason = toolReason(tool);
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .step = step,
+            .tool = tool,
+            .reason = reason,
+            .args_preview = preview,
+            .args_json = args_json,
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn toolResult(self: *EventLogger, step: u32, kind: []const u8, summary: []const u8, run_id: ?[]const u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.tool_result),
+            step: u32,
+            kind: []const u8,
+            summary: []const u8,
+            run_id: []const u8,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .step = step,
+            .kind = kind,
+            .summary = summary,
+            .run_id = run_id orelse "",
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn proposalCreated(self: *EventLogger, proposal_path: []const u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.proposal_created),
+            proposal_path: []const u8,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{ .proposal_path = proposal_path }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn validationStarted(self: *EventLogger, attempt: u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.validation_started),
+            attempt: u8,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{ .attempt = attempt }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn validationResult(self: *EventLogger, attempt: u8, passed: bool, report: []const u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.validation_result),
+            attempt: u8,
+            passed: bool,
+            report: []const u8,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .attempt = attempt,
+            .passed = passed,
+            .report = if (report.len > 2048) report[0..2048] else report,
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn finalAnswer(self: *EventLogger, text: []const u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.final_answer),
+            text: []const u8,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{ .text = text }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn runCompleted(self: *EventLogger, payload: struct {
+        steps: []const Step,
+        proposal_rel: ?[]const u8,
+        response_text: ?[]const u8,
+        repair_attempts: u8,
+        usage: provider_mod.TokenUsage,
+    }) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.run_completed),
+            steps: usize,
+            repair_attempts: u8,
+            proposal_path: []const u8,
+            response_text: []const u8,
+            reported_tokens: provider_mod.TokenUsage,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .steps = payload.steps.len,
+            .repair_attempts = payload.repair_attempts,
+            .proposal_path = payload.proposal_rel orelse "",
+            .response_text = payload.response_text orelse "",
+            .reported_tokens = payload.usage,
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+};
+
+fn toolReason(tool: []const u8) []const u8 {
+    if (std.mem.eql(u8, tool, "read_file")) return "Gather line-level evidence from a specific file.";
+    if (std.mem.eql(u8, tool, "codebase_search")) return "Semantic retrieval to find relevant symbols/files.";
+    if (std.mem.eql(u8, tool, "search")) return "Keyword search to locate relevant lines quickly.";
+    if (std.mem.eql(u8, tool, "list_tree")) return "Inspect workspace structure to find likely files.";
+    if (std.mem.eql(u8, tool, "run_command")) return "Run a command to validate or gather runtime evidence.";
+    if (std.mem.eql(u8, tool, "apply_proposal")) return "Apply a proposed change via transaction.";
+    return "Execute a tool to gather missing evidence.";
+}
+
+fn argsPreview(args_json: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, args_json, &std.ascii.whitespace);
+    return if (trimmed.len > 160) trimmed[0..160] else trimmed;
+}
+
+const EventCtx = struct {
+    logger: *EventLogger,
+    step_begin_callback: ?*const fn (?*anyopaque, StepBegin) void,
+    step_begin_context: ?*anyopaque,
+    step_callback: ?*const fn (?*anyopaque, Step) void,
+    step_context: ?*anyopaque,
+
+    fn onStepBegin(ctx: ?*anyopaque, step: StepBegin) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        if (self.step_begin_callback) |callback| {
+            callback(self.step_begin_context, step);
+        }
+        self.logger.toolCall(step.index, step.tool_name, step.args_json) catch {};
+    }
+
+    fn onStep(ctx: ?*anyopaque, step: Step) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        if (self.step_callback) |callback| {
+            callback(self.step_context, step);
+        }
+        self.logger.toolResult(step.index, step.kind, step.summary, step.run_id) catch {};
+    }
+};
 
 fn emitProgress(config: Config, phase: progress.Phase) void {
     if (config.progress_callback) |callback| {
