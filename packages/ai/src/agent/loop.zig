@@ -70,8 +70,59 @@ pub const LoopError = error{
     ContextLengthExceeded,
     NetworkError,
     StepLimitReached,
+    DuplicateLoop,
+    NoProgress,
     NotAllowed,
 } || tool_dispatch.DispatchError;
+
+const LoopGuard = struct {
+    const window: usize = 32;
+
+    seen: [window]u64 = .{0} ** window,
+    cursor: usize = 0,
+    filled: usize = 0,
+
+    consecutive_non_evidence: u8 = 0,
+
+    fn noteToolCall(self: *LoopGuard, tool_name: []const u8, args_json: []const u8) LoopError!void {
+        const hash = callHash(tool_name, args_json);
+        const scan_len = self.filled;
+        var i: usize = 0;
+        while (i < scan_len) : (i += 1) {
+            if (self.seen[i] == hash) return error.DuplicateLoop;
+        }
+
+        self.seen[self.cursor] = hash;
+        self.cursor = (self.cursor + 1) % window;
+        if (self.filled < window) self.filled += 1;
+
+        if (isEvidenceTool(tool_name)) {
+            self.consecutive_non_evidence = 0;
+        } else if (isBroadTool(tool_name)) {
+            self.consecutive_non_evidence +|= 1;
+            if (self.consecutive_non_evidence >= 3) return error.NoProgress;
+        }
+    }
+};
+
+fn callHash(tool_name: []const u8, args_json: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(tool_name);
+    hasher.update("\n");
+    const trimmed = std.mem.trim(u8, args_json, &std.ascii.whitespace);
+    hasher.update(trimmed);
+    return hasher.final();
+}
+
+fn isEvidenceTool(tool_name: []const u8) bool {
+    return std.mem.eql(u8, tool_name, "read_file");
+}
+
+fn isBroadTool(tool_name: []const u8) bool {
+    return std.mem.eql(u8, tool_name, "search") or
+        std.mem.eql(u8, tool_name, "codebase_search") or
+        std.mem.eql(u8, tool_name, "list_tree");
+}
 
 /// Provider-agnostic tool loop. The transport adapts wire format per LLM backend.
 pub fn run(
@@ -86,6 +137,8 @@ pub fn run(
 ) LoopError!RunState {
     var conversation: std.ArrayList(u8) = .empty;
     defer conversation.deinit(allocator);
+
+    var guard = LoopGuard{};
 
     const prompt = loop_prompt.buildExplorePrompt(allocator, intent, ctx_builder, .{
         .task_intent = config.task_intent,
@@ -105,7 +158,7 @@ pub fn run(
             .name = @constCast(config.pending_tool),
             .args_json = @constCast(config.pending_args_json),
         };
-        try executeTool(allocator, transport, &conversation, pending_call, tool_ctx, mcp, config, step_index, false);
+        try executeTool(allocator, transport, &conversation, pending_call, tool_ctx, mcp, config, &guard, step_index, false);
         step_index += 1;
     }
 
@@ -131,7 +184,7 @@ pub fn run(
 
         switch (completion) {
             .tool_call => |call| {
-                try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, step_index, true);
+                try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, &guard, step_index, true);
                 step_index += 1;
             },
             .text => return .{
@@ -152,10 +205,12 @@ fn executeTool(
     tool_ctx: tool_executor.Context,
     mcp: ?*mcp_registry.Registry,
     config: Config,
+    guard: *LoopGuard,
     step_index: u32,
     append_call: bool,
 ) LoopError!void {
     if (!tool_registry.isToolAllowed(call.name, tool_ctx.profile, mcp)) return error.NotAllowed;
+    try guard.noteToolCall(call.name, call.args_json);
     if (config.step_begin_callback) |callback| callback(config.step_begin_context, step_index, call.name, call.args_json);
 
     if (append_call) transport.appendToolCall(allocator, conversation, call) catch return error.ProviderFailed;
@@ -197,4 +252,26 @@ fn mapDispatch(err: tool_dispatch.DispatchError) LoopError {
         error.NotAllowed => error.NotAllowed,
         else => error.ProviderFailed,
     };
+}
+
+test "LoopGuard rejects duplicate tool calls" {
+    var guard = LoopGuard{};
+    try guard.noteToolCall("search", "{\"term\":\"x\"}");
+    try std.testing.expectError(error.DuplicateLoop, guard.noteToolCall("search", "{\"term\":\"x\"}"));
+}
+
+test "LoopGuard rejects broad-tool stagnation without evidence" {
+    var guard = LoopGuard{};
+    try guard.noteToolCall("search", "{\"term\":\"a\"}");
+    try guard.noteToolCall("codebase_search", "{\"query\":\"b\"}");
+    try std.testing.expectError(error.NoProgress, guard.noteToolCall("list_tree", "{\"path\":\".\"}"));
+}
+
+test "LoopGuard evidence resets stagnation counter" {
+    var guard = LoopGuard{};
+    try guard.noteToolCall("search", "{\"term\":\"a\"}");
+    try guard.noteToolCall("read_file", "{\"path\":\"x\"}");
+    try guard.noteToolCall("search", "{\"term\":\"b\"}");
+    try guard.noteToolCall("codebase_search", "{\"query\":\"c\"}");
+    try guard.noteToolCall("read_file", "{\"path\":\"y\"}");
 }
