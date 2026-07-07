@@ -42,6 +42,8 @@ pub const codebase_index = @import("codebase_index.zig");
 pub const toolchain_probe = @import("toolchain_probe.zig");
 pub const parser_resolver = @import("parser_resolver.zig");
 pub const parser_profile = @import("parser_profile.zig");
+pub const parser_catalog = @import("parser_catalog.zig");
+pub const parser_sync = @import("parser_sync.zig");
 
 pub const watch = @import("watch.zig");
 pub const WatchEvent = watch.Event;

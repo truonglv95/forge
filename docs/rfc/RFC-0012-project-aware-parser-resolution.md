@@ -20,8 +20,15 @@ catalog, and records the result in `.forge/` before chunking.
    change forces a rebuild alongside `chunker_version`.
 
 Runtime parser downloads remain forbidden. Future multi-grammar support must
-extend the bundled catalog or use a verified `--sync-parsers` cache under
-`.forge/parsers/` with a lockfile.
+extend the bundled catalog in `packages/workspace/src/parser_catalog.zig` or
+use a verified `forge parsers sync` cache under `.forge/parsers/` with a
+lockfile.
+
+## CLI
+
+- `forge parsers sync` probes the workspace, resolves grammars, and writes
+  `.forge/toolchain.json`, `.forge/parser_lock.json`, and `.forge/parsers/sync.json`.
+- `forge doctor` reports whether the parser lock matches the current toolchain.
 
 ## Fallback
 

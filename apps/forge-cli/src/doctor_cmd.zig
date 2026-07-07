@@ -73,6 +73,13 @@ pub fn run(
         const detail = try std.fmt.allocPrint(allocator, "writable at {s}", .{ws_path});
         try appendCheck(allocator, &checks, "workspace.writable", true, detail);
 
+        const parser_lock_ok = workspace.parser_sync.lockCurrent(allocator, io, opened.root) catch false;
+        const parser_detail = if (parser_lock_ok)
+            try std.fmt.allocPrint(allocator, "parser lock current ({s})", .{workspace.parser_resolver.parser_lock_file})
+        else
+            try std.fmt.allocPrint(allocator, "parser lock stale or missing; run `forge parsers sync`", .{});
+        try appendCheck(allocator, &checks, "parsers.lock", parser_lock_ok, parser_detail);
+
         const mcp_enabled = loadMcpEnabled(allocator, io, opened.root);
         var mcp = ai.mcp_registry.Registry.load(allocator, io, opened.root, ws_path, mcp_enabled, resolveDoctorHome(environ_map), environ_map) catch |err| {
             const detail_msg = try std.fmt.allocPrint(allocator, "MCP load failed: {}", .{err});
