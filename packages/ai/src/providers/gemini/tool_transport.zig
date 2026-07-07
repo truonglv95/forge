@@ -50,9 +50,13 @@ pub const GeminiTransport = struct {
         });
         defer parser.deinit();
 
-        fetchStreamGenerateContentInto(self.gemini, allocator, self.io, conversation_json, tool_declarations_json, cancel_token, &parser) catch |err| switch (err) {
-            error.Cancelled => return error.Cancelled,
-            else => return error.ProviderFailed,
+        fetchStreamGenerateContentInto(self.gemini, allocator, self.io, conversation_json, tool_declarations_json, cancel_token, &parser) catch |err| return switch (err) {
+            error.Cancelled => error.Cancelled,
+            error.AuthenticationFailed => error.AuthenticationFailed,
+            error.RateLimitExceeded => error.RateLimitExceeded,
+            error.ContextLengthExceeded => error.ContextLengthExceeded,
+            error.NetworkError => error.NetworkError,
+            else => error.ProviderFailed,
         };
         parser.finish() catch return error.MalformedResponse;
         if (parser.terminal_error) |_| return error.ProviderFailed;
@@ -168,11 +172,18 @@ fn fetchStreamGenerateContentInto(
         .headers = .{ .content_type = .{ .override = "application/json" } },
         .extra_headers = &api_headers,
         .response_writer = parser.ioWriter(),
-    }) catch return error.ProviderFailed;
+    }) catch return error.NetworkError;
 
     parser.releaseWriter();
 
-    if (result.status != .ok) return error.ProviderFailed;
+    if (result.status != .ok) {
+        return switch (result.status) {
+            .unauthorized, .forbidden => error.AuthenticationFailed,
+            .too_many_requests => error.RateLimitExceeded,
+            .bad_request, .payload_too_large => error.ContextLengthExceeded,
+            else => error.ProviderFailed,
+        };
+    }
 }
 
 fn jsonString(allocator: std.mem.Allocator, text: []const u8) ![]u8 {

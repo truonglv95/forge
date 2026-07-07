@@ -108,30 +108,49 @@ fn runAgent(
     defer scope.deinit();
     if (!parsed.flags.quiet and !parsed.flags.json) scope.installSigint();
 
-    if (!parsed.flags.quiet and !parsed.flags.json) {
-        if (is_resume) {
-            try writer.print("Agent resume: {s}\n", .{target});
-        } else {
-            try writer.print("Agent run: {s}\n", .{target});
-        }
-    }
-
     const provider_opts = ai_workflow.agentProviderOptionsFromFlags(parsed.flags, target);
     const max_steps = if (parsed.flags.max_steps > 0) parsed.flags.max_steps else 8;
-    const progress_writer: ?*std.Io.Writer = if (parsed.flags.quiet or parsed.flags.json) null else writer;
+    const progress_writer: ?*std.Io.Writer = null;
     var cancel_token = scope.token();
+    const event_stream = eventStreamMode(parsed.flags) catch {
+        try writer.writeAll("error: unsupported --events format; expected ndjson\n");
+        return 2;
+    };
+    if (event_stream and parsed.flags.json) {
+        try writer.writeAll("error: --events ndjson cannot be combined with --json\n");
+        return 2;
+    }
+    if (event_stream and workspace_cmd.approved(parsed)) {
+        try writer.writeAll("error: --events ndjson cannot be combined with --yes yet; apply events are not implemented\n");
+        return 2;
+    }
+    const mode = modeFromFlags(parsed.flags);
+    const capability = capabilityFromFlags(parsed.flags);
+    var event_writer = AgentEventWriter{
+        .allocator = allocator,
+        .writer = writer,
+    };
+    if (event_stream) {
+        try event_writer.runStarted(if (is_resume) "agent_resume" else "agent_run", providerName(provider_opts.kind), provider_opts.model, mode, capability, max_steps);
+    }
 
     const agent_config = ai.agent.Config{
         .max_steps = max_steps,
         .provider_options = provider_opts,
-        .mode = modeFromCapability(capabilityFromFlags(parsed.flags)),
-        .capability_profile = capabilityFromFlags(parsed.flags),
+        .mode = mode,
+        .capability_profile = capability,
         .workspace_cwd = opened.path,
         .cancel_token = &cancel_token,
         .progress_writer = progress_writer,
         .progress_json = parsed.flags.json,
         .max_repair_attempts = if (provider_opts.kind == .fake) 0 else 2,
         .approve_every_time_tools = workspace_cmd.approved(parsed),
+        .turn_callback = if (event_stream) AgentEventWriter.onTurn else null,
+        .turn_context = &event_writer,
+        .step_begin_callback = if (event_stream) AgentEventWriter.onStepBegin else null,
+        .step_begin_context = &event_writer,
+        .step_callback = if (event_stream) AgentEventWriter.onStep else null,
+        .step_context = &event_writer,
     };
 
     var result = (if (is_resume)
@@ -139,23 +158,39 @@ fn runAgent(
     else
         ai.agent.run(allocator, io, environ_map, opened.root, target, agent_config)) catch |err| switch (err) {
         ai.agent.AgentError.StepLimitReached => {
-            try writer.writeAll("error: agent reached step limit before completing\n");
+            if (event_stream) try event_writer.agentError(.step_limit_reached, "agent reached step limit before completing", true) else try writer.writeAll("error: agent reached step limit before completing\n");
             return 2;
         },
         ai.agent.AgentError.Cancelled => {
-            try writer.writeAll("error: agent cancelled\n");
+            if (event_stream) try event_writer.agentError(.cancelled, "agent cancelled", false) else try writer.writeAll("error: agent cancelled\n");
             return 130;
         },
         ai.agent.AgentError.ProviderFailed => {
-            try writer.writeAll("error: agent provider failed\n");
+            if (event_stream) try event_writer.agentError(.provider_failed, "agent provider failed", true) else try writer.writeAll("error: agent provider failed\n");
+            return 2;
+        },
+        ai.agent.AgentError.RateLimitExceeded => {
+            if (event_stream) try event_writer.agentError(.rate_limit_exceeded, "agent provider rate limit exceeded; retry later or switch provider/model", true) else try writer.writeAll("error: agent provider rate limit exceeded; retry later or switch provider/model\n");
+            return 2;
+        },
+        ai.agent.AgentError.AuthenticationFailed => {
+            if (event_stream) try event_writer.agentError(.authentication_failed, "agent provider authentication failed; check provider API key", false) else try writer.writeAll("error: agent provider authentication failed; check provider API key\n");
+            return 2;
+        },
+        ai.agent.AgentError.ContextLengthExceeded => {
+            if (event_stream) try event_writer.agentError(.context_length_exceeded, "agent provider rejected the context; reduce --budget-bytes or attached files", true) else try writer.writeAll("error: agent provider rejected the context; reduce --budget-bytes or attached files\n");
+            return 2;
+        },
+        ai.agent.AgentError.NetworkError => {
+            if (event_stream) try event_writer.agentError(.network_error, "agent provider network request failed", true) else try writer.writeAll("error: agent provider network request failed\n");
             return 2;
         },
         ai.agent.AgentError.WorkspaceFailed => {
-            try writer.writeAll("error: agent workspace operation failed\n");
+            if (event_stream) try event_writer.agentError(.workspace_failed, "agent workspace operation failed", false) else try writer.writeAll("error: agent workspace operation failed\n");
             return 2;
         },
         ai.agent.AgentError.InvalidProposal => {
-            try writer.writeAll("error: agent returned invalid proposal JSON\n");
+            if (event_stream) try event_writer.agentError(.invalid_proposal, "agent returned invalid proposal JSON", false) else try writer.writeAll("error: agent returned invalid proposal JSON\n");
             return 2;
         },
     };
@@ -163,7 +198,9 @@ fn runAgent(
 
     var exit_code: u8 = 0;
 
-    if (parsed.flags.json) {
+    if (event_stream) {
+        try event_writer.runCompleted(if (is_resume) "agent_resume" else "agent_run", result);
+    } else if (parsed.flags.json) {
         const event_type = if (is_resume) "agent_resume" else "agent_run";
         try writer.print(
             "{{\"status\":\"ok\",\"type\":\"{s}\",\"session_id\":\"{s}\",\"run_id\":\"{s}\",\"proposal_path\":\"{s}\",\"steps\":{d},\"repair_attempts\":{d},\"reported_tokens\":{{\"prompt\":{d},\"completion\":{d},\"total\":{d}}}",
@@ -179,14 +216,13 @@ fn runAgent(
                 result.usage.total_tokens,
             },
         );
+        if (result.response_text) |text| {
+            const escaped = try std.json.Stringify.valueAlloc(allocator, text, .{});
+            defer allocator.free(escaped);
+            try writer.print(",\"response_text\":{s}", .{escaped});
+        }
     } else {
-        try writer.print("Session: .forge/sessions/{s}.json\n", .{result.session_id});
-        for (result.steps) |step| {
-            try writer.print("  step {d} [{s}] {s}\n", .{ step.index, step.kind, step.summary });
-        }
-        if (result.proposal_rel) |prop| {
-            try writer.print("Proposal: {s}\nReview: forge diff {s} --workspace <path>\n", .{ prop, prop });
-        }
+        try renderHumanTranscript(writer, result, !parsed.flags.no_color);
     }
 
     if (result.proposal_rel) |prop| {
@@ -210,15 +246,211 @@ fn runAgent(
 }
 
 fn capabilityFromFlags(flags: args_mod.GlobalFlags) ai.tools.CapabilityProfile {
-    const value = flags.capability orelse return ai.tools.profileForMode(.agent);
+    const value = flags.capability orelse return ai.tools.profileForMode(modeFromFlags(flags));
     if (std.mem.eql(u8, value, "read_only")) return .read_only;
     if (std.mem.eql(u8, value, "propose_and_task")) return .propose_and_task;
     return .propose;
 }
 
-fn modeFromCapability(profile: ai.tools.CapabilityProfile) ai.tools.Mode {
-    return switch (profile) {
-        .read_only => .ask,
-        .propose, .propose_and_task => .agent,
+fn modeFromFlags(flags: args_mod.GlobalFlags) ai.tools.Mode {
+    if (flags.mode) |mode| {
+        if (std.mem.eql(u8, mode, "ask")) return .ask;
+        if (std.mem.eql(u8, mode, "plan")) return .plan;
+    }
+    return .agent;
+}
+
+fn renderHumanTranscript(writer: *std.Io.Writer, result: ai.agent.Result, use_color: bool) !void {
+    try writeStyled(writer, use_color, Style.dim, "Session: ");
+    try writer.print(".forge/sessions/{s}.json\n\n", .{result.session_id});
+
+    if (result.steps.len > 0) {
+        for (result.steps) |step| {
+            try writeStyled(writer, use_color, Style.magenta, "↻ call llm");
+            try writer.print("  next tool step {d}\n", .{step.index});
+
+            try writeStyled(writer, use_color, Style.yellow, "$ ");
+            try writeStyled(writer, use_color, Style.bright_yellow, step.kind);
+            try writer.print("  step {d}\n", .{step.index});
+
+            var buf: [512]u8 = undefined;
+            const preview = summarizeStep(&buf, step.summary);
+            try writeStyled(writer, use_color, Style.green, "ok ");
+            try writeStyled(writer, use_color, Style.bright_green, step.kind);
+            try writer.print(" · {s}\n\n", .{preview});
+        }
+    }
+
+    if (result.response_text) |text| {
+        try writeStyled(writer, use_color, Style.bold_yellow, "Answer: ");
+        try writer.print("{s}\n", .{text});
+    }
+
+    if (result.proposal_rel) |prop| {
+        try writer.writeAll("\n");
+        try writeStyled(writer, use_color, Style.bold_yellow, "Proposal: ");
+        try writer.print("{s}\n", .{prop});
+        try writeStyled(writer, use_color, Style.dim, "Review: ");
+        try writer.print("forge diff {s} --workspace <path>\n", .{prop});
+    }
+}
+
+const Style = struct {
+    const reset = "\x1b[0m";
+    const dim = "\x1b[2m";
+    const yellow = "\x1b[33m";
+    const bright_yellow = "\x1b[93m";
+    const bold_yellow = "\x1b[1;93m";
+    const green = "\x1b[32m";
+    const bright_green = "\x1b[92m";
+    const magenta = "\x1b[35m";
+};
+
+fn writeStyled(writer: *std.Io.Writer, use_color: bool, style: []const u8, text: []const u8) !void {
+    if (use_color) try writer.writeAll(style);
+    try writer.writeAll(text);
+    if (use_color) try writer.writeAll(Style.reset);
+}
+
+fn summarizeStep(buf: []u8, summary: []const u8) []const u8 {
+    var lines = std.mem.splitScalar(u8, summary, '\n');
+    var count: usize = 0;
+    var first: []const u8 = "";
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+        if (trimmed.len == 0) continue;
+        if (count == 0) first = trimmed;
+        count += 1;
+    }
+    const clipped = if (first.len > 220) first[0..220] else first;
+    if (count > 4) {
+        return std.fmt.bufPrint(buf, "{s} · {d} output lines hidden", .{ clipped, count }) catch clipped;
+    }
+    return clipped;
+}
+
+fn eventStreamMode(flags: args_mod.GlobalFlags) !bool {
+    const value = flags.events orelse return false;
+    if (std.mem.eql(u8, value, "ndjson")) return true;
+    return error.UnsupportedEventStream;
+}
+
+fn providerName(kind: ai.provider_factory.Kind) []const u8 {
+    return switch (kind) {
+        .auto => "auto",
+        .fake => "fake",
+        .gemini => "gemini",
+        .ollama => "ollama",
     };
+}
+
+const AgentEventWriter = struct {
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+
+    fn onTurn(ctx: ?*anyopaque, next_step: u32) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        self.llmTurn(next_step) catch {};
+    }
+
+    fn onStepBegin(ctx: ?*anyopaque, step: ai.agent.StepBegin) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        self.toolCall(step.index, step.tool_name, step.args_json) catch {};
+    }
+
+    fn onStep(ctx: ?*anyopaque, step: ai.agent.Step) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        self.toolResult(step) catch {};
+    }
+
+    fn runStarted(
+        self: *@This(),
+        event_type: []const u8,
+        provider: []const u8,
+        model: ?[]const u8,
+        mode: ai.tools.Mode,
+        capability: ai.tools.CapabilityProfile,
+        max_steps: u32,
+    ) !void {
+        const model_json = try jsonString(self.allocator, model orelse "");
+        defer self.allocator.free(model_json);
+        try self.writer.print(
+            "{{\"schema_version\":{d},\"type\":\"{s}\",\"run_type\":\"{s}\",\"provider\":\"{s}\",\"model\":{s},\"mode\":\"{s}\",\"capability\":\"{s}\",\"max_steps\":{d}}}\n",
+            .{ ai.agent_event.schema_version, ai.agent_event.typeName(.run_started), event_type, provider, model_json, @tagName(mode), @tagName(capability), max_steps },
+        );
+    }
+
+    fn llmTurn(self: *@This(), next_step: u32) !void {
+        try self.writer.print(
+            "{{\"schema_version\":{d},\"type\":\"{s}\",\"next_step\":{d}}}\n",
+            .{ ai.agent_event.schema_version, ai.agent_event.typeName(.llm_turn), next_step },
+        );
+    }
+
+    fn toolCall(self: *@This(), step: u32, tool: []const u8, args_json: []const u8) !void {
+        const tool_json = try jsonString(self.allocator, tool);
+        defer self.allocator.free(tool_json);
+        const args_json_string = try jsonString(self.allocator, args_json);
+        defer self.allocator.free(args_json_string);
+        try self.writer.print(
+            "{{\"schema_version\":{d},\"type\":\"{s}\",\"step\":{d},\"tool\":{s},\"args_json\":{s}}}\n",
+            .{ ai.agent_event.schema_version, ai.agent_event.typeName(.tool_call), step, tool_json, args_json_string },
+        );
+    }
+
+    fn toolResult(self: *@This(), step: ai.agent.Step) !void {
+        const kind_json = try jsonString(self.allocator, step.kind);
+        defer self.allocator.free(kind_json);
+        const summary_json = try jsonString(self.allocator, step.summary);
+        defer self.allocator.free(summary_json);
+        const run_id_json = try jsonString(self.allocator, step.run_id orelse "");
+        defer self.allocator.free(run_id_json);
+        try self.writer.print(
+            "{{\"schema_version\":{d},\"type\":\"{s}\",\"step\":{d},\"kind\":{s},\"summary\":{s},\"run_id\":{s}}}\n",
+            .{ ai.agent_event.schema_version, ai.agent_event.typeName(.tool_result), step.index, kind_json, summary_json, run_id_json },
+        );
+    }
+
+    fn runCompleted(self: *@This(), event_type: []const u8, result: ai.agent.Result) !void {
+        const session_json = try jsonString(self.allocator, result.session_id);
+        defer self.allocator.free(session_json);
+        const run_id_json = try jsonString(self.allocator, result.final_run_id orelse "");
+        defer self.allocator.free(run_id_json);
+        const proposal_json = try jsonString(self.allocator, result.proposal_rel orelse "");
+        defer self.allocator.free(proposal_json);
+        const response_json = try jsonString(self.allocator, result.response_text orelse "");
+        defer self.allocator.free(response_json);
+        try self.writer.print(
+            "{{\"schema_version\":{d},\"type\":\"{s}\",\"run_type\":\"{s}\",\"session_id\":{s},\"run_id\":{s},\"proposal_path\":{s},\"steps\":{d},\"repair_attempts\":{d},\"reported_tokens\":{{\"prompt\":{d},\"completion\":{d},\"total\":{d}}},\"response_text\":{s}}}\n",
+            .{
+                ai.agent_event.schema_version,
+                ai.agent_event.typeName(.run_completed),
+                event_type,
+                session_json,
+                run_id_json,
+                proposal_json,
+                result.steps.len,
+                result.repair_attempts,
+                result.usage.prompt_tokens,
+                result.usage.completion_tokens,
+                result.usage.total_tokens,
+                response_json,
+            },
+        );
+    }
+
+    fn agentError(self: *@This(), code: ai.agent_event.ErrorCode, message: []const u8, retryable: bool) !void {
+        const code_json = try jsonString(self.allocator, ai.agent_event.errorCodeName(code));
+        defer self.allocator.free(code_json);
+        const message_json = try jsonString(self.allocator, message);
+        defer self.allocator.free(message_json);
+        try self.writer.print(
+            "{{\"schema_version\":{d},\"type\":\"{s}\",\"error\":{{\"code\":{s},\"message\":{s},\"retryable\":{}}}}}\n",
+            .{ ai.agent_event.schema_version, ai.agent_event.typeName(.@"error"), code_json, message_json, retryable },
+        );
+    }
+};
+
+fn jsonString(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, value, .{});
 }

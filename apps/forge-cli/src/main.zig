@@ -156,6 +156,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\Options:
         \\  --workspace <path>   Set the workspace root path
         \\  --json               Output machine-readable JSON
+        \\  --events <format>    Stream agent events: ndjson
         \\  --dry-run            Dry-run flag (used with apply)
         \\  --yes                Approve apply without interactive prompt
         \\  --file <path>        Include file in AI context (repeatable)

@@ -25,6 +25,15 @@ pub fn buildExplorePrompt(
     const writer = &prompt.writer;
 
     try writer.print("You are a coding agent working inside a Forge workspace.\n", .{});
+    try writer.writeAll(
+        \\Tool loop contract:
+        \\- If the current context is insufficient, call exactly one focused tool to get the missing fact.
+        \\- Prefer codebase_search for unknown symbols/concepts, search for exact text, list_tree for structure, and read_file for line-level evidence.
+        \\- After each tool result, decide whether you have enough evidence; continue only when another specific fact is missing.
+        \\- Do not repeat equivalent tool calls unless the previous observation was insufficient or stale.
+        \\- Finish with a concise answer or a proposal once the task is complete.
+        \\
+    );
     try writer.writeAll(context_manifest.intentGuidance(options.task_intent));
     try writer.print("\nUser intent: {s}\n\n", .{intent});
 

@@ -102,6 +102,11 @@ pub const App = struct {
     active_tool: [96]u8 = undefined,
     active_tool_len: usize = 0,
     active_tool_running: bool = false,
+    last_tool_review: ?[]u8 = null,
+    last_tool_review_kind: ?[]u8 = null,
+    command_index: usize = 0,
+
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/resume", "/sessions", "/help", "/quit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -140,23 +145,7 @@ pub const App = struct {
         if (parsed.flags.mode) |mode_name| {
             if (commands.parseModeName(mode_name)) |mode| app.agent_mode = mode;
         }
-        try app.pushSystem("Forge agent — /help for commands | Tab policy | Ctrl+M mode | @file context");
-        app.showRecentSession();
         return app;
-    }
-
-    fn showRecentSession(self: *App) void {
-        var list = workspace.sessions.listEntries(self.allocator, self.io, self.opened.root) catch return;
-        defer list.deinit();
-        if (list.items.len == 0) return;
-        const latest = list.items[list.items.len - 1];
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(
-            &buf,
-            "Last session {s}: \"{s}\" — /resume {s} or /sessions",
-            .{ latest.session_id, latest.intent, latest.session_id },
-        ) catch return;
-        self.pushLine(.system, self.allocator.dupe(u8, msg) catch return) catch {};
     }
 
     pub fn deinit(self: *App) void {
@@ -177,6 +166,8 @@ pub const App = struct {
         if (self.worker_err) |msg| self.allocator.free(msg);
         if (self.pending_proposal) |prop| self.allocator.free(prop);
         if (self.resume_session_id) |id| self.allocator.free(id);
+        if (self.last_tool_review) |text| self.allocator.free(text);
+        if (self.last_tool_review_kind) |kind| self.allocator.free(kind);
         self.frame.deinit();
         self.approval.cond.deinit();
         self.approval.mutex.deinit();
@@ -219,6 +210,40 @@ pub const App = struct {
         self.dirty = true;
     }
 
+    fn getFilteredCommands(self: *App, out: *[ALL_COMMANDS.len][]const u8) usize {
+        var len: usize = 0;
+        const input_text = self.input.items;
+        for (ALL_COMMANDS) |cmd| {
+            if (std.mem.startsWith(u8, cmd, input_text)) {
+                out[len] = cmd;
+                len += 1;
+            }
+        }
+        if (len == 0) {
+            for (ALL_COMMANDS) |cmd| {
+                out[len] = cmd;
+                len += 1;
+            }
+        }
+        return len;
+    }
+
+    fn applyCommandSuggestion(self: *App) void {
+        var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
+        const len = self.getFilteredCommands(&filtered);
+        if (len > 0) {
+            const idx = if (self.command_index < len) self.command_index else 0;
+            const chosen = filtered[idx];
+            self.input.clearRetainingCapacity();
+            self.input.appendSlice(self.allocator, chosen) catch return;
+            if (std.mem.eql(u8, chosen, "/mode") or std.mem.eql(u8, chosen, "/resume")) {
+                self.input.append(self.allocator, ' ') catch return;
+            }
+            self.cursor = self.input.items.len;
+            self.command_index = 0;
+        }
+    }
+
     fn handleKey(self: *App, key: term.Key) !void {
         switch (key) {
             .ctrl_c, .ctrl_d => {
@@ -250,12 +275,17 @@ pub const App = struct {
             },
             .tab => {
                 self.mutex.lock();
-                if (self.focus_action) {
-                    self.tool_policy = self.tool_policy.next();
+                if (self.input.items.len > 0 and self.input.items[0] == '/') {
+                    self.applyCommandSuggestion();
+                    self.markDirty();
                 } else {
-                    self.focus_action = true;
+                    if (self.focus_action) {
+                        self.tool_policy = self.tool_policy.next();
+                    } else {
+                        self.focus_action = true;
+                    }
+                    self.markDirty();
                 }
-                self.markDirty();
                 self.mutex.unlock();
             },
             .escape => {
@@ -264,7 +294,25 @@ pub const App = struct {
                 self.markDirty();
                 self.mutex.unlock();
             },
-            .enter => try self.submitInput(),
+            .enter => {
+                self.mutex.lock();
+                const is_cmd = self.input.items.len > 0 and self.input.items[0] == '/';
+                const has_space = std.mem.indexOfScalar(u8, self.input.items, ' ') != null;
+                if (is_cmd and !has_space) {
+                    var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
+                    const len = self.getFilteredCommands(&filtered);
+                    if (len > 0) {
+                        const idx = if (self.command_index < len) self.command_index else 0;
+                        const chosen = filtered[idx];
+                        if (std.mem.startsWith(u8, chosen, self.input.items)) {
+                            self.input.clearRetainingCapacity();
+                            self.input.appendSlice(self.allocator, chosen) catch {};
+                        }
+                    }
+                }
+                self.mutex.unlock();
+                try self.submitInput();
+            },
             .backspace => {
                 self.mutex.lock();
                 if (self.cursor > 0) {
@@ -325,14 +373,53 @@ pub const App = struct {
                 self.markDirty();
                 self.mutex.unlock();
             },
+            .ctrl_r => try self.showLastToolReview(),
             .ctrl_w => {
                 self.mutex.lock();
                 self.deleteWordBackward();
                 self.markDirty();
                 self.mutex.unlock();
             },
-            .up => self.recallHistory(-1),
-            .down => self.recallHistory(1),
+            .up => {
+                self.mutex.lock();
+                if (self.input.items.len > 0 and self.input.items[0] == '/') {
+                    var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
+                    const len = self.getFilteredCommands(&filtered);
+                    if (len > 0) {
+                        if (self.command_index > 0) {
+                            self.command_index -= 1;
+                        } else {
+                            self.command_index = len - 1;
+                        }
+                        self.markDirty();
+                    }
+                } else {
+                    self.mutex.unlock();
+                    self.recallHistory(-1);
+                    return;
+                }
+                self.mutex.unlock();
+            },
+            .down => {
+                self.mutex.lock();
+                if (self.input.items.len > 0 and self.input.items[0] == '/') {
+                    var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
+                    const len = self.getFilteredCommands(&filtered);
+                    if (len > 0) {
+                        if (self.command_index + 1 < len) {
+                            self.command_index += 1;
+                        } else {
+                            self.command_index = 0;
+                        }
+                        self.markDirty();
+                    }
+                } else {
+                    self.mutex.unlock();
+                    self.recallHistory(1);
+                    return;
+                }
+                self.mutex.unlock();
+            },
             .page_up => self.scrollChatPage(1),
             .page_down => self.scrollChatPage(-1),
             .char => |ch| {
@@ -397,7 +484,7 @@ pub const App = struct {
     }
 
     fn chatRowCount(self: *const App) usize {
-        const footer_rows: u16 = 3;
+        const footer_rows: u16 = 4;
         if (self.terminal_size.rows <= footer_rows + 2) return 1;
         return self.terminal_size.rows - footer_rows;
     }
@@ -760,8 +847,9 @@ pub const App = struct {
                 payload.deinit(self.allocator);
             },
             .err => |message| {
-                self.pushLine(.failure, message) catch {};
-                self.allocator.free(message);
+                self.pushLine(.failure, message) catch {
+                    self.allocator.free(message);
+                };
             },
         }
         self.refreshStatus() catch {};
@@ -900,6 +988,42 @@ pub const App = struct {
         try self.pushLine(.system, try self.allocator.dupe(u8, text));
     }
 
+    fn showLastToolReview(self: *App) !void {
+        const Snapshot = struct { kind: []u8, text: []u8 };
+        const snap: ?Snapshot = blk: {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            const text = self.last_tool_review orelse break :blk null;
+            const kind = self.last_tool_review_kind orelse "tool";
+            const kind_copy = try self.allocator.dupe(u8, kind);
+            errdefer self.allocator.free(kind_copy);
+            const text_copy = try self.allocator.dupe(u8, text);
+            break :blk .{
+                .kind = kind_copy,
+                .text = text_copy,
+            };
+        };
+        if (snap) |review| {
+            defer self.allocator.free(review.kind);
+            defer self.allocator.free(review.text);
+            const header = try std.fmt.allocPrint(self.allocator, "--- full {s} output ---", .{review.kind});
+            try self.pushLine(.tool, header);
+            var lines = std.mem.splitScalar(u8, review.text, '\n');
+            var shown: usize = 0;
+            while (lines.next()) |line| {
+                if (line.len == 0) continue;
+                try self.pushLine(.tool, try self.allocator.dupe(u8, line));
+                shown += 1;
+                if (shown >= 240) {
+                    try self.pushLine(.tool, try self.allocator.dupe(u8, "… truncated review at 240 lines"));
+                    break;
+                }
+            }
+        } else {
+            try self.pushSystem("No collapsed tool output to review yet");
+        }
+    }
+
     fn freeLines(self: *App) void {
         for (self.lines.items) |line| self.allocator.free(line.text);
         self.lines.clearRetainingCapacity();
@@ -1004,7 +1128,7 @@ pub const App = struct {
         return approved;
     }
 
-    fn onStepBegin(self: *App, index: u32, tool_name: []const u8) void {
+    fn onStepBegin(self: *App, index: u32, tool_name: []const u8, args_json: []const u8) void {
         self.mutex.lock();
         const len = @min(tool_name.len, self.active_tool.len);
         @memcpy(self.active_tool[0..len], tool_name[0..len]);
@@ -1014,7 +1138,12 @@ pub const App = struct {
         self.mutex.unlock();
 
         var buf: [256]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "step {d}: {s}…", .{ index, tool_name }) catch return;
+        var args_buf: [160]u8 = undefined;
+        const args_preview = compactArgs(&args_buf, args_json);
+        const line = if (args_preview.len > 0)
+            std.fmt.bufPrint(&buf, "$ {s} {s}  step {d}", .{ tool_name, args_preview, index }) catch return
+        else
+            std.fmt.bufPrint(&buf, "$ {s}  step {d}", .{ tool_name, index }) catch return;
         self.pushLine(.tool, self.allocator.dupe(u8, line) catch return) catch {};
     }
 
@@ -1023,20 +1152,124 @@ pub const App = struct {
         self.mutex.lock();
         self.active_tool_running = false;
         self.active_tool_len = 0;
+        if (self.last_tool_review) |old| self.allocator.free(old);
+        if (self.last_tool_review_kind) |old| self.allocator.free(old);
+        self.last_tool_review = self.allocator.dupe(u8, summary) catch null;
+        self.last_tool_review_kind = self.allocator.dupe(u8, kind) catch null;
         self.markDirty();
         self.mutex.unlock();
 
         var buf: [1024]u8 = undefined;
-        const clipped = if (summary.len > 700) summary[0..700] else summary;
-        const line = std.fmt.bufPrint(&buf, "[{s}] {s}", .{ kind, clipped }) catch return;
+        const first = firstNonEmptyLine(summary);
+        const line_count = countNonEmptyLines(summary);
+        const clipped = if (first.len > 420) first[0..420] else first;
+        const line = if (line_count > 4)
+            std.fmt.bufPrint(&buf, "ok {s} · {d} output lines hidden · ctrl+r to review · {s}", .{ kind, line_count, clipped }) catch return
+        else
+            std.fmt.bufPrint(&buf, "ok {s} · {s}", .{ kind, clipped }) catch return;
         self.pushLine(.tool, self.allocator.dupe(u8, line) catch return) catch {};
         self.refreshStatus() catch {};
+    }
+
+    fn firstNonEmptyLine(text: []const u8) []const u8 {
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+            if (trimmed.len > 0) return trimmed;
+        }
+        return "";
+    }
+
+    fn countNonEmptyLines(text: []const u8) usize {
+        var count: usize = 0;
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |line| {
+            if (std.mem.trim(u8, line, &std.ascii.whitespace).len > 0) count += 1;
+        }
+        return count;
+    }
+
+    fn compactArgs(buf: []u8, args_json: []const u8) []const u8 {
+        const trimmed = std.mem.trim(u8, args_json, &std.ascii.whitespace);
+        if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "{}")) return "";
+        var out_len: usize = 0;
+        var last_space = false;
+        for (trimmed) |c| {
+            const is_space = std.ascii.isWhitespace(c);
+            if (is_space and last_space) continue;
+            const next = if (is_space) ' ' else c;
+            if (out_len >= buf.len) break;
+            buf[out_len] = next;
+            out_len += 1;
+            last_space = is_space;
+        }
+        if (out_len > 120 and buf.len >= 123) {
+            @memcpy(buf[120..123], "...");
+            return buf[0..123];
+        }
+        return buf[0..out_len];
+    }
+
+    fn colorForLine(kind: LineKind, text: []const u8) []const u8 {
+        if (text.len > 0 and text[0] == '+') return term.Style.bright_green;
+        if (text.len > 0 and text[0] == '-') return term.Style.bright_red;
+        if (std.mem.startsWith(u8, text, "Edited ")) return term.Style.bright_yellow;
+        if (std.mem.startsWith(u8, text, "$ ")) return term.Style.bright_yellow;
+        if (std.mem.startsWith(u8, text, "ok ")) return term.Style.bright_green;
+        if (std.mem.startsWith(u8, text, "↻ ")) return term.Style.magenta;
+        return switch (kind) {
+            .user => term.Style.bright_yellow,
+            .agent => term.Style.green,
+            .tool => term.Style.yellow,
+            .system => term.Style.dim,
+            .failure => term.Style.red,
+        };
+    }
+
+    fn bgForLine(text: []const u8) ?[]const u8 {
+        if (text.len > 0 and text[0] == '+') return term.Style.bg_green;
+        if (text.len > 0 and text[0] == '-') return term.Style.bg_red;
+        return null;
+    }
+
+    fn decorateLine(allocator: std.mem.Allocator, kind: LineKind, text: []const u8) ![]u8 {
+        return switch (kind) {
+            .user => std.fmt.allocPrint(allocator, "› {s}", .{text}),
+            .failure => std.fmt.allocPrint(allocator, "× {s}", .{text}),
+            else => allocator.dupe(u8, text),
+        };
+    }
+
+    fn getToolAction(tool_name: []const u8) []const u8 {
+        if (std.mem.eql(u8, tool_name, "read_file")) return "Reading file";
+        if (std.mem.eql(u8, tool_name, "search")) return "Searching files";
+        if (std.mem.eql(u8, tool_name, "codebase_search")) return "Semantic search";
+        if (std.mem.eql(u8, tool_name, "run_command")) return "Running command";
+        if (std.mem.eql(u8, tool_name, "propose_edit")) return "Proposing edit";
+        if (std.mem.eql(u8, tool_name, "apply_proposal")) return "Applying proposal";
+        if (std.mem.eql(u8, tool_name, "fetch_url")) return "Fetching URL";
+        if (std.mem.eql(u8, tool_name, "list_tree")) return "Listing directory";
+        if (std.mem.eql(u8, tool_name, "remember")) return "Remembering context";
+        if (std.mem.eql(u8, tool_name, "undo")) return "Undoing changes";
+        if (std.mem.eql(u8, tool_name, "show_context")) return "Checking context";
+        return tool_name;
     }
 
     fn render(self: *App) void {
         self.terminal_size = self.term.size();
         const size = self.terminal_size;
-        const footer_rows: u16 = 3;
+        const show_commands = self.input.items.len > 0 and self.input.items[0] == '/';
+        var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
+        var filtered_len: u16 = 0;
+
+        if (show_commands) {
+            filtered_len = @intCast(self.getFilteredCommands(&filtered));
+            if (filtered_len > 0 and self.command_index >= filtered_len) {
+                self.command_index = filtered_len - 1;
+            }
+        }
+
+        const footer_rows: u16 = 5 + filtered_len;
         if (size.rows <= footer_rows + 2) return;
         const chat_rows = size.rows - footer_rows;
 
@@ -1053,7 +1286,9 @@ pub const App = struct {
 
         const width = @max(20, @as(usize, size.cols) - 2);
         for (self.lines.items) |line| {
-            const wrapped = term.wrapLines(self.allocator, line.text, width) catch continue;
+            const decorated = decorateLine(self.allocator, line.kind, line.text) catch continue;
+            defer self.allocator.free(decorated);
+            const wrapped = term.wrapLines(self.allocator, decorated, width) catch continue;
             defer term.freeLines(self.allocator, wrapped);
             for (wrapped) |part| {
                 const owned = self.allocator.dupe(u8, part) catch continue;
@@ -1065,6 +1300,20 @@ pub const App = struct {
             }
         }
 
+        if (self.agent_busy) {
+            var busy_buf: [128]u8 = undefined;
+            const status_line = blk: {
+                if (self.active_tool_running and self.active_tool_len > 0) {
+                    break :blk std.fmt.bufPrint(&busy_buf, "⣻ {s}...", .{getToolAction(self.active_tool[0..self.active_tool_len])}) catch "⣻ Working...";
+                }
+                break :blk std.fmt.bufPrint(&busy_buf, "⣻ Thinking...", .{}) catch "⣻ Thinking...";
+            };
+            if (self.allocator.dupe(u8, status_line)) |owned_status| {
+                wrapped_cache.append(self.allocator, owned_status) catch self.allocator.free(owned_status);
+                display_lines.append(self.allocator, .{ .kind = .system, .text = owned_status }) catch {};
+            } else |_| {}
+        }
+
         const total = display_lines.items.len;
         const max_scroll = if (total > chat_rows) total - chat_rows else 0;
         if (self.scroll > max_scroll) self.scroll = max_scroll;
@@ -1074,16 +1323,13 @@ pub const App = struct {
         var row: u16 = 1;
         var scratch: [512]u8 = undefined;
         for (display_lines.items[start..end]) |line| {
-            const color = switch (line.kind) {
-                .user => term.Style.cyan,
-                .agent => term.Style.green,
-                .tool => term.Style.yellow,
-                .system => term.Style.dim,
-                .failure => term.Style.red,
-            };
+            const color = colorForLine(line.kind, line.text);
             const clipped = term.truncateEnd(&scratch, line.text, @intCast(size.cols - 1));
             self.frame.moveTo(row, 1);
             if (self.term.use_color) self.frame.appendSlice(color) catch {};
+            if (self.term.use_color) {
+                if (bgForLine(line.text)) |bg| self.frame.appendSlice(bg) catch {};
+            }
             self.frame.appendSlice(clipped) catch {};
             if (clipped.len < size.cols) {
                 self.frame.data.appendNTimes(self.allocator, ' ', size.cols - clipped.len) catch {};
@@ -1096,17 +1342,33 @@ pub const App = struct {
             self.frame.writeRow(row, size.cols, "");
         }
 
-        const input_row = size.rows - 2;
-        const status_row = size.rows - 1;
-        const action_row = size.rows;
+        const input_top_row = chat_rows + 1;
+        const input_row = chat_rows + 2;
 
-        var input_line: [576]u8 = undefined;
-        const prompt = if (self.agent_busy) " … " else " > ";
-        const prompt_w: usize = 3;
-        const avail = size.cols - @min(size.cols, prompt_w + 1);
-        const input_view = term.truncateEnd(&scratch, self.input.items, @intCast(avail));
-        const input_text = std.fmt.bufPrint(&input_line, "{s}{s}", .{ prompt, input_view }) catch prompt;
-        self.frame.writeRow(input_row, size.cols, input_text);
+        if (show_commands) {
+            for (filtered[0..filtered_len], 0..) |cmd, i| {
+                const cmd_row = input_row + 1 + @as(u16, @intCast(i));
+                self.frame.moveTo(cmd_row, 1);
+
+                if (i == self.command_index) {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+                    self.frame.appendSlice(" > ") catch {};
+                    self.frame.appendSlice(cmd) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                } else {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                    self.frame.appendSlice("   ") catch {};
+                    self.frame.appendSlice(cmd) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                }
+                self.frame.appendSlice("\x1b[K") catch {};
+            }
+        }
+
+        const status_row = input_row + filtered_len + 1;
+        const action_row = status_row + 1;
+        self.frame.writeRow(size.rows, size.cols, "");
 
         var status_buf: [1024]u8 = undefined;
         var folder_scratch: [256]u8 = undefined;
@@ -1117,17 +1379,34 @@ pub const App = struct {
             }
             break :blk "-";
         };
+
+        var input_line: [576]u8 = undefined;
+        var composer_title: [256]u8 = undefined;
+        const title = std.fmt.bufPrint(&composer_title, "╭─ Message Forge  ·  @file / @codebase / slash commands", .{}) catch "╭─ Message Forge";
+        if (self.term.use_color) self.frame.appendSlice(term.Style.bg_input) catch {};
+        if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+        self.frame.writeRow(input_top_row, size.cols, term.truncateEnd(&scratch, title, @intCast(size.cols - 1)));
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+
+        const prompt = if (self.agent_busy) " … " else " → ";
+        const prompt_w: usize = 3;
+        const avail = size.cols - @min(size.cols, prompt_w + 1);
+        const input_view = term.truncateEnd(&scratch, self.input.items, @intCast(avail));
+        const placeholder = if (self.input.items.len == 0 and !self.agent_busy) "Add a follow-up" else input_view;
+        const input_text = std.fmt.bufPrint(&input_line, "{s}{s}", .{ prompt, placeholder }) catch prompt;
+        if (self.term.use_color) self.frame.appendSlice(term.Style.bg_input) catch {};
+        if (self.term.use_color and self.input.items.len == 0 and !self.agent_busy) self.frame.appendSlice(term.Style.dim) catch {};
+        self.frame.writeRow(input_row, size.cols, input_text);
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+
         const status = std.fmt.bufPrint(
             &status_buf,
-            "mode:{s}  tool:{s}  model:{s}  ctx:{s}  {s}  {s}  {s}",
+            "mode:{s} · tool:{s} · model:{s} · ctx:{s}",
             .{
                 commands.modeLabel(self.agent_mode),
                 tool_indicator,
                 self.model_label,
                 self.context_label,
-                self.edited_label,
-                folder,
-                self.branch_label,
             },
         ) catch "";
         if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
@@ -1135,6 +1414,14 @@ pub const App = struct {
         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
 
         const action_label = self.tool_policy.label();
+        const bottom = std.fmt.bufPrint(
+            &status_buf,
+            "1 task  Auto · {s} · {s} · {s}",
+            .{ self.edited_label, folder, self.branch_label },
+        ) catch "";
+        if (self.term.use_color) self.frame.appendSlice(term.Style.blue) catch {};
+        self.frame.writeRow(action_row, size.cols, term.truncateEnd(&folder_scratch, bottom, @intCast(size.cols - 1)));
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         const action_text = if (self.focus_action)
             std.fmt.bufPrint(&status_buf, "[{s} ▶]", .{action_label}) catch action_label
         else
@@ -1144,6 +1431,7 @@ pub const App = struct {
         else
             1;
         self.frame.moveTo(action_row, action_col);
+        if (self.term.use_color) self.frame.appendSlice(term.Style.magenta) catch {};
         if (self.focus_action and self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
         self.frame.appendSlice(action_text) catch {};
         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
@@ -1261,6 +1549,8 @@ fn workerMain(ctx: *WorkerCtx) void {
         .step_begin_context = app,
         .step_callback = stepBridge,
         .step_context = app,
+        .turn_callback = turnBridge,
+        .turn_context = app,
         .progress_callback = progressBridge,
         .progress_context = app,
     };
@@ -1313,7 +1603,7 @@ fn approvalBridge(context: ?*anyopaque, tool_name: []const u8, args_json: []cons
 
 fn stepBeginBridge(context: ?*anyopaque, step: ai.agent.StepBegin) void {
     const app: *App = @ptrCast(@alignCast(context.?));
-    app.onStepBegin(step.index, step.tool_name);
+    app.onStepBegin(step.index, step.tool_name, step.args_json);
 }
 
 fn stepBridge(context: ?*anyopaque, step: ai.agent.Step) void {
@@ -1321,10 +1611,27 @@ fn stepBridge(context: ?*anyopaque, step: ai.agent.Step) void {
     app.onStepDone(step.index, step.kind, step.summary);
 }
 
+fn turnBridge(context: ?*anyopaque, next_step_index: u32) void {
+    const app: *App = @ptrCast(@alignCast(context.?));
+    var buf: [96]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "↻ call llm  next tool step {d}", .{next_step_index}) catch return;
+    app.pushLine(.tool, app.allocator.dupe(u8, line) catch return) catch {};
+}
+
 fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
     const app: *App = @ptrCast(@alignCast(context.?));
+    const label = switch (phase) {
+        .context_built => "Context built",
+        .planning => "Planning...",
+        .plan_ready => "Plan ready",
+        .sending => "Thinking...",
+        .streaming => "Generating...",
+        .parsing => "Parsing response...",
+        .repairing => "Repairing...",
+        .proposal_ready => "Proposal ready",
+    };
     var buf: [64]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "[{s}]", .{@tagName(phase)}) catch return;
+    const line = std.fmt.bufPrint(&buf, "● {s}", .{label}) catch return;
     app.pushLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
 }
 

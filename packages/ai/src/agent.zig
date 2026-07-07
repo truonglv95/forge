@@ -71,6 +71,7 @@ pub const Step = struct {
 pub const StepBegin = struct {
     index: u32,
     tool_name: []const u8,
+    args_json: []const u8 = "",
 };
 
 pub const Result = struct {
@@ -86,6 +87,10 @@ pub const Result = struct {
 pub const AgentError = error{
     StepLimitReached,
     ProviderFailed,
+    AuthenticationFailed,
+    RateLimitExceeded,
+    ContextLengthExceeded,
+    NetworkError,
     WorkspaceFailed,
     Cancelled,
     InvalidProposal,
@@ -630,10 +635,10 @@ fn runExploreLoop(
             }
         }
 
-        fn onStepBegin(ctx: ?*anyopaque, index: u32, tool_name: []const u8) void {
+        fn onStepBegin(ctx: ?*anyopaque, index: u32, tool_name: []const u8, args_json: []const u8) void {
             const self: *@This() = @ptrCast(@alignCast(ctx.?));
             if (self.config.step_begin_callback) |callback| {
-                callback(self.config.step_begin_context, .{ .index = index, .tool_name = tool_name });
+                callback(self.config.step_begin_context, .{ .index = index, .tool_name = tool_name, .args_json = args_json });
             }
         }
     };
@@ -661,6 +666,10 @@ fn runExploreLoop(
         .preloaded_retrieval = preloaded_retrieval,
     }) catch |err| switch (err) {
         error.Cancelled => return error.Cancelled,
+        error.AuthenticationFailed => return error.AuthenticationFailed,
+        error.RateLimitExceeded => return error.RateLimitExceeded,
+        error.ContextLengthExceeded => return error.ContextLengthExceeded,
+        error.NetworkError => return error.NetworkError,
         error.StepLimitReached => return error.StepLimitReached,
         else => return error.ProviderFailed,
     };

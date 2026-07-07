@@ -11,12 +11,15 @@ pub const IgnoreRules = struct {
     /// This is an M1 MVP evaluator. A robust implementation would parse .gitignore files
     /// and match full paths with glob patterns.
     pub fn isIgnored(component: []const u8) bool {
+        if (std.mem.eql(u8, component, ".env") or std.mem.startsWith(u8, component, ".env.")) return true;
+
         const builtins = [_][]const u8{
             ".git",
             ".zig-cache",
             "zig-out",
             "zig-pkg",
             "node_modules",
+            "third_party",
             ".DS_Store",
             ".forge",
             ".cursor",
@@ -35,7 +38,10 @@ pub const IgnoreRules = struct {
 test "IgnoreRules recognizes built-ins" {
     try std.testing.expect(IgnoreRules.isIgnored(".git"));
     try std.testing.expect(IgnoreRules.isIgnored("zig-out"));
+    try std.testing.expect(IgnoreRules.isIgnored("third_party"));
     try std.testing.expect(IgnoreRules.isIgnored(".DS_Store"));
+    try std.testing.expect(IgnoreRules.isIgnored(".env"));
+    try std.testing.expect(IgnoreRules.isIgnored(".env.local"));
 
     try std.testing.expect(!IgnoreRules.isIgnored("src"));
     try std.testing.expect(!IgnoreRules.isIgnored("main.zig"));

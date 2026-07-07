@@ -83,7 +83,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 pub fn helpText() []const u8 {
     return
     \\Commands: /clear|/cls /policy /mode [ask|plan|agent] /context /diff /resume [id] /sessions /help /quit
-    \\Keys: Tab policy | Ctrl+M mode | PgUp/PgDn scroll | d/a/n proposal | Ctrl+C cancel/quit
+    \\Keys: Tab policy | Ctrl+M mode | Ctrl+R review tool output | PgUp/PgDn scroll | d/a/n proposal | Ctrl+C cancel/quit
     ;
 }
 

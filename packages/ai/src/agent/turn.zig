@@ -73,6 +73,10 @@ pub const Transport = struct {
 pub const TransportError = error{
     Cancelled,
     ProviderFailed,
+    AuthenticationFailed,
+    RateLimitExceeded,
+    ContextLengthExceeded,
+    NetworkError,
     MalformedResponse,
     OutOfMemory,
 };

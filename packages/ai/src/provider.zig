@@ -96,6 +96,10 @@ pub const tool_loop_stubs = struct {
 pub fn mapTransportError(err: agent_turn.TransportError) ProviderError {
     return switch (err) {
         error.Cancelled => error.Cancelled,
+        error.AuthenticationFailed => error.AuthenticationFailed,
+        error.RateLimitExceeded => error.RateLimitExceeded,
+        error.ContextLengthExceeded => error.ContextLengthExceeded,
+        error.NetworkError => error.NetworkError,
         error.MalformedResponse => error.MalformedResponse,
         error.ProviderFailed => error.ProviderInternalError,
         error.OutOfMemory => error.ProviderInternalError,
@@ -105,6 +109,10 @@ pub fn mapTransportError(err: agent_turn.TransportError) ProviderError {
 fn mapProviderToTransportError(err: ProviderError) agent_turn.TransportError {
     return switch (err) {
         error.Cancelled => error.Cancelled,
+        error.AuthenticationFailed => error.AuthenticationFailed,
+        error.RateLimitExceeded => error.RateLimitExceeded,
+        error.ContextLengthExceeded => error.ContextLengthExceeded,
+        error.NetworkError => error.NetworkError,
         error.MalformedResponse => error.MalformedResponse,
         else => error.ProviderFailed,
     };

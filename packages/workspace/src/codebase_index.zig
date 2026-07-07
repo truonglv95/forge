@@ -38,6 +38,7 @@ pub const max_files: u32 = 2000;
 pub const max_chunks: u32 = 10_000;
 pub const chunker_version: u32 = 7;
 pub const embedding_input_version: u32 = 2;
+pub const ignore_version: u32 = 3;
 
 pub const Chunk = struct {
     id: []const u8,
@@ -55,6 +56,7 @@ pub const Manifest = struct {
     schema_version: u32 = 2,
     chunker_version: u32 = chunker_version,
     embedding_input_version: u32 = embedding_input_version,
+    ignore_version: u32 = ignore_version,
     parser_set_id: []const u8 = "",
     toolchain_fingerprint: u64 = 0,
     dim: u32,
@@ -473,6 +475,7 @@ fn indexVersionCurrent(allocator: std.mem.Allocator, io: std.Io, root: path_mod.
         schema_version: u32 = 0,
         chunker_version: u32 = 0,
         embedding_input_version: u32 = 0,
+        ignore_version: u32 = 0,
         parser_set_id: []const u8 = "",
         toolchain_fingerprint: u64 = 0,
     };
@@ -481,6 +484,7 @@ fn indexVersionCurrent(allocator: std.mem.Allocator, io: std.Io, root: path_mod.
     return parsed.value.schema_version == 2 and
         parsed.value.chunker_version == chunker_version and
         parsed.value.embedding_input_version == embedding_input_version and
+        parsed.value.ignore_version == ignore_version and
         parsed.value.parser_set_id.len > 0;
 }
 
@@ -770,6 +774,7 @@ fn formatManifest(allocator: std.mem.Allocator, fields: ManifestFields) ![]const
         schema_version: u32 = 2,
         chunker_version: u32 = chunker_version,
         embedding_input_version: u32 = embedding_input_version,
+        ignore_version: u32 = ignore_version,
         parser_set_id: []const u8,
         toolchain_fingerprint: u64,
         dim: u32,
