@@ -18,6 +18,7 @@ pub const GlobalFlags = struct {
     budget_bytes: usize = 0,
     capability: ?[]const u8 = null,
     mode: ?[]const u8 = null,
+    events: ?[]const u8 = null,
 };
 
 pub const Command = enum {
@@ -107,6 +108,9 @@ pub const CliArgs = struct {
                 } else if (std.mem.eql(u8, arg, "--mode")) {
                     i += 1;
                     if (i < args.len) flags.mode = args[i];
+                } else if (std.mem.eql(u8, arg, "--events")) {
+                    i += 1;
+                    if (i < args.len) flags.events = args[i];
                 } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
                     command = .help;
                     cmd_found = true;
@@ -148,4 +152,16 @@ test "CliArgs parses subcommands and flags" {
     try std.testing.expectEqualStrings("/tmp", parsed.flags.workspace.?);
     try std.testing.expect(parsed.command == .search);
     try std.testing.expectEqualStrings("keyword", parsed.positional[0]);
+}
+
+test "CliArgs parses event stream flag" {
+    const allocator = std.testing.allocator;
+    const args_list = &[_][]const u8{ "forge", "agent", "run", "task", "--events", "ndjson" };
+
+    const parsed = try CliArgs.parse(allocator, args_list);
+    defer allocator.free(parsed.positional);
+    defer allocator.free(parsed.flags.files);
+
+    try std.testing.expect(parsed.command == .agent);
+    try std.testing.expectEqualStrings("ndjson", parsed.flags.events.?);
 }

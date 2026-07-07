@@ -22,8 +22,9 @@ Structural parsing is deliberately a better boundary heuristic, not advertised
 as a full AST. Grammar-specific correctness requires a parser bundled and pinned
 with Forge.
 
-The manifest records schema, chunker, embedding-input, dimension, chunk count,
-and file count. Changing chunk or tokenization behavior forces a deterministic
+The manifest records schema, chunker, embedding-input, ignore-rule version,
+parser set, dimension, chunk count, and file count. Changing chunk,
+tokenization, parser, or built-in ignore behavior forces a deterministic
 rebuild. JSONL is emitted through the standard JSON serializer so source control
 bytes cannot corrupt the index.
 
@@ -45,15 +46,20 @@ requires Recall@1 of 5/5 across Zig, Python, and TypeScript concepts.
 - AST chunks preserve headers, function symbols, and declaration content;
 - every chunk remains bounded;
 - control bytes produce valid JSONL;
-- ignored proposal/binary files do not make a fresh index immediately stale.
+- ignored proposal/binary/vendor/secret files do not make a fresh index
+  immediately stale.
 
 ## Forge repository measurement
 
-After the v3 rebuild on 2026-07-06:
+After the v7 rebuild on 2026-07-07:
 
-- 4,559 chunks across 342 indexed files;
-- 3,976 native Zig AST chunks;
-- 412 structural declaration chunks from non-Zig languages in this repository;
+- 4,691 chunks across 353 indexed files;
+- 4,159 native Zig AST chunks;
+- Python, TypeScript, and TSX route through pinned Tree-sitter backends;
+- JavaScript, C, Objective-C, shell, Markdown, TOML, JSON, and text route through
+  structural or bounded line-window fallback as appropriate for this repository;
+- `third_party/`, `.forge/`, build caches, `node_modules`, and `.env*` are
+  excluded from the default codebase index;
 - shared `language`, `kind`, and `symbol` metadata across all backends;
 - median chunk length reduced from 45 lines to roughly 5 lines;
 - zero malformed JSONL rows;
@@ -64,6 +70,3 @@ the current repository because it also performs workspace scanning, keyword
 retrieval, git diff/context assembly, and freshness checks. Session-level
 index/query caches and pre-retrieval manifest hints reduce duplicate work inside
 agent tool loops.
-
-Python and TypeScript Tree-sitter support landed after this measurement and
-increments `chunker_version` to force a deterministic index rebuild.

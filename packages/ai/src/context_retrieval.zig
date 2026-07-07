@@ -88,16 +88,22 @@ pub fn collectFromIntent(
     var selected: std.ArrayList(CandidateChunk) = .empty;
     errdefer freeCandidates(allocator, selected.items);
 
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    var used_keys = std.StringHashMap(void).init(arena.allocator());
+    var used_keys = std.StringHashMap(void).init(allocator);
+    defer {
+        var iter = used_keys.keyIterator();
+        while (iter.next()) |key| allocator.free(key.*);
+        used_keys.deinit();
+    }
 
     for (chunks.items) |chunk| {
         var key_buf: [512]u8 = undefined;
         const key = std.fmt.bufPrint(&key_buf, "{s}:{d}-{d}", .{ chunk.path, chunk.line_start, chunk.line_end }) catch continue;
-        const owned_key = try arena.allocator().dupe(u8, key);
-        const gop = try used_keys.getOrPut(owned_key);
-        if (gop.found_existing) continue;
+        if (used_keys.contains(key)) continue;
+        const owned_key = try allocator.dupe(u8, key);
+        used_keys.putNoClobber(owned_key, {}) catch |err| {
+            allocator.free(owned_key);
+            return err;
+        };
 
         const snippet = try readLineWindow(allocator, io, root, chunk.path, chunk.line_start, chunk.line_end);
         errdefer allocator.free(snippet);
@@ -331,4 +337,40 @@ test "retrieveFromIntent finds matching snippet" {
 
     try std.testing.expect(block != null);
     try std.testing.expect(std.mem.indexOf(u8, block.?, "authenticate") != null);
+}
+
+test "collectFromIntent deduplicates many repeated windows without hash map crash" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(allocator);
+    for (0..256) |i| {
+        const line = try std.fmt.allocPrint(allocator, "pub fn repeated_{d}() void {{ semantic semantic semantic }}\n", .{i});
+        defer allocator.free(line);
+        try content.appendSlice(allocator, line);
+    }
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("many.zig"), content.items);
+
+    const candidates = try collectFromIntent(allocator, io, root, "semantic repeated", &.{}, .{
+        .max_terms = 2,
+        .max_chunks = 24,
+        .context_lines = 0,
+    });
+    defer freeCandidates(allocator, candidates);
+
+    try std.testing.expect(candidates.len > 0);
+    try std.testing.expect(candidates.len <= 24);
+
+    for (candidates, 0..) |candidate, index| {
+        for (candidates[0..index]) |previous| {
+            try std.testing.expect(!std.mem.eql(u8, candidate.path, previous.path) or
+                candidate.line_start != previous.line_start or
+                candidate.line_end != previous.line_end);
+        }
+    }
 }

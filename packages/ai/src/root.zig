@@ -13,6 +13,7 @@ pub const ollama_ndjson = @import("ollama_ndjson.zig");
 pub const credentials = @import("credentials.zig");
 pub const provider_factory = @import("provider_factory.zig");
 pub const agent = @import("agent.zig");
+pub const agent_event = @import("agent_event.zig");
 pub const tools = @import("tools.zig");
 pub const tool_registry = @import("tools/registry.zig");
 pub const tool_args = @import("tools/args.zig");

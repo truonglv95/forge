@@ -1,6 +1,18 @@
 const std = @import("std");
 
-pub const dim: usize = 128;
+const stop_words = std.StaticStringMap(void).initComptime(.{
+    .{ "the", {} },    .{ "a", {} },       .{ "an", {} },     .{ "and", {} },       .{ "or", {} },
+    .{ "if", {} },     .{ "else", {} },    .{ "return", {} }, .{ "fn", {} },        .{ "pub", {} },
+    .{ "const", {} },  .{ "var", {} },     .{ "let", {} },    .{ "for", {} },       .{ "while", {} },
+    .{ "switch", {} }, .{ "case", {} },    .{ "break", {} },  .{ "continue", {} },  .{ "struct", {} },
+    .{ "enum", {} },   .{ "union", {} },   .{ "error", {} },  .{ "try", {} },       .{ "catch", {} },
+    .{ "is", {} },     .{ "in", {} },      .{ "to", {} },     .{ "of", {} },        .{ "it", {} },
+    .{ "on", {} },     .{ "with", {} },    .{ "by", {} },     .{ "as", {} },        .{ "at", {} },
+    .{ "be", {} },     .{ "this", {} },    .{ "that", {} },   .{ "from", {} },      .{ "import", {} },
+    .{ "export", {} }, .{ "default", {} }, .{ "class", {} },  .{ "interface", {} }, .{ "extends", {} },
+});
+
+pub const dim: usize = 1024;
 
 pub fn embedInto(allocator: std.mem.Allocator, text: []const u8, out: []f32) !void {
     if (out.len < dim) return error.BufferTooSmall;
@@ -18,7 +30,13 @@ pub fn embed(allocator: std.mem.Allocator, text: []const u8, out: *[dim]f32) !vo
     }
     try tokenize(allocator, text, &tokens);
 
+    var unique = std.StringHashMap(void).init(allocator);
+    defer unique.deinit();
+
     for (tokens.items) |token| {
+        if (unique.contains(token)) continue;
+        try unique.put(token, {});
+
         const h = std.hash.Wyhash.hash(0, token);
         const bucket = h % dim;
         const sign: f32 = if ((h >> 32) & 1 == 1) 1.0 else -1.0;
@@ -90,6 +108,12 @@ fn appendLowerToken(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8
     const lower = try allocator.dupe(u8, raw);
     errdefer allocator.free(lower);
     for (lower) |*char| char.* = std.ascii.toLower(char.*);
+
+    if (stop_words.has(lower)) {
+        allocator.free(lower);
+        return;
+    }
+
     try out.append(allocator, lower);
 }
 

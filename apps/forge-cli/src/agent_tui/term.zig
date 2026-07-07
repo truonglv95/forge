@@ -22,6 +22,7 @@ pub const Key = union(enum) {
     ctrl_e,
     ctrl_l,
     ctrl_m,
+    ctrl_r,
     ctrl_u,
     ctrl_w,
     none,
@@ -110,6 +111,7 @@ pub const Terminal = struct {
         if (buf[0] == 5) return .ctrl_e;
         if (buf[0] == 12) return .ctrl_l;
         if (buf[0] == 13) return .ctrl_m;
+        if (buf[0] == 18) return .ctrl_r;
         if (buf[0] == 21) return .ctrl_u;
         if (buf[0] == 23) return .ctrl_w;
         if (buf[0] == '\r' or buf[0] == '\n') return .enter;
@@ -212,6 +214,13 @@ pub const Style = struct {
     pub const red = "\x1b[31m";
     pub const blue = "\x1b[34m";
     pub const white = "\x1b[37m";
+    pub const gray = "\x1b[90m";
+    pub const bright_yellow = "\x1b[93m";
+    pub const bright_green = "\x1b[92m";
+    pub const bright_red = "\x1b[91m";
+    pub const bg_input = "\x1b[48;5;235m";
+    pub const bg_green = "\x1b[48;5;22m";
+    pub const bg_red = "\x1b[48;5;52m";
     pub const reset = "\x1b[0m";
     pub const invert = "\x1b[7m";
 };

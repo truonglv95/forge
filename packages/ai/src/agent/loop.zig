@@ -12,7 +12,7 @@ const routing = @import("../routing.zig");
 const turn = @import("turn.zig");
 
 pub const StepCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
-pub const StepBeginCallback = *const fn (?*anyopaque, u32, []const u8) void;
+pub const StepBeginCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
 pub const TurnCallback = *const fn (?*anyopaque, u32) void;
 pub const CheckpointCallback = *const fn (
     ?*anyopaque,
@@ -65,6 +65,10 @@ pub const RunState = struct {
 pub const LoopError = error{
     Cancelled,
     ProviderFailed,
+    AuthenticationFailed,
+    RateLimitExceeded,
+    ContextLengthExceeded,
+    NetworkError,
     StepLimitReached,
     NotAllowed,
 } || tool_dispatch.DispatchError;
@@ -117,6 +121,10 @@ pub fn run(
 
         var completion = transport.complete(allocator, conversation.items, tool_declarations_json, config.cancel_token) catch |err| return switch (err) {
             error.Cancelled => error.Cancelled,
+            error.AuthenticationFailed => error.AuthenticationFailed,
+            error.RateLimitExceeded => error.RateLimitExceeded,
+            error.ContextLengthExceeded => error.ContextLengthExceeded,
+            error.NetworkError => error.NetworkError,
             else => error.ProviderFailed,
         };
         defer completion.deinit(allocator);
@@ -148,7 +156,7 @@ fn executeTool(
     append_call: bool,
 ) LoopError!void {
     if (!tool_registry.isToolAllowed(call.name, tool_ctx.profile, mcp)) return error.NotAllowed;
-    if (config.step_begin_callback) |callback| callback(config.step_begin_context, step_index, call.name);
+    if (config.step_begin_callback) |callback| callback(config.step_begin_context, step_index, call.name, call.args_json);
 
     if (append_call) transport.appendToolCall(allocator, conversation, call) catch return error.ProviderFailed;
     if (config.checkpoint_callback) |checkpoint| {
