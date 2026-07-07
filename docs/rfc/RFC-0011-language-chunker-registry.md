@@ -27,4 +27,5 @@ index rebuild.
 
 Runtime parser downloads and unsigned dynamic libraries are forbidden.
 Tree-sitter core and grammars must be pinned, built, and shipped as Forge
-dependencies under `third_party/`.
+dependencies under `third_party/`. Project toolchain versions are probed on
+index and mapped to a bundled grammar set per RFC-0012.

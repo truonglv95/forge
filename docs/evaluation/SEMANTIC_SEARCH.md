@@ -12,8 +12,11 @@ All backends preserve header/import context, split oversized declarations, and
 emit the same `language`, `kind`, and `symbol` schema. Tree-sitter grammars can
 therefore replace additional structural profiles later without changing index or
 retrieval contracts. The Tree-sitter core runtime and grammar sources are pinned
-under `third_party/` and compiled with Forge. Indexing never downloads or
-dynamically executes parser binaries.
+under `third_party/` and compiled with Forge. On workspace open/index, Forge
+probes project manifests (`pyproject.toml`, `package.json`, `build.zig.zon`, …),
+resolves a grammar set from a bundled catalog, and writes `.forge/toolchain.json`
+plus `.forge/parser_lock.json`. Indexing never downloads or dynamically executes
+parser binaries.
 
 Structural parsing is deliberately a better boundary heuristic, not advertised
 as a full AST. Grammar-specific correctness requires a parser bundled and pinned
