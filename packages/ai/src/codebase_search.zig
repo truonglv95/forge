@@ -3,6 +3,7 @@ const workspace = @import("forge-workspace");
 const local_vector = @import("local_vector.zig");
 const credentials = @import("credentials.zig");
 const gemini_embedder = @import("gemini_embedder.zig");
+const builtin = @import("builtin");
 
 pub const scope_resolver = @import("scope_resolver.zig");
 
@@ -11,6 +12,7 @@ pub const SearchOptions = struct {
     max_bytes: usize = 24 * 1024,
     prefer_gemini: bool = true,
     environ_map: ?*const std.process.Environ.Map = null,
+    allow_rebuild: bool = true,
 };
 
 pub const ScoredChunk = struct {
@@ -19,6 +21,9 @@ pub const ScoredChunk = struct {
     line_end: u32,
     score: f32,
     text: []const u8,
+    symbol: ?[]const u8 = null,
+    kind: ?[]const u8 = null,
+    language: ?[]const u8 = null,
 };
 
 const LoadedIndex = struct {
@@ -32,6 +37,9 @@ const LoadedIndex = struct {
             self.allocator.free(chunk.id);
             self.allocator.free(chunk.path);
             self.allocator.free(chunk.text);
+            self.allocator.free(chunk.symbol);
+            self.allocator.free(chunk.kind);
+            self.allocator.free(chunk.language);
         }
         self.allocator.free(self.chunks);
         if (self.vectors.len > 0) self.allocator.free(self.vectors);
@@ -46,6 +54,9 @@ const StoredChunk = struct {
     line_end: u32,
     file_hash: u64,
     text: []const u8,
+    symbol: []const u8,
+    kind: []const u8,
+    language: []const u8,
 };
 
 const EmbedBackend = struct {
@@ -98,12 +109,15 @@ fn geminiEmbedAdapter(allocator: std.mem.Allocator, text: []const u8, out: []f32
 }
 
 pub fn ensureIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, options: SearchOptions) !void {
+    if (!options.allow_rebuild) return;
+
     var backend = try resolveEmbedBackend(allocator, io, options);
     defer backend.deinit();
 
     const manifest_dim = readManifestDim(allocator, io, root) catch null;
     const needs = try workspace.codebase_index.needsRebuild(allocator, io, root);
     if (needs or manifest_dim == null or manifest_dim.? != backend.dim) {
+        clearSearchCaches(allocator);
         if (backend.creds) |*owned| {
             gemini_embed_ctx = .{ .io = io, .creds = owned };
             defer gemini_embed_ctx = null;
@@ -116,6 +130,34 @@ pub fn ensureIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Wor
 
 const ScoreItem = struct { index: usize, score: f32 };
 
+const IndexCacheEntry = struct {
+    fingerprint: u64,
+    index: LoadedIndex,
+};
+
+var index_cache: ?IndexCacheEntry = null;
+
+const QueryCacheSlot = struct {
+    key: u64 = 0,
+    dim: u32 = 0,
+    vec: ?[]f32 = null,
+};
+
+var query_cache_slots: [8]QueryCacheSlot = [_]QueryCacheSlot{.{}} ** 8;
+var query_cache_cursor: u8 = 0;
+
+pub fn clearSearchCaches(allocator: std.mem.Allocator) void {
+    if (index_cache) |*entry| {
+        entry.index.deinit();
+        index_cache = null;
+    }
+    for (&query_cache_slots) |*slot| {
+        if (slot.vec) |vec| allocator.free(vec);
+        slot.* = .{};
+    }
+    query_cache_cursor = 0;
+}
+
 pub fn search(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -124,11 +166,16 @@ pub fn search(
     skip_paths: []const []const u8,
     options: SearchOptions,
 ) ![]ScoredChunk {
+    defer if (builtin.is_test) clearSearchCaches(allocator);
+
     try ensureIndex(allocator, io, root, options);
 
-    var index = try loadIndex(allocator, io, root);
-    defer index.deinit();
-
+    var local_index: LoadedIndex = undefined;
+    const index: *const LoadedIndex = if (builtin.is_test) blk: {
+        local_index = try loadIndex(allocator, io, root);
+        break :blk &local_index;
+    } else try getOrLoadIndex(allocator, io, root);
+    defer if (builtin.is_test) local_index.deinit();
     if (index.chunks.len == 0) return &.{};
 
     var backend = try resolveEmbedBackend(allocator, io, options);
@@ -138,13 +185,7 @@ pub fn search(
     defer allocator.free(query_vec);
     @memset(query_vec, 0);
 
-    if (backend.creds) |*owned| {
-        gemini_embed_ctx = .{ .io = io, .creds = owned };
-        defer gemini_embed_ctx = null;
-        try geminiEmbedAdapter(allocator, query, query_vec);
-    } else {
-        try localEmbedAdapter(allocator, query, query_vec);
-    }
+    try embedQueryCached(allocator, io, &backend, query, index.dim, query_vec);
 
     var scores: std.ArrayList(ScoreItem) = .empty;
     defer scores.deinit(allocator);
@@ -168,23 +209,32 @@ pub fn search(
 
     const take = @min(options.top_k, scores.items.len);
     var out: std.ArrayList(ScoredChunk) = .empty;
+    var selected_bytes: usize = 0;
     errdefer {
         for (out.items) |item| {
             allocator.free(item.path);
             allocator.free(item.text);
+            if (item.symbol) |value| allocator.free(value);
+            if (item.kind) |value| allocator.free(value);
+            if (item.language) |value| allocator.free(value);
         }
         out.deinit(allocator);
     }
 
     for (scores.items[0..take]) |item| {
         const chunk = index.chunks[item.index];
+        if (out.items.len > 0 and selected_bytes + chunk.text.len > options.max_bytes) break;
         try out.append(allocator, .{
             .path = try allocator.dupe(u8, chunk.path),
             .line_start = chunk.line_start,
             .line_end = chunk.line_end,
             .score = item.score,
             .text = try allocator.dupe(u8, chunk.text),
+            .symbol = try allocator.dupe(u8, chunk.symbol),
+            .kind = try allocator.dupe(u8, chunk.kind),
+            .language = try allocator.dupe(u8, chunk.language),
         });
+        selected_bytes += chunk.text.len;
     }
 
     return try out.toOwnedSlice(allocator);
@@ -209,6 +259,9 @@ pub fn freeResults(allocator: std.mem.Allocator, results: []ScoredChunk) void {
     for (results) |item| {
         allocator.free(item.path);
         allocator.free(item.text);
+        if (item.symbol) |value| allocator.free(value);
+        if (item.kind) |value| allocator.free(value);
+        if (item.language) |value| allocator.free(value);
     }
     allocator.free(results);
 }
@@ -221,10 +274,13 @@ pub fn formatBlock(allocator: std.mem.Allocator, results: []const ScoredChunk) !
     try out.appendSlice(allocator, "# Semantic codebase search\n\n");
 
     for (results) |item| {
-        const section = try std.fmt.allocPrint(allocator, "## {s}:{d}-{d} (score {d:.3})\n```\n{s}\n```\n\n", .{
+        const section = try std.fmt.allocPrint(allocator, "## {s}:{d}-{d} [{s}/{s} {s}] (score {d:.3})\n```\n{s}\n```\n\n", .{
             item.path,
             item.line_start,
             item.line_end,
+            item.kind orelse "chunk",
+            item.language orelse "text",
+            item.symbol orelse "",
             item.score,
             item.text,
         });
@@ -290,6 +346,9 @@ fn loadIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Workspace
             line_end: u32,
             file_hash: u64,
             text: []const u8,
+            symbol: []const u8 = "",
+            kind: []const u8 = "line_window",
+            language: []const u8 = "text",
         };
         var parsed = try std.json.parseFromSlice(Row, allocator, line, .{});
         defer parsed.deinit();
@@ -300,6 +359,9 @@ fn loadIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Workspace
             .line_end = parsed.value.line_end,
             .file_hash = parsed.value.file_hash,
             .text = try allocator.dupe(u8, parsed.value.text),
+            .symbol = try allocator.dupe(u8, parsed.value.symbol),
+            .kind = try allocator.dupe(u8, parsed.value.kind),
+            .language = try allocator.dupe(u8, parsed.value.language),
         });
     }
 
@@ -329,6 +391,70 @@ fn emptyIndex(allocator: std.mem.Allocator) LoadedIndex {
     };
 }
 
+fn indexFingerprint(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?u64 {
+    const manifest_bytes = readRelative(allocator, io, root, workspace.codebase_index.manifest_file) catch return null;
+    defer allocator.free(manifest_bytes);
+    return std.hash.Wyhash.hash(0, manifest_bytes);
+}
+
+fn getOrLoadIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !*const LoadedIndex {
+    const fingerprint = indexFingerprint(allocator, io, root) catch null orelse 0;
+    if (index_cache) |*entry| {
+        if (entry.fingerprint == fingerprint) return &entry.index;
+        entry.index.deinit();
+        index_cache = null;
+    }
+    const loaded = try loadIndex(allocator, io, root);
+    index_cache = .{ .fingerprint = fingerprint, .index = loaded };
+    return &index_cache.?.index;
+}
+
+fn hashQuery(query: []const u8, dim: u32) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(query);
+    hasher.update(std.mem.asBytes(&dim));
+    return hasher.final();
+}
+
+fn embedQueryCached(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    backend: *EmbedBackend,
+    query: []const u8,
+    dim: u32,
+    out: []f32,
+) !void {
+    const key = hashQuery(query, dim);
+    if (!builtin.is_test) {
+        for (query_cache_slots) |slot| {
+            if (slot.key == key and slot.dim == dim) {
+                if (slot.vec) |cached| {
+                    @memcpy(out, cached[0..@min(out.len, cached.len)]);
+                    return;
+                }
+            }
+        }
+    }
+
+    if (backend.creds) |*owned| {
+        gemini_embed_ctx = .{ .io = io, .creds = owned };
+        defer gemini_embed_ctx = null;
+        try geminiEmbedAdapter(allocator, query, out);
+    } else {
+        try localEmbedAdapter(allocator, query, out);
+    }
+
+    const owned = try allocator.dupe(f32, out);
+    if (!builtin.is_test) {
+        const slot = &query_cache_slots[query_cache_cursor % query_cache_slots.len];
+        query_cache_cursor +%= 1;
+        if (slot.vec) |old| allocator.free(old);
+        slot.* = .{ .key = key, .dim = dim, .vec = owned };
+    } else {
+        allocator.free(owned);
+    }
+}
+
 fn readRelative(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, rel: []const u8) ![]u8 {
     var file = try root.dir.openFile(io, rel, .{});
     defer file.close(io);
@@ -349,4 +475,52 @@ test "formatBlock renders semantic hits" {
     const block = try formatBlock(allocator, &results);
     defer allocator.free(block.?);
     try std.testing.expect(std.mem.indexOf(u8, block.?, "Semantic codebase search") != null);
+}
+
+test "local semantic index achieves recall at one on symbol corpus" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("auth.zig"),
+        \\/// Validate user credentials and create a login session.
+        \\pub fn authenticateUserSession() void {}
+    );
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("recovery.zig"),
+        \\/// Restore transaction backups after an interrupted apply.
+        \\pub fn recoverPendingTransaction() void {}
+    );
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("renderer.zig"),
+        \\/// Draw editor tabs and colored layout rectangles.
+        \\pub fn renderEditorLayout() void {}
+    );
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("billing.py"),
+        \\# Calculate invoice totals and apply customer discounts.
+        \\def calculate_invoice_total(items):
+        \\    return sum(items)
+    );
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("router.ts"),
+        \\// Register HTTP routes and dispatch incoming requests.
+        \\export function registerHttpRoutes() { return true; }
+    );
+
+    const Query = struct { text: []const u8, expected: []const u8 };
+    const corpus = [_]Query{
+        .{ .text = "authentication login for a user", .expected = "auth.zig" },
+        .{ .text = "recover interrupted transaction backup", .expected = "recovery.zig" },
+        .{ .text = "draw editor tab layout", .expected = "renderer.zig" },
+        .{ .text = "calculate customer invoice total", .expected = "billing.py" },
+        .{ .text = "register and dispatch HTTP routes", .expected = "router.ts" },
+    };
+    var recalled: usize = 0;
+    for (corpus) |query| {
+        const results = try search(allocator, io, root, query.text, &.{}, .{
+            .top_k = 1,
+            .prefer_gemini = false,
+        });
+        defer freeResults(allocator, results);
+        if (results.len == 1 and std.mem.eql(u8, results[0].path, query.expected)) recalled += 1;
+    }
+    try std.testing.expectEqual(corpus.len, recalled);
 }

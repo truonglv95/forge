@@ -8,6 +8,7 @@ const workspace_cmd = @import("../workspace_cmd.zig");
 const ai_workflow = @import("../ai_workflow.zig");
 const cancel_scope_mod = @import("../cancel_scope.zig");
 const term = @import("term.zig");
+const commands = @import("commands.zig");
 
 pub const ToolRunPolicy = enum {
     run_everything,
@@ -95,6 +96,12 @@ pub const App = struct {
     pending_proposal: ?[]u8 = null,
     cancel_armed: bool = false,
     session_files: std.ArrayList([]const u8) = .empty,
+    agent_mode: ai.tools.Mode = .agent,
+    resume_session_id: ?[]u8 = null,
+    terminal_size: term.Terminal.Size = .{ .rows = 25, .cols = 80 },
+    active_tool: [96]u8 = undefined,
+    active_tool_len: usize = 0,
+    active_tool_running: bool = false,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -129,7 +136,11 @@ pub const App = struct {
             .frame = term.FrameBuffer.init(allocator),
         };
         try app.refreshStatus();
-        try app.pushSystem("Forge agent — Enter send | Tab policy | @file context | d diff a apply | Ctrl+C cancel/quit");
+        app.terminal_size = terminal.size();
+        if (parsed.flags.mode) |mode_name| {
+            if (commands.parseModeName(mode_name)) |mode| app.agent_mode = mode;
+        }
+        try app.pushSystem("Forge agent — /help for commands | Tab policy | Ctrl+M mode | @file context");
         app.showRecentSession();
         return app;
     }
@@ -142,7 +153,7 @@ pub const App = struct {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(
             &buf,
-            "Last session {s}: \"{s}\" — resume with `forge agent resume {s}`",
+            "Last session {s}: \"{s}\" — /resume {s} or /sessions",
             .{ latest.session_id, latest.intent, latest.session_id },
         ) catch return;
         self.pushLine(.system, self.allocator.dupe(u8, msg) catch return) catch {};
@@ -165,6 +176,7 @@ pub const App = struct {
         self.allocator.free(self.branch_label);
         if (self.worker_err) |msg| self.allocator.free(msg);
         if (self.pending_proposal) |prop| self.allocator.free(prop);
+        if (self.resume_session_id) |id| self.allocator.free(id);
         self.frame.deinit();
         self.approval.cond.deinit();
         self.approval.mutex.deinit();
@@ -174,6 +186,11 @@ pub const App = struct {
     pub fn run(self: *App) !u8 {
         self.cancel_scope.installSigint();
         while (!self.quit) {
+            if (self.term.sizeChanged(self.terminal_size)) {
+                self.terminal_size = self.term.size();
+                self.markDirty();
+            }
+
             const now = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
             self.mutex.lock();
             const busy = self.agent_busy;
@@ -221,6 +238,15 @@ pub const App = struct {
                 self.scroll = 0;
                 self.markDirty();
                 self.mutex.unlock();
+            },
+            .ctrl_m => {
+                self.mutex.lock();
+                self.agent_mode = commands.nextMode(self.agent_mode);
+                self.markDirty();
+                self.mutex.unlock();
+                var buf: [64]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Mode: {s}", .{commands.modeLabel(self.agent_mode)}) catch return;
+                try self.pushSystem(msg);
             },
             .tab => {
                 self.mutex.lock();
@@ -274,13 +300,21 @@ pub const App = struct {
             },
             .home, .ctrl_a => {
                 self.mutex.lock();
-                self.cursor = 0;
+                if (self.input.items.len == 0) {
+                    self.scrollChatToTop();
+                } else {
+                    self.cursor = 0;
+                }
                 self.markDirty();
                 self.mutex.unlock();
             },
             .end, .ctrl_e => {
                 self.mutex.lock();
-                self.cursor = self.input.items.len;
+                if (self.input.items.len == 0) {
+                    self.scroll = 0;
+                } else {
+                    self.cursor = self.input.items.len;
+                }
                 self.markDirty();
                 self.mutex.unlock();
             },
@@ -299,6 +333,8 @@ pub const App = struct {
             },
             .up => self.recallHistory(-1),
             .down => self.recallHistory(1),
+            .page_up => self.scrollChatPage(1),
+            .page_down => self.scrollChatPage(-1),
             .char => |ch| {
                 if (self.agent_busy) return;
                 if (self.tryProposalShortcut(ch)) return;
@@ -340,6 +376,32 @@ pub const App = struct {
         }
     }
 
+    fn scrollChatPage(self: *App, direction: i32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const chat_rows = self.chatRowCount();
+        const page = @max(1, chat_rows);
+        if (direction > 0) {
+            self.scroll +|= page;
+        } else if (self.scroll > page) {
+            self.scroll -= page;
+        } else {
+            self.scroll = 0;
+        }
+        self.markDirty();
+    }
+
+    fn scrollChatToTop(self: *App) void {
+        self.scroll = std.math.maxInt(usize);
+        self.markDirty();
+    }
+
+    fn chatRowCount(self: *const App) usize {
+        const footer_rows: u16 = 3;
+        if (self.terminal_size.rows <= footer_rows + 2) return 1;
+        return self.terminal_size.rows - footer_rows;
+    }
+
     fn deleteWordBackward(self: *App) void {
         while (self.cursor > 0 and self.input.items[self.cursor - 1] == ' ') {
             _ = self.input.orderedRemove(self.cursor - 1);
@@ -354,12 +416,11 @@ pub const App = struct {
     fn recallHistory(self: *App, direction: i32) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (self.history.items.len == 0) {
-            if (direction < 0 and self.scroll > 0) self.scroll -= 1;
-            if (direction > 0) self.scroll += 1;
-            self.markDirty();
+        if (self.input.items.len > 0 or self.scroll > 0) {
+            if (direction < 0) self.scrollChatPageLocked(1) else if (self.scroll > 0) self.scrollChatPageLocked(-1);
             return;
         }
+        if (self.history.items.len == 0) return;
         const len = self.history.items.len;
         var pos = self.history_pos orelse len;
         if (direction < 0) {
@@ -373,6 +434,18 @@ pub const App = struct {
             self.input.appendSlice(self.allocator, self.history.items[pos]) catch {};
         }
         self.cursor = self.input.items.len;
+        self.markDirty();
+    }
+
+    fn scrollChatPageLocked(self: *App, direction: i32) void {
+        const page = @max(1, self.chatRowCount());
+        if (direction > 0) {
+            self.scroll +|= page;
+        } else if (self.scroll > page) {
+            self.scroll -= page;
+        } else {
+            self.scroll = 0;
+        }
         self.markDirty();
     }
 
@@ -418,11 +491,187 @@ pub const App = struct {
         self.history.append(self.allocator, self.allocator.dupe(u8, raw) catch raw) catch {};
         self.mutex.unlock();
 
+        const cmd = commands.parseSlashCommand(raw);
+        if (cmd != .not_command) {
+            self.allocator.free(raw);
+            try self.dispatchCommand(cmd);
+            return;
+        }
+
         try self.extractFileMentions(raw);
 
         try self.pushLine(.user, raw);
         const intent = try self.allocator.dupe(u8, raw);
-        try self.startAgent(intent);
+        try self.startAgent(intent, null);
+    }
+
+    fn dispatchCommand(self: *App, cmd: commands.Command) !void {
+        switch (cmd) {
+            .not_command => {},
+            .wipe_history => {
+                self.mutex.lock();
+                self.freeLines();
+                self.scroll = 0;
+                self.markDirty();
+                self.mutex.unlock();
+            },
+            .policy => {
+                self.mutex.lock();
+                self.tool_policy = self.tool_policy.next();
+                const label = self.tool_policy.label();
+                self.markDirty();
+                self.mutex.unlock();
+                var buf: [96]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Tool policy: {s}", .{label}) catch return;
+                try self.pushSystem(msg);
+            },
+            .mode => |mode| try self.setAgentMode(mode),
+            .mode_cycle => try self.setAgentMode(commands.nextMode(self.agent_mode)),
+            .context => try self.showContextManifest(),
+            .diff => try self.showProposalDiff(),
+            .help => try self.pushSystem(commands.helpText()),
+            .exit_app => self.quit = true,
+            .sessions => try self.listSessions(),
+            .resume_session => |session_id| try self.resumeSession(session_id),
+        }
+    }
+
+    fn setAgentMode(self: *App, mode: ai.tools.Mode) !void {
+        self.mutex.lock();
+        self.agent_mode = mode;
+        self.markDirty();
+        self.mutex.unlock();
+        var buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Mode: {s}", .{commands.modeLabel(mode)}) catch return;
+        try self.pushSystem(msg);
+    }
+
+    fn showContextManifest(self: *App) !void {
+        const explicit = self.explicitFilesSnapshot();
+        defer {
+            for (explicit) |f| self.allocator.free(f);
+            if (explicit.len > 0) self.allocator.free(explicit);
+        }
+
+        const mode = self.agent_mode;
+        const route = ai.routing.plan(.{
+            .mode = mode,
+            .intent = "",
+            .has_active_file = self.parsed.flags.files.len > 0,
+        }, .{
+            .intent = null,
+            .explicit_files = explicit,
+            .max_bytes = if (self.parsed.flags.budget_bytes > 0) self.parsed.flags.budget_bytes else 1024 * 1024,
+            .workspace_cwd = self.opened.path,
+        });
+
+        var ctx_builder = try ai.context_loader.build(self.allocator, self.io, self.opened.root, route.context);
+        defer ctx_builder.deinit();
+
+        var out = std.Io.Writer.Allocating.init(self.allocator);
+        defer out.deinit();
+        try ai.context_loader.renderManifestHuman(&ctx_builder, &out.writer);
+        try self.pushSystem("--- context manifest ---");
+        var lines = std.mem.splitScalar(u8, out.writer.buffered(), '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const kb = ctx_builder.used_bytes / 1024;
+        var label_buf: [128]u8 = undefined;
+        const label = std.fmt.bufPrint(
+            &label_buf,
+            "{d} blocks {d}kB",
+            .{ ctx_builder.blocks.items.len, kb },
+        ) catch return;
+        const owned = self.allocator.dupe(u8, label) catch return;
+        self.allocator.free(self.context_label);
+        self.context_label = owned;
+        self.markDirty();
+    }
+
+    fn listSessions(self: *App) !void {
+        var list = try workspace.sessions.listEntries(self.allocator, self.io, self.opened.root);
+        defer list.deinit();
+        if (list.items.len == 0) {
+            try self.pushSystem("No saved sessions");
+            return;
+        }
+        try self.pushSystem("Sessions (newest last):");
+        for (list.items) |entry| {
+            var buf: [512]u8 = undefined;
+            const line = std.fmt.bufPrint(
+                &buf,
+                "  {s}  \"{s}\"  ({d})",
+                .{ entry.session_id, entry.intent, entry.timestamp_ms },
+            ) catch continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+        try self.pushSystem("Use /resume <session_id> to load");
+    }
+
+    fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {
+        const session_id = blk: {
+            if (session_id_opt) |id| break :blk try self.allocator.dupe(u8, id);
+            var list = try workspace.sessions.listEntries(self.allocator, self.io, self.opened.root);
+            defer list.deinit();
+            if (list.items.len == 0) {
+                try self.pushSystem("No sessions to resume");
+                return;
+            }
+            const latest = list.items[list.items.len - 1];
+            break :blk try self.allocator.dupe(u8, latest.session_id);
+        };
+        defer self.allocator.free(session_id);
+
+        var doc = workspace.sessions.loadSession(self.allocator, self.io, self.opened.root, session_id) catch |err| {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Resume failed: {s}", .{@errorName(err)}) catch "Resume failed";
+            try self.pushSystem(msg);
+            return;
+        };
+        defer workspace.sessions.deinitSession(self.allocator, &doc);
+
+        self.mutex.lock();
+        self.freeLines();
+        for (self.conversation.items) |turn| self.allocator.free(turn.content);
+        self.conversation.clearRetainingCapacity();
+        if (self.resume_session_id) |old| self.allocator.free(old);
+        self.resume_session_id = self.allocator.dupe(u8, doc.session_id) catch null;
+        self.scroll = 0;
+        self.mutex.unlock();
+
+        const intent_owned = try self.allocator.dupe(u8, doc.intent);
+        try self.pushLine(.user, intent_owned);
+        try self.appendConversation(.user, doc.intent);
+
+        for (doc.steps) |step| {
+            var buf: [1024]u8 = undefined;
+            const clipped = if (step.summary.len > 700) step.summary[0..700] else step.summary;
+            const line = std.fmt.bufPrint(&buf, "step {d}: [{s}] {s}", .{ step.index, step.kind, clipped }) catch continue;
+            try self.pushLine(.tool, try self.allocator.dupe(u8, line));
+        }
+
+        if (doc.proposal_path.len > 0) {
+            try self.setPendingProposal(doc.proposal_path);
+        }
+
+        var msg_buf: [256]u8 = undefined;
+        const loaded = std.fmt.bufPrint(
+            &msg_buf,
+            "Loaded session {s} [{s}]",
+            .{ doc.session_id, doc.execution_state },
+        ) catch return;
+        try self.pushSystem(loaded);
+
+        if (workspace.sessions.isResumableExecutionState(doc.execution_state)) {
+            try self.pushSystem("Resuming interrupted agent...");
+            const intent = try self.allocator.dupe(u8, doc.intent);
+            try self.startAgent(intent, doc.session_id);
+        }
     }
 
     /// Parse @path tokens and register them as explicit context files, like the
@@ -472,11 +721,12 @@ pub const App = struct {
         return out;
     }
 
-    fn startAgent(self: *App, intent: []const u8) !void {
+    fn startAgent(self: *App, intent: []const u8, resume_id: ?[]const u8) !void {
         const ctx = try self.allocator.create(WorkerCtx);
         ctx.* = .{
             .app = self,
             .intent = intent,
+            .resume_session_id = if (resume_id) |id| self.allocator.dupe(u8, id) catch null else null,
         };
 
         self.mutex.lock();
@@ -676,14 +926,19 @@ pub const App = struct {
     }
 
     fn refreshContextLabel(self: *App, intent: []const u8) void {
-        const mode = parseMode(self.parsed.flags.mode);
+        const explicit = self.explicitFilesSnapshot();
+        defer {
+            for (explicit) |f| self.allocator.free(f);
+            if (explicit.len > 0) self.allocator.free(explicit);
+        }
+
         const route = ai.routing.plan(.{
-            .mode = mode,
+            .mode = self.agent_mode,
             .intent = intent,
             .has_active_file = self.parsed.flags.files.len > 0,
         }, .{
             .intent = intent,
-            .explicit_files = self.parsed.flags.files,
+            .explicit_files = explicit,
             .max_bytes = if (self.parsed.flags.budget_bytes > 0) self.parsed.flags.budget_bytes else 1024 * 1024,
             .workspace_cwd = self.opened.path,
         });
@@ -750,6 +1005,14 @@ pub const App = struct {
     }
 
     fn onStepBegin(self: *App, index: u32, tool_name: []const u8) void {
+        self.mutex.lock();
+        const len = @min(tool_name.len, self.active_tool.len);
+        @memcpy(self.active_tool[0..len], tool_name[0..len]);
+        self.active_tool_len = len;
+        self.active_tool_running = true;
+        self.markDirty();
+        self.mutex.unlock();
+
         var buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "step {d}: {s}…", .{ index, tool_name }) catch return;
         self.pushLine(.tool, self.allocator.dupe(u8, line) catch return) catch {};
@@ -757,6 +1020,12 @@ pub const App = struct {
 
     fn onStepDone(self: *App, index: u32, kind: []const u8, summary: []const u8) void {
         _ = index;
+        self.mutex.lock();
+        self.active_tool_running = false;
+        self.active_tool_len = 0;
+        self.markDirty();
+        self.mutex.unlock();
+
         var buf: [1024]u8 = undefined;
         const clipped = if (summary.len > 700) summary[0..700] else summary;
         const line = std.fmt.bufPrint(&buf, "[{s}] {s}", .{ kind, clipped }) catch return;
@@ -765,7 +1034,8 @@ pub const App = struct {
     }
 
     fn render(self: *App) void {
-        const size = self.term.size();
+        self.terminal_size = self.term.size();
+        const size = self.terminal_size;
         const footer_rows: u16 = 3;
         if (size.rows <= footer_rows + 2) return;
         const chat_rows = size.rows - footer_rows;
@@ -840,11 +1110,25 @@ pub const App = struct {
 
         var status_buf: [1024]u8 = undefined;
         var folder_scratch: [256]u8 = undefined;
-        const folder = term.truncateEnd(&folder_scratch, self.folder_label, 28);
+        const folder = term.truncateEnd(&folder_scratch, self.folder_label, 24);
+        const tool_indicator = blk: {
+            if (self.active_tool_running and self.active_tool_len > 0) {
+                break :blk self.active_tool[0..self.active_tool_len];
+            }
+            break :blk "-";
+        };
         const status = std.fmt.bufPrint(
             &status_buf,
-            "model:{s}  ctx:{s}  {s}  {s}  {s}",
-            .{ self.model_label, self.context_label, self.edited_label, folder, self.branch_label },
+            "mode:{s}  tool:{s}  model:{s}  ctx:{s}  {s}  {s}  {s}",
+            .{
+                commands.modeLabel(self.agent_mode),
+                tool_indicator,
+                self.model_label,
+                self.context_label,
+                self.edited_label,
+                folder,
+                self.branch_label,
+            },
         ) catch "";
         if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
         self.frame.writeRow(status_row, size.cols, term.truncateEnd(&folder_scratch, status, @intCast(size.cols - 1)));
@@ -915,13 +1199,18 @@ const WorkerResult = union(enum) {
 const WorkerCtx = struct {
     app: *App,
     intent: []const u8,
+    resume_session_id: ?[]u8 = null,
 };
 
 fn workerMain(ctx: *WorkerCtx) void {
     const app = ctx.app;
     const intent = ctx.intent;
+    const resume_id = ctx.resume_session_id;
+    defer if (resume_id) |id| app.allocator.free(id);
 
-    app.appendConversation(.user, intent) catch {};
+    if (resume_id == null) {
+        app.appendConversation(.user, intent) catch {};
+    }
     app.refreshContextLabel(intent);
 
     const parsed = app.parsed;
@@ -957,8 +1246,8 @@ fn workerMain(ctx: *WorkerCtx) void {
     const agent_config = ai.agent.Config{
         .max_steps = max_steps,
         .provider_options = provider_opts,
-        .mode = modeFromFlags(parsed.flags),
-        .capability_profile = capabilityFromFlags(parsed.flags),
+        .mode = app.agent_mode,
+        .capability_profile = capabilityForMode(app.agent_mode, parsed.flags),
         .workspace_cwd = app.opened.path,
         .explicit_files = explicit_files,
         .conversation = conversation_snapshot,
@@ -976,18 +1265,31 @@ fn workerMain(ctx: *WorkerCtx) void {
         .progress_context = app,
     };
 
-    const result = ai.agent.run(
-        app.allocator,
-        app.io,
-        app.environ_map,
-        app.opened.root,
-        intent,
-        agent_config,
-    ) catch |err| {
-        var buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Agent error: {s}", .{@errorName(err)}) catch "Agent error";
-        app.workerDone(ctx, .{ .err = app.allocator.dupe(u8, msg) catch return });
-        return;
+    const result: ai.agent.Result = blk: {
+        const run_result = if (resume_id) |session_id|
+            ai.agent.resumeSession(
+                app.allocator,
+                app.io,
+                app.environ_map,
+                app.opened.root,
+                session_id,
+                agent_config,
+            )
+        else
+            ai.agent.run(
+                app.allocator,
+                app.io,
+                app.environ_map,
+                app.opened.root,
+                intent,
+                agent_config,
+            );
+        break :blk run_result catch |err| {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Agent error: {s}", .{@errorName(err)}) catch "Agent error";
+            app.workerDone(ctx, .{ .err = app.allocator.dupe(u8, msg) catch return });
+            return;
+        };
     };
 
     const payload = WorkerResult.OkPayload{
@@ -1043,11 +1345,17 @@ fn parseMode(value: ?[]const u8) ai.tools.Mode {
     return .agent;
 }
 
+fn capabilityForMode(mode: ai.tools.Mode, flags: args_mod.GlobalFlags) ai.tools.CapabilityProfile {
+    if (flags.capability) |value| {
+        if (std.mem.eql(u8, value, "read_only")) return .read_only;
+        if (std.mem.eql(u8, value, "propose_and_task")) return .propose_and_task;
+        return .propose;
+    }
+    return ai.tools.profileForMode(mode);
+}
+
 fn capabilityFromFlags(flags: args_mod.GlobalFlags) ai.tools.CapabilityProfile {
-    const value = flags.capability orelse return ai.tools.profileForMode(.agent);
-    if (std.mem.eql(u8, value, "read_only")) return .read_only;
-    if (std.mem.eql(u8, value, "propose_and_task")) return .propose_and_task;
-    return .propose;
+    return capabilityForMode(modeFromFlags(flags), flags);
 }
 
 fn modeFromFlags(flags: args_mod.GlobalFlags) ai.tools.Mode {

@@ -5,6 +5,7 @@ const edit = @import("edit.zig");
 const tree = @import("tree.zig");
 const ignore = @import("ignore.zig");
 const atomic = @import("atomic.zig");
+const language_chunker = @import("language_chunker.zig");
 
 pub const index_dir = ".forge/index/v1";
 pub const chunks_file = ".forge/index/v1/chunks.jsonl";
@@ -31,8 +32,10 @@ fn markPathSeen(arena_alloc: std.mem.Allocator, seen: *std.StringHashMap(void), 
 
 pub const max_chunk_lines: u32 = 48;
 pub const max_chunk_bytes: usize = 2048;
-pub const max_files: u32 = 800;
-pub const max_chunks: u32 = 2500;
+pub const max_files: u32 = 2000;
+pub const max_chunks: u32 = 10_000;
+pub const chunker_version: u32 = 6;
+pub const embedding_input_version: u32 = 2;
 
 pub const Chunk = struct {
     id: []const u8,
@@ -41,12 +44,18 @@ pub const Chunk = struct {
     line_end: u32,
     file_hash: u64,
     text: []const u8,
+    symbol: []const u8,
+    kind: []const u8,
+    language: []const u8,
 };
 
 pub const Manifest = struct {
-    schema_version: u32 = 1,
+    schema_version: u32 = 2,
+    chunker_version: u32 = chunker_version,
+    embedding_input_version: u32 = embedding_input_version,
     dim: u32,
     chunk_count: u32,
+    file_count: u32,
     built_ms: i64,
 };
 
@@ -59,7 +68,16 @@ pub const IndexError = error{
     IndexMissing,
 };
 
-pub fn chunkContent(allocator: std.mem.Allocator, path: []const u8, file_hash: u64, content: []const u8) ![]Chunk {
+pub fn chunkContent(allocator: std.mem.Allocator, io: std.Io, path: []const u8, file_hash: u64, content: []const u8) ![]Chunk {
+    if (try language_chunker.chunk(allocator, io, path, file_hash, content)) |structured_chunks| {
+        if (structured_chunks.len > 0) return structured_chunks;
+        allocator.free(structured_chunks);
+    }
+
+    return legacyChunkContent(allocator, path, file_hash, content);
+}
+
+fn legacyChunkContent(allocator: std.mem.Allocator, path: []const u8, file_hash: u64, content: []const u8) ![]Chunk {
     var chunks: std.ArrayList(Chunk) = .empty;
     errdefer {
         for (chunks.items) |chunk| freeChunk(allocator, chunk);
@@ -123,6 +141,9 @@ fn appendChunk(
         .line_end = line_end,
         .file_hash = file_hash,
         .text = text,
+        .symbol = try allocator.dupe(u8, ""),
+        .kind = try allocator.dupe(u8, "line_window"),
+        .language = try allocator.dupe(u8, language_chunker.detect(path).id),
     });
 }
 
@@ -130,6 +151,9 @@ pub fn freeChunk(allocator: std.mem.Allocator, chunk: Chunk) void {
     allocator.free(chunk.id);
     allocator.free(chunk.path);
     allocator.free(chunk.text);
+    allocator.free(chunk.symbol);
+    allocator.free(chunk.kind);
+    allocator.free(chunk.language);
 }
 
 pub fn freeChunks(allocator: std.mem.Allocator, chunks: []Chunk) void {
@@ -161,7 +185,7 @@ pub fn build(
 
     for (summary.entries) |entry| {
         if (entry.kind != .file) continue;
-        if (file_count >= max_files or all_chunks.items.len >= max_chunks) break;
+        if (file_count >= max_files) break;
         if (std.mem.startsWith(u8, entry.path, ".forge/")) continue;
         if (std.mem.endsWith(u8, entry.path, ".proposal.json")) continue;
 
@@ -181,7 +205,7 @@ pub fn build(
         if (snap.content.len > ignore.Limits.max_file_size) continue;
         if (!std.unicode.utf8ValidateSlice(snap.content)) continue;
 
-        const file_chunks = try chunkContent(allocator, entry.path, snap.hash, snap.content);
+        const file_chunks = try chunkContent(allocator, io, entry.path, snap.hash, snap.content);
         defer freeChunks(allocator, file_chunks);
         for (file_chunks) |chunk| {
             if (all_chunks.items.len >= max_chunks) break;
@@ -192,11 +216,16 @@ pub fn build(
                 .line_end = chunk.line_end,
                 .file_hash = chunk.file_hash,
                 .text = try allocator.dupe(u8, chunk.text),
+                .symbol = try allocator.dupe(u8, chunk.symbol),
+                .kind = try allocator.dupe(u8, chunk.kind),
+                .language = try allocator.dupe(u8, chunk.language),
             });
         }
         file_count += 1;
 
-        const hash_line = try std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\",\"hash\":{d}}}\n", .{ entry.path, snap.hash });
+        const hash_line_json = try std.json.Stringify.valueAlloc(allocator, .{ .path = entry.path, .hash = snap.hash }, .{});
+        defer allocator.free(hash_line_json);
+        const hash_line = try std.fmt.allocPrint(allocator, "{s}\n", .{hash_line_json});
         defer allocator.free(hash_line);
         try hash_lines.appendSlice(allocator, hash_line);
     }
@@ -204,13 +233,10 @@ pub fn build(
     var chunks_buf: std.ArrayList(u8) = .empty;
     defer chunks_buf.deinit(allocator);
     for (all_chunks.items) |chunk| {
-        const line_prefix = try std.fmt.allocPrint(allocator, "{{\"id\":\"{s}\",\"path\":\"{s}\",\"line_start\":{d},\"line_end\":{d},\"file_hash\":{d},\"text\":", .{
-            chunk.id, chunk.path, chunk.line_start, chunk.line_end, chunk.file_hash,
-        });
-        defer allocator.free(line_prefix);
-        try chunks_buf.appendSlice(allocator, line_prefix);
-        try appendJsonString(allocator, &chunks_buf, chunk.text);
-        try chunks_buf.appendSlice(allocator, "}\n");
+        const line = try std.json.Stringify.valueAlloc(allocator, chunk, .{});
+        defer allocator.free(line);
+        try chunks_buf.appendSlice(allocator, line);
+        try chunks_buf.append(allocator, '\n');
     }
 
     var vectors_buf: std.ArrayList(u8) = .empty;
@@ -230,9 +256,12 @@ pub fn build(
 
     const built_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
     var manifest_buf: [256]u8 = undefined;
-    const manifest_text = try std.fmt.bufPrint(&manifest_buf, "{{\"schema_version\":1,\"dim\":{d},\"chunk_count\":{d},\"built_ms\":{d}}}\n", .{
+    const manifest_text = try std.fmt.bufPrint(&manifest_buf, "{{\"schema_version\":2,\"chunker_version\":{d},\"embedding_input_version\":{d},\"dim\":{d},\"chunk_count\":{d},\"file_count\":{d},\"built_ms\":{d}}}\n", .{
+        chunker_version,
+        embedding_input_version,
         vector_dim,
         all_chunks.items.len,
+        file_count,
         built_ms,
     });
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(manifest_file), manifest_text);
@@ -244,24 +273,8 @@ pub fn build(
     return .{ .chunk_count = count, .file_count = file_count };
 }
 
-fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
-    try out.append(allocator, '"');
-    for (text) |c| {
-        switch (c) {
-            '\\' => try out.appendSlice(allocator, "\\\\"),
-            '"' => try out.appendSlice(allocator, "\\\""),
-            '\n' => try out.appendSlice(allocator, "\\n"),
-            '\r' => try out.appendSlice(allocator, "\\r"),
-            '\t' => try out.appendSlice(allocator, "\\t"),
-            else => try out.append(allocator, c),
-        }
-    }
-    try out.append(allocator, '"');
-}
-
 pub fn needsRebuild(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !bool {
-    const manifest = readRelative(allocator, io, root, manifest_file) catch return true;
-    allocator.free(manifest);
+    if (!(try indexVersionCurrent(allocator, io, root))) return true;
     const hashes = readRelative(allocator, io, root, file_hashes_file) catch return true;
     defer allocator.free(hashes);
 
@@ -285,6 +298,7 @@ pub fn needsRebuild(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Wor
     for (summary.entries) |entry| {
         if (entry.kind != .file) continue;
         if (std.mem.startsWith(u8, entry.path, ".forge/")) continue;
+        if (std.mem.endsWith(u8, entry.path, ".proposal.json")) continue;
         if (checked >= max_files) break;
 
         var skip = false;
@@ -301,6 +315,8 @@ pub fn needsRebuild(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Wor
         const wp = try path_mod.WorkspacePath.parse(entry.path);
         var snap = snapshot.FileSnapshot.read(allocator, io, root, wp) catch continue;
         defer snap.deinit();
+        if (snap.content.len > ignore.Limits.max_file_size) continue;
+        if (!std.unicode.utf8ValidateSlice(snap.content)) continue;
 
         const prev = stored.get(entry.path) orelse return true;
         if (prev != snap.hash) return true;
@@ -344,6 +360,7 @@ pub fn collectStalePaths(
     for (summary.entries) |entry| {
         if (entry.kind != .file) continue;
         if (std.mem.startsWith(u8, entry.path, ".forge/")) continue;
+        if (std.mem.endsWith(u8, entry.path, ".proposal.json")) continue;
         if (checked >= max_files) break;
 
         var skip = false;
@@ -361,6 +378,8 @@ pub fn collectStalePaths(
         const wp = try path_mod.WorkspacePath.parse(entry.path);
         var snap = snapshot.FileSnapshot.read(allocator, io, root, wp) catch continue;
         defer snap.deinit();
+        if (snap.content.len > ignore.Limits.max_file_size) continue;
+        if (!std.unicode.utf8ValidateSlice(snap.content)) continue;
 
         const prev = stored.get(entry.path) orelse {
             try stale.append(allocator, try allocator.dupe(u8, entry.path));
@@ -398,6 +417,11 @@ pub fn refresh(
     vector_dim: u32,
     embedFn: *const fn (std.mem.Allocator, []const u8, []f32) anyerror!void,
 ) !BuildResult {
+    // Schema/backend changes require a full rebuild. Incremental refresh cannot
+    // safely preserve chunks emitted by an older language backend.
+    if (!(try indexVersionCurrent(allocator, io, root))) {
+        return try build(allocator, io, root, vector_dim, embedFn);
+    }
     if (!(try needsRebuild(allocator, io, root))) {
         const manifest_bytes = readRelative(allocator, io, root, manifest_file) catch return try build(allocator, io, root, vector_dim, embedFn);
         defer allocator.free(manifest_bytes);
@@ -426,6 +450,17 @@ pub fn refresh(
     return updateIncremental(allocator, io, root, vector_dim, embedFn, stale_paths) catch {
         return try build(allocator, io, root, vector_dim, embedFn);
     };
+}
+
+fn indexVersionCurrent(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !bool {
+    const manifest = readRelative(allocator, io, root, manifest_file) catch return false;
+    defer allocator.free(manifest);
+    const Header = struct { schema_version: u32 = 0, chunker_version: u32 = 0, embedding_input_version: u32 = 0 };
+    var parsed = std.json.parseFromSlice(Header, allocator, manifest, .{ .ignore_unknown_fields = true }) catch return false;
+    defer parsed.deinit();
+    return parsed.value.schema_version == 2 and
+        parsed.value.chunker_version == chunker_version and
+        parsed.value.embedding_input_version == embedding_input_version;
 }
 
 fn updateIncremental(
@@ -471,6 +506,9 @@ fn updateIncremental(
                 .line_end = item.chunk.line_end,
                 .file_hash = item.chunk.file_hash,
                 .text = try allocator.dupe(u8, item.chunk.text),
+                .symbol = try allocator.dupe(u8, item.chunk.symbol),
+                .kind = try allocator.dupe(u8, item.chunk.kind),
+                .language = try allocator.dupe(u8, item.chunk.language),
             },
             .vector = vector,
         });
@@ -480,13 +518,14 @@ fn updateIncremental(
     defer hash_lines.deinit(allocator);
 
     for (stale_paths) |path| {
+        if (std.mem.endsWith(u8, path, ".proposal.json")) continue;
         const wp = path_mod.WorkspacePath.parse(path) catch continue;
         var snap = snapshot.FileSnapshot.read(allocator, io, root, wp) catch continue;
         defer snap.deinit();
         if (snap.content.len > ignore.Limits.max_file_size) continue;
         if (!std.unicode.utf8ValidateSlice(snap.content)) continue;
 
-        const file_chunks = try chunkContent(allocator, path, snap.hash, snap.content);
+        const file_chunks = try chunkContent(allocator, io, path, snap.hash, snap.content);
         defer freeChunks(allocator, file_chunks);
 
         for (file_chunks) |chunk| {
@@ -503,6 +542,9 @@ fn updateIncremental(
                     .line_end = chunk.line_end,
                     .file_hash = chunk.file_hash,
                     .text = try allocator.dupe(u8, chunk.text),
+                    .symbol = try allocator.dupe(u8, chunk.symbol),
+                    .kind = try allocator.dupe(u8, chunk.kind),
+                    .language = try allocator.dupe(u8, chunk.language),
                 },
                 .vector = vector,
             });
@@ -520,7 +562,9 @@ fn updateIncremental(
         const wp = path_mod.WorkspacePath.parse(key.*) catch continue;
         var snap = snapshot.FileSnapshot.read(allocator, io, root, wp) catch continue;
         defer snap.deinit();
-        const hash_line = try std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\",\"hash\":{d}}}\n", .{ key.*, snap.hash });
+        const hash_line_json = try std.json.Stringify.valueAlloc(allocator, .{ .path = key.*, .hash = snap.hash }, .{});
+        defer allocator.free(hash_line_json);
+        const hash_line = try std.fmt.allocPrint(allocator, "{s}\n", .{hash_line_json});
         defer allocator.free(hash_line);
         try hash_lines.appendSlice(allocator, hash_line);
     }
@@ -573,6 +617,9 @@ fn loadExistingIndex(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Wo
             line_end: u32,
             file_hash: u64,
             text: []const u8,
+            symbol: []const u8 = "",
+            kind: []const u8 = "line_window",
+            language: []const u8 = "text",
         };
         var parsed = try std.json.parseFromSlice(Row, allocator, line, .{});
         defer parsed.deinit();
@@ -586,6 +633,9 @@ fn loadExistingIndex(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Wo
                 .line_end = parsed.value.line_end,
                 .file_hash = parsed.value.file_hash,
                 .text = try allocator.dupe(u8, parsed.value.text),
+                .symbol = try allocator.dupe(u8, parsed.value.symbol),
+                .kind = try allocator.dupe(u8, parsed.value.kind),
+                .language = try allocator.dupe(u8, parsed.value.language),
             },
             .vector = vector,
         });
@@ -630,15 +680,15 @@ fn writeIndex(
     defer chunks_buf.deinit(allocator);
     var vectors_buf: std.ArrayList(u8) = .empty;
     defer vectors_buf.deinit(allocator);
+    var indexed_paths = std.StringHashMap(void).init(allocator);
+    defer indexed_paths.deinit();
 
     for (items) |item| {
-        const line_prefix = try std.fmt.allocPrint(allocator, "{{\"id\":\"{s}\",\"path\":\"{s}\",\"line_start\":{d},\"line_end\":{d},\"file_hash\":{d},\"text\":", .{
-            item.chunk.id, item.chunk.path, item.chunk.line_start, item.chunk.line_end, item.chunk.file_hash,
-        });
-        defer allocator.free(line_prefix);
-        try chunks_buf.appendSlice(allocator, line_prefix);
-        try appendJsonString(allocator, &chunks_buf, item.chunk.text);
-        try chunks_buf.appendSlice(allocator, "}\n");
+        try indexed_paths.put(item.chunk.path, {});
+        const line = try std.json.Stringify.valueAlloc(allocator, item.chunk, .{});
+        defer allocator.free(line);
+        try chunks_buf.appendSlice(allocator, line);
+        try chunks_buf.append(allocator, '\n');
         const bytes = std.mem.sliceAsBytes(item.vector);
         try vectors_buf.appendSlice(allocator, bytes);
     }
@@ -649,9 +699,12 @@ fn writeIndex(
 
     const built_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
     var manifest_buf: [256]u8 = undefined;
-    const manifest_text = try std.fmt.bufPrint(&manifest_buf, "{{\"schema_version\":1,\"dim\":{d},\"chunk_count\":{d},\"built_ms\":{d}}}\n", .{
+    const manifest_text = try std.fmt.bufPrint(&manifest_buf, "{{\"schema_version\":2,\"chunker_version\":{d},\"embedding_input_version\":{d},\"dim\":{d},\"chunk_count\":{d},\"file_count\":{d},\"built_ms\":{d}}}\n", .{
+        chunker_version,
+        embedding_input_version,
         vector_dim,
         items.len,
+        indexed_paths.count(),
         built_ms,
     });
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(manifest_file), manifest_text);
@@ -677,7 +730,8 @@ test "chunkContent splits long files" {
     while (line < 100) : (line += 1) {
         try content.appendSlice(allocator, "line content\n");
     }
-    const chunks = try chunkContent(allocator, "sample.zig", edit.contentHash(content.items), content.items);
+    const io = std.testing.io;
+    const chunks = try chunkContent(allocator, io, "sample.zig", edit.contentHash(content.items), content.items);
     defer freeChunks(allocator, chunks);
     try std.testing.expect(chunks.len >= 2);
 }
@@ -698,4 +752,35 @@ test "build cleans up chunks on embed failure" {
     }.embed;
 
     try std.testing.expectError(error.EmbedFailed, build(allocator, io, root, 8, failEmbed));
+}
+
+test "index stays fresh and JSON-valid with ignored and control-byte files" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("main.zig"), "pub fn main() void {}\n");
+    try tmp.dir.createDirPath(io, "fixtures");
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("fixtures/change.proposal.json"), "{}\n");
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("controls.txt"), "ascii\x00\x01\x0b tail\n");
+    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("binary.bin"), "\xff\xfe");
+
+    const embed = struct {
+        fn run(_: std.mem.Allocator, text: []const u8, out: []f32) !void {
+            @memset(out, 0);
+            if (out.len > 0) out[0] = @floatFromInt(text.len + 1);
+        }
+    }.run;
+    _ = try build(allocator, io, root, 4, embed);
+    try std.testing.expect(!(try needsRebuild(allocator, io, root)));
+
+    const serialized = try readRelative(allocator, io, root, chunks_file);
+    defer allocator.free(serialized);
+    var lines = std.mem.splitScalar(u8, serialized, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        parsed.deinit();
+    }
 }

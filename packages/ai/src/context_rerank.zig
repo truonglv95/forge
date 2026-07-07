@@ -10,6 +10,7 @@ pub const Input = struct {
     line_start: u32,
     line_end: u32,
     text: []const u8,
+    symbol: []const u8 = "",
     source: Source,
     /// Normalized source score in [0, 1] for display only.
     source_score: f32,
@@ -35,6 +36,8 @@ pub const Options = struct {
     import_boost: f32 = 0.10,
     git_boost: f32 = 0.12,
     path_overlap_max: f32 = 0.10,
+    symbol_boost: f32 = 0.30,
+    symbol_overlap_max: f32 = 0.15,
 };
 
 pub const RankedHit = struct {
@@ -53,6 +56,7 @@ const Merged = struct {
     line_start: u32,
     line_end: u32,
     text: []const u8,
+    symbol: []const u8 = "",
     semantic_rank: ?usize = null,
     keyword_rank: ?usize = null,
     semantic_score: f32 = 0,
@@ -123,6 +127,16 @@ pub fn rerank(
         const overlap_boost = overlap * options.path_overlap_max;
         boost += overlap_boost;
         if (overlap_boost > 0.001) try appendBoostTag(allocator, &boost_parts, "+path");
+
+        const symbol_overlap = symbolOverlapScore(item.symbol, signals.intent_terms);
+        if (symbol_overlap >= 1.0) {
+            boost += options.symbol_boost;
+            try appendBoostTag(allocator, &boost_parts, "+symbol");
+        } else if (symbol_overlap > 0) {
+            const partial = symbol_overlap * options.symbol_overlap_max;
+            boost += partial;
+            if (partial > 0.001) try appendBoostTag(allocator, &boost_parts, "+symbol~");
+        }
 
         const final_score = rrf + boost;
         const sources = blk: {
@@ -211,6 +225,7 @@ fn upsertMerged(allocator: std.mem.Allocator, merged: *std.ArrayList(Merged), it
         if (item.text.len > existing.text.len) {
             existing.text = item.text;
         }
+        if (item.symbol.len > 0) existing.symbol = item.symbol;
         switch (item.source) {
             .semantic => {
                 if (existing.semantic_rank == null or item.source_rank < existing.semantic_rank.?) {
@@ -233,6 +248,7 @@ fn upsertMerged(allocator: std.mem.Allocator, merged: *std.ArrayList(Merged), it
         .line_start = item.line_start,
         .line_end = item.line_end,
         .text = item.text,
+        .symbol = item.symbol,
     };
     switch (item.source) {
         .semantic => {
@@ -318,6 +334,17 @@ fn pathTermOverlapScore(path: []const u8, terms: []const []const u8) f32 {
     return @as(f32, @floatFromInt(hits)) / @as(f32, @floatFromInt(terms.len));
 }
 
+fn symbolOverlapScore(symbol: []const u8, terms: []const []const u8) f32 {
+    if (symbol.len == 0 or terms.len == 0) return 0;
+    for (terms) |term| {
+        if (term.len < 2) continue;
+        if (std.ascii.eqlIgnoreCase(symbol, term)) return 1.0;
+        if (std.ascii.indexOfIgnoreCase(symbol, term) != null) return 0.75;
+        if (term.len >= 3 and std.ascii.indexOfIgnoreCase(term, symbol) != null) return 0.5;
+    }
+    return 0;
+}
+
 fn appendBoostTag(allocator: std.mem.Allocator, parts: *std.ArrayList(u8), tag: []const u8) !void {
     if (parts.items.len > 0) try parts.append(allocator, ' ');
     try parts.appendSlice(allocator, tag);
@@ -371,4 +398,17 @@ test "active file boost ranks higher" {
     defer freeHits(allocator, hits);
 
     try std.testing.expectEqualStrings("open.zig", hits[0].path);
+}
+
+test "symbol boost ranks matching declaration" {
+    const allocator = std.testing.allocator;
+    const inputs = [_]Input{
+        .{ .path = "other.zig", .line_start = 1, .line_end = 1, .text = "a", .symbol = "renderSidebar", .source = .semantic, .source_score = 0.95, .source_rank = 0 },
+        .{ .path = "auth.zig", .line_start = 1, .line_end = 1, .text = "b", .symbol = "authenticateUser", .source = .semantic, .source_score = 0.80, .source_rank = 1 },
+    };
+
+    const hits = try rerank(allocator, &inputs, .{ .intent_terms = &[_][]const u8{"authenticateUser"} }, .{});
+    defer freeHits(allocator, hits);
+
+    try std.testing.expectEqualStrings("auth.zig", hits[0].path);
 }

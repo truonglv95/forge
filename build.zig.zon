@@ -42,6 +42,7 @@
         "build.zig.zon",
         "apps",
         "packages",
+        "third_party",
         "docs",
         "scripts",
         "forge.toml",
