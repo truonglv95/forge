@@ -39,6 +39,9 @@ pub const SearchResult = search.SearchResult;
 pub const git_diff = @import("git_diff.zig");
 pub const recent_files = @import("recent_files.zig");
 pub const codebase_index = @import("codebase_index.zig");
+pub const toolchain_probe = @import("toolchain_probe.zig");
+pub const parser_resolver = @import("parser_resolver.zig");
+pub const parser_profile = @import("parser_profile.zig");
 
 pub const watch = @import("watch.zig");
 pub const WatchEvent = watch.Event;

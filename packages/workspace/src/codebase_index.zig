@@ -6,6 +6,8 @@ const tree = @import("tree.zig");
 const ignore = @import("ignore.zig");
 const atomic = @import("atomic.zig");
 const language_chunker = @import("language_chunker.zig");
+const parser_resolver = @import("parser_resolver.zig");
+const parser_profile = @import("parser_profile.zig");
 
 pub const index_dir = ".forge/index/v1";
 pub const chunks_file = ".forge/index/v1/chunks.jsonl";
@@ -34,7 +36,7 @@ pub const max_chunk_lines: u32 = 48;
 pub const max_chunk_bytes: usize = 2048;
 pub const max_files: u32 = 2000;
 pub const max_chunks: u32 = 10_000;
-pub const chunker_version: u32 = 6;
+pub const chunker_version: u32 = 7;
 pub const embedding_input_version: u32 = 2;
 
 pub const Chunk = struct {
@@ -53,6 +55,8 @@ pub const Manifest = struct {
     schema_version: u32 = 2,
     chunker_version: u32 = chunker_version,
     embedding_input_version: u32 = embedding_input_version,
+    parser_set_id: []const u8 = "",
+    toolchain_fingerprint: u64 = 0,
     dim: u32,
     chunk_count: u32,
     file_count: u32,
@@ -66,6 +70,7 @@ pub const BuildResult = struct {
 
 pub const IndexError = error{
     IndexMissing,
+    MissingParserProfile,
 };
 
 pub fn chunkContent(allocator: std.mem.Allocator, io: std.Io, path: []const u8, file_hash: u64, content: []const u8) ![]Chunk {
@@ -170,6 +175,9 @@ pub fn build(
 ) !BuildResult {
     try root.dir.createDirPath(io, index_dir);
 
+    parser_profile.activateOwned(allocator, try parser_resolver.ensure(allocator, io, root));
+    defer parser_profile.deactivate(allocator);
+
     var summary = try tree.scan(allocator, io, root, ".");
     defer summary.deinit();
 
@@ -255,15 +263,16 @@ pub fn build(
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(file_hashes_file), hash_lines.items);
 
     const built_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
-    var manifest_buf: [256]u8 = undefined;
-    const manifest_text = try std.fmt.bufPrint(&manifest_buf, "{{\"schema_version\":2,\"chunker_version\":{d},\"embedding_input_version\":{d},\"dim\":{d},\"chunk_count\":{d},\"file_count\":{d},\"built_ms\":{d}}}\n", .{
-        chunker_version,
-        embedding_input_version,
-        vector_dim,
-        all_chunks.items.len,
-        file_count,
-        built_ms,
+    const profile = parser_profile.get() orelse return error.MissingParserProfile;
+    const manifest_text = try formatManifest(allocator, .{
+        .dim = vector_dim,
+        .chunk_count = @intCast(all_chunks.items.len),
+        .file_count = file_count,
+        .built_ms = built_ms,
+        .parser_set_id = profile.parser_set_id,
+        .toolchain_fingerprint = profile.toolchain_fingerprint,
     });
+    defer allocator.free(manifest_text);
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(manifest_file), manifest_text);
 
     const count: u32 = @intCast(all_chunks.items.len);
@@ -275,6 +284,11 @@ pub fn build(
 
 pub fn needsRebuild(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !bool {
     if (!(try indexVersionCurrent(allocator, io, root))) return true;
+
+    var parser_set = try parser_resolver.compute(allocator, io, root);
+    defer parser_set.deinit(allocator);
+    if (!(try manifestParserProfileCurrent(allocator, io, root, parser_set))) return true;
+
     const hashes = readRelative(allocator, io, root, file_hashes_file) catch return true;
     defer allocator.free(hashes);
 
@@ -455,12 +469,40 @@ pub fn refresh(
 fn indexVersionCurrent(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !bool {
     const manifest = readRelative(allocator, io, root, manifest_file) catch return false;
     defer allocator.free(manifest);
-    const Header = struct { schema_version: u32 = 0, chunker_version: u32 = 0, embedding_input_version: u32 = 0 };
+    const Header = struct {
+        schema_version: u32 = 0,
+        chunker_version: u32 = 0,
+        embedding_input_version: u32 = 0,
+        parser_set_id: []const u8 = "",
+        toolchain_fingerprint: u64 = 0,
+    };
     var parsed = std.json.parseFromSlice(Header, allocator, manifest, .{ .ignore_unknown_fields = true }) catch return false;
     defer parsed.deinit();
     return parsed.value.schema_version == 2 and
         parsed.value.chunker_version == chunker_version and
-        parsed.value.embedding_input_version == embedding_input_version;
+        parsed.value.embedding_input_version == embedding_input_version and
+        parsed.value.parser_set_id.len > 0;
+}
+
+fn manifestParserProfileCurrent(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+    parser_set: parser_resolver.ParserSet,
+) !bool {
+    const manifest = try readRelative(allocator, io, root, manifest_file);
+    defer allocator.free(manifest);
+    const Header = struct {
+        parser_set_id: []const u8 = "",
+        toolchain_fingerprint: u64 = 0,
+    };
+    var parsed = try std.json.parseFromSlice(Header, allocator, manifest, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return parser_resolver.manifestMatches(
+        parser_set,
+        parsed.value.parser_set_id,
+        parsed.value.toolchain_fingerprint,
+    );
 }
 
 fn updateIncremental(
@@ -471,6 +513,9 @@ fn updateIncremental(
     embedFn: *const fn (std.mem.Allocator, []const u8, []f32) anyerror!void,
     stale_paths: []const []const u8,
 ) !BuildResult {
+    parser_profile.activateOwned(allocator, try parser_resolver.ensure(allocator, io, root));
+    defer parser_profile.deactivate(allocator);
+
     var stale_set = std.StringHashMap(void).init(allocator);
     defer stale_set.deinit();
     for (stale_paths) |path| try stale_set.put(path, {});
@@ -698,16 +743,50 @@ fn writeIndex(
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(file_hashes_file), hash_lines);
 
     const built_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
-    var manifest_buf: [256]u8 = undefined;
-    const manifest_text = try std.fmt.bufPrint(&manifest_buf, "{{\"schema_version\":2,\"chunker_version\":{d},\"embedding_input_version\":{d},\"dim\":{d},\"chunk_count\":{d},\"file_count\":{d},\"built_ms\":{d}}}\n", .{
-        chunker_version,
-        embedding_input_version,
-        vector_dim,
-        items.len,
-        indexed_paths.count(),
-        built_ms,
+    const profile = parser_profile.get() orelse return error.MissingParserProfile;
+    const manifest_text = try formatManifest(allocator, .{
+        .dim = vector_dim,
+        .chunk_count = @intCast(items.len),
+        .file_count = @intCast(indexed_paths.count()),
+        .built_ms = built_ms,
+        .parser_set_id = profile.parser_set_id,
+        .toolchain_fingerprint = profile.toolchain_fingerprint,
     });
+    defer allocator.free(manifest_text);
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(manifest_file), manifest_text);
+}
+
+const ManifestFields = struct {
+    dim: u32,
+    chunk_count: u32,
+    file_count: u32,
+    built_ms: i64,
+    parser_set_id: []const u8,
+    toolchain_fingerprint: u64,
+};
+
+fn formatManifest(allocator: std.mem.Allocator, fields: ManifestFields) ![]const u8 {
+    const Json = struct {
+        schema_version: u32 = 2,
+        chunker_version: u32 = chunker_version,
+        embedding_input_version: u32 = embedding_input_version,
+        parser_set_id: []const u8,
+        toolchain_fingerprint: u64,
+        dim: u32,
+        chunk_count: u32,
+        file_count: u32,
+        built_ms: i64,
+    };
+    const json = try std.json.Stringify.valueAlloc(allocator, Json{
+        .parser_set_id = fields.parser_set_id,
+        .toolchain_fingerprint = fields.toolchain_fingerprint,
+        .dim = fields.dim,
+        .chunk_count = fields.chunk_count,
+        .file_count = fields.file_count,
+        .built_ms = fields.built_ms,
+    }, .{});
+    defer allocator.free(json);
+    return std.fmt.allocPrint(allocator, "{s}\n", .{json});
 }
 
 fn readRelative(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, rel: []const u8) ![]u8 {
