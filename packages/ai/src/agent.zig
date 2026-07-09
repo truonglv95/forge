@@ -598,6 +598,7 @@ pub fn run(
     const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.WorkspaceFailed;
 
     workspace.history.ensureLayout(allocator, io, root) catch return error.WorkspaceFailed;
+    workspace.atomic.ensureProposalDir(io, root) catch return error.WorkspaceFailed;
     workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.WorkspaceFailed, augmented_body) catch return error.WorkspaceFailed;
 
     const meta = llm.metadata();
@@ -1490,7 +1491,7 @@ test "agent run uses fake tool loop when enabled" {
     const forge_home = try initAgentTestHome(allocator, &tmp);
     defer allocator.free(forge_home);
     defer workspace.global_store.clearForgeHomeOverride();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge search\n");
 
     const fake_response =
@@ -1516,7 +1517,7 @@ test "ask read-only mode explores and returns text without proposal" {
     const forge_home = try initAgentTestHome(allocator, &tmp);
     defer allocator.free(forge_home);
     defer workspace.global_store.clearForgeHomeOverride();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello ask mode\n");
 
     var result = try run(allocator, io, null, root, "Explain sample.txt", .{
@@ -1550,7 +1551,7 @@ test "agent run produces search and propose steps" {
     const forge_home = try initAgentTestHome(allocator, &tmp);
     defer allocator.free(forge_home);
     defer workspace.global_store.clearForgeHomeOverride();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge search\n");
 
     const fake_response =
@@ -1576,7 +1577,7 @@ test "agent resumes exact transport conversation after step limit" {
     const forge_home = try initAgentTestHome(allocator, &tmp);
     defer allocator.free(forge_home);
     defer workspace.global_store.clearForgeHomeOverride();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge search\n");
 
     const fake_response =
@@ -1616,7 +1617,7 @@ test "agent recovers crash checkpoint between tool call and tool result" {
     const forge_home = try initAgentTestHome(allocator, &tmp);
     defer allocator.free(forge_home);
     defer workspace.global_store.clearForgeHomeOverride();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello pending tool\n");
 
     const conversation_json =

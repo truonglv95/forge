@@ -39,13 +39,16 @@ pub fn providerOptionsFromFlags(
     }
 
     const provider_name = flags.provider orelse if (workspace_cfg) |cfg| cfg.provider else null;
+    var owned_model: ?[]u8 = null;
     const model_name: ?[]const u8 = if (flags.model) |model| model else if (workspace_cfg) |cfg| if (cfg.model) |model| blk: {
-        break :blk allocator.dupe(u8, model) catch null;
+        owned_model = allocator.dupe(u8, model) catch null;
+        break :blk owned_model;
     } else null else null;
 
     return .{
         .kind = ai.provider_factory.Kind.parse(provider_name),
         .model = model_name,
+        .owned_model = owned_model,
         .fake_response = fake_response,
         .fake_plan_response = fake_plan,
     };

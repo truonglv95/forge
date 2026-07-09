@@ -69,6 +69,7 @@ fn clearBuilding(workspace_path: []const u8) void {
 }
 
 pub fn skipAutoWarm(environ_map: ?*const std.process.Environ.Map) bool {
+    if (@import("builtin").is_test) return true;
     if (environ_map) |map| {
         if (map.get("FORGE_SKIP_INDEX")) |value| {
             return std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "true");
