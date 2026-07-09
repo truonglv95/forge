@@ -24,6 +24,8 @@ pub const Kind = enum {
 pub const Options = struct {
     kind: Kind = .auto,
     model: ?[]const u8 = null,
+    /// Set when `model` was allocated by `providerOptionsFromFlags` (workspace config path).
+    owned_model: ?[]u8 = null,
     ollama_url: ?[]const u8 = null,
     fake_response: []const u8,
     fake_plan_response: ?[]const u8 = null,
@@ -33,6 +35,14 @@ pub const Options = struct {
     stream_context: ?*anyopaque = null,
     thinking_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     thinking_context: ?*anyopaque = null,
+
+    pub fn deinit(self: *Options, allocator: std.mem.Allocator) void {
+        if (self.owned_model) |model| {
+            allocator.free(model);
+            self.owned_model = null;
+            self.model = null;
+        }
+    }
 };
 
 pub const Handle = struct {

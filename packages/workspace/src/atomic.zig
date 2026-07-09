@@ -38,6 +38,17 @@ pub fn createDirPath(io: std.Io, root: path_mod.WorkspaceRoot, dir_path: []const
     try root.dir.createDirPath(io, dir_path);
 }
 
+pub fn ensureProposalDir(io: std.Io, root: path_mod.WorkspaceRoot) !void {
+    root.dir.createDirPath(io, ".forge") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    root.dir.createDirPath(io, ".forge/proposals") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+}
+
 /// Deletes a file.
 pub fn deleteFile(io: std.Io, root: path_mod.WorkspaceRoot, file_path: path_mod.WorkspacePath) !void {
     try root.dir.deleteFile(io, file_path.raw);

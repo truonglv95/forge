@@ -356,9 +356,9 @@ pub fn generateAndPersist(
     owned_body = null;
 
     workspace.history.ensureLayout(allocator, io, root) catch return error.ProviderFailed;
-
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.ProviderFailed;
+    workspace.atomic.ensureProposalDir(io, root) catch return error.ProviderFailed;
     workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.ProviderFailed, final_body) catch return error.ProviderFailed;
 
     const initial_state: run_record.State = .proposed;
@@ -473,7 +473,10 @@ test "cli and ide surfaces produce identical proposal bodies" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try initProposalTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     const rules = "# rules\nUse zig fmt.\n";
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("FORGE.md"), rules);
@@ -521,8 +524,11 @@ test "cli and ide proposals have identical apply and undo outcomes" {
     defer cli_tmp.cleanup();
     var ide_tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer ide_tmp.cleanup();
-    const cli_root = workspace.WorkspaceRoot.init(cli_tmp.dir);
-    const ide_root = workspace.WorkspaceRoot.init(ide_tmp.dir);
+    const forge_home = try initProposalTestHome(allocator, &cli_tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
+    const cli_root = workspace.WorkspaceRoot.init(cli_tmp.dir, ".");
+    const ide_root = workspace.WorkspaceRoot.init(ide_tmp.dir, ".");
 
     const provider_options = provider_factory.Options{
         .kind = .fake,
@@ -567,7 +573,10 @@ test "project rules are included in context manifest" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try initProposalTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("FORGE.md"), "# Rules\nAlways test.\n");
 
@@ -590,7 +599,10 @@ test "generateAndPersist wraps unparseable model text into empty proposal" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try initProposalTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     const provider_options = provider_factory.Options{
         .kind = .fake,
@@ -612,7 +624,10 @@ test "generateAndPersist with ollama when server is running" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try initProposalTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello\n");
 
     const provider_options = provider_factory.Options{
@@ -644,7 +659,7 @@ test "generateAndPersist ollama via WorkspaceRoot.open path" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const seed_root = workspace.WorkspaceRoot.init(tmp.dir);
+    const seed_root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, seed_root, try workspace.WorkspacePath.parse("sample.txt"), "hello\n");
 
     var ws_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -665,4 +680,10 @@ test "generateAndPersist ollama via WorkspaceRoot.open path" {
 
 fn liveTestsEnabled() bool {
     return false;
+}
+
+fn initProposalTestHome(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/tmp/forge-proposal-test-{s}", .{tmp.sub_path});
+    try workspace.global_store.setForgeHomeOverride(path);
+    return path;
 }
