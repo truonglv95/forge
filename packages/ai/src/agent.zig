@@ -18,16 +18,23 @@ const mcp_registry = @import("mcp_registry.zig");
 const progress = @import("progress.zig");
 const validation_hints = @import("validation_hints.zig");
 const repair_loop = @import("repair_loop.zig");
+const proposal_normalize = @import("proposal_normalize.zig");
+const proposal_precondition = @import("proposal_precondition.zig");
 const subagent = @import("subagent.zig");
 const routing = @import("routing.zig");
+const intent_classifier = @import("intent_classifier.zig");
 const context_manifest = @import("context_manifest.zig");
 const agent_event = @import("agent_event.zig");
 
 pub const Config = struct {
-    max_steps: u32 = 8,
+    max_steps: u32 = 128,
     provider_options: provider_factory.Options,
     mode: tools.Mode = .agent,
     capability_profile: tools.CapabilityProfile = .propose,
+    /// When true, the classified intent decides the capability profile
+    /// (question/exploration stays read-only, edit/debug unlocks proposals).
+    /// Set false when the caller explicitly pinned a capability.
+    auto_capability: bool = false,
     workspace_cwd: []const u8 = ".",
     mcp_enabled: bool = true,
     explicit_files: []const []const u8 = &.{},
@@ -60,7 +67,7 @@ pub const Config = struct {
     approval_callback: ?agent_loop.ApprovalCallback = null,
     approval_context: ?*anyopaque = null,
     approve_every_time_tools: bool = false,
-    max_repair_attempts: u8 = 0,
+    max_repair_attempts: u8 = 2,
 };
 
 pub const Step = struct {
@@ -129,7 +136,7 @@ pub fn run(
         workspace.sessions.makeSessionId(allocator, timestamp_ms) catch return error.WorkspaceFailed;
     defer allocator.free(session_id);
 
-    var event_logger = EventLogger.init(allocator, io, root, session_id);
+    var event_logger = EventLogger.init(allocator, io, session_id);
     defer event_logger.deinit();
 
     var effective_config = config;
@@ -146,19 +153,20 @@ pub fn run(
     effective_config.step_context = &event_ctx;
 
     if (config.resume_session_id == null) {
-        const session_index = workspace.sessions.formatIndexLine(allocator, session_id, intent, timestamp_ms) catch return error.WorkspaceFailed;
+        const session_index = workspace.sessions.formatIndexLine(allocator, session_id, intent, timestamp_ms, effective_config.workspace_cwd) catch return error.WorkspaceFailed;
         defer allocator.free(session_index);
-        workspace.sessions.appendIndex(allocator, io, root, session_index) catch return error.WorkspaceFailed;
+        workspace.sessions.appendIndex(allocator, io, effective_config.workspace_cwd, session_index) catch return error.WorkspaceFailed;
     }
 
     event_logger.sessionStarted(effective_config, intent) catch {};
 
-    const route = routing.plan(.{
+    const route_input = routing.RouteInput{
         .mode = effective_config.mode,
         .intent = intent,
         .has_active_file = effective_config.active_file != null,
         .has_selection = effective_config.has_selection,
-    }, .{
+    };
+    const load_opts = context_loader.LoadOptions{
         .intent = intent,
         .explicit_files = effective_config.explicit_files,
         .active_file = effective_config.active_file,
@@ -166,18 +174,37 @@ pub fn run(
         .include_project_rules = true,
         .workspace_cwd = effective_config.workspace_cwd,
         .recent_files = effective_config.recent_files,
-    });
+    };
+
+    const resolved: intent_classifier.ResolveResult = if (effective_config.auto_capability and config.resume_session_id == null)
+        intent_classifier.resolveIntent(
+            allocator,
+            route_input,
+            provider_handle.interface(),
+            effective_config.cancel_token,
+            .{},
+        )
+    else
+        .{ .intent = routing.classify(route_input), .used_llm = false };
+
+    const route = routing.planWithIntent(resolved.intent, route_input, load_opts);
+
+    // Let the classified intent pick the least-privilege capability unless the
+    // caller pinned one explicitly. On resume we keep the persisted profile.
+    if (effective_config.auto_capability and config.resume_session_id == null) {
+        effective_config.capability_profile = route.capability_profile;
+    }
 
     var ctx_builder = context_loader.build(allocator, io, root, route.context) catch return error.WorkspaceFailed;
     defer ctx_builder.deinit();
     {
-        var routing_buf: [128]u8 = undefined;
-        const summary = routing.formatRoutingSummary(&routing_buf, .{
-            .mode = config.mode,
-            .intent = intent,
-            .has_active_file = config.active_file != null,
-            .has_selection = config.has_selection,
-        }, route);
+        var routing_buf: [160]u8 = undefined;
+        const summary = std.fmt.bufPrint(&routing_buf, "mode={s} task={s} profile={s}{s}", .{
+            @tagName(config.mode),
+            routing.intentLabel(route.intent),
+            @tagName(route.capability_profile),
+            if (resolved.used_llm) " classifier=llm" else "",
+        }) catch "mode=unknown task=unknown profile=unknown";
         ctx_builder.addBlock(.intent, "routing", summary) catch {};
     }
     emitProgress(effective_config, .context_built);
@@ -218,7 +245,7 @@ pub fn run(
             const NativeCtx = struct {
                 allocator: std.mem.Allocator,
                 io: std.Io,
-                root: workspace.WorkspaceRoot,
+                workspace_path: []const u8,
                 session_id: []const u8,
                 intent: []const u8,
                 steps: *std.ArrayList(Step),
@@ -246,14 +273,14 @@ pub fn run(
                         if (pending_tool.len > 0) "tool_pending" else "exploring",
                     ) catch return false;
                     defer self.allocator.free(body);
-                    workspace.sessions.persistSession(self.io, self.root, self.session_id, body) catch return false;
+                    workspace.sessions.persistSession(self.io, self.workspace_path, self.session_id, body) catch return false;
                     return true;
                 }
             };
             var native_ctx = NativeCtx{
                 .allocator = allocator,
                 .io = io,
-                .root = root,
+                .workspace_path = effective_config.workspace_cwd,
                 .session_id = session_id,
                 .intent = intent,
                 .steps = &steps,
@@ -307,7 +334,10 @@ pub fn run(
         var search_term_buf: [128]u8 = undefined;
         const search_term = firstToken(intent, &search_term_buf);
         if (search_term.len > 0) {
-            const search_out = tool_executor.search(tool_ctx, search_term) catch |err| return mapToolError(err);
+            const search_out = tool_executor.search(tool_ctx, .{
+                .pattern = search_term,
+                .path = ".",
+            }) catch |err| return mapToolError(err);
             defer allocator.free(search_out.summary);
             defer allocator.free(search_out.observation);
             first_match_path = search_out.first_match_path;
@@ -352,7 +382,24 @@ pub fn run(
             "completed",
         ) catch return error.WorkspaceFailed;
         defer allocator.free(completed_json);
-        workspace.sessions.persistSession(io, root, session_id, completed_json) catch return error.WorkspaceFailed;
+        workspace.sessions.persistSession(io, effective_config.workspace_cwd, session_id, completed_json) catch return error.WorkspaceFailed;
+        event_logger.finalAnswer(owned_response) catch {};
+        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = owned_response, .repair_attempts = 0, .usage = provider_handle.interface().usage() }) catch {};
+        return .{
+            .session_id = owned_session,
+            .steps = owned_steps,
+            .final_run_id = null,
+            .proposal_rel = null,
+            .usage = provider_handle.interface().usage(),
+            .response_text = owned_response,
+        };
+    }
+
+    if (effective_config.use_inline_edits) {
+        const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
+        const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
+        const owned_response = allocator.dupe(u8, explore_text orelse "Edited files directly.") catch return error.WorkspaceFailed;
+
         event_logger.finalAnswer(owned_response) catch {};
         event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = owned_response, .repair_attempts = 0, .usage = provider_handle.interface().usage() }) catch {};
         return .{
@@ -367,20 +414,6 @@ pub fn run(
 
     if (effective_config.max_steps < next_index) return error.StepLimitReached;
     if (!tools.isAllowed(effective_config.capability_profile, .propose_edit)) return error.StepLimitReached;
-
-    if (effective_config.use_inline_edits) {
-        const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
-        const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
-
-        // Return without a final proposal run
-        return .{
-            .session_id = owned_session,
-            .steps = owned_steps,
-            .final_run_id = null,
-            .proposal_rel = null,
-            .usage = provider_handle.interface().usage(),
-        };
-    }
 
     const llm = provider_handle.interface();
     const images = multimodal.loadImages(allocator, io, root, config.attachments) catch &[_]provider_mod.ImagePart{};
@@ -415,21 +448,66 @@ pub fn run(
         }
     } else |_| {}
     var repair_attempt: u8 = 0;
+    var use_repair_prompt = false;
+    var json_repair_attempts: u8 = 0;
     while (true) {
         response.writer.end = 0;
-        if (repair_attempt == 0) {
+        if (!use_repair_prompt) {
             emitProgress(effective_config, .sending);
             planner_inst.plan(&response.writer, cancel_token) catch return error.ProviderFailed;
         } else {
             emitProgress(effective_config, .repairing);
-            planner_inst.planRepair(&response.writer, cancel_token, validation_report.?, final_proposal.?) catch return error.ProviderFailed;
+            planner_inst.planRepair(
+                &response.writer,
+                cancel_token,
+                validation_report orelse "proposal JSON parse/validation failed",
+                final_proposal orelse "",
+            ) catch return error.ProviderFailed;
         }
         emitProgress(effective_config, .streaming);
         emitProgress(effective_config, .parsing);
 
         const candidate = response.writer.buffer[0..response.writer.end];
-        proposal_workflow.validateProposalBody(allocator, candidate) catch return error.InvalidProposal;
-        const augmented = validation_hints.augmentProposalJson(allocator, candidate) catch return error.WorkspaceFailed;
+        const normalized = proposal_normalize.normalize(allocator, candidate) catch {
+            if (json_repair_attempts < 2) {
+                json_repair_attempts += 1;
+                use_repair_prompt = true;
+                if (validation_report) |old| allocator.free(old);
+                validation_report = std.fmt.allocPrint(
+                    allocator,
+                    "proposal JSON normalization failed. Output ONLY a raw JSON object for schema_version 1.\n\nModel output (truncated):\n{s}",
+                    .{clipText(candidate, 1500)},
+                ) catch null;
+                if (final_proposal) |old| allocator.free(old);
+                final_proposal = allocator.dupe(u8, candidate) catch return error.InvalidProposal;
+                continue;
+            }
+            return error.InvalidProposal;
+        };
+        defer allocator.free(normalized);
+
+        const prepared = proposal_precondition.fillMissingExpectedHashes(allocator, io, root, normalized) catch normalized;
+        defer if (prepared.ptr != normalized.ptr) allocator.free(prepared);
+
+        proposal_workflow.validateProposalBody(allocator, prepared) catch {
+            if (json_repair_attempts < 2) {
+                json_repair_attempts += 1;
+                use_repair_prompt = true;
+                if (validation_report) |old| allocator.free(old);
+                validation_report = std.fmt.allocPrint(
+                    allocator,
+                    "proposal JSON validation failed. For modify/delete include expected_hash from context, or rely on file snapshots. Output ONLY valid WorkspaceEdit JSON (schema_version 1). No markdown fences or commentary.\n\nModel output (truncated):\n{s}",
+                    .{clipText(prepared, 1500)},
+                ) catch null;
+                if (final_proposal) |old| allocator.free(old);
+                final_proposal = allocator.dupe(u8, prepared) catch return error.InvalidProposal;
+                continue;
+            }
+            return error.InvalidProposal;
+        };
+        use_repair_prompt = false;
+
+        const augmented = validation_hints.augmentProposalJson(allocator, prepared) catch return error.WorkspaceFailed;
         if (final_proposal) |old| allocator.free(old);
         final_proposal = augmented;
 
@@ -508,6 +586,7 @@ pub fn run(
             allocator.free(trial.hint_paths);
         }
         allocator.free(trial.report);
+        use_repair_prompt = true;
         repair_attempt += 1;
     }
 
@@ -518,7 +597,7 @@ pub fn run(
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.WorkspaceFailed;
 
-    workspace.history.ensureLayout(io, root) catch return error.WorkspaceFailed;
+    workspace.history.ensureLayout(allocator, io, root) catch return error.WorkspaceFailed;
     workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.WorkspaceFailed, augmented_body) catch return error.WorkspaceFailed;
 
     const meta = llm.metadata();
@@ -535,7 +614,7 @@ pub fn run(
 
     const json_body = run_record.formatJson(allocator, record) catch return error.WorkspaceFailed;
     defer allocator.free(json_body);
-    workspace.runs.persistRun(io, root, run_id, json_body) catch return error.WorkspaceFailed;
+    workspace.runs.persistRun(allocator, io, root, run_id, json_body) catch return error.WorkspaceFailed;
 
     const index_line = run_record.formatIndexLine(allocator, record) catch return error.WorkspaceFailed;
     defer allocator.free(index_line);
@@ -563,7 +642,7 @@ pub fn run(
         llm.metadata().provider_name,
     ) catch return error.WorkspaceFailed;
     defer allocator.free(session_json);
-    workspace.sessions.persistSession(io, root, owned_session, session_json) catch return error.WorkspaceFailed;
+    workspace.sessions.persistSession(io, effective_config.workspace_cwd, owned_session, session_json) catch return error.WorkspaceFailed;
 
     event_logger.proposalCreated(owned_proposal) catch {};
     event_logger.runCompleted(.{
@@ -765,7 +844,7 @@ pub fn resumeSession(
     session_id: []const u8,
     config: Config,
 ) AgentError!Result {
-    var doc = workspace.sessions.loadSession(allocator, io, root, session_id) catch |err| switch (err) {
+    var doc = workspace.sessions.loadSession(allocator, io, session_id) catch |err| switch (err) {
         error.SessionNotFound => return error.WorkspaceFailed,
         else => return error.WorkspaceFailed,
     };
@@ -957,6 +1036,7 @@ fn runExploreLoop(
         error.StepLimitReached => return error.StepLimitReached,
         error.DuplicateLoop => return error.DuplicateLoop,
         error.NoProgress => return error.NoProgress,
+        error.WorkspaceFailed => return error.WorkspaceFailed,
         else => return error.ProviderFailed,
     };
 }
@@ -973,17 +1053,16 @@ fn mapToolError(err: tool_executor.AgentToolError) AgentError {
 const EventLogger = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
-    root: workspace.WorkspaceRoot,
     session_id: []const u8,
 
-    fn init(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, session_id: []const u8) EventLogger {
-        return .{ .allocator = allocator, .io = io, .root = root, .session_id = session_id };
+    fn init(allocator: std.mem.Allocator, io: std.Io, session_id: []const u8) EventLogger {
+        return .{ .allocator = allocator, .io = io, .session_id = session_id };
     }
 
     fn deinit(_: *EventLogger) void {}
 
     fn appendJson(self: *EventLogger, json: []const u8) !void {
-        try workspace.sessions.appendEvent(self.allocator, self.io, self.root, self.session_id, json);
+        try workspace.sessions.appendEvent(self.allocator, self.io, self.session_id, json);
     }
 
     fn sessionStarted(self: *EventLogger, config: Config, intent: []const u8) !void {
@@ -1204,6 +1283,10 @@ fn argsPreview(args_json: []const u8) []const u8 {
     return if (trimmed.len > 160) trimmed[0..160] else trimmed;
 }
 
+fn clipText(text: []const u8, max: usize) []const u8 {
+    return if (text.len > max) text[0..max] else text;
+}
+
 const EventCtx = struct {
     logger: *EventLogger,
     step_begin_callback: ?*const fn (?*anyopaque, StepBegin) void,
@@ -1274,6 +1357,7 @@ fn formatCheckpointSessionJson(
         schema_version: u32 = 3,
         session_id: []const u8,
         intent: []const u8,
+        workspace_path: []const u8,
         capability_profile: []const u8,
         max_steps: u32,
         run_ids: []const []const u8 = &.{},
@@ -1289,6 +1373,7 @@ fn formatCheckpointSessionJson(
     return std.json.Stringify.valueAlloc(allocator, CheckpointDoc{
         .session_id = session_id,
         .intent = intent,
+        .workspace_path = config.workspace_cwd,
         .capability_profile = @tagName(config.capability_profile),
         .max_steps = config.max_steps,
         .steps = stored_steps,
@@ -1347,6 +1432,7 @@ fn formatSessionJson(
         schema_version: u32 = 3,
         session_id: []const u8,
         intent: []const u8,
+        workspace_path: []const u8,
         capability_profile: []const u8,
         max_steps: u32,
         run_ids: []const []const u8,
@@ -1368,6 +1454,7 @@ fn formatSessionJson(
     return std.json.Stringify.valueAlloc(allocator, SessionDoc{
         .session_id = session_id,
         .intent = intent,
+        .workspace_path = config.workspace_cwd,
         .capability_profile = @tagName(config.capability_profile),
         .max_steps = config.max_steps,
         .run_ids = run_ids,
@@ -1388,12 +1475,21 @@ fn resolveHomeDir(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
     return null;
 }
 
+fn initAgentTestHome(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/tmp/forge-test-{s}", .{tmp.sub_path});
+    try workspace.global_store.setForgeHomeOverride(path);
+    return path;
+}
+
 test "agent run uses fake tool loop when enabled" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
+    const forge_home = try initAgentTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
     const root = workspace.WorkspaceRoot.init(tmp.dir);
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge search\n");
 
@@ -1417,6 +1513,9 @@ test "ask read-only mode explores and returns text without proposal" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
+    const forge_home = try initAgentTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
     const root = workspace.WorkspaceRoot.init(tmp.dir);
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello ask mode\n");
 
@@ -1436,7 +1535,7 @@ test "ask read-only mode explores and returns text without proposal" {
     try std.testing.expect(result.response_text != null);
     try std.testing.expectEqualStrings("Exploration complete.", result.response_text.?);
 
-    var session = try workspace.sessions.loadSession(allocator, io, root, result.session_id);
+    var session = try workspace.sessions.loadSession(allocator, io, result.session_id);
     defer workspace.sessions.deinitSession(allocator, &session);
     try std.testing.expectEqualStrings("completed", session.execution_state);
     try std.testing.expectEqualStrings("read_only", session.capability_profile);
@@ -1448,6 +1547,9 @@ test "agent run produces search and propose steps" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
+    const forge_home = try initAgentTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
     const root = workspace.WorkspaceRoot.init(tmp.dir);
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge search\n");
 
@@ -1471,6 +1573,9 @@ test "agent resumes exact transport conversation after step limit" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
+    const forge_home = try initAgentTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
     const root = workspace.WorkspaceRoot.init(tmp.dir);
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge search\n");
 
@@ -1482,12 +1587,12 @@ test "agent resumes exact transport conversation after step limit" {
         .provider_options = .{ .kind = .fake, .fake_response = fake_response, .fake_tool_loop = true },
     }));
 
-    var sessions = try workspace.sessions.listEntries(allocator, io, root);
+    var sessions = try workspace.sessions.listEntries(allocator, io, ".");
     defer sessions.deinit();
     try std.testing.expectEqual(@as(usize, 1), sessions.items.len);
     const session_id = sessions.items[0].session_id;
 
-    var checkpoint = try workspace.sessions.loadSession(allocator, io, root, session_id);
+    var checkpoint = try workspace.sessions.loadSession(allocator, io, session_id);
     defer workspace.sessions.deinitSession(allocator, &checkpoint);
     try std.testing.expectEqualStrings("exploring", checkpoint.execution_state);
     try std.testing.expect(checkpoint.conversation_json.len > 0);
@@ -1508,6 +1613,9 @@ test "agent recovers crash checkpoint between tool call and tool result" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
+    const forge_home = try initAgentTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
     const root = workspace.WorkspaceRoot.init(tmp.dir);
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello pending tool\n");
 
@@ -1532,7 +1640,7 @@ test "agent recovers crash checkpoint between tool call and tool result" {
     };
     const checkpoint_body = try std.json.Stringify.valueAlloc(allocator, CrashCheckpoint{}, .{});
     defer allocator.free(checkpoint_body);
-    try workspace.sessions.persistSession(io, root, "sess_crash_pending", checkpoint_body);
+    try workspace.sessions.persistSession(io, ".", "sess_crash_pending", checkpoint_body);
 
     const fake_response =
         \\{"schema_version":1,"summary":"recovered","workspace_edit":{"files":[{"path":"recovered.txt","operation":"create","edits":[{"start":0,"end":0,"replacement":"ok\\n"}]}]}}

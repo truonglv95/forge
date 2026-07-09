@@ -85,6 +85,7 @@ pub fn onRenderFrame() void {
             }
         }
         if (wb.agent_panel_visible and geo.agent_w > 0) {
+            renderer.Renderer.drawRect(geo.agent_x, layout.header_height, geo.agent_w, side_h, .{ .r = 0.055, .g = 0.055, .b = 0.06, .a = 1.0 });
             renderer.Renderer.drawRect(geo.agent_x - 1, layout.header_height, 1, side_h, subtle_border);
             agent_render.drawAgentPanel(wb, geo.agent_x, geo.agent_w, h);
         }
@@ -92,6 +93,7 @@ pub fn onRenderFrame() void {
         header_toolbar.drawHoverTooltip(w, wb.headerToolbarState(), state.header_hover_action);
 
         if (wb.palette.open) dialogs.drawPalette(wb, w, h);
+        if (wb.workspace_symbol_picker.open) dialogs.drawWorkspaceSymbolPicker(wb, w, h);
         if (wb.focused_panel == .conflict) dialogs.drawConflictDialog(wb, w, h);
         if (wb.focused_panel == .recovery) dialogs.drawRecoveryDialog(wb, w, h);
         if (wb.agent.scope_picker_open) agent_render.drawScopePicker(wb, geo.agent_x, geo.agent_w, h);

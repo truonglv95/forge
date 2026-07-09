@@ -115,8 +115,17 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             wb.selected_extension_index = index;
         },
         .open_extensions_dir => |path| {
-            const doc = try wb.tabs.openOrActivate(path);
-            try workspace_io.loadDocument(wb.io, wb.workspace_root, doc);
+            const global_store = @import("forge-workspace").global_store;
+            if (path.len == 0) {
+                if (global_store.getExtensionsDir(wb.allocator)) |global_ext| {
+                    defer wb.allocator.free(global_ext);
+                    const readme_path = std.fmt.allocPrint(wb.allocator, "{s}/README.md", .{global_ext}) catch return;
+                    try wb.dispatch(.{ .open_file = readme_path });
+                } else |_| {}
+            } else {
+                const doc = try wb.tabs.openOrActivate(path);
+                try workspace_io.loadDocument(wb.io, wb.workspace_root, doc);
+            }
             wb.sidebar_view = .extensions;
             wb.focused_panel = .extensions;
             wb.syncTabScroll();
@@ -173,6 +182,9 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .check_external_conflicts => {
             for (wb.tabs.tabs.items) |*doc| {
                 try doc.checkExternalConflict(wb.io, wb.workspace_root);
+                if (doc.external_conflict and !doc.isDirty()) {
+                    try workspace_io.loadDocument(wb.io, wb.workspace_root, doc);
+                }
             }
             if (wb.tabs.activeDoc()) |doc| {
                 if (doc.external_conflict) try wb.openConflictDialog(doc.path);
@@ -210,6 +222,36 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .palette_close => {
             wb.palette.close();
             wb.focused_panel = wb.previous_focus;
+        },
+        .workspace_symbol_picker_open => {
+            wb.previous_focus = wb.focused_panel;
+            wb.focused_panel = .palette; // Reuse palette focus for keys? Or create new? Let's use a new focus if needed, wait, let's reuse palette focus but we need to route it.
+            // Wait, we need a separate focus for workspace_symbol_picker, or just check if it's open.
+            // I'll add .workspace_symbol_picker to PanelFocus later if needed, but for now just use .editor and check if open?
+            // Actually, we can just use a flag. Let's look at scope_picker.
+            try wb.workspace_symbol_picker.openPicker();
+        },
+        .workspace_symbol_picker_close => {
+            wb.workspace_symbol_picker.close();
+        },
+        .workspace_symbol_picker_select => {
+            if (wb.workspace_symbol_picker.entries.items.len > 0) {
+                const entry = wb.workspace_symbol_picker.entries.items[wb.workspace_symbol_picker.selected];
+                wb.dispatch(.{ .open_file = entry.location.uri }) catch {};
+
+                // Then goto line
+                const line = entry.location.line;
+                const character = entry.location.character;
+                if (wb.tabs.activeDoc()) |doc| {
+                    if (doc.buffer.lines.items.len > line) {
+                        doc.buffer.cursor.row = line;
+                        doc.buffer.cursor.col = character;
+                        doc.buffer.selection_anchor = null;
+                        wb.dispatch(.editor_scroll_to_cursor) catch {};
+                    }
+                }
+            }
+            wb.workspace_symbol_picker.close();
         },
         .agent_set_mode => |mode| {
             wb.agent.lock();
@@ -249,6 +291,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
                 try wb.setStatus(msg);
                 return;
             };
+            wb.chat_scroll_to_end_on_ready = true;
             try wb.setStatus("Agent: building context…");
         },
         .agent_edit_selection => {
@@ -334,6 +377,13 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .agent_approve_tool => {
             wb.agent.resolveToolApproval(true);
             try wb.setStatus("Tool approved — continuing agent...");
+        },
+        .agent_approve_always_tool => {
+            wb.agent.lock();
+            wb.agent.always_approve_tools = true;
+            wb.agent.unlock();
+            wb.agent.resolveToolApproval(true);
+            try wb.setStatus("Always approve enabled — continuing agent...");
         },
         .agent_reject_tool => {
             wb.agent.resolveToolApproval(false);
@@ -558,14 +608,18 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .toggle_sidebar => wb.sidebar_visible = !wb.sidebar_visible,
         .toggle_bottom_panel => wb.bottom_panel_visible = !wb.bottom_panel_visible,
         .toggle_agent_panel => wb.agent_panel_visible = !wb.agent_panel_visible,
-        .focus_agent => {
-            wb.agent_panel_visible = true;
-            wb.focused_panel = .agent;
-        },
+        .chat_clear_history => try wb.clearChatHistory(),
+        .close_proposal_review => wb.closeProposalReview(),
+        .close_ai_settings => wb.closeAiSettings(),
         .nav_back => try wb.navBack(),
         .nav_forward => try wb.navForward(),
         .open_ai_settings => try wb.openAiSettings(),
-        .close_ai_settings => wb.closeAiSettings(),
-        .close_proposal_review => wb.closeProposalReview(),
+        .focus_agent => {
+            wb.agent_panel_visible = true;
+            wb.focused_panel = .agent;
+            wb.chat_scroll_to_end_on_ready = true;
+            wb.chat_follow_stream = true;
+            try wb.setStatus("Agent focused");
+        },
     }
 }

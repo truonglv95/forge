@@ -4,6 +4,17 @@ const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
 const chat_bubble_mod = @import("../ui/agent/chat_bubble.zig");
 const tool_step_card_mod = @import("../ui/agent/tool_step_card.zig");
 const chat_message_lines_mod = @import("../ui/agent/chat_message_lines.zig");
+const agent_session_mod = @import("../agent/session.zig");
+
+const chat_composer_gap: f32 = 12.0;
+const chat_bottom_padding: f32 = 88.0;
+
+fn phaseShowsLive(phase: anytype) bool {
+    return switch (phase) {
+        .building_context, .sending, .streaming, .parsing, .waiting_approval => true,
+        else => false,
+    };
+}
 
 pub const Cache = struct {
     content_w: f32 = -1,
@@ -61,20 +72,19 @@ fn agentChrome(wb: anytype) struct {
 fn liveContentHeight(wb: anytype, content_w: f32) f32 {
     wb.agent.lock();
     defer wb.agent.unlock();
-    const worker_running = wb.agent.worker_running;
+    const worker_running = wb.agent.worker_running or phaseShowsLive(wb.agent.phase);
     const steps_len = wb.agent.agent_steps.items.len;
-    if (!worker_running and steps_len == 0) return 0;
+    _ = steps_len;
+    if (!worker_running) return 0;
 
-    var lines: usize = 0;
-    lines += chat_bubble_mod.estimateLiveLines(
-        wb.agent.thinking_text.items,
-        wb.agent.stream_text.items,
-        worker_running,
-        content_w,
-    );
-    const steps_h = tool_step_card_mod.totalStepsHeight(wb.agent.agent_steps.items, content_w, wb.agent.mode);
-    lines += @as(usize, @intFromFloat(std.math.ceil(steps_h / chat_bubble_mod.line_h)));
-    return @as(f32, @floatFromInt(lines)) * chat_bubble_mod.line_h;
+    var h: f32 = 0;
+    if (worker_running and wb.agent.stream_text.items.len == 0) {
+        h += chat_bubble_mod.thinkingLineHeight();
+    }
+    if (wb.agent.stream_text.items.len > 0) {
+        h += chat_bubble_mod.agentMessageHeight(wb.agent.stream_text.items, content_w);
+    }
+    return h;
 }
 
 fn appendMessageMetrics(cache: *Cache, wb: anytype, msg_h: f32, line_entry: chat_message_lines_mod.Entry) void {
@@ -103,15 +113,33 @@ fn appendMessageMetrics(cache: *Cache, wb: anytype, msg_h: f32, line_entry: chat
 
 fn messageTextWidth(content_w: f32, is_user: bool) f32 {
     if (is_user) return chat_bubble_mod.textMaxWidth(content_w);
-    return content_w;
+    return content_w - 28.0; // Agent message has 28px left margin for avatar
 }
 
 fn buildLineEntry(wb: anytype, msg: anytype, content_w: f32) chat_message_lines_mod.Entry {
+    if (msg.role == .tool) return .{};
     const text_w = messageTextWidth(content_w, msg.role == .user);
     return chat_message_lines_mod.build(wb.allocator, msg.content, text_w) catch .{};
 }
 
-fn messageHeight(line_entry: chat_message_lines_mod.Entry, is_user: bool, text: []const u8, content_w: f32) f32 {
+pub fn toolStepFromMessage(msg: anytype) [1]agent_session_mod.AgentStep {
+    return .{.{
+        .index = msg.tool_index,
+        .kind = msg.tool_kind orelse "tool",
+        .summary = msg.content,
+        .expanded = agent_session_mod.shouldAutoExpandStep(msg.tool_kind orelse "tool", msg.tool_content),
+        .content = msg.tool_content,
+        .running = msg.tool_running,
+    }};
+}
+
+fn messageHeight(line_entry: chat_message_lines_mod.Entry, msg: anytype, content_w: f32) f32 {
+    if (msg.role == .tool) {
+        var step = toolStepFromMessage(msg);
+        return tool_step_card_mod.stepHeight(step[0..], 0, content_w, .agent) + 8.0;
+    }
+    const is_user = msg.role == .user;
+    const text = msg.content;
     if (!agent_panel_mod.chatHasVisibleContent(text)) return 0;
     return chat_message_lines_mod.layoutHeight(line_entry, is_user, text, content_w);
 }
@@ -124,7 +152,7 @@ fn rebuildHistory(wb: anytype, cache: *Cache, content_w: f32) void {
         while (i < total) : (i += 1) {
             const msg = wb.chat_history.items[i];
             const line_entry = buildLineEntry(wb, msg, content_w);
-            const msg_h = messageHeight(line_entry, msg.role == .user, msg.content, content_w);
+            const msg_h = messageHeight(line_entry, msg, content_w);
             appendMessageMetrics(cache, wb, msg_h, line_entry);
             history_h += msg_h;
         }
@@ -141,7 +169,7 @@ fn rebuildHistory(wb: anytype, cache: *Cache, content_w: f32) void {
     var history_h: f32 = 0;
     for (wb.chat_history.items) |msg| {
         const line_entry = buildLineEntry(wb, msg, content_w);
-        const msg_h = messageHeight(line_entry, msg.role == .user, msg.content, content_w);
+        const msg_h = messageHeight(line_entry, msg, content_w);
         appendMessageMetrics(cache, wb, msg_h, line_entry);
         history_h += msg_h;
     }
@@ -186,20 +214,14 @@ fn layoutChrome(wb: anytype, agent_h: f32) struct {
     viewport: f32,
 } {
     const chrome = agentChrome(wb);
-    const bottom = agent_panel_mod.bottomReserved(chrome.attachment_count, wb.agent_panel_width, &wb.prompt_buffer) +
-        context_inspector_mod.stripHeight(chrome.expanded, chrome.entry_count, chrome.has_detail, chrome.has_routing);
-    const strip_top = context_inspector_mod.stripTop(
-        agent_h,
-        chrome.expanded,
-        chrome.entry_count,
-        chrome.attachment_count,
-        wb.agent_panel_width,
-        &wb.prompt_buffer,
-        chrome.has_detail,
-        chrome.has_routing,
-    );
+    _ = chrome.expanded;
+    _ = chrome.entry_count;
+    _ = chrome.has_detail;
+    _ = chrome.has_routing;
+    const bottom = agent_panel_mod.bottomReserved(chrome.attachment_count, wb.agent_panel_width, &wb.prompt_buffer);
+    const composer_top = @import("../ui/agent/agent_composer.zig").composerTop(agent_h, chrome.attachment_count, wb.agent_panel_width, &wb.prompt_buffer);
     const chat_top = agent_panel_mod.chat_content_top + 8.0;
-    const viewport = @max(0, strip_top - 4 - chat_top);
+    const viewport = @max(0, composer_top - chat_composer_gap - chat_top);
     return .{ .bottom = bottom, .viewport = viewport };
 }
 
@@ -208,23 +230,25 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
     const cache = &wb.chat_layout;
 
     const history_dirty = cache.content_w != content_w or cache.built_revision != wb.chat_history_revision;
+    wb.agent.lock();
+    const stream_len = wb.agent.stream_text.items.len;
+    const thinking_len = wb.agent.thinking_text.items.len;
+    const steps_len = wb.agent.agent_steps.items.len;
+    const worker_running = wb.agent.worker_running or phaseShowsLive(wb.agent.phase);
+    wb.agent.unlock();
+
     if (!history_dirty and
         cache.agent_h == agent_h and
-        !cache.worker_running and
-        cache.steps_len == 0 and
-        cache.chrome_prompt_lines == wb.prompt_buffer.lineCount())
+        cache.worker_running == worker_running and
+        cache.steps_len == steps_len and
+        cache.stream_len == stream_len and
+        cache.thinking_len == thinking_len and
+        cache.bottom_reserved == layoutChrome(wb, agent_h).bottom)
     {
         return;
     }
 
     const chrome = layoutChrome(wb, agent_h);
-
-    wb.agent.lock();
-    const stream_len = wb.agent.stream_text.items.len;
-    const thinking_len = wb.agent.thinking_text.items.len;
-    const steps_len = wb.agent.agent_steps.items.len;
-    const worker_running = wb.agent.worker_running;
-    wb.agent.unlock();
 
     const live_dirty = history_dirty or
         cache.stream_len != stream_len or
@@ -239,7 +263,7 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
 
     if (history_dirty or live_dirty) {
         const live_h = liveContentHeight(wb, content_w);
-        cache.content_h = cache.history_content_h + live_h;
+        cache.content_h = cache.history_content_h + live_h + chat_bottom_padding;
         cache.stream_len = stream_len;
         cache.thinking_len = thinking_len;
         cache.steps_len = steps_len;
@@ -250,7 +274,8 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
             wb.agent.lock();
             const stream_text = wb.agent.stream_text.items;
             wb.agent.unlock();
-            cache.stream_entry = chat_message_lines_mod.build(wb.allocator, stream_text, content_w) catch .{};
+            const stream_text_w = content_w - 28.0;
+            cache.stream_entry = chat_message_lines_mod.build(wb.allocator, stream_text, stream_text_w) catch .{};
             cache.stream_built_len = stream_len;
         }
     }

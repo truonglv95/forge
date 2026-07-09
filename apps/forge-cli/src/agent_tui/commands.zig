@@ -90,8 +90,8 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear|/cls /policy /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /resume [id] /sessions /help /quit
-    \\Keys: Tab policy | Ctrl+M mode | Ctrl+R review tool output | Esc close events | PgUp/PgDn scroll | d/a/n proposal | Ctrl+C cancel/quit
+    \\Commands: /clear|/cls /policy /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /resume [id] /sessions /help /quit|/exit
+    \\Keys: Tab policy | Ctrl+M mode | Ctrl+R review tool output | Esc close events | PgUp/PgDn scroll | a/n proposal apply/dismiss | Ctrl+C cancel/quit
     ;
 }
 
@@ -109,6 +109,7 @@ test "parse slash commands" {
     try std.testing.expect(parseSlashCommand("/policy") == .policy);
     try std.testing.expect(parseSlashCommand("/help") == .help);
     try std.testing.expect(parseSlashCommand("/quit") == .exit_app);
+    try std.testing.expect(parseSlashCommand("/exit") == .exit_app);
     try std.testing.expect(parseSlashCommand("/sessions") == .sessions);
     {
         const cmd = parseSlashCommand("/events");

@@ -124,7 +124,11 @@ pub const Host = struct {
     pub fn discoverWorkspace(self: *Host, root: workspace.WorkspaceRoot) !void {
         self.workspace_root = root;
         try self.discoverUnderRoot(root, "extensions");
-        try self.discoverUnderRoot(root, ".forge/extensions");
+        const global_store = @import("forge-workspace").global_store;
+        if (global_store.getExtensionsDir(self.allocator)) |global_ext| {
+            defer self.allocator.free(global_ext);
+            self.discoverAbsolute(global_ext) catch {};
+        } else |_| {}
     }
 
     fn discoverUnderRoot(self: *Host, root: workspace.WorkspaceRoot, parent_rel: []const u8) !void {
@@ -134,6 +138,7 @@ pub const Host = struct {
         while (true) {
             const entry_opt = walker.next(self.io) catch break;
             const entry = entry_opt orelse break;
+
             if (entry.kind != .directory) continue;
             if (!std.mem.startsWith(u8, entry.path, parent_rel)) continue;
             if (entry.path.len <= parent_rel.len + 1) continue;
@@ -155,6 +160,51 @@ pub const Host = struct {
                 try self.extensions.append(self.allocator, loaded);
             }
         }
+    }
+
+    fn discoverAbsolute(self: *Host, parent_abs: []const u8) !void {
+        var dir = std.Io.Dir.openDirAbsolute(self.io, parent_abs, .{ .iterate = true }) catch return;
+        defer dir.close(self.io);
+
+        var iter = dir.iterate();
+        while (try iter.next(self.io)) |entry| {
+            if (entry.kind != .directory) continue;
+
+            if (entry.kind != .directory) continue;
+            if (std.mem.startsWith(u8, entry.name, "catalog")) continue;
+
+            const entry_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ parent_abs, entry.name });
+            defer self.allocator.free(entry_path);
+
+            if (try self.tryLoadManifestAbsolute(entry_path)) |loaded_value| {
+                var loaded = loaded_value;
+                if (self.findExtension(loaded.id) != null) {
+                    loaded.deinit(self.allocator);
+                    continue;
+                }
+                try self.extensions.append(self.allocator, loaded);
+            }
+        }
+    }
+
+    fn tryLoadManifestAbsolute(self: *Host, entry_path: []const u8) !?LoadedExtension {
+        const manifest_path = try std.fmt.allocPrint(self.allocator, "{s}/forge.toml", .{entry_path});
+        defer self.allocator.free(manifest_path);
+
+        if (workspace.global_store.readAbsoluteFile(self.allocator, self.io, manifest_path)) |content| {
+            defer self.allocator.free(content);
+            return self.loadFromManifestSource(entry_path, content);
+        } else |_| {}
+
+        const package_path = try std.fmt.allocPrint(self.allocator, "{s}/package.json", .{entry_path});
+        defer self.allocator.free(package_path);
+
+        if (workspace.global_store.readAbsoluteFile(self.allocator, self.io, package_path)) |content| {
+            defer self.allocator.free(content);
+            return self.loadFromPackageJsonSource(entry_path, content);
+        } else |_| {}
+
+        return null;
     }
 
     fn tryLoadManifest(self: *Host, root: workspace.WorkspaceRoot, entry_path: []const u8) !?LoadedExtension {

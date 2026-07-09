@@ -148,7 +148,7 @@ test "topByMtime returns workspace files" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     const atomic = @import("atomic.zig");
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("sample.txt"), "sample");

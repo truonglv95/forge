@@ -32,13 +32,9 @@ pub const Entry = struct {
     }
 };
 
-const bubble_pad_x: f32 = 8.0;
-const bubble_pad_y: f32 = 6.0;
-const bubble_gap: f32 = 10.0;
-
-fn usesMarkdown(text: []const u8) bool {
-    return std.mem.indexOf(u8, text, "```") != null or std.mem.indexOf(u8, text, "**") != null;
-}
+const bubble_pad_y: f32 = 10.0;
+const bubble_gap: f32 = 16.0;
+const layout_safety_pad: f32 = 8.0;
 
 fn lineHasInlineMarkup(line: []const u8) bool {
     for (line) |ch| {
@@ -51,6 +47,14 @@ fn paragraphHasInlineMarkup(text: []const u8) bool {
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line| {
         if (lineHasInlineMarkup(line)) return true;
+    }
+    return false;
+}
+
+fn paragraphHasBlockMarkdown(text: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (chat_markdown.lineHasBlockMarkdown(line)) return true;
     }
     return false;
 }
@@ -165,7 +169,7 @@ fn buildMarkdownCached(allocator: std.mem.Allocator, text: []const u8, content_w
                 const trimmed = trimRange(text, cursor, fence.open_end - 1);
                 if (trimmed.end > trimmed.start) {
                     const para = text[trimmed.start..trimmed.end];
-                    if (paragraphHasInlineMarkup(para)) return error.NeedsRuntimeMarkdown;
+                    if (paragraphHasInlineMarkup(para) or paragraphHasBlockMarkdown(para)) return error.NeedsRuntimeMarkdown;
                     var text_lines: std.ArrayList(LineRange) = .empty;
                     errdefer text_lines.deinit(allocator);
                     try appendLinesInRange(allocator, &text_lines, text, trimmed.start, trimmed.end, max_w, chat_markdown.body_font_size);
@@ -189,7 +193,7 @@ fn buildMarkdownCached(allocator: std.mem.Allocator, text: []const u8, content_w
         const trimmed = trimRange(text, cursor, text.len);
         if (trimmed.end > trimmed.start) {
             const tail = text[trimmed.start..trimmed.end];
-            if (paragraphHasInlineMarkup(tail)) return error.NeedsRuntimeMarkdown;
+            if (paragraphHasInlineMarkup(tail) or paragraphHasBlockMarkdown(tail)) return error.NeedsRuntimeMarkdown;
             var text_lines: std.ArrayList(LineRange) = .empty;
             errdefer text_lines.deinit(allocator);
             try appendLinesInRange(allocator, &text_lines, text, trimmed.start, trimmed.end, max_w, chat_markdown.body_font_size);
@@ -228,7 +232,7 @@ fn buildPlain(allocator: std.mem.Allocator, text: []const u8, content_w: f32) !E
 
 pub fn build(allocator: std.mem.Allocator, text: []const u8, content_w: f32) !Entry {
     if (text.len == 0) return .{};
-    if (usesMarkdown(text)) {
+    if (chat_markdown.usesMarkdown(text)) {
         if (buildMarkdownCached(allocator, text, content_w)) |entry| return entry else |_| {
             return .{
                 .markdown = true,
@@ -243,8 +247,8 @@ pub fn build(allocator: std.mem.Allocator, text: []const u8, content_w: f32) !En
 pub fn layoutHeight(entry: Entry, is_user: bool, text: []const u8, content_w: f32) f32 {
     _ = content_w;
     if (text.len == 0 or entry.height == 0) return 0;
-    if (is_user) return entry.height + bubble_pad_y * 2 + bubble_gap;
-    return entry.height + bubble_gap;
+    if (is_user) return entry.height + bubble_pad_y * 2 + bubble_gap + layout_safety_pad;
+    return entry.height + bubble_gap + layout_safety_pad;
 }
 
 pub fn drawPlain(text: []const u8, entry: *const Entry, x: f32, y: f32, fg: renderer.Color) f32 {

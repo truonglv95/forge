@@ -10,8 +10,11 @@ pub fn snapshotDirtyDocs(
     root: workspace.WorkspaceRoot,
     tabs: *const editor.TabGroup,
 ) !void {
-    try workspace.atomic.createDirPath(io, root, ".forge");
-    try workspace.atomic.createDirPath(io, root, ".forge/recovery");
+    const session_dir = try workspace.global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const recovery_dir = try std.fmt.allocPrint(allocator, "{s}/recovery", .{session_dir});
+    defer allocator.free(recovery_dir);
+    std.Io.Dir.createDirPath(.cwd(), io, recovery_dir) catch {};
 
     for (tabs.tabs.items) |*doc| {
         if (!doc.isDirty()) continue;
@@ -29,11 +32,10 @@ pub fn snapshotDirtyDocs(
             const out = if (c == '/') '_' else c;
             try safe_path.append(allocator, out);
         }
-        const rel = try std.fmt.allocPrint(allocator, ".forge/recovery/{s}.snap", .{safe_path.items});
-        defer allocator.free(rel);
+        const abs_path = try std.fmt.allocPrint(allocator, "{s}/{s}.snap", .{ recovery_dir, safe_path.items });
+        defer allocator.free(abs_path);
 
-        const wp = try workspace.WorkspacePath.parse(rel);
-        try workspace.atomic.replaceFile(io, root, wp, payload);
+        try workspace.global_store.replaceAbsoluteFile(io, abs_path, payload);
     }
 }
 
@@ -42,8 +44,12 @@ pub fn listRecoveryFiles(
     io: std.Io,
     root: workspace.WorkspaceRoot,
 ) ![]const []const u8 {
-    var summary = try workspace.tree.scan(allocator, io, root, ".forge/recovery");
-    defer summary.deinit();
+    const session_dir = try workspace.global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const recovery_dir = try std.fmt.allocPrint(allocator, "{s}/recovery", .{session_dir});
+    defer allocator.free(recovery_dir);
+
+    var dir = std.Io.Dir.openDirAbsolute(io, recovery_dir, .{ .iterate = true }) catch return &.{};
 
     var paths: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -51,11 +57,13 @@ pub fn listRecoveryFiles(
         paths.deinit(allocator);
     }
 
-    for (summary.entries) |entry| {
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.path, ".snap")) continue;
-        try paths.append(allocator, try allocator.dupe(u8, entry.path));
+        if (!std.mem.endsWith(u8, entry.name, ".snap")) continue;
+        try paths.append(allocator, try allocator.dupe(u8, entry.name));
     }
+    dir.close(io);
     return try paths.toOwnedSlice(allocator);
 }
 
@@ -75,17 +83,21 @@ pub fn readSnapshot(
     root: workspace.WorkspaceRoot,
     snap_rel_path: []const u8,
 ) !struct { path: []const u8, content: []const u8 } {
-    const wp = try workspace.WorkspacePath.parse(snap_rel_path);
-    var snap = try workspace.FileSnapshot.read(allocator, io, root, wp);
-    defer snap.deinit();
+    const session_dir = try workspace.global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const abs_path = try std.fmt.allocPrint(allocator, "{s}/recovery/{s}", .{ session_dir, snap_rel_path });
+    defer allocator.free(abs_path);
 
-    const parsed = parseSnapshotPayload(snap.content);
+    const content = try workspace.global_store.readAbsoluteFile(allocator, io, abs_path);
+    defer allocator.free(content);
+
+    const parsed = parseSnapshotPayload(content);
     const path = if (parsed.path.len > 0)
         try allocator.dupe(u8, parsed.path)
     else
         try inferPathFromSnapName(allocator, snap_rel_path);
-    const content = try allocator.dupe(u8, parsed.content);
-    return .{ .path = path, .content = content };
+    const ret_content = try allocator.dupe(u8, parsed.content);
+    return .{ .path = path, .content = ret_content };
 }
 
 fn inferPathFromSnapName(allocator: std.mem.Allocator, snap_rel_path: []const u8) ![]const u8 {
@@ -103,12 +115,17 @@ fn inferPathFromSnapName(allocator: std.mem.Allocator, snap_rel_path: []const u8
 }
 
 pub fn deleteSnapshot(
+    allocator: std.mem.Allocator,
     io: std.Io,
     root: workspace.WorkspaceRoot,
     snap_rel_path: []const u8,
 ) !void {
-    const wp = try workspace.WorkspacePath.parse(snap_rel_path);
-    try workspace.atomic.deleteFile(io, root, wp);
+    const session_dir = try workspace.global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const abs_path = try std.fmt.allocPrint(allocator, "{s}/recovery/{s}", .{ session_dir, snap_rel_path });
+    defer allocator.free(abs_path);
+
+    workspace.global_store.deleteAbsoluteFile(io, abs_path);
 }
 
 pub fn countRecoveryFiles(
@@ -138,7 +155,7 @@ test "recovery writes snapshot for dirty doc" {
     try doc.buffer.loadFromSlice("dirty content");
     try doc.buffer.insertString("!");
 
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try snapshotDirtyDocs(allocator, io, root, &tabs);
 
     const paths = try listRecoveryFiles(allocator, io, root);

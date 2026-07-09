@@ -72,6 +72,12 @@ pub const Palette = struct {
     number: Rgba,
     punctuation: Rgba,
     string_color: Rgba,
+    type: Rgba,
+    parameter: Rgba,
+    variable: Rgba,
+    property: Rgba,
+    function: Rgba,
+    comment: Rgba,
     diff_add: Rgba,
     diff_remove: Rgba,
     accent: Rgba,
@@ -83,10 +89,11 @@ pub const Palette = struct {
 pub const ThemeSettings = struct {
     preset: ThemePreset = .dark,
     font_family: []const u8 = "Menlo",
+    ui_font_family: []const u8 = "Inter",
     font_size: f32 = 14,
     font_weight: FontWeight = .regular,
     line_height: f32 = 1.5,
-    ui_font_size: f32 = 12,
+    ui_font_size: f32 = 13,
     background: ?Rgba = null,
     foreground: ?Rgba = null,
     keyword: ?Rgba = null,
@@ -97,6 +104,7 @@ pub const ThemeSettings = struct {
     pub fn mergeFrom(self: *ThemeSettings, override: ThemeOverrides) void {
         if (override.preset) |v| self.preset = v;
         if (override.font_family) |v| self.font_family = v;
+        if (override.ui_font_family) |v| self.ui_font_family = v;
         if (override.font_size) |v| self.font_size = v;
         if (override.font_weight) |v| self.font_weight = v;
         if (override.line_height) |v| self.line_height = v;
@@ -139,6 +147,8 @@ pub const ThemeSettings = struct {
             self.preset = ThemePreset.parse(try parseStringValue(value)) orelse return error.InvalidValue;
         } else if (std.mem.eql(u8, key, "font_family")) {
             self.font_family = try parseStringValue(value);
+        } else if (std.mem.eql(u8, key, "ui_font_family")) {
+            self.ui_font_family = try parseStringValue(value);
         } else if (std.mem.eql(u8, key, "font_size")) {
             self.font_size = std.fmt.parseFloat(f32, value) catch return error.InvalidValue;
             if (self.font_size < 8 or self.font_size > 32) return error.InvalidValue;
@@ -181,6 +191,7 @@ fn parseColorValue(value: []const u8) error{InvalidValue}!Rgba {
 pub const ThemeOverrides = struct {
     preset: ?ThemePreset = null,
     font_family: ?[]const u8 = null,
+    ui_font_family: ?[]const u8 = null,
     font_size: ?f32 = null,
     font_weight: ?FontWeight = null,
     line_height: ?f32 = null,
@@ -197,6 +208,8 @@ pub const ThemeOverrides = struct {
             self.preset = ThemePreset.parse(try parseStringValue(value)) orelse return error.InvalidValue;
         } else if (std.mem.eql(u8, key, "font_family")) {
             self.font_family = try parseStringValue(value);
+        } else if (std.mem.eql(u8, key, "ui_font_family")) {
+            self.ui_font_family = try parseStringValue(value);
         } else if (std.mem.eql(u8, key, "font_size")) {
             const size = std.fmt.parseFloat(f32, value) catch return error.InvalidValue;
             if (size < 8 or size > 32) return error.InvalidValue;
@@ -232,6 +245,7 @@ pub const ThemeOverrides = struct {
 pub const Theme = struct {
     preset: ThemePreset,
     font_family: []const u8,
+    ui_font_family: []const u8,
     editor_font_size: f32,
     ui_font_size: f32,
     font_weight: FontWeight,
@@ -242,10 +256,14 @@ pub const Theme = struct {
     measured_line_height: f32 = 0,
     measured_baseline: f32 = 0,
     owned_family: ?[]const u8 = null,
+    owned_ui_family: ?[]const u8 = null,
     allocator: ?std.mem.Allocator = null,
 
     pub fn deinit(self: *Theme) void {
         if (self.owned_family) |family| {
+            if (self.allocator) |allocator| allocator.free(family);
+        }
+        if (self.owned_ui_family) |family| {
             if (self.allocator) |allocator| allocator.free(family);
         }
         self.* = undefined;
@@ -283,6 +301,8 @@ pub const Theme = struct {
         theme.line_height_scale = settings.line_height;
         theme.font_family = try allocator.dupe(u8, settings.font_family);
         theme.owned_family = theme.font_family;
+        theme.ui_font_family = try allocator.dupe(u8, settings.ui_font_family);
+        theme.owned_ui_family = theme.ui_font_family;
         theme.allocator = allocator;
 
         if (settings.background) |color| theme.colors.editor_bg = color;
@@ -301,6 +321,7 @@ pub const Theme = struct {
     pub fn darkDefault() Theme {
         var theme = presetPalette(.dark);
         theme.font_family = "Menlo";
+        theme.ui_font_family = "Inter";
         return theme;
     }
 };
@@ -310,46 +331,54 @@ fn presetPalette(preset: ThemePreset) Theme {
         .dark => .{
             .preset = .dark,
             .font_family = "Menlo",
+            .ui_font_family = "Inter",
             .editor_font_size = 14,
-            .ui_font_size = 12,
+            .ui_font_size = 13,
             .font_weight = .regular,
             .line_height_scale = 1.5,
             .tab_width = 4,
             .colors = .{
-                .workbench_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .header_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .activity_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .sidebar_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .agent_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .editor_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .tab_bar_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .tab_active_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .panel_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .status_bg = .{ .r = 0.05, .g = 0.05, .b = 0.05 },
-                .border = .{ .r = 0.12, .g = 0.12, .b = 0.12 },
-                .text_primary = .{ .r = 0.92, .g = 0.92, .b = 0.92 },
-                .text_secondary = .{ .r = 0.8, .g = 0.8, .b = 0.8 },
-                .text_muted = .{ .r = 0.55, .g = 0.55, .b = 0.55 },
-                .editor_fg = .{ .r = 0.9, .g = 0.9, .b = 0.9 },
-                .line_number = .{ .r = 0.5, .g = 0.5, .b = 0.5 },
-                .cursor = .{ .r = 1.0, .g = 1.0, .b = 1.0 },
-                .keyword = .{ .r = 0.9, .g = 0.4, .b = 0.7 },
-                .number = .{ .r = 0.5, .g = 0.8, .b = 0.5 },
+                .workbench_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
+                .header_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
+                .activity_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
+                .sidebar_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
+                .agent_bg = .{ .r = 0.12, .g = 0.12, .b = 0.12 },
+                .editor_bg = .{ .r = 0.12, .g = 0.12, .b = 0.12 },
+                .tab_bar_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
+                .tab_active_bg = .{ .r = 0.12, .g = 0.12, .b = 0.12 },
+                .panel_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
+                .status_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
+                .border = .{ .r = 0.18, .g = 0.18, .b = 0.18 },
+                .text_primary = .{ .r = 0.9, .g = 0.9, .b = 0.9 },
+                .text_secondary = .{ .r = 0.7, .g = 0.7, .b = 0.7 },
+                .text_muted = .{ .r = 0.5, .g = 0.5, .b = 0.5 },
+                .editor_fg = .{ .r = 0.85, .g = 0.85, .b = 0.85 },
+                .line_number = .{ .r = 0.4, .g = 0.4, .b = 0.4 },
+                .cursor = .{ .r = 0.8, .g = 0.8, .b = 0.8 },
+                .keyword = .{ .r = 0.35, .g = 0.6, .b = 0.85 },
+                .number = .{ .r = 0.7, .g = 0.8, .b = 0.6 },
                 .punctuation = .{ .r = 0.6, .g = 0.6, .b = 0.6 },
-                .string_color = .{ .r = 0.85, .g = 0.75, .b = 0.55 },
-                .diff_add = .{ .r = 0.5, .g = 0.9, .b = 0.5 },
-                .diff_remove = .{ .r = 0.95, .g = 0.45, .b = 0.45 },
-                .accent = .{ .r = 0.15, .g = 0.35, .b = 0.55 },
-                .accent_soft = .{ .r = 0.22, .g = 0.35, .b = 0.55 },
-                .selection = .{ .r = 0.22, .g = 0.22, .b = 0.26 },
-                .warning = .{ .r = 1.0, .g = 0.6, .b = 0.2 },
+                .string_color = .{ .r = 0.8, .g = 0.55, .b = 0.4 },
+                .type = .{ .r = 0.3, .g = 0.75, .b = 0.65 },
+                .parameter = .{ .r = 0.8, .g = 0.6, .b = 0.3 },
+                .variable = .{ .r = 0.6, .g = 0.8, .b = 0.95 },
+                .property = .{ .r = 0.5, .g = 0.7, .b = 0.85 },
+                .function = .{ .r = 0.85, .g = 0.85, .b = 0.6 },
+                .comment = .{ .r = 0.4, .g = 0.6, .b = 0.4 },
+                .diff_add = .{ .r = 0.2, .g = 0.5, .b = 0.2 },
+                .diff_remove = .{ .r = 0.6, .g = 0.2, .b = 0.2 },
+                .accent = .{ .r = 0.15, .g = 0.45, .b = 0.85 },
+                .accent_soft = .{ .r = 0.2, .g = 0.3, .b = 0.5 },
+                .selection = .{ .r = 0.15, .g = 0.3, .b = 0.45 },
+                .warning = .{ .r = 0.8, .g = 0.6, .b = 0.1 },
             },
         },
         .light => .{
             .preset = .light,
             .font_family = "Menlo",
+            .ui_font_family = "Inter",
             .editor_font_size = 14,
-            .ui_font_size = 12,
+            .ui_font_size = 13,
             .font_weight = .regular,
             .line_height_scale = 1.5,
             .tab_width = 4,
@@ -375,6 +404,12 @@ fn presetPalette(preset: ThemePreset) Theme {
                 .number = .{ .r = 0.08, .g = 0.55, .b = 0.08 },
                 .punctuation = .{ .r = 0.35, .g = 0.35, .b = 0.35 },
                 .string_color = .{ .r = 0.65, .g = 0.2, .b = 0.2 },
+                .type = .{ .r = 0.1, .g = 0.5, .b = 0.4 },
+                .parameter = .{ .r = 0.6, .g = 0.3, .b = 0.0 },
+                .variable = .{ .r = 0.0, .g = 0.2, .b = 0.5 },
+                .property = .{ .r = 0.5, .g = 0.1, .b = 0.4 },
+                .function = .{ .r = 0.4, .g = 0.3, .b = 0.1 },
+                .comment = .{ .r = 0.4, .g = 0.6, .b = 0.4 },
                 .diff_add = .{ .r = 0.1, .g = 0.55, .b = 0.1 },
                 .diff_remove = .{ .r = 0.75, .g = 0.15, .b = 0.15 },
                 .accent = .{ .r = 0.0, .g = 0.45, .b = 0.85 },

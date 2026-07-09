@@ -59,7 +59,11 @@ test "agent events are appended to session log" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = @import("forge-workspace").WorkspaceRoot.init(tmp.dir);
+    const abs = try std.fmt.allocPrint(allocator, "/tmp/forge-test-{s}", .{tmp.sub_path});
+    defer allocator.free(abs);
+    try @import("forge-workspace").global_store.setForgeHomeOverride(abs);
+    defer @import("forge-workspace").global_store.clearForgeHomeOverride();
+    const root = @import("forge-workspace").WorkspaceRoot.init(tmp.dir, ".");
 
     // Minimal task; fake provider will propose quickly.
     var result = try @import("agent.zig").run(allocator, io, null, root, "search sample", .{
@@ -75,7 +79,7 @@ test "agent events are appended to session log" {
     });
     defer @import("agent.zig").deinitResult(allocator, &result);
 
-    const events = @import("forge-workspace").sessions.readEvents(allocator, io, root, result.session_id) catch {
+    const events = @import("forge-workspace").sessions.readEvents(allocator, io, result.session_id) catch {
         try std.testing.expect(false);
         return;
     };
@@ -91,7 +95,11 @@ test "validation_result event includes task counts when repair loop runs" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = @import("forge-workspace").WorkspaceRoot.init(tmp.dir);
+    const abs = try std.fmt.allocPrint(allocator, "/tmp/forge-test-{s}", .{tmp.sub_path});
+    defer allocator.free(abs);
+    try @import("forge-workspace").global_store.setForgeHomeOverride(abs);
+    defer @import("forge-workspace").global_store.clearForgeHomeOverride();
+    const root = @import("forge-workspace").WorkspaceRoot.init(tmp.dir, ".");
     try @import("forge-workspace").atomic.replaceFile(io, root, try @import("forge-workspace").WorkspacePath.parse("build.zig"), ""); // enable zig tasks
 
     var result = try @import("agent.zig").run(allocator, io, null, root, "search sample", .{
@@ -107,7 +115,7 @@ test "validation_result event includes task counts when repair loop runs" {
     });
     defer @import("agent.zig").deinitResult(allocator, &result);
 
-    const events = try @import("forge-workspace").sessions.readEvents(allocator, io, root, result.session_id);
+    const events = try @import("forge-workspace").sessions.readEvents(allocator, io, result.session_id);
     defer allocator.free(events);
     // We expect the JSON fields to exist when validation_result is emitted.
     if (std.mem.indexOf(u8, events, "\"type\":\"validation_result\"") != null) {
@@ -122,7 +130,11 @@ test "multi-agent planner/reviewer subagents emit events when enabled" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = @import("forge-workspace").WorkspaceRoot.init(tmp.dir);
+    const abs = try std.fmt.allocPrint(allocator, "/tmp/forge-test-{s}", .{tmp.sub_path});
+    defer allocator.free(abs);
+    try @import("forge-workspace").global_store.setForgeHomeOverride(abs);
+    defer @import("forge-workspace").global_store.clearForgeHomeOverride();
+    const root = @import("forge-workspace").WorkspaceRoot.init(tmp.dir, ".");
 
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
@@ -141,7 +153,7 @@ test "multi-agent planner/reviewer subagents emit events when enabled" {
     });
     defer @import("agent.zig").deinitResult(allocator, &result);
 
-    const events = try @import("forge-workspace").sessions.readEvents(allocator, io, root, result.session_id);
+    const events = try @import("forge-workspace").sessions.readEvents(allocator, io, result.session_id);
     defer allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"subagent_started\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"type\":\"subagent_result\"") != null);

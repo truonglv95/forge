@@ -110,6 +110,8 @@ pub const FakeProvider = struct {
 
         const payload = if (std.mem.indexOf(u8, prompt, "MARKDOWN PLAN MODE") != null)
             self.plan_response orelse self.response
+        else if (std.mem.indexOf(u8, prompt, "INTENT_CLASSIFIER_MODE") != null)
+            self.response
         else
             self.response;
 

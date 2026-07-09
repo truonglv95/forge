@@ -12,16 +12,16 @@ pub const prompt_font_size: f32 = 13.5;
 pub const prompt_line_h: f32 = 18.0;
 pub const scroll_bar_w: f32 = scrollbar.track_w;
 
-pub const composer_pad: f32 = 10;
-pub const input_min_h: f32 = 66;
-pub const input_max_h: f32 = 144;
-pub const composer_chrome_h: f32 = 52;
+pub const composer_pad: f32 = 12;
+pub const input_min_h: f32 = 56;
+pub const input_max_h: f32 = 220;
+pub const composer_chrome_h: f32 = 12;
 pub const composer_base_h: f32 = composer_chrome_h + input_min_h;
 pub const composer_max_h: f32 = composer_chrome_h + input_max_h;
 pub const attachment_row_h: f32 = 26;
 pub const chip_h: f32 = 18;
 pub const chip_remove_w: f32 = 16;
-pub const toolbar_h: f32 = 30;
+pub const toolbar_h: f32 = 24;
 pub const input_pad: f32 = 12;
 
 pub const ModelOption = struct {
@@ -30,12 +30,39 @@ pub const ModelOption = struct {
     provider: []const u8,
 };
 
-pub const models = [_]ModelOption{
+pub const default_models = [_]ModelOption{
+    .{ .id = "qwen3.5:35b", .label = "Qwen 3.5 35B (Ollama)", .provider = "ollama" },
     .{ .id = "qwen2.5-coder:7b", .label = "Qwen 2.5 Coder 7B (Ollama)", .provider = "ollama" },
     .{ .id = "gemini-2.5-flash", .label = "Gemini 2.5 Flash", .provider = "gemini" },
     .{ .id = "gemini-2.5-pro", .label = "Gemini 2.5 Pro", .provider = "gemini" },
     .{ .id = "gemini-2.0-flash", .label = "Gemini 2.0 Flash", .provider = "gemini" },
 };
+
+pub fn parseCustomModels(allocator: std.mem.Allocator, custom_str: []const u8) ![]ModelOption {
+    var list: std.ArrayList(ModelOption) = .empty;
+    defer list.deinit(allocator);
+
+    try list.appendSlice(allocator, &default_models);
+
+    var it = std.mem.splitScalar(u8, custom_str, ',');
+    while (it.next()) |part| {
+        const trimmed = std.mem.trim(u8, part, &std.ascii.whitespace);
+        if (trimmed.len == 0) continue;
+
+        var field_it = std.mem.splitScalar(u8, trimmed, '|');
+        const id = field_it.next() orelse continue;
+        const label = field_it.next() orelse continue;
+        const provider = field_it.next() orelse continue;
+
+        try list.append(allocator, .{
+            .id = try allocator.dupe(u8, std.mem.trim(u8, id, &std.ascii.whitespace)),
+            .label = try allocator.dupe(u8, std.mem.trim(u8, label, &std.ascii.whitespace)),
+            .provider = try allocator.dupe(u8, std.mem.trim(u8, provider, &std.ascii.whitespace)),
+        });
+    }
+
+    return list.toOwnedSlice(allocator);
+}
 
 pub const ModeOption = struct {
     mode: agent_session.Mode,
@@ -85,10 +112,17 @@ pub fn visualLineCount(prompt: *const editor.Buffer, agent_w: f32) usize {
 
 pub fn composerHeight(attachment_count: usize, visual_lines: usize) f32 {
     const lines = @max(1, visual_lines);
-    const desired_input = @as(f32, @floatFromInt(lines)) * prompt_line_h + 4;
+    const desired_input = @as(f32, @floatFromInt(lines)) * prompt_line_h + input_pad * 2;
     const input_h = std.math.clamp(desired_input, input_min_h, input_max_h);
     const attachment_extra = if (attachment_count > 0) attachment_row_h else 0;
     return composer_chrome_h + attachment_extra + input_h;
+}
+
+pub fn inputTextHeight(attachment_count: usize, visual_lines: usize) f32 {
+    const composer_h = composerHeight(attachment_count, visual_lines);
+    const attachment_extra = if (attachment_count > 0) attachment_row_h else 0;
+    const input_box_h = composer_h - composer_chrome_h - attachment_extra;
+    return @max(prompt_line_h, input_box_h - input_pad - 4);
 }
 
 pub fn promptScrollMax(visual_lines: usize, input_h: f32) f32 {
@@ -159,14 +193,27 @@ pub fn computeLayout(
     const composer_top = window_h - layout.status_height - composer_h - composer_pad;
     const box_x = agent_x + composer_pad;
     const box_w = agent_w - composer_pad * 2;
-    const toolbar_y = composer_top + composer_h - toolbar_h - 8;
-    const input_y = composer_top + 8 + if (attachment_count > 0) attachment_row_h else 0;
-    const input_h = toolbar_y - input_y - 6;
 
-    const mode_btn = Rect{ .x = box_x + 10, .y = toolbar_y + 2, .w = 68, .h = 24 };
-    const model_btn = Rect{ .x = mode_btn.x + mode_btn.w + 6, .y = toolbar_y + 2, .w = 148, .h = 24 };
-    const send_btn = Rect{ .x = box_x + box_w - 62, .y = toolbar_y + 2, .w = 52, .h = 24 };
-    const scope_btn = Rect{ .x = send_btn.x - 34, .y = toolbar_y + 2, .w = 28, .h = 24 };
+    // The input box takes up the upper part of the composer height
+    // The toolbar (mode, model) sits below it
+    const toolbar_y = composer_top + composer_h - toolbar_h;
+
+    // Inside the input box, text starts at input_y
+    const input_y = composer_top + 8 + if (attachment_count > 0) attachment_row_h else 0;
+
+    // Send and Scope buttons are inside the input box, at the bottom right
+    const input_box_h = composer_h - composer_chrome_h;
+    const inner_bottom = composer_top + input_box_h;
+
+    // input_h is the area for the text itself
+    const input_h = inputTextHeight(attachment_count, visual_lines);
+
+    const mode_btn = Rect{ .x = box_x, .y = toolbar_y + 4, .w = 0, .h = 0 };
+    const model_btn = Rect{ .x = box_x, .y = toolbar_y + 4, .w = 0, .h = 0 };
+
+    // Send and scope are positioned at the bottom right inside the input box
+    const send_btn = Rect{ .x = box_x + box_w - 32, .y = inner_bottom - 28, .w = 24, .h = 24 };
+    const scope_btn = Rect{ .x = send_btn.x - 30, .y = inner_bottom - 28, .w = 24, .h = 24 };
 
     return .{
         .composer_top = composer_top,
@@ -192,14 +239,15 @@ fn modeLabel(mode: agent_session.Mode) []const u8 {
     return @tagName(mode);
 }
 
-fn modelLabel(model_id: ?[]const u8) []const u8 {
+fn modelLabel(models: []const ModelOption, model_id: ?[]const u8) []const u8 {
     if (model_id) |id| {
         for (models) |entry| {
             if (std.mem.eql(u8, entry.id, id)) return entry.label;
         }
         return id;
     }
-    return models[0].label;
+    if (models.len > 0) return models[0].label;
+    return "Unknown";
 }
 
 fn promptIsEmpty(prompt: *const editor.Buffer) bool {
@@ -252,48 +300,46 @@ fn drawPromptScrollbar(layout_info: Layout, scroll_y: f32, x: f32, show: bool) v
     scrollbar.drawVertical(track_x, track_y, track_h, scroll_y, layout_info.scroll_max, content_h, track_h, true);
 }
 
-fn drawDropdownButton(rect: Rect, label: []const u8, open: bool, enabled: bool) void {
-    const bg = if (open)
-        renderer.Color{ .r = 0.22, .g = 0.28, .b = 0.38, .a = 1.0 }
-    else if (enabled)
-        renderer.Color{ .r = 0.14, .g = 0.16, .b = 0.2, .a = 1.0 }
-    else
-        renderer.Color{ .r = 0.12, .g = 0.12, .b = 0.14, .a = 1.0 };
-    renderer.Renderer.drawRoundedRect(rect.x, rect.y, rect.w, rect.h, 6, bg);
-    const chevron_w: f32 = 12;
-    const label_pad: f32 = 8;
-    const label_max_w = rect.w - chevron_w - label_pad;
+fn drawDropdownButton(rect: Rect, label: []const u8, open: bool, enabled: bool, prefix: []const u8, color_tag: ?renderer.Color) void {
+    _ = open;
+    const prefix_w = if (prefix.len > 0) @as(f32, @floatFromInt(prefix.len)) * 6.5 + 4.0 else 0;
+    const label_max_w = rect.w - prefix_w - 4.0;
+
     var label_buf: [64:0]u8 = undefined;
     const clipped = if (label.len > 58) label[0..58] else label;
     @memcpy(label_buf[0..clipped.len], clipped);
     label_buf[clipped.len] = 0;
+
     const fg = if (enabled)
-        renderer.Color{ .r = 0.88, .g = 0.92, .b = 0.98, .a = 1.0 }
+        renderer.Color{ .r = 0.5, .g = 0.5, .b = 0.55, .a = 1.0 }
     else
-        renderer.Color{ .r = 0.5, .g = 0.52, .b = 0.58, .a = 1.0 };
+        renderer.Color{ .r = 0.35, .g = 0.35, .b = 0.4, .a = 1.0 };
+
+    var x = rect.x;
+
+    if (prefix.len > 0) {
+        const p_color = color_tag orelse fg;
+        renderer.Renderer.drawText(prefix, x, rect.y + 4, 11.5, p_color);
+        x += prefix_w;
+    }
+
     var display_len = clipped.len;
-    while (display_len > 0 and renderer.Renderer.measureText(label_buf[0..display_len], 10.0) > label_max_w) {
+    while (display_len > 0 and renderer.Renderer.measureText(label_buf[0..display_len], 11.5) > label_max_w) {
         display_len -= 1;
     }
     label_buf[display_len] = 0;
-    renderer.Renderer.drawText(@ptrCast(&label_buf), rect.x + label_pad, rect.y + 5, 10.0, fg);
-    const chevron_rect = Rect{
-        .x = rect.x + rect.w - chevron_w,
-        .y = rect.y,
-        .w = chevron_w,
-        .h = rect.h,
-    };
-    renderer.Renderer.drawSvg(if (open) renderer.icons.chevron_up else renderer.icons.chevron_down, chevron_rect.x, chevron_rect.y, 16, 16, .{ .r = 0.89, .g = 0.89, .b = 0.89, .a = fg.a });
+
+    renderer.Renderer.drawText(@ptrCast(&label_buf), x, rect.y + 4, 11.5, fg);
 }
 
-fn drawMenu(rect: Rect, items: []const []const u8, selected_index: usize) void {
+fn drawMenu(rect: Rect, labels: [][]const u8, selected: usize) void {
     const row_h: f32 = 24;
-    const menu_h = @as(f32, @floatFromInt(items.len)) * row_h + 8;
+    const menu_h = @as(f32, @floatFromInt(labels.len)) * row_h + 8;
     const menu_y = rect.y - menu_h - 4;
     renderer.Renderer.drawRoundedRect(rect.x, menu_y, rect.w, menu_h, 8, .{ .r = 0.12, .g = 0.14, .b = 0.18, .a = 1.0 });
     var row_y = menu_y + 4;
-    for (items, 0..) |item, index| {
-        if (index == selected_index) {
+    for (labels, 0..) |item, index| {
+        if (index == selected) {
             renderer.Renderer.drawRoundedRect(rect.x + 4, row_y, rect.w - 8, row_h - 2, 4, .{ .r = 0.2, .g = 0.32, .b = 0.48, .a = 1.0 });
         }
         var item_buf: [64:0]u8 = undefined;
@@ -341,6 +387,7 @@ pub fn draw(
     agent: *agent_session.Session,
     layout_info: Layout,
     model_id: ?[]const u8,
+    models: []const ModelOption,
     prompt: *const editor.Buffer,
     prompt_scroll_y: f32,
     show_cursor: bool,
@@ -349,21 +396,17 @@ pub fn draw(
 ) void {
     const disabled = worker_running or show_review;
     const bg = if (disabled)
-        renderer.Color{ .r = 0.11, .g = 0.11, .b = 0.12, .a = 1.0 }
+        renderer.Color{ .r = 0.17, .g = 0.17, .b = 0.17, .a = 1.0 }
     else
-        renderer.Color{ .r = 0.14, .g = 0.15, .b = 0.17, .a = 1.0 };
+        renderer.Color{ .r = 0.22, .g = 0.22, .b = 0.22, .a = 1.0 };
+    const outline_color = renderer.Color{ .r = 0.38, .g = 0.44, .b = 0.52, .a = 0.9 };
 
-    renderer.Renderer.drawRoundedRect(layout_info.box_x, layout_info.composer_top, layout_info.box_w, layout_info.composer_h, 14, bg);
-    renderer.Renderer.drawRoundedRect(layout_info.box_x + 1, layout_info.composer_top + 1, layout_info.box_w - 2, layout_info.composer_h - 2, 13, .{
-        .r = 0.1,
-        .g = 0.11,
-        .b = 0.13,
-        .a = 1.0,
-    });
+    const input_box_h = layout_info.composer_h - composer_chrome_h;
+    renderer.Renderer.drawRoundedRect(layout_info.box_x, layout_info.composer_top, layout_info.box_w, input_box_h, 6, outline_color);
+    renderer.Renderer.drawRoundedRect(layout_info.box_x + 1, layout_info.composer_top + 1, layout_info.box_w - 2, input_box_h - 2, 5, bg);
 
     agent.lock();
     const attachment_count = agent.attachments.items.len;
-    const mode = agent.mode;
     const mode_menu_open = agent.mode_menu_open;
     const model_menu_open = agent.model_menu_open;
     defer agent.unlock();
@@ -392,19 +435,19 @@ pub fn draw(
     }
 
     const text_x = layout_info.box_x + input_pad;
-    const text_y = layout_info.input_y + 4;
+    const text_y = layout_info.input_y + 1;
     const max_w = @max(40, layout_info.box_w - input_pad * 2 - scroll_bar_w);
-    const visible_h = layout_info.input_h - 4;
+    const visible_h = layout_info.input_h;
     const text_color = renderer.Color{ .r = 0.94, .g = 0.94, .b = 0.96, .a = 1.0 };
     const scroll_y = clampPromptScroll(prompt_scroll_y, layout_info.visual_lines, layout_info.input_h);
 
     renderer.Renderer.setClipRect(text_x, layout_info.input_y, max_w + scroll_bar_w, layout_info.input_h);
 
     if (promptIsEmpty(prompt) and !disabled) {
-        renderer.Renderer.drawText("Ask Forge anything… paste text or image", text_x, text_y, 13.0, .{
-            .r = 0.45,
-            .g = 0.48,
-            .b = 0.55,
+        renderer.Renderer.drawText("Type a message...", text_x, text_y, 13.0, .{
+            .r = 0.62,
+            .g = 0.64,
+            .b = 0.68,
             .a = 1.0,
         });
     } else {
@@ -430,40 +473,25 @@ pub fn draw(
     );
     drawPromptScrollbar(layout_info, scroll_y, layout_info.box_x + layout_info.box_w - scroll_bar_w - 4, show_scroll);
 
-    drawDropdownButton(layout_info.mode_btn, modeLabel(mode), mode_menu_open, !disabled);
-    drawDropdownButton(layout_info.model_btn, modelLabel(model_id), model_menu_open, !disabled);
+    _ = mode_menu_open;
+    _ = model_menu_open;
+    _ = model_id;
+    _ = models;
 
-    renderer.Renderer.drawRoundedRect(layout_info.scope_btn.x, layout_info.scope_btn.y, layout_info.scope_btn.w, layout_info.scope_btn.h, 6, .{ .r = 0.14, .g = 0.16, .b = 0.2, .a = 1.0 });
-    renderer.Renderer.drawText("@", layout_info.scope_btn.x + 9, layout_info.scope_btn.y + 4, 12.0, .{ .r = 0.75, .g = 0.88, .b = 1.0, .a = 1.0 });
-
-    const send_bg = if (disabled)
-        renderer.Color{ .r = 0.22, .g = 0.24, .b = 0.28, .a = 1.0 }
-    else
-        renderer.Color{ .r = 0.28, .g = 0.58, .b = 0.42, .a = 1.0 };
-    renderer.Renderer.drawRoundedRect(layout_info.send_btn.x, layout_info.send_btn.y, layout_info.send_btn.w, layout_info.send_btn.h, 6, send_bg);
-    renderer.Renderer.drawText("Send", layout_info.send_btn.x + 10, layout_info.send_btn.y + 5, 10.5, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-
-    if (mode_menu_open and !disabled) {
-        var labels: [modes.len][]const u8 = undefined;
-        for (modes, 0..) |entry, i| labels[i] = entry.label;
-        var selected: usize = 0;
-        for (modes, 0..) |entry, i| {
-            if (entry.mode == mode) selected = i;
-        }
-        drawMenu(layout_info.mode_btn, &labels, selected);
+    // Render Attach (Scope) button
+    const scope_hover = if (disabled) false else state.last_mouse_x >= layout_info.scope_btn.x and state.last_mouse_x < layout_info.scope_btn.x + layout_info.scope_btn.w and state.last_mouse_y >= layout_info.scope_btn.y and state.last_mouse_y < layout_info.scope_btn.y + layout_info.scope_btn.h;
+    if (scope_hover) {
+        renderer.Renderer.drawRoundedRect(layout_info.scope_btn.x, layout_info.scope_btn.y, layout_info.scope_btn.w, layout_info.scope_btn.h, 4, .{ .r = 0.25, .g = 0.25, .b = 0.3, .a = 1.0 });
     }
+    renderer.Renderer.drawSvg(renderer.icons.paperclip, layout_info.scope_btn.x + 2, layout_info.scope_btn.y + 2, 20, 20, .{ .r = 0.68, .g = 0.72, .b = 0.78, .a = 1.0 });
 
-    if (model_menu_open and !disabled) {
-        var labels: [models.len][]const u8 = undefined;
-        for (models, 0..) |entry, i| labels[i] = entry.label;
-        var selected: usize = 0;
-        if (model_id) |id| {
-            for (models, 0..) |entry, i| {
-                if (std.mem.eql(u8, entry.id, id)) selected = i;
-            }
-        }
-        drawMenu(layout_info.model_btn, &labels, selected);
+    // Render Send button
+    const send_hover = if (disabled) false else state.last_mouse_x >= layout_info.send_btn.x and state.last_mouse_x < layout_info.send_btn.x + layout_info.send_btn.w and state.last_mouse_y >= layout_info.send_btn.y and state.last_mouse_y < layout_info.send_btn.y + layout_info.send_btn.h;
+    if (send_hover) {
+        renderer.Renderer.drawRoundedRect(layout_info.send_btn.x, layout_info.send_btn.y, layout_info.send_btn.w, layout_info.send_btn.h, 4, .{ .r = 0.25, .g = 0.25, .b = 0.3, .a = 1.0 });
     }
+    const send_c = if (disabled) renderer.Color{ .r = 0.4, .g = 0.4, .b = 0.4, .a = 1.0 } else renderer.Color{ .r = 0.72, .g = 0.76, .b = 0.84, .a = 1.0 };
+    renderer.Renderer.drawSvg(renderer.icons.send, layout_info.send_btn.x + 2, layout_info.send_btn.y + 2, 20, 20, send_c);
 }
 
 pub const Hit = enum {
@@ -481,6 +509,7 @@ pub const Hit = enum {
 pub fn hitTest(
     agent: *agent_session.Session,
     layout_info: Layout,
+    models: []const ModelOption,
     x: f32,
     y: f32,
 ) Hit {
@@ -536,7 +565,7 @@ pub fn modeIndexAt(agent: *agent_session.Session, layout_info: Layout, x: f32, y
     return row;
 }
 
-pub fn modelIndexAt(agent: *agent_session.Session, layout_info: Layout, x: f32, y: f32) ?usize {
+pub fn modelIndexAt(agent: *agent_session.Session, layout_info: Layout, models: []const ModelOption, x: f32, y: f32) ?usize {
     agent.lock();
     defer agent.unlock();
     if (!agent.model_menu_open) return null;

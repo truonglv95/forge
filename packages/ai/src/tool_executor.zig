@@ -55,30 +55,54 @@ fn requireTool(ctx: Context, tool: tools.ToolId) AgentToolError!void {
     if (!tools.isAllowed(ctx.profile, tool)) return error.NotAllowed;
 }
 
-pub fn search(ctx: Context, term: []const u8) AgentToolError!SearchOutcome {
+pub fn search(ctx: Context, args: @import("tools/args.zig").SearchArgs) AgentToolError!SearchOutcome {
+    const owned: @import("tools/args.zig").SearchArgs = .{
+        .pattern = ctx.allocator.dupe(u8, args.pattern) catch return error.WorkspaceFailed,
+        .path = ctx.allocator.dupe(u8, args.path) catch return error.WorkspaceFailed,
+        .glob = if (args.glob) |glob| ctx.allocator.dupe(u8, glob) catch return error.WorkspaceFailed else null,
+        .case_sensitive = args.case_sensitive,
+        .head_limit = args.head_limit,
+    };
+    defer @import("tools/args.zig").freeSearchArgs(ctx.allocator, owned);
     try checkCancel(ctx);
     try requireTool(ctx, .search);
 
+    const cache_key = std.fmt.allocPrint(ctx.allocator, "{{\"pattern\":\"{s}\",\"path\":\"{s}\",\"glob\":{s},\"case_sensitive\":{}}}", .{
+        owned.pattern,
+        owned.path,
+        if (owned.glob) |g| g else "null",
+        owned.case_sensitive,
+    }) catch return error.WorkspaceFailed;
+    defer ctx.allocator.free(cache_key);
+
     if (ctx.cache) |cache| {
-        const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "search", term) catch return error.WorkspaceFailed;
+        const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "search", cache_key) catch return error.WorkspaceFailed;
         defer ctx.allocator.free(key);
         if (cache.get(key)) |cached| {
-            const summary = std.fmt.allocPrint(ctx.allocator, "search '{s}' -> cache hit", .{term}) catch return error.WorkspaceFailed;
+            const summary = std.fmt.allocPrint(ctx.allocator, "grep '{s}' -> cache hit", .{owned.pattern}) catch return error.WorkspaceFailed;
             const observation = ctx.allocator.dupe(u8, cached) catch return error.WorkspaceFailed;
             return .{ .summary = summary, .first_match_path = null, .observation = observation };
         }
     }
 
-    var result = workspace.search.searchContent(ctx.allocator, ctx.io, ctx.root, ".", term) catch return error.WorkspaceFailed;
+    var result = workspace.search.grepContent(ctx.allocator, ctx.io, ctx.root, .{
+        .pattern = owned.pattern,
+        .path = owned.path,
+        .glob = owned.glob,
+        .case_sensitive = owned.case_sensitive,
+        .head_limit = owned.head_limit,
+    }) catch return error.WorkspaceFailed;
     defer result.deinit();
 
-    const summary = std.fmt.allocPrint(ctx.allocator, "search '{s}' -> {d} hits", .{ term, result.matches.len }) catch return error.WorkspaceFailed;
+    const summary = std.fmt.allocPrint(ctx.allocator, "grep '{s}' -> {d} hits", .{ owned.pattern, result.matches.len }) catch return error.WorkspaceFailed;
     errdefer ctx.allocator.free(summary);
 
     var observation: std.ArrayList(u8) = .empty;
     errdefer observation.deinit(ctx.allocator);
-    const shown = @min(result.matches.len, 20);
-    appendPrint(ctx.allocator, &observation, "Search `{s}`: {d} hit(s), showing {d}\n", .{ term, result.matches.len, shown }) catch return error.WorkspaceFailed;
+    const shown = result.matches.len;
+    appendPrint(ctx.allocator, &observation, "Grep `{s}` in `{s}`: {d} hit(s)", .{ owned.pattern, owned.path, result.matches.len }) catch return error.WorkspaceFailed;
+    if (owned.glob) |glob| appendPrint(ctx.allocator, &observation, " glob=`{s}`", .{glob}) catch return error.WorkspaceFailed;
+    appendPrint(ctx.allocator, &observation, "\n", .{}) catch return error.WorkspaceFailed;
     for (result.matches[0..shown]) |match| {
         appendPrint(ctx.allocator, &observation, "\n{s}:{d}\n{s}\n", .{ match.path, match.line, match.line_text }) catch return error.WorkspaceFailed;
     }
@@ -91,7 +115,7 @@ pub fn search(ctx: Context, term: []const u8) AgentToolError!SearchOutcome {
     const observation_owned = observation.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed;
 
     if (ctx.cache) |cache| {
-        const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "search", term) catch return error.WorkspaceFailed;
+        const key = tool_cache_mod.Cache.makeKey(ctx.allocator, "search", cache_key) catch return error.WorkspaceFailed;
         defer ctx.allocator.free(key);
         cache.put(key, observation_owned) catch {};
     }
@@ -120,7 +144,15 @@ pub fn codebaseSearch(ctx: Context, query: []const u8) AgentToolError!CodebaseSe
         .top_k = 16,
         .prefer_gemini = ctx.environ_map != null,
         .environ_map = ctx.environ_map,
-    }) catch return error.WorkspaceFailed;
+    }) catch {
+        const summary = std.fmt.allocPrint(ctx.allocator, "codebase_search '{s}' -> index unavailable", .{query}) catch return error.WorkspaceFailed;
+        const formatted = std.fmt.allocPrint(
+            ctx.allocator,
+            "Semantic index is not ready for this workspace. Try list_tree or read_file on known paths.\n",
+            .{},
+        ) catch return error.WorkspaceFailed;
+        return .{ .summary = summary, .formatted = formatted };
+    };
     defer codebase_search.freeResults(ctx.allocator, results);
 
     var inputs: std.ArrayList(context_rerank.Input) = .empty;
@@ -266,6 +298,14 @@ fn relativeDepth(path: []const u8, base_path: []const u8) usize {
 pub fn readFile(ctx: Context, rel_path: []const u8, start_line: ?usize, end_line: ?usize) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .read_file);
+    if (isDeniedReadPath(rel_path)) {
+        const summary = std.fmt.allocPrint(
+            ctx.allocator,
+            "read_file blocked `{s}`: skip __pycache__, .pyc, and other generated/binary files. Read the matching source file (e.g. tensor.py) instead.",
+            .{rel_path},
+        ) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    }
 
     const cache_key = std.fmt.allocPrint(ctx.allocator, "{{\"path\":\"{s}\",\"start\":{?},\"end\":{?}}}", .{ rel_path, start_line, end_line }) catch return error.WorkspaceFailed;
     defer ctx.allocator.free(cache_key);
@@ -316,10 +356,38 @@ fn appendPrint(allocator: std.mem.Allocator, out: *std.ArrayList(u8), comptime f
     try out.appendSlice(allocator, text);
 }
 
+fn isDeniedReadPath(rel_path: []const u8) bool {
+    const trimmed = std.mem.trim(u8, rel_path, &std.ascii.whitespace);
+    if (trimmed.len == 0) return true;
+    if (std.mem.indexOf(u8, trimmed, "__pycache__") != null) return true;
+    const base = std.fs.path.basename(trimmed);
+    const denied_suffixes = [_][]const u8{ ".pyc", ".pyo", ".pyd", ".so", ".dll", ".exe", ".bin", ".o", ".class", ".wasm" };
+    for (denied_suffixes) |suffix| {
+        if (std.mem.endsWith(u8, base, suffix)) return true;
+    }
+    return false;
+}
+
 pub fn runCommand(ctx: Context, command: []const u8) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .run_command);
-    const argv = allowedCommandArgv(command) orelse return error.NotAllowed;
+    const checkout_path = parseGitCheckoutPath(command);
+    var checkout_argv: [4][]const u8 = undefined;
+    const grep_args = parseGrepNCommand(command);
+    var grep_argv: [4][]const u8 = undefined;
+    const argv = allowedCommandArgv(command) orelse blk: {
+        if (checkout_path) |path| {
+            _ = workspace.WorkspacePath.parse(path) catch return error.NotAllowed;
+            checkout_argv = .{ "git", "checkout", "--", path };
+            break :blk checkout_argv[0..];
+        }
+        if (grep_args) |args| {
+            _ = workspace.WorkspacePath.parse(args.path) catch return error.NotAllowed;
+            grep_argv = .{ "grep", "-n", args.pattern, args.path };
+            break :blk grep_argv[0..];
+        }
+        return error.NotAllowed;
+    };
 
     const captured = kernel.process.runCapture(ctx.allocator, .{
         .argv = argv,
@@ -337,31 +405,182 @@ pub fn runCommand(ctx: Context, command: []const u8) AgentToolError!Outcome {
     return .{ .summary = summary };
 }
 
+fn parseGitCheckoutPath(command: []const u8) ?[]const u8 {
+    const prefix = "git checkout ";
+    if (!std.mem.startsWith(u8, command, prefix)) return null;
+    const path = std.mem.trim(u8, command[prefix.len..], &std.ascii.whitespace);
+    if (path.len == 0) return null;
+    if (std.mem.indexOfAny(u8, path, " \t\r\n") != null) return null;
+    if (std.mem.startsWith(u8, path, "-")) return null;
+    return path;
+}
+
+const GrepNCommand = struct {
+    pattern: []const u8,
+    path: []const u8,
+};
+
+fn parseGrepNCommand(command: []const u8) ?GrepNCommand {
+    const prefix = "grep -n ";
+    if (!std.mem.startsWith(u8, command, prefix)) return null;
+    var rest = std.mem.trim(u8, command[prefix.len..], &std.ascii.whitespace);
+    if (rest.len == 0) return null;
+
+    var pattern: []const u8 = "";
+    if (rest[0] == '"' or rest[0] == '\'') {
+        const quote = rest[0];
+        var end: usize = 1;
+        while (end < rest.len and rest[end] != quote) : (end += 1) {}
+        if (end >= rest.len) return null;
+        pattern = rest[1..end];
+        rest = std.mem.trim(u8, rest[end + 1 ..], &std.ascii.whitespace);
+    } else {
+        const split = std.mem.indexOfAny(u8, rest, " \t\r\n") orelse return null;
+        pattern = rest[0..split];
+        rest = std.mem.trim(u8, rest[split..], &std.ascii.whitespace);
+    }
+
+    const path = rest;
+    if (pattern.len == 0 or path.len == 0) return null;
+    if (std.mem.indexOfAny(u8, pattern, "\r\n\x00") != null) return null;
+    if (std.mem.indexOfAny(u8, path, " \t\r\n\x00") != null) return null;
+    if (std.mem.indexOf(u8, path, "..") != null) return null;
+    if (std.mem.startsWith(u8, pattern, "-") or std.mem.startsWith(u8, path, "-")) return null;
+    return .{ .pattern = pattern, .path = path };
+}
+
 pub fn replaceFileContent(ctx: Context, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .propose_edit);
+
+    if (try unsafeEditShrinkReason(ctx, path, start_line, end_line, replacement)) |reason| {
+        return .{ .summary = reason };
+    }
 
     if (ctx.edit_callback) |cb| {
         cb(ctx.edit_context, path, start_line, end_line, replacement);
     }
 
-    const summary = std.fmt.allocPrint(ctx.allocator, "Proposed edit to {s} (lines {d}-{d})", .{ path, start_line, end_line }) catch return error.WorkspaceFailed;
+    const summary = std.fmt.allocPrint(ctx.allocator, "Edited {s} (lines {d}-{d})", .{ path, start_line, end_line }) catch return error.WorkspaceFailed;
     return .{ .summary = summary };
+}
+
+fn unsafeEditShrinkReason(
+    ctx: Context,
+    path: []const u8,
+    start_line: usize,
+    end_line: usize,
+    replacement: []const u8,
+) AgentToolError!?[]u8 {
+    const wp = workspace.WorkspacePath.parse(path) catch return null;
+    var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return null;
+    defer snap.deinit();
+
+    const old_lines = countLines(snap.content);
+    if (old_lines == 0) return null;
+    const replacement_lines = countLines(replacement);
+    const removed_lines = if (start_line == 0 and end_line == 0)
+        old_lines
+    else if (end_line >= start_line)
+        end_line - start_line + 1
+    else
+        0;
+
+    if (removed_lines < 20) return null;
+    if (replacement_lines * 2 + 10 >= removed_lines) return null;
+
+    return std.fmt.allocPrint(
+        ctx.allocator,
+        "Edit rejected for safety: requested replacement of {d} line(s) in `{s}` with only {d} line(s). Read the exact target range and retry with a narrower line range.",
+        .{ removed_lines, path, replacement_lines },
+    ) catch return error.WorkspaceFailed;
+}
+
+fn countLines(text: []const u8) usize {
+    if (text.len == 0) return 0;
+    var count: usize = 1;
+    for (text) |byte| {
+        if (byte == '\n') count += 1;
+    }
+    if (text[text.len - 1] == '\n' and count > 0) count -= 1;
+    return count;
 }
 
 /// Maps a deliberately small set of read-only or validation commands to argv.
 /// Never pass model text through a shell: prefix checks do not prevent command
 /// separators, substitutions, redirects, or path traversal.
-fn allowedCommandArgv(command: []const u8) ?[]const []const u8 {
+pub fn allowedCommandArgv(command: []const u8) ?[]const []const u8 {
+    // --- Zig ---
     if (std.mem.eql(u8, command, "zig build")) return &.{ "zig", "build" };
     if (std.mem.eql(u8, command, "zig build test")) return &.{ "zig", "build", "test" };
     if (std.mem.eql(u8, command, "zig fmt --check .")) return &.{ "zig", "fmt", "--check", "." };
+    if (std.mem.eql(u8, command, "zig test src/main.zig")) return &.{ "zig", "test", "src/main.zig" };
+    // --- Git ---
     if (std.mem.eql(u8, command, "git status")) return &.{ "git", "status" };
     if (std.mem.eql(u8, command, "git status --short")) return &.{ "git", "status", "--short" };
     if (std.mem.eql(u8, command, "git diff")) return &.{ "git", "--no-pager", "diff", "--no-ext-diff" };
     if (std.mem.eql(u8, command, "git diff --stat")) return &.{ "git", "--no-pager", "diff", "--no-ext-diff", "--stat" };
     if (std.mem.eql(u8, command, "git log --oneline")) return &.{ "git", "--no-pager", "log", "--oneline" };
+    if (std.mem.eql(u8, command, "git log --oneline -10")) return &.{ "git", "--no-pager", "log", "--oneline", "-10" };
+    if (std.mem.eql(u8, command, "git stash list")) return &.{ "git", "--no-pager", "stash", "list" };
+    // --- Node / npm / bun ---
+    if (std.mem.eql(u8, command, "npm test")) return &.{ "npm", "test" };
+    if (std.mem.eql(u8, command, "npm run build")) return &.{ "npm", "run", "build" };
+    if (std.mem.eql(u8, command, "npm run lint")) return &.{ "npm", "run", "lint" };
+    if (std.mem.eql(u8, command, "npm run typecheck")) return &.{ "npm", "run", "typecheck" };
+    if (std.mem.eql(u8, command, "npm install")) return &.{ "npm", "install" };
+    if (std.mem.eql(u8, command, "npx tsc --noEmit")) return &.{ "npx", "tsc", "--noEmit" };
+    if (std.mem.eql(u8, command, "npx eslint .")) return &.{ "npx", "eslint", "." };
+    if (std.mem.eql(u8, command, "bun test")) return &.{ "bun", "test" };
+    if (std.mem.eql(u8, command, "bun run build")) return &.{ "bun", "run", "build" };
+    if (std.mem.eql(u8, command, "bun install")) return &.{ "bun", "install" };
+    // --- Rust / Cargo ---
+    if (std.mem.eql(u8, command, "cargo build")) return &.{ "cargo", "build" };
+    if (std.mem.eql(u8, command, "cargo test")) return &.{ "cargo", "test" };
+    if (std.mem.eql(u8, command, "cargo check")) return &.{ "cargo", "check" };
+    if (std.mem.eql(u8, command, "cargo clippy")) return &.{ "cargo", "clippy" };
+    if (std.mem.eql(u8, command, "cargo fmt --check")) return &.{ "cargo", "fmt", "--check" };
+    if (std.mem.eql(u8, command, "cargo build --release")) return &.{ "cargo", "build", "--release" };
+    // --- Go ---
+    if (std.mem.eql(u8, command, "go build ./...")) return &.{ "go", "build", "./..." };
+    if (std.mem.eql(u8, command, "go test ./...")) return &.{ "go", "test", "./..." };
+    if (std.mem.eql(u8, command, "go vet ./...")) return &.{ "go", "vet", "./..." };
+    if (std.mem.eql(u8, command, "go build .")) return &.{ "go", "build", "." };
+    if (std.mem.eql(u8, command, "gofmt -l .")) return &.{ "gofmt", "-l", "." };
+    // --- Python ---
+    if (std.mem.eql(u8, command, "python -m pytest")) return &.{ "python", "-m", "pytest" };
+    if (std.mem.eql(u8, command, "python -m pytest -v")) return &.{ "python", "-m", "pytest", "-v" };
+    if (std.mem.eql(u8, command, "python -m mypy .")) return &.{ "python", "-m", "mypy", "." };
+    if (std.mem.eql(u8, command, "python -m ruff check .")) return &.{ "python", "-m", "ruff", "check", "." };
+    if (std.mem.eql(u8, command, "python -m ruff format --check .")) return &.{ "python", "-m", "ruff", "format", "--check", "." };
+    if (std.mem.eql(u8, command, "uv run pytest")) return &.{ "uv", "run", "pytest" };
+    if (std.mem.eql(u8, command, "uv run mypy .")) return &.{ "uv", "run", "mypy", "." };
+    // --- Make ---
+    if (std.mem.eql(u8, command, "make")) return &.{"make"};
+    if (std.mem.eql(u8, command, "make test")) return &.{ "make", "test" };
+    if (std.mem.eql(u8, command, "make build")) return &.{ "make", "build" };
+    if (std.mem.eql(u8, command, "make check")) return &.{ "make", "check" };
+    if (std.mem.eql(u8, command, "make lint")) return &.{ "make", "lint" };
+    // --- Dart / Flutter ---
+    if (std.mem.eql(u8, command, "dart test")) return &.{ "dart", "test" };
+    if (std.mem.eql(u8, command, "dart analyze")) return &.{ "dart", "analyze" };
+    if (std.mem.eql(u8, command, "flutter test")) return &.{ "flutter", "test" };
+    if (std.mem.eql(u8, command, "flutter analyze")) return &.{ "flutter", "analyze" };
+    // --- Java / Kotlin / JVM ---
+    if (std.mem.eql(u8, command, "mvn test")) return &.{ "mvn", "test" };
+    if (std.mem.eql(u8, command, "mvn compile")) return &.{ "mvn", "compile" };
+    if (std.mem.eql(u8, command, "gradle test")) return &.{ "gradle", "test" };
+    if (std.mem.eql(u8, command, "gradle build")) return &.{ "gradle", "build" };
+    if (std.mem.eql(u8, command, "./gradlew test")) return &.{ "./gradlew", "test" };
+    if (std.mem.eql(u8, command, "./gradlew build")) return &.{ "./gradlew", "build" };
+    // --- C/C++ ---
+    if (std.mem.eql(u8, command, "cmake --build .")) return &.{ "cmake", "--build", "." };
+    if (std.mem.eql(u8, command, "ctest")) return &.{"ctest"};
+    if (std.mem.eql(u8, command, "ninja")) return &.{"ninja"};
+    // --- System ---
     if (std.mem.eql(u8, command, "pwd")) return &.{"pwd"};
+    if (std.mem.eql(u8, command, "ls")) return &.{"ls"};
+    if (std.mem.eql(u8, command, "ls -la")) return &.{ "ls", "-la" };
     return null;
 }
 
@@ -404,7 +623,7 @@ test "tool executor search finds content" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge search\n");
 
     const outcome = try search(.{
@@ -413,7 +632,10 @@ test "tool executor search finds content" {
         .root = root,
         .cwd = ".",
         .profile = .propose,
-    }, "forge");
+    }, .{
+        .pattern = "forge",
+        .path = ".",
+    });
     defer allocator.free(outcome.summary);
     defer allocator.free(outcome.observation);
     if (outcome.first_match_path) |path| {
@@ -421,8 +643,8 @@ test "tool executor search finds content" {
     }
 
     try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "1 hits") != null);
-    try std.testing.expect(std.mem.indexOf(u8, outcome.observation, "sample.txt:1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, outcome.observation, "hello forge search") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.observation, "Grep `forge`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.observation, "sample.txt") != null);
     try std.testing.expect(outcome.first_match_path != null);
 }
 
@@ -431,7 +653,7 @@ test "read file returns bounded source with line numbers and hash" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("source.zig"), "one\ntwo\nthree\n");
 
     const outcome = try readFile(.{
@@ -452,7 +674,7 @@ test "list tree returns workspace paths" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try tmp.dir.createDirPath(io, "src");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/main.zig"), "pub fn main() void {}\n");
 
@@ -473,7 +695,7 @@ test "tool executor codebase_search returns semantic hits" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("auth.zig"), "pub fn authenticateUser() void {}\n");
 
     const outcome = try codebaseSearch(.{
@@ -495,6 +717,14 @@ test "run command allowlist produces argv without a shell" {
     try std.testing.expectEqualStrings("git", argv[0]);
     try std.testing.expectEqualStrings("--no-pager", argv[1]);
     for (argv) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "sh"));
+}
+
+test "run command parses simple approved grep without a shell" {
+    const parsed = parseGrepNCommand("grep -n \"mouse_click\\|click_event\" apps/forge-ide/src/ui").?;
+    try std.testing.expectEqualStrings("mouse_click\\|click_event", parsed.pattern);
+    try std.testing.expectEqualStrings("apps/forge-ide/src/ui", parsed.path);
+    try std.testing.expect(parseGrepNCommand("grep -n \"x\" apps/forge-ide/src/ui; rm -rf .") == null);
+    try std.testing.expect(parseGrepNCommand("grep -n \"x\" ../../.ssh") == null);
 }
 
 test "run command rejects shell injection and path-reading commands" {

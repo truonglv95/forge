@@ -9,11 +9,31 @@ const language_chunker = @import("language_chunker.zig");
 const parser_resolver = @import("parser_resolver.zig");
 const parser_profile = @import("parser_profile.zig");
 
-pub const index_dir = ".forge/index/v1";
-pub const chunks_file = ".forge/index/v1/chunks.jsonl";
-pub const vectors_file = ".forge/index/v1/vectors.bin";
-pub const manifest_file = ".forge/index/v1/manifest.json";
-pub const file_hashes_file = ".forge/index/v1/file_hashes.json";
+const global_store = @import("global_store.zig");
+
+pub fn getChunksFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
+    const dir = try global_store.getIndexDir(allocator, io, root);
+    defer allocator.free(dir);
+    return try std.fmt.allocPrint(allocator, "{s}/chunks.jsonl", .{dir});
+}
+
+pub fn getVectorsFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
+    const dir = try global_store.getIndexDir(allocator, io, root);
+    defer allocator.free(dir);
+    return try std.fmt.allocPrint(allocator, "{s}/vectors.bin", .{dir});
+}
+
+pub fn getManifestFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
+    const dir = try global_store.getIndexDir(allocator, io, root);
+    defer allocator.free(dir);
+    return try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{dir});
+}
+
+pub fn getFileHashesFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
+    const dir = try global_store.getIndexDir(allocator, io, root);
+    defer allocator.free(dir);
+    return try std.fmt.allocPrint(allocator, "{s}/file_hashes.json", .{dir});
+}
 
 fn storeHashRow(arena_alloc: std.mem.Allocator, stored: *std.StringHashMap(u64), path: []const u8, hash: u64) !void {
     const owned = try arena_alloc.dupe(u8, path);
@@ -175,8 +195,6 @@ pub fn build(
     vector_dim: u32,
     embedFn: *const fn (std.mem.Allocator, []const u8, []f32) anyerror!void,
 ) !BuildResult {
-    try root.dir.createDirPath(io, index_dir);
-
     parser_profile.activateOwned(allocator, try parser_resolver.ensure(allocator, io, root));
     defer parser_profile.deactivate(allocator);
 
@@ -260,9 +278,21 @@ pub fn build(
         try vectors_buf.appendSlice(allocator, bytes);
     }
 
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(chunks_file), chunks_buf.items);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(vectors_file), vectors_buf.items);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(file_hashes_file), hash_lines.items);
+    {
+        const p = try getChunksFile(allocator, io, root);
+        defer allocator.free(p);
+        try global_store.replaceAbsoluteFile(io, p, chunks_buf.items);
+    }
+    {
+        const p = try getVectorsFile(allocator, io, root);
+        defer allocator.free(p);
+        try global_store.replaceAbsoluteFile(io, p, vectors_buf.items);
+    }
+    {
+        const p = try getFileHashesFile(allocator, io, root);
+        defer allocator.free(p);
+        try global_store.replaceAbsoluteFile(io, p, hash_lines.items);
+    }
 
     const built_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
     const profile = parser_profile.get() orelse return error.MissingParserProfile;
@@ -275,7 +305,11 @@ pub fn build(
         .toolchain_fingerprint = profile.toolchain_fingerprint,
     });
     defer allocator.free(manifest_text);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(manifest_file), manifest_text);
+    {
+        const p = try getManifestFile(allocator, io, root);
+        defer allocator.free(p);
+        try global_store.replaceAbsoluteFile(io, p, manifest_text);
+    }
 
     const count: u32 = @intCast(all_chunks.items.len);
     for (all_chunks.items) |chunk| freeChunk(allocator, chunk);
@@ -291,7 +325,11 @@ pub fn needsRebuild(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Wor
     defer parser_set.deinit(allocator);
     if (!(try manifestParserProfileCurrent(allocator, io, root, parser_set))) return true;
 
-    const hashes = readRelative(allocator, io, root, file_hashes_file) catch return true;
+    const hashes = ((blk: {
+        const p = getFileHashesFile(allocator, io, root) catch return true;
+        defer allocator.free(p);
+        break :blk global_store.readAbsoluteFile(allocator, io, p);
+    }) catch return true);
     defer allocator.free(hashes);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -345,8 +383,16 @@ pub fn collectStalePaths(
     io: std.Io,
     root: path_mod.WorkspaceRoot,
 ) ![]const []const u8 {
-    _ = readRelative(allocator, io, root, manifest_file) catch return IndexError.IndexMissing;
-    const hashes = readRelative(allocator, io, root, file_hashes_file) catch return IndexError.IndexMissing;
+    _ = ((blk: {
+        const p = getManifestFile(allocator, io, root) catch return IndexError.IndexMissing;
+        defer allocator.free(p);
+        break :blk global_store.readAbsoluteFile(allocator, io, p);
+    }) catch return IndexError.IndexMissing);
+    const hashes = ((blk: {
+        const p = getFileHashesFile(allocator, io, root) catch return IndexError.IndexMissing;
+        defer allocator.free(p);
+        break :blk global_store.readAbsoluteFile(allocator, io, p);
+    }) catch return IndexError.IndexMissing);
     defer allocator.free(hashes);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -439,7 +485,11 @@ pub fn refresh(
         return try build(allocator, io, root, vector_dim, embedFn);
     }
     if (!(try needsRebuild(allocator, io, root))) {
-        const manifest_bytes = readRelative(allocator, io, root, manifest_file) catch return try build(allocator, io, root, vector_dim, embedFn);
+        const manifest_bytes = ((blk: {
+            const p = getManifestFile(allocator, io, root) catch return try build(allocator, io, root, vector_dim, embedFn);
+            defer allocator.free(p);
+            break :blk global_store.readAbsoluteFile(allocator, io, p);
+        }) catch return try build(allocator, io, root, vector_dim, embedFn));
         defer allocator.free(manifest_bytes);
         const ManifestJson = struct { chunk_count: u32, file_count: u32 };
         var parsed = try std.json.parseFromSlice(ManifestJson, allocator, manifest_bytes, .{ .ignore_unknown_fields = true });
@@ -469,7 +519,11 @@ pub fn refresh(
 }
 
 fn indexVersionCurrent(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !bool {
-    const manifest = readRelative(allocator, io, root, manifest_file) catch return false;
+    const manifest = ((blk: {
+        const p = getManifestFile(allocator, io, root) catch return false;
+        defer allocator.free(p);
+        break :blk global_store.readAbsoluteFile(allocator, io, p);
+    }) catch return false);
     defer allocator.free(manifest);
     const Header = struct {
         schema_version: u32 = 0,
@@ -494,7 +548,11 @@ fn manifestParserProfileCurrent(
     root: path_mod.WorkspaceRoot,
     parser_set: parser_resolver.ParserSet,
 ) !bool {
-    const manifest = try readRelative(allocator, io, root, manifest_file);
+    const manifest = (blk: {
+        const p = try getManifestFile(allocator, io, root);
+        defer allocator.free(p);
+        break :blk try global_store.readAbsoluteFile(allocator, io, p);
+    });
     defer allocator.free(manifest);
     const Header = struct {
         parser_set_id: []const u8 = "",
@@ -635,16 +693,28 @@ const ExistingIndex = struct {
 };
 
 fn loadExistingIndex(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, expected_dim: u32) !ExistingIndex {
-    const manifest_bytes = try readRelative(allocator, io, root, manifest_file);
+    const manifest_bytes = (blk: {
+        const p = try getManifestFile(allocator, io, root);
+        defer allocator.free(p);
+        break :blk try global_store.readAbsoluteFile(allocator, io, p);
+    });
     defer allocator.free(manifest_bytes);
     const ManifestJson = struct { dim: u32 };
     var manifest_parsed = try std.json.parseFromSlice(ManifestJson, allocator, manifest_bytes, .{ .ignore_unknown_fields = true });
     defer manifest_parsed.deinit();
     if (manifest_parsed.value.dim != expected_dim) return IndexError.IndexMissing;
 
-    const chunks_bytes = try readRelative(allocator, io, root, chunks_file);
+    const chunks_bytes = (blk: {
+        const p = try getChunksFile(allocator, io, root);
+        defer allocator.free(p);
+        break :blk try global_store.readAbsoluteFile(allocator, io, p);
+    });
     defer allocator.free(chunks_bytes);
-    const vectors_bytes = try readRelative(allocator, io, root, vectors_file);
+    const vectors_bytes = (blk: {
+        const p = try getVectorsFile(allocator, io, root);
+        defer allocator.free(p);
+        break :blk try global_store.readAbsoluteFile(allocator, io, p);
+    });
     defer allocator.free(vectors_bytes);
 
     var items: std.ArrayList(LoadedChunk) = .empty;
@@ -742,9 +812,21 @@ fn writeIndex(
         try vectors_buf.appendSlice(allocator, bytes);
     }
 
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(chunks_file), chunks_buf.items);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(vectors_file), vectors_buf.items);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(file_hashes_file), hash_lines);
+    {
+        const p = try getChunksFile(allocator, io, root);
+        defer allocator.free(p);
+        try global_store.replaceAbsoluteFile(io, p, chunks_buf.items);
+    }
+    {
+        const p = try getVectorsFile(allocator, io, root);
+        defer allocator.free(p);
+        try global_store.replaceAbsoluteFile(io, p, vectors_buf.items);
+    }
+    {
+        const p = try getFileHashesFile(allocator, io, root);
+        defer allocator.free(p);
+        try global_store.replaceAbsoluteFile(io, p, hash_lines);
+    }
 
     const built_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
     const profile = parser_profile.get() orelse return error.MissingParserProfile;
@@ -757,7 +839,11 @@ fn writeIndex(
         .toolchain_fingerprint = profile.toolchain_fingerprint,
     });
     defer allocator.free(manifest_text);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(manifest_file), manifest_text);
+    {
+        const p = try getManifestFile(allocator, io, root);
+        defer allocator.free(p);
+        try global_store.replaceAbsoluteFile(io, p, manifest_text);
+    }
 }
 
 const ManifestFields = struct {
@@ -825,7 +911,7 @@ test "build cleans up chunks on embed failure" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("sample.zig"), "pub fn sample() void {}\n");
 
@@ -843,7 +929,7 @@ test "index stays fresh and JSON-valid with ignored and control-byte files" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("main.zig"), "pub fn main() void {}\n");
     try tmp.dir.createDirPath(io, "fixtures");
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("fixtures/change.proposal.json"), "{}\n");
@@ -859,7 +945,11 @@ test "index stays fresh and JSON-valid with ignored and control-byte files" {
     _ = try build(allocator, io, root, 4, embed);
     try std.testing.expect(!(try needsRebuild(allocator, io, root)));
 
-    const serialized = try readRelative(allocator, io, root, chunks_file);
+    const serialized = (blk: {
+        const p = try getChunksFile(allocator, io, root);
+        defer allocator.free(p);
+        break :blk try global_store.readAbsoluteFile(allocator, io, p);
+    });
     defer allocator.free(serialized);
     var lines = std.mem.splitScalar(u8, serialized, '\n');
     while (lines.next()) |line| {

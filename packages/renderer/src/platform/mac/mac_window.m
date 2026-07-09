@@ -1032,7 +1032,11 @@ void forge_mac_draw_svg(const char* svg_string, float x, float y, float w, float
         g_renderer.currentTexture = g_renderer.iconAtlas.texture;
     }
     
-    ForgeIconInfo info = [g_renderer.iconAtlas getIconInfo:svg_string width:(int)w height:(int)h];
+    CGFloat backingScale = g_renderer.mtkView.window ? g_renderer.mtkView.window.backingScaleFactor : 2.0;
+    int pixelW = (int)ceil(w * backingScale);
+    int pixelH = (int)ceil(h * backingScale);
+    
+    ForgeIconInfo info = [g_renderer.iconAtlas getIconInfo:svg_string width:pixelW height:pixelH];
     if (info.gw == 0) return;
     
     ForgeEnsureVertexCapacity(6);

@@ -94,10 +94,13 @@ pub fn formatManifest(allocator: std.mem.Allocator, builder: *const context.Cont
 pub fn intentGuidance(intent: routing.TaskIntent) []const u8 {
     return switch (intent) {
         .explore_codebase =>
-        \\Task: explore the codebase. Use read_file on manifest paths first; only call codebase_search if gaps remain.
+        \\Task: explore the codebase. For location/status questions, list_tree first, then read_file. Use keyword search, not full sentences.
         ,
         .edit_code =>
-        \\Task: implement a code change. Verify affected files with read_file; use run_command only after understanding scope.
+        \\Task: implement a code change. Read relevant source files, then call replace_file_content to edit the code directly.
+        \\Do not stop at list_tree/read_file when the user asked to build or implement something.
+        \\Do not output proposal JSON for direct edit tasks.
+        \\Never read __pycache__, .pyc, or other generated/binary artifacts.
         ,
         .debug_failure =>
         \\Task: debug a failure. Prioritize git diff, diagnostics, and reading error-related files before broad search.

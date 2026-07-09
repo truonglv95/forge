@@ -81,7 +81,7 @@ test "create file under parent path" {
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
 
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     const created = try createFileAlloc(allocator, io, root, "src", "new.txt");
     defer allocator.free(created);
 

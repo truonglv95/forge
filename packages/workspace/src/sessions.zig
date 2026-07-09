@@ -1,10 +1,14 @@
 const std = @import("std");
 const path_mod = @import("path.zig");
 const atomic = @import("atomic.zig");
+const global_store = @import("global_store.zig");
 
-pub const sessions_dir = ".forge/sessions";
-pub const sessions_index = ".forge/sessions/index.jsonl";
+pub const sessions_dir = global_store.sessions_subdir;
+pub const sessions_index = "sessions/index.jsonl";
 pub const session_events_suffix = ".events.jsonl";
+
+// Legacy per-workspace layout (read-only fallback for migration).
+const legacy_sessions_dir = ".forge/sessions";
 
 pub const SessionStep = struct {
     index: u32,
@@ -17,6 +21,7 @@ pub const SessionDoc = struct {
     schema_version: u32 = 1,
     session_id: []const u8,
     intent: []const u8,
+    workspace_path: []const u8 = "",
     run_ids: [][]const u8 = &.{},
     proposal_path: []const u8 = "",
     steps: []SessionStep = &.{},
@@ -34,6 +39,7 @@ pub const IndexEntry = struct {
     session_id: []const u8,
     intent: []const u8,
     timestamp_ms: i64,
+    workspace_path: []const u8 = "",
 };
 
 pub const ResumableSession = struct {
@@ -73,15 +79,15 @@ pub fn deinitResumable(allocator: std.mem.Allocator, offer: *ResumableSession) v
 pub fn findLatestResumable(
     allocator: std.mem.Allocator,
     io: std.Io,
-    root: path_mod.WorkspaceRoot,
+    workspace_path: []const u8,
 ) !?ResumableSession {
-    var list = try listEntries(allocator, io, root);
+    var list = try listEntries(allocator, io, workspace_path);
     defer list.deinit();
 
     var index = list.items.len;
     while (index > 0) : (index -= 1) {
         const entry = list.items[index - 1];
-        var doc = loadSession(allocator, io, root, entry.session_id) catch continue;
+        var doc = loadSession(allocator, io, entry.session_id) catch continue;
         defer deinitSession(allocator, &doc);
         if (!isResumableExecutionState(doc.execution_state)) continue;
         return ResumableSession{
@@ -96,15 +102,15 @@ pub fn findLatestResumable(
 pub fn findLatestProposalReady(
     allocator: std.mem.Allocator,
     io: std.Io,
-    root: path_mod.WorkspaceRoot,
+    workspace_path: []const u8,
 ) !?ProposalReadySession {
-    var list = try listEntries(allocator, io, root);
+    var list = try listEntries(allocator, io, workspace_path);
     defer list.deinit();
 
     var index = list.items.len;
     while (index > 0) : (index -= 1) {
         const entry = list.items[index - 1];
-        var doc = loadSession(allocator, io, root, entry.session_id) catch continue;
+        var doc = loadSession(allocator, io, entry.session_id) catch continue;
         defer deinitSession(allocator, &doc);
         if (!isProposalReadyExecutionState(doc.execution_state)) continue;
         if (doc.proposal_path.len == 0) continue;
@@ -125,13 +131,30 @@ pub const IndexList = struct {
         for (self.items) |entry| {
             self.allocator.free(entry.session_id);
             self.allocator.free(entry.intent);
+            self.allocator.free(entry.workspace_path);
         }
         self.allocator.free(self.items);
         self.* = undefined;
     }
 };
 
-fn readRelativeFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, rel_path: []const u8) ![]u8 {
+fn sessionFilePath(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
+    var rel_buf: [192]u8 = undefined;
+    const rel = try std.fmt.bufPrint(&rel_buf, "{s}/{s}.json", .{ sessions_dir, session_id });
+    return global_store.joinHome(allocator, rel);
+}
+
+fn sessionEventsPath(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
+    var rel_buf: [192]u8 = undefined;
+    const rel = try std.fmt.bufPrint(&rel_buf, "{s}/{s}{s}", .{ sessions_dir, session_id, session_events_suffix });
+    return global_store.joinHome(allocator, rel);
+}
+
+fn indexFilePath(allocator: std.mem.Allocator) ![]u8 {
+    return global_store.joinHome(allocator, sessions_index);
+}
+
+fn readLegacyRelativeFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, rel_path: []const u8) ![]u8 {
     var file = try root.dir.openFile(io, rel_path, .{});
     defer file.close(io);
     const stat = try file.stat(io);
@@ -143,21 +166,40 @@ fn readRelativeFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Wor
     return content;
 }
 
-pub fn formatIndexLine(allocator: std.mem.Allocator, session_id: []const u8, intent: []const u8, timestamp_ms: i64) ![]u8 {
-    return try std.fmt.allocPrint(allocator, "{{\"session_id\":\"{s}\",\"intent\":\"{s}\",\"timestamp_ms\":{d}}}\n", .{
-        session_id,
-        intent,
-        timestamp_ms,
-    });
+pub fn formatIndexLine(
+    allocator: std.mem.Allocator,
+    session_id: []const u8,
+    intent: []const u8,
+    timestamp_ms: i64,
+    workspace_path: []const u8,
+) ![]u8 {
+    const Json = struct {
+        session_id: []const u8,
+        intent: []const u8,
+        timestamp_ms: i64,
+        workspace_path: []const u8,
+    };
+    const line = try std.json.Stringify.valueAlloc(allocator, Json{
+        .session_id = session_id,
+        .intent = intent,
+        .timestamp_ms = timestamp_ms,
+        .workspace_path = workspace_path,
+    }, .{});
+    defer allocator.free(line);
+    return try std.fmt.allocPrint(allocator, "{s}\n", .{line});
 }
 
-pub fn appendIndex(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, line: []const u8) !void {
-    try ensureLayout(io, root);
+pub fn appendIndex(allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8, line: []const u8) !void {
+    _ = workspace_path;
+    try global_store.ensureLayout(io);
+
+    const index_path = try indexFilePath(allocator);
+    defer allocator.free(index_path);
 
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
 
-    const existing = readRelativeFile(allocator, io, root, sessions_index) catch |err| switch (err) {
+    const existing = global_store.readAbsoluteFile(allocator, io, index_path) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return err,
     };
@@ -168,10 +210,10 @@ pub fn appendIndex(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
     }
 
     try buffer.appendSlice(allocator, line);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(sessions_index), buffer.items);
+    try global_store.replaceAbsoluteFile(io, index_path, buffer.items);
 }
 
-pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !IndexList {
+pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, workspace_path: ?[]const u8) !IndexList {
     var items: std.ArrayList(IndexEntry) = .empty;
     errdefer {
         for (items.items) |entry| {
@@ -181,7 +223,10 @@ pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
         items.deinit(allocator);
     }
 
-    const content = readRelativeFile(allocator, io, root, sessions_index) catch |err| switch (err) {
+    const index_path = try indexFilePath(allocator);
+    defer allocator.free(index_path);
+
+    const content = global_store.readAbsoluteFile(allocator, io, index_path) catch |err| switch (err) {
         error.FileNotFound => return IndexList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) },
         else => return err,
     };
@@ -194,42 +239,47 @@ pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
             session_id: []const u8,
             intent: []const u8,
             timestamp_ms: i64,
+            workspace_path: ?[]const u8 = null,
         };
         var parsed = try std.json.parseFromSlice(JsonEntry, allocator, line, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
+        if (workspace_path) |filter| {
+            if (parsed.value.workspace_path) |stored| {
+                if (!std.mem.eql(u8, stored, filter)) continue;
+            }
+        }
         try items.append(allocator, .{
             .session_id = try allocator.dupe(u8, parsed.value.session_id),
             .intent = try allocator.dupe(u8, parsed.value.intent),
             .timestamp_ms = parsed.value.timestamp_ms,
+            .workspace_path = try allocator.dupe(u8, parsed.value.workspace_path orelse ""),
         });
     }
 
     return IndexList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) };
 }
 
-pub fn ensureLayout(io: std.Io, root: path_mod.WorkspaceRoot) !void {
-    try root.dir.createDirPath(io, ".forge");
-    try root.dir.createDirPath(io, sessions_dir);
+pub fn ensureLayout(io: std.Io) !void {
+    try global_store.ensureLayout(io);
 }
 
-pub fn persistSession(io: std.Io, root: path_mod.WorkspaceRoot, session_id: []const u8, json_body: []const u8) !void {
-    try ensureLayout(io, root);
-
-    var path_buf: [128]u8 = undefined;
-    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}.json", .{ sessions_dir, session_id });
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(rel), json_body);
+pub fn persistSession(io: std.Io, workspace_path: []const u8, session_id: []const u8, json_body: []const u8) !void {
+    _ = workspace_path;
+    try global_store.ensureLayout(io);
+    const path = sessionFilePath(std.heap.page_allocator, session_id) catch return error.OutOfMemory;
+    defer std.heap.page_allocator.free(path);
+    try global_store.replaceAbsoluteFile(io, path, json_body);
 }
 
-pub fn appendEvent(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, session_id: []const u8, line: []const u8) !void {
-    try ensureLayout(io, root);
-
-    var path_buf: [160]u8 = undefined;
-    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}{s}", .{ sessions_dir, session_id, session_events_suffix });
+pub fn appendEvent(allocator: std.mem.Allocator, io: std.Io, session_id: []const u8, line: []const u8) !void {
+    try global_store.ensureLayout(io);
+    const path = try sessionEventsPath(allocator, session_id);
+    defer allocator.free(path);
 
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
 
-    const existing = readRelativeFile(allocator, io, root, rel) catch |err| switch (err) {
+    const existing = global_store.readAbsoluteFile(allocator, io, path) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return err,
     };
@@ -241,27 +291,40 @@ pub fn appendEvent(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
 
     try buffer.appendSlice(allocator, line);
     if (line.len > 0 and line[line.len - 1] != '\n') try buffer.append(allocator, '\n');
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(rel), buffer.items);
+    try global_store.replaceAbsoluteFile(io, path, buffer.items);
 }
 
-pub fn readEvents(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, session_id: []const u8) ![]u8 {
+pub fn readEvents(allocator: std.mem.Allocator, io: std.Io, session_id: []const u8) ![]u8 {
+    const path = try sessionEventsPath(allocator, session_id);
+    defer allocator.free(path);
+    return global_store.readAbsoluteFile(allocator, io, path);
+}
+
+pub fn readEventsLegacy(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+    session_id: []const u8,
+) ![]u8 {
     var path_buf: [160]u8 = undefined;
-    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}{s}", .{ sessions_dir, session_id, session_events_suffix });
-    return try readRelativeFile(allocator, io, root, rel);
+    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}{s}", .{ legacy_sessions_dir, session_id, session_events_suffix });
+    return readLegacyRelativeFile(allocator, io, root, rel);
 }
 
-test "sessions append events under .forge/sessions" {
+test "sessions append events under global sessions dir" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try withTestForgeHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer global_store.clearForgeHomeOverride();
 
-    try appendEvent(allocator, io, root, "sess_events", "{\"schema_version\":1,\"type\":\"run_started\"}");
-    try appendEvent(allocator, io, root, "sess_events", "{\"schema_version\":1,\"type\":\"run_completed\"}");
+    try appendEvent(allocator, io, "sess_events", "{\"schema_version\":1,\"type\":\"run_started\"}");
+    try appendEvent(allocator, io, "sess_events", "{\"schema_version\":1,\"type\":\"run_completed\"}");
 
-    const body = try readEvents(allocator, io, root, "sess_events");
+    const body = try readEvents(allocator, io, "sess_events");
     defer allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "run_started") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "run_completed") != null);
@@ -274,6 +337,7 @@ pub fn makeSessionId(allocator: std.mem.Allocator, timestamp_ms: i64) ![]u8 {
 pub fn deinitSession(allocator: std.mem.Allocator, doc: *SessionDoc) void {
     allocator.free(doc.session_id);
     allocator.free(doc.intent);
+    allocator.free(doc.workspace_path);
     allocator.free(doc.proposal_path);
     allocator.free(doc.execution_state);
     allocator.free(doc.pending_tool);
@@ -295,30 +359,38 @@ pub fn deinitSession(allocator: std.mem.Allocator, doc: *SessionDoc) void {
 pub fn loadSession(
     allocator: std.mem.Allocator,
     io: std.Io,
+    session_id: []const u8,
+) !SessionDoc {
+    const path = sessionFilePath(allocator, session_id) catch return error.OutOfMemory;
+    defer allocator.free(path);
+
+    const json_body = global_store.readAbsoluteFile(allocator, io, path) catch |err| switch (err) {
+        error.FileNotFound => return error.SessionNotFound,
+        else => return err,
+    };
+    defer allocator.free(json_body);
+
+    return try parseSessionDoc(allocator, json_body);
+}
+
+pub fn loadSessionLegacy(
+    allocator: std.mem.Allocator,
+    io: std.Io,
     root: path_mod.WorkspaceRoot,
     session_id: []const u8,
 ) !SessionDoc {
     var path_buf: [128]u8 = undefined;
-    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}.json", .{ sessions_dir, session_id });
+    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}.json", .{ legacy_sessions_dir, session_id });
+    const json_body = try readLegacyRelativeFile(allocator, io, root, rel);
+    defer allocator.free(json_body);
+    return try parseSessionDoc(allocator, json_body);
+}
 
-    var file = root.dir.openFile(io, rel, .{}) catch |err| switch (err) {
-        error.FileNotFound => return error.SessionNotFound,
-        else => return err,
-    };
-    defer file.close(io);
-
-    const stat = try file.stat(io);
-    const size: usize = @intCast(stat.size);
-    const json_body = try allocator.alloc(u8, size);
-    errdefer allocator.free(json_body);
-    const read_len = try file.readPositionalAll(io, json_body, 0);
-    if (read_len != size) return error.UnexpectedEof;
-
+fn parseSessionDoc(allocator: std.mem.Allocator, json_body: []const u8) !SessionDoc {
     var parsed = try std.json.parseFromSlice(SessionDoc, allocator, json_body, .{
         .ignore_unknown_fields = true,
     });
     defer parsed.deinit();
-    defer allocator.free(json_body);
 
     const value = parsed.value;
     const owned_steps = try allocator.alloc(SessionStep, value.steps.len);
@@ -345,6 +417,7 @@ pub fn loadSession(
         .schema_version = value.schema_version,
         .session_id = try allocator.dupe(u8, value.session_id),
         .intent = try allocator.dupe(u8, value.intent),
+        .workspace_path = try allocator.dupe(u8, value.workspace_path),
         .run_ids = owned_run_ids,
         .proposal_path = try allocator.dupe(u8, value.proposal_path),
         .steps = owned_steps,
@@ -359,20 +432,29 @@ pub fn loadSession(
     };
 }
 
-test "sessions persist under .forge/sessions" {
+fn withTestForgeHome(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/tmp/forge-test-{s}", .{tmp.sub_path});
+    try global_store.setForgeHomeOverride(path);
+    return path;
+}
+
+test "sessions persist globally under FORGE_HOME" {
+    const allocator = std.testing.allocator;
     const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try withTestForgeHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer global_store.clearForgeHomeOverride();
 
-    try persistSession(io, root, "sess_1", "{\"session_id\":\"sess_1\"}\n");
+    try persistSession(io, "/tmp/project", "sess_1", "{\"session_id\":\"sess_1\"}\n");
 
-    var file = try root.dir.openFile(io, ".forge/sessions/sess_1.json", .{});
-    defer file.close(io);
-    var buffer: [64]u8 = undefined;
-    const n = try file.readPositionalAll(io, &buffer, 0);
-    try std.testing.expect(std.mem.indexOf(u8, buffer[0..n], "sess_1") != null);
+    const path = try sessionFilePath(allocator, "sess_1");
+    defer allocator.free(path);
+    const body = try global_store.readAbsoluteFile(allocator, io, path);
+    defer allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "sess_1") != null);
 }
 
 test "sessions index list parses jsonl" {
@@ -381,11 +463,15 @@ test "sessions index list parses jsonl" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try withTestForgeHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer global_store.clearForgeHomeOverride();
 
-    try appendIndex(allocator, io, root, "{\"session_id\":\"sess_1\",\"intent\":\"test\",\"timestamp_ms\":100}\n");
+    const line = try formatIndexLine(allocator, "sess_1", "test", 100, "/tmp/project");
+    defer allocator.free(line);
+    try appendIndex(allocator, io, "/tmp/project", line);
 
-    var list = try listEntries(allocator, io, root);
+    var list = try listEntries(allocator, io, "/tmp/project");
     defer list.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), list.items.len);
@@ -398,20 +484,27 @@ test "findLatestResumable prefers interrupted sessions" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try withTestForgeHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer global_store.clearForgeHomeOverride();
 
+    const workspace_path = "/tmp/project";
     const completed =
         \\{"schema_version":3,"session_id":"sess_done","intent":"done","execution_state":"completed","conversation_json":"[]","steps":[]}
     ;
     const pending =
         \\{"schema_version":3,"session_id":"sess_pending","intent":"resume me","execution_state":"tool_pending","pending_tool":"search","pending_tool_args":"{}","conversation_json":"[]","steps":[]}
     ;
-    try persistSession(io, root, "sess_done", completed);
-    try persistSession(io, root, "sess_pending", pending);
-    try appendIndex(allocator, io, root, "{\"session_id\":\"sess_done\",\"intent\":\"done\",\"timestamp_ms\":1}\n");
-    try appendIndex(allocator, io, root, "{\"session_id\":\"sess_pending\",\"intent\":\"resume me\",\"timestamp_ms\":2}\n");
+    try persistSession(io, workspace_path, "sess_done", completed);
+    try persistSession(io, workspace_path, "sess_pending", pending);
+    const line_done = try formatIndexLine(allocator, "sess_done", "done", 1, workspace_path);
+    defer allocator.free(line_done);
+    const line_pending = try formatIndexLine(allocator, "sess_pending", "resume me", 2, workspace_path);
+    defer allocator.free(line_pending);
+    try appendIndex(allocator, io, workspace_path, line_done);
+    try appendIndex(allocator, io, workspace_path, line_pending);
 
-    const offer_opt = try findLatestResumable(allocator, io, root);
+    const offer_opt = try findLatestResumable(allocator, io, workspace_path);
     try std.testing.expect(offer_opt != null);
     if (offer_opt) |value| {
         var owned = value;
@@ -427,20 +520,27 @@ test "findLatestProposalReady prefers latest proposal_ready session" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try withTestForgeHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer global_store.clearForgeHomeOverride();
 
+    const workspace_path = "/tmp/project";
     const older =
         \\{"schema_version":3,"session_id":"sess_old","intent":"old","execution_state":"proposal_ready","proposal_path":".forge/proposals/run_old.json","conversation_json":"[]","steps":[]}
     ;
     const newer =
         \\{"schema_version":3,"session_id":"sess_new","intent":"review me","execution_state":"proposal_ready","proposal_path":".forge/proposals/run_new.json","conversation_json":"[]","steps":[]}
     ;
-    try persistSession(io, root, "sess_old", older);
-    try persistSession(io, root, "sess_new", newer);
-    try appendIndex(allocator, io, root, "{\"session_id\":\"sess_old\",\"intent\":\"old\",\"timestamp_ms\":1}\n");
-    try appendIndex(allocator, io, root, "{\"session_id\":\"sess_new\",\"intent\":\"review me\",\"timestamp_ms\":2}\n");
+    try persistSession(io, workspace_path, "sess_old", older);
+    try persistSession(io, workspace_path, "sess_new", newer);
+    const line_old = try formatIndexLine(allocator, "sess_old", "old", 1, workspace_path);
+    defer allocator.free(line_old);
+    const line_new = try formatIndexLine(allocator, "sess_new", "review me", 2, workspace_path);
+    defer allocator.free(line_new);
+    try appendIndex(allocator, io, workspace_path, line_old);
+    try appendIndex(allocator, io, workspace_path, line_new);
 
-    const offer_opt = try findLatestProposalReady(allocator, io, root);
+    const offer_opt = try findLatestProposalReady(allocator, io, workspace_path);
     try std.testing.expect(offer_opt != null);
     if (offer_opt) |value| {
         var owned = value;
@@ -456,14 +556,16 @@ test "loadSession reads persisted session" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const forge_home = try withTestForgeHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer global_store.clearForgeHomeOverride();
 
     const body =
         \\{"schema_version":1,"session_id":"sess_2","intent":"search sample","run_ids":["run_1"],"proposal_path":".forge/proposals/run_1.json","steps":[{"index":1,"kind":"search","summary":"ok","run_id":""}]}
     ;
-    try persistSession(io, root, "sess_2", body);
+    try persistSession(io, "/tmp/project", "sess_2", body);
 
-    var doc = try loadSession(allocator, io, root, "sess_2");
+    var doc = try loadSession(allocator, io, "sess_2");
     defer deinitSession(allocator, &doc);
     try std.testing.expectEqualStrings("sess_2", doc.session_id);
     try std.testing.expectEqualStrings("search sample", doc.intent);

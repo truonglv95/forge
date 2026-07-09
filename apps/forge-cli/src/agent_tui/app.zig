@@ -107,11 +107,13 @@ pub const App = struct {
     active_tool: [96]u8 = undefined,
     active_tool_len: usize = 0,
     active_tool_running: bool = false,
+    active_progress: [96]u8 = undefined,
+    active_progress_len: usize = 0,
     last_tool_review: ?[]u8 = null,
     last_tool_review_kind: ?[]u8 = null,
     command_index: usize = 0,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/events", "/resume", "/sessions", "/help", "/quit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/events", "/resume", "/sessions", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -122,10 +124,10 @@ pub const App = struct {
         terminal: term.Terminal,
         cancel_scope: cancel_scope_mod.Scope,
     ) !App {
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(parsed.flags, "interactive");
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, "interactive", io, opened.root);
         const model = try std.fmt.allocPrint(allocator, "{s}/{s}", .{
             @tagName(provider_opts.kind),
-            parsed.flags.model orelse defaultModel(provider_opts.kind),
+            provider_opts.model orelse defaultModel(provider_opts.kind),
         });
 
         const folder = try std.fmt.allocPrint(allocator, "{s}", .{opened.path});
@@ -690,7 +692,7 @@ pub const App = struct {
     }
 
     fn listSessions(self: *App) !void {
-        var list = try workspace.sessions.listEntries(self.allocator, self.io, self.opened.root);
+        var list = try workspace.sessions.listEntries(self.allocator, self.io, self.opened.path);
         defer list.deinit();
         if (list.items.len == 0) {
             try self.pushSystem("No saved sessions");
@@ -712,7 +714,7 @@ pub const App = struct {
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {
         const session_id = blk: {
             if (session_id_opt) |id| break :blk try self.allocator.dupe(u8, id);
-            var list = try workspace.sessions.listEntries(self.allocator, self.io, self.opened.root);
+            var list = try workspace.sessions.listEntries(self.allocator, self.io, self.opened.path);
             defer list.deinit();
             if (list.items.len == 0) {
                 try self.pushSystem("No sessions to resume");
@@ -723,7 +725,7 @@ pub const App = struct {
         };
         defer self.allocator.free(session_id);
 
-        var doc = workspace.sessions.loadSession(self.allocator, self.io, self.opened.root, session_id) catch |err| {
+        var doc = workspace.sessions.loadSession(self.allocator, self.io, session_id) catch |err| {
             var buf: [128]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Resume failed: {s}", .{@errorName(err)}) catch "Resume failed";
             try self.pushSystem(msg);
@@ -840,6 +842,8 @@ pub const App = struct {
 
         self.mutex.lock();
         self.agent_busy = false;
+        self.active_progress_len = 0;
+        self.stream_line_index = null;
         self.worker = null;
         self.markDirty();
         self.mutex.unlock();
@@ -883,7 +887,7 @@ pub const App = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         try self.lines.append(self.allocator, .{ .kind = kind, .text = text });
-        self.scroll = std.math.maxInt(usize);
+        self.scroll = 0;
         self.markDirty();
     }
 
@@ -902,12 +906,16 @@ pub const App = struct {
             self.stream_line_index = null;
         } else {
             try self.lines.append(self.allocator, .{ .kind = .agent, .text = owned });
-            self.scroll = std.math.maxInt(usize);
+            self.scroll = 0;
         }
         self.markDirty();
     }
 
     fn onStreamChunk(self: *App, chunk: []const u8) void {
+        // Agent worker delivers the final answer via workerDone; intermediate LLM
+        // token streams during tool turns would append to stale line indices and
+        // appear above already-printed tool steps.
+        if (self.agent_busy) return;
         if (chunk.len == 0) return;
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -928,7 +936,7 @@ pub const App = struct {
             return;
         };
         self.stream_line_index = self.lines.items.len - 1;
-        self.scroll = std.math.maxInt(usize);
+        self.scroll = 0;
         self.markDirty();
     }
 
@@ -938,12 +946,20 @@ pub const App = struct {
         if (self.pending_proposal) |old| self.allocator.free(old);
         self.pending_proposal = owned;
         self.mutex.unlock();
+
+        try self.pushSystem("--- proposed changes ---");
+        try self.showProposalDiffFor(prop);
+
         const msg = try std.fmt.allocPrint(
             self.allocator,
-            "Proposal ready: {s} — press d=diff, a=apply, n=dismiss",
+            "Proposal: {s} — green + added, red - removed. Press a=apply to write files, n=dismiss",
             .{prop},
         );
         try self.pushLine(.system, msg);
+
+        if (self.parsed.flags.yes or self.tool_policy == .run_everything) {
+            try self.applyPendingProposal();
+        }
     }
 
     fn dismissPendingProposal(self: *App) void {
@@ -962,7 +978,10 @@ pub const App = struct {
             defer self.mutex.unlock();
             break :blk if (self.pending_proposal) |prop| prop else return;
         };
+        try self.showProposalDiffFor(prop_rel);
+    }
 
+    fn showProposalDiffFor(self: *App, prop_rel: []const u8) !void {
         var proposal = try workspace_cmd.loadProposal(self.allocator, self.io, self.opened, prop_rel);
         defer proposal.deinit();
         const edit = proposal.workspaceEdit();
@@ -971,11 +990,17 @@ pub const App = struct {
         var out = std.Io.Writer.Allocating.init(self.allocator);
         defer out.deinit();
         try workspace.preview.renderDiff(self.allocator, self.io, self.opened.root, edit, &out.writer);
-        try self.pushSystem("--- diff preview ---");
+
         var lines = std.mem.splitScalar(u8, out.writer.buffered(), '\n');
+        var shown: usize = 0;
         while (lines.next()) |line| {
             if (line.len == 0) continue;
             try self.pushLine(.system, try self.allocator.dupe(u8, line));
+            shown += 1;
+            if (shown >= 160) {
+                try self.pushSystem("... diff truncated (use /diff or `forge diff` for full output)");
+                break;
+            }
         }
     }
 
@@ -1025,7 +1050,7 @@ pub const App = struct {
             return;
         }
 
-        const body = workspace.sessions.readEvents(self.allocator, self.io, self.opened.root, session_id) catch {
+        const body = workspace.sessions.readEvents(self.allocator, self.io, session_id) catch {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "No event log for {s}", .{session_id}) catch "No event log";
             try self.pushSystem(msg);
@@ -1089,7 +1114,7 @@ pub const App = struct {
             self.allocator.free(text);
             return;
         };
-        self.events_scroll = std.math.maxInt(usize);
+        self.events_scroll = 0;
     }
 
     fn applyPendingProposal(self: *App) !void {
@@ -1106,7 +1131,7 @@ pub const App = struct {
         const code = workspace_cmd.applyProposal(self.allocator, self.io, self.opened, prop_rel, &writer, false) catch 2;
         if (code == 0) {
             self.dismissPendingProposal();
-            const msg = try std.fmt.allocPrint(self.allocator, "Applied {s}", .{prop_rel});
+            const msg = try std.fmt.allocPrint(self.allocator, "✓ Applied {s}", .{prop_rel});
             try self.pushLine(.system, msg);
             try self.refreshStatus();
         } else {
@@ -1116,6 +1141,24 @@ pub const App = struct {
 
     fn pushSystem(self: *App, text: []const u8) !void {
         try self.pushLine(.system, try self.allocator.dupe(u8, text));
+    }
+
+    fn sessionIdForResume(self: *App) ?[]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.last_session_id) |id| return self.allocator.dupe(u8, id) catch null;
+        if (self.resume_session_id) |id| return self.allocator.dupe(u8, id) catch null;
+        return null;
+    }
+
+    fn printResumeHintToStdout(self: *App, io: std.Io) !void {
+        const session_id = self.sessionIdForResume() orelse return;
+        defer self.allocator.free(session_id);
+        var buf: [320]u8 = undefined;
+        var file_writer = std.Io.File.Writer.init(.stdout(), io, &buf);
+        const writer = &file_writer.interface;
+        try writer.print("Resume: forge agent --conversation={s} (or forge agent -c {s})\n", .{ session_id, session_id });
+        try writer.flush();
     }
 
     fn showLastToolReview(self: *App) !void {
@@ -1269,6 +1312,8 @@ pub const App = struct {
         @memcpy(self.active_tool[0..len], tool_name[0..len]);
         self.active_tool_len = len;
         self.active_tool_running = true;
+        self.stream_line_index = null;
+        self.active_progress_len = 0;
         self.markDirty();
         self.mutex.unlock();
 
@@ -1350,7 +1395,7 @@ pub const App = struct {
         if (text.len > 0 and text[0] == '-') return term.Style.bright_red;
         if (std.mem.startsWith(u8, text, "Edited ")) return term.Style.bright_yellow;
         if (std.mem.startsWith(u8, text, "$ ")) return term.Style.bright_yellow;
-        if (std.mem.startsWith(u8, text, "ok ")) return term.Style.bright_green;
+        if (std.mem.startsWith(u8, text, "ok ") or std.mem.startsWith(u8, text, "✓ ")) return term.Style.bright_green;
         if (std.mem.startsWith(u8, text, "↻ ")) return term.Style.magenta;
         return switch (kind) {
             .user => term.Style.bright_yellow,
@@ -1369,7 +1414,7 @@ pub const App = struct {
 
     fn decorateLine(allocator: std.mem.Allocator, kind: LineKind, text: []const u8) ![]u8 {
         return switch (kind) {
-            .user => std.fmt.allocPrint(allocator, "› {s}", .{text}),
+            .user => std.fmt.allocPrint(allocator, "-> project git:(main) {s}", .{text}),
             .failure => std.fmt.allocPrint(allocator, "× {s}", .{text}),
             else => allocator.dupe(u8, text),
         };
@@ -1405,10 +1450,29 @@ pub const App = struct {
         }
 
         const footer_rows: u16 = 5 + filtered_len;
-        if (size.rows <= footer_rows + 2) return;
-        const chat_rows = size.rows - footer_rows;
+        if (size.rows <= footer_rows + 3) return;
+        const chat_rows = size.rows - footer_rows - 1;
 
         self.frame.begin();
+
+        // Render header
+        self.frame.moveTo(1, 1);
+        if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
+        self.frame.appendSlice(" 🔴 🟡 🟢   ") catch {};
+        if (self.term.use_color) self.frame.appendSlice(term.Style.bg_input) catch {};
+        self.frame.appendSlice(" >_ Terminal ") catch {};
+        if (self.term.use_color) {
+            self.frame.appendSlice(term.Style.bg_block) catch {};
+            self.frame.appendSlice(term.Style.gray) catch {};
+        }
+        self.frame.appendSlice(" 🗗 IDE ") catch {};
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        self.frame.data.appendNTimes(self.allocator, ' ', size.cols - 30) catch {};
+        if (self.term.use_color) {
+            self.frame.appendSlice(term.Style.bg_block) catch {};
+            self.frame.appendSlice("\x1b[K") catch {};
+            self.frame.appendSlice(term.Style.reset) catch {};
+        }
 
         var wrapped_cache: std.ArrayList([]const u8) = .empty;
         defer {
@@ -1419,11 +1483,27 @@ pub const App = struct {
         var display_lines: std.ArrayList(struct { kind: LineKind, text: []const u8 }) = .empty;
         defer display_lines.deinit(self.allocator);
 
+        var block_states: std.ArrayList(u8) = .empty;
+        defer block_states.deinit(self.allocator);
+        // 0: none, 1: thinking, 2: diff
+
         const width = @max(20, @as(usize, size.cols) - 2);
         const source_lines = if (self.show_events) self.events_lines.items else self.lines.items;
         const source_scroll_ptr: *usize = if (self.show_events) &self.events_scroll else &self.scroll;
 
+        var current_block: u8 = 0;
+
         for (source_lines) |line| {
+            if (line.kind == .agent) {
+                if (std.mem.startsWith(u8, line.text, "Thinking...")) {
+                    current_block = 1;
+                } else if (current_block == 1 and line.text.len > 0 and line.text[0] != '>' and line.text[0] != '!' and !std.mem.startsWith(u8, line.text, "Thinking")) {
+                    current_block = 0;
+                } else if (std.mem.startsWith(u8, line.text, "```")) {
+                    current_block = if (current_block == 2) 0 else 2;
+                }
+            }
+
             const decorated = decorateLine(self.allocator, line.kind, line.text) catch continue;
             defer self.allocator.free(decorated);
             const wrapped = term.wrapLines(self.allocator, decorated, width) catch continue;
@@ -1435,6 +1515,7 @@ pub const App = struct {
                     continue;
                 };
                 display_lines.append(self.allocator, .{ .kind = line.kind, .text = owned }) catch {};
+                block_states.append(self.allocator, current_block) catch {};
             }
         }
 
@@ -1444,11 +1525,15 @@ pub const App = struct {
                 if (self.active_tool_running and self.active_tool_len > 0) {
                     break :blk std.fmt.bufPrint(&busy_buf, "⣻ {s}...", .{getToolAction(self.active_tool[0..self.active_tool_len])}) catch "⣻ Working...";
                 }
-                break :blk std.fmt.bufPrint(&busy_buf, "⣻ Thinking...", .{}) catch "⣻ Thinking...";
+                if (self.active_progress_len > 0) {
+                    break :blk std.fmt.bufPrint(&busy_buf, "⣻ {s}", .{self.active_progress[0..self.active_progress_len]}) catch "⣻ Working...";
+                }
+                break :blk std.fmt.bufPrint(&busy_buf, "⣻ Working...", .{}) catch "⣻ Working...";
             };
             if (self.allocator.dupe(u8, status_line)) |owned_status| {
                 wrapped_cache.append(self.allocator, owned_status) catch self.allocator.free(owned_status);
                 display_lines.append(self.allocator, .{ .kind = .system, .text = owned_status }) catch {};
+                block_states.append(self.allocator, 0) catch {};
             } else |_| {}
         }
 
@@ -1458,30 +1543,77 @@ pub const App = struct {
         const start = if (total > chat_rows) total - chat_rows - source_scroll_ptr.* else 0;
         const end = @min(total, start + chat_rows);
 
-        var row: u16 = 1;
+        var row: u16 = 2;
         var scratch: [512]u8 = undefined;
-        for (display_lines.items[start..end]) |line| {
+        for (display_lines.items[start..end], start..) |line, i| {
+            const block = block_states.items[i];
             const color = colorForLine(line.kind, line.text);
-            const clipped = term.truncateEnd(&scratch, line.text, @intCast(size.cols - 1));
+
+            const padding: usize = if (block > 0) 2 else 0;
+            const content_cols = size.cols - 1 - padding * 2;
+            const clipped = term.truncateEnd(&scratch, line.text, @intCast(content_cols));
+
             self.frame.moveTo(row, 1);
-            if (self.term.use_color) self.frame.appendSlice(color) catch {};
-            if (self.term.use_color) {
-                if (bgForLine(line.text)) |bg| self.frame.appendSlice(bg) catch {};
+
+            // Left padding
+            if (padding > 0) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
+                self.frame.data.appendNTimes(self.allocator, ' ', padding) catch {};
             }
-            self.frame.appendSlice(clipped) catch {};
-            if (clipped.len < size.cols) {
-                self.frame.data.appendNTimes(self.allocator, ' ', size.cols - clipped.len) catch {};
+
+            if (line.kind == .user and std.mem.startsWith(u8, clipped, "-> project git:(main) ")) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.green) catch {};
+                self.frame.appendSlice("-> project git:(main) ") catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                if (padding > 0 and self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
+                self.frame.appendSlice(clipped["-> project git:(main) ".len..]) catch {};
+            } else if (std.mem.eql(u8, clipped, "Thinking...")) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.blue) catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
+                self.frame.appendSlice(clipped) catch {};
+            } else {
+                if (self.term.use_color) self.frame.appendSlice(color) catch {};
+                if (self.term.use_color) {
+                    if (bgForLine(line.text)) |bg| {
+                        self.frame.appendSlice(bg) catch {};
+                    } else if (padding > 0) {
+                        self.frame.appendSlice(term.Style.bg_block) catch {};
+                    }
+                }
+                self.frame.appendSlice(clipped) catch {};
             }
+
+            // Right padding and fill
+            if (clipped.len < content_cols) {
+                if (self.term.use_color) {
+                    if (bgForLine(line.text)) |bg| {
+                        self.frame.appendSlice(bg) catch {};
+                    } else if (padding > 0) {
+                        self.frame.appendSlice(term.Style.bg_block) catch {};
+                    }
+                }
+                self.frame.data.appendNTimes(self.allocator, ' ', content_cols - clipped.len + padding) catch {};
+            } else if (padding > 0) {
+                if (self.term.use_color) {
+                    if (bgForLine(line.text)) |bg| {
+                        self.frame.appendSlice(bg) catch {};
+                    } else {
+                        self.frame.appendSlice(term.Style.bg_block) catch {};
+                    }
+                }
+                self.frame.data.appendNTimes(self.allocator, ' ', padding) catch {};
+            }
+
             self.frame.appendSlice("\x1b[K") catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             row += 1;
         }
-        while (row <= chat_rows) : (row += 1) {
+        while (row <= chat_rows + 1) : (row += 1) {
             self.frame.writeRow(row, size.cols, "");
         }
 
-        const input_top_row = chat_rows + 1;
-        const input_row = chat_rows + 2;
+        const input_top_row = chat_rows + 2;
+        const input_row = chat_rows + 3;
 
         if (show_commands) {
             for (filtered[0..filtered_len], 0..) |cmd, i| {
@@ -1642,7 +1774,7 @@ fn workerMain(ctx: *WorkerCtx) void {
     app.refreshContextLabel(intent);
 
     const parsed = app.parsed;
-    var provider_opts = ai_workflow.agentProviderOptionsFromFlags(parsed.flags, intent);
+    var provider_opts = ai_workflow.agentProviderOptionsFromFlags(app.allocator, parsed.flags, intent, app.io, app.opened.root);
     provider_opts.stream_callback = streamBridge;
     provider_opts.stream_context = app;
     const max_steps = if (parsed.flags.max_steps > 0) parsed.flags.max_steps else 8;
@@ -1676,6 +1808,7 @@ fn workerMain(ctx: *WorkerCtx) void {
         .provider_options = provider_opts,
         .mode = app.agent_mode,
         .capability_profile = capabilityForMode(app.agent_mode, parsed.flags),
+        .auto_capability = parsed.flags.capability == null and app.agent_mode == .agent,
         .workspace_cwd = app.opened.path,
         .explicit_files = explicit_files,
         .conversation = conversation_snapshot,
@@ -1715,9 +1848,11 @@ fn workerMain(ctx: *WorkerCtx) void {
                 agent_config,
             );
         break :blk run_result catch |err| {
-            var buf: [128]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Agent error: {s}", .{@errorName(err)}) catch "Agent error";
-            app.workerDone(ctx, .{ .err = app.allocator.dupe(u8, msg) catch return });
+            const msg = agentErrorMessage(app.allocator, err) catch {
+                app.workerDone(ctx, .{ .err = app.allocator.dupe(u8, "Agent error") catch return });
+                return;
+            };
+            app.workerDone(ctx, .{ .err = msg });
             return;
         };
     };
@@ -1730,6 +1865,19 @@ fn workerMain(ctx: *WorkerCtx) void {
     var mutable = result;
     ai.agent.deinitResult(app.allocator, &mutable);
     app.workerDone(ctx, .{ .ok = payload });
+}
+
+fn agentErrorMessage(allocator: std.mem.Allocator, err: ai.agent.AgentError) ![]u8 {
+    const text: []const u8 = switch (err) {
+        error.ProviderFailed => "Agent error: LLM provider failed (timeout, malformed response, or context too long). Try again, use a shorter request, or run `forge agent resume <session_id>`.",
+        error.ContextLengthExceeded => "Agent error: context too long for the model. Retry with fewer attached files or a shorter prompt.",
+        error.NetworkError => "Agent error: cannot reach Ollama. Check `ollama serve` and OLLAMA_HOST.",
+        error.StepLimitReached => "Agent error: step limit reached before finishing. Resume the session or increase --max-steps.",
+        error.DuplicateLoop => "Agent error: agent repeated the same tool calls. Give a more specific file/symbol or use /resume.",
+        error.NoProgress => "Agent error: no progress after broad searches. Point to a specific file or task.",
+        else => return std.fmt.allocPrint(allocator, "Agent error: {s}", .{@errorName(err)}),
+    };
+    return allocator.dupe(u8, text);
 }
 
 fn streamBridge(context: ?*anyopaque, chunk: []const u8) void {
@@ -1754,6 +1902,11 @@ fn stepBridge(context: ?*anyopaque, step: ai.agent.Step) void {
 
 fn turnBridge(context: ?*anyopaque, next_step_index: u32) void {
     const app: *App = @ptrCast(@alignCast(context.?));
+    app.mutex.lock();
+    app.stream_line_index = null;
+    app.active_progress_len = 0;
+    app.mutex.unlock();
+
     var buf: [96]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "↻ call llm  next tool step {d}", .{next_step_index}) catch return;
     app.pushLine(.tool, app.allocator.dupe(u8, line) catch return) catch {};
@@ -1771,9 +1924,22 @@ fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
         .repairing => "Repairing...",
         .proposal_ready => "Proposal ready",
     };
-    var buf: [64]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "● {s}", .{label}) catch return;
-    app.pushLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
+
+    switch (phase) {
+        .context_built, .plan_ready, .proposal_ready => {
+            var buf: [64]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "● {s}", .{label}) catch return;
+            app.pushLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
+        },
+        .planning, .sending, .streaming, .parsing, .repairing => {
+            app.mutex.lock();
+            const len = @min(label.len, app.active_progress.len);
+            @memcpy(app.active_progress[0..len], label[0..len]);
+            app.active_progress_len = len;
+            app.markDirty();
+            app.mutex.unlock();
+        },
+    }
 }
 
 fn defaultModel(kind: ai.provider_factory.Kind) []const u8 {
@@ -1821,15 +1987,22 @@ pub fn run(
 
     var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
     defer opened.close(io);
+    workspace_cmd.scheduleSemanticIndex(allocator, io, environ_map, opened);
 
     var scope = try cancel_scope_mod.Scope.init(allocator);
     defer scope.deinit();
 
     var terminal = try term.Terminal.init(!parsed.flags.no_color);
-    defer terminal.deinit();
 
     var app = try App.init(allocator, io, environ_map, opened, parsed, terminal, scope);
     defer app.deinit();
 
-    return app.run();
+    if (parsed.flags.conversation) |session_id| {
+        try app.resumeSession(session_id);
+    }
+
+    const code = try app.run();
+    app.printResumeHintToStdout(io) catch {};
+    terminal.deinit();
+    return code;
 }

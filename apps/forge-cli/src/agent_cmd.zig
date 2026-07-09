@@ -56,7 +56,7 @@ fn runList(
     var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
     defer opened.close(io);
 
-    var list = try workspace.sessions.listEntries(allocator, io, opened.root);
+    var list = try workspace.sessions.listEntries(allocator, io, opened.path);
     defer list.deinit();
 
     if (parsed.flags.json) {
@@ -111,7 +111,7 @@ fn runEvents(
     defer opened.close(io);
 
     const session_id = parsed.positional[1];
-    const body = workspace.sessions.readEvents(allocator, io, opened.root, session_id) catch {
+    const body = workspace.sessions.readEvents(allocator, io, session_id) catch {
         try writer.print("error: no event log for session '{s}'\n", .{session_id});
         return 2;
     };
@@ -149,12 +149,13 @@ fn runAgent(
 ) !u8 {
     var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
     defer opened.close(io);
+    workspace_cmd.scheduleSemanticIndex(allocator, io, environ_map, opened);
 
     var scope = try cancel_scope_mod.Scope.init(allocator);
     defer scope.deinit();
     if (!parsed.flags.quiet and !parsed.flags.json) scope.installSigint();
 
-    const provider_opts = ai_workflow.agentProviderOptionsFromFlags(parsed.flags, target);
+    const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, target, io, opened.root);
     const max_steps = if (parsed.flags.max_steps > 0) parsed.flags.max_steps else 8;
     const progress_writer: ?*std.Io.Writer = null;
     var cancel_token = scope.token();
@@ -172,6 +173,9 @@ fn runAgent(
     }
     const mode = modeFromFlags(parsed.flags);
     const capability = capabilityFromFlags(parsed.flags);
+    // Without an explicit --capability, let the classified intent choose the
+    // least-privilege profile (questions stay read-only, edits unlock proposals).
+    const auto_capability = parsed.flags.capability == null;
     var event_writer = AgentEventWriter{
         .allocator = allocator,
         .writer = writer,
@@ -186,6 +190,7 @@ fn runAgent(
         .provider_options = provider_opts,
         .mode = mode,
         .capability_profile = capability,
+        .auto_capability = auto_capability,
         .workspace_cwd = opened.path,
         .cancel_token = &cancel_token,
         .progress_writer = progress_writer,
@@ -306,7 +311,7 @@ fn runAgent(
             try writer.print(",\"response_text\":{s}", .{escaped});
         }
     } else {
-        try renderHumanTranscript(writer, result, !parsed.flags.no_color);
+        try renderHumanTranscript(allocator, io, opened, writer, result, !parsed.flags.no_color);
     }
 
     if (result.proposal_rel) |prop| {
@@ -344,9 +349,16 @@ fn modeFromFlags(flags: args_mod.GlobalFlags) ai.tools.Mode {
     return .agent;
 }
 
-fn renderHumanTranscript(writer: *std.Io.Writer, result: ai.agent.Result, use_color: bool) !void {
+fn renderHumanTranscript(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    opened: workspace_cmd.OpenedWorkspace,
+    writer: *std.Io.Writer,
+    result: ai.agent.Result,
+    use_color: bool,
+) !void {
     try writeStyled(writer, use_color, Style.dim, "Session: ");
-    try writer.print(".forge/sessions/{s}.json\n\n", .{result.session_id});
+    try writer.print("~/.forge/sessions/{s}.json\n\n", .{result.session_id});
 
     if (result.steps.len > 0) {
         for (result.steps) |step| {
@@ -372,10 +384,15 @@ fn renderHumanTranscript(writer: *std.Io.Writer, result: ai.agent.Result, use_co
 
     if (result.proposal_rel) |prop| {
         try writer.writeAll("\n");
-        try writeStyled(writer, use_color, Style.bold_yellow, "Proposal: ");
-        try writer.print("{s}\n", .{prop});
-        try writeStyled(writer, use_color, Style.dim, "Review: ");
-        try writer.print("forge diff {s} --workspace <path>\n", .{prop});
+        try writeStyled(writer, use_color, Style.bold_yellow, "Proposed changes (+ added, - removed):\n");
+        var proposal = try workspace_cmd.loadProposal(allocator, io, opened, prop);
+        defer proposal.deinit();
+        const edit = proposal.workspaceEdit();
+        edit.validate() catch {};
+        try workspace.preview.renderDiff(allocator, io, opened.root, edit, writer);
+        try writer.writeAll("\n");
+        try writeStyled(writer, use_color, Style.dim, "Apply:  ");
+        try writer.print("forge apply {s}\n", .{prop});
     }
 }
 
@@ -601,11 +618,14 @@ test "agent events renders a timeline from the session log" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const abs = try std.fmt.allocPrint(allocator, "/tmp/forge-test-{s}", .{tmp.sub_path});
+    defer allocator.free(abs);
+    try workspace.global_store.setForgeHomeOverride(abs);
+    defer workspace.global_store.clearForgeHomeOverride();
 
-    try workspace.sessions.appendEvent(allocator, io, root, "sess_demo", "{\"schema_version\":1,\"type\":\"session_started\",\"intent\":\"do work\"}");
-    try workspace.sessions.appendEvent(allocator, io, root, "sess_demo", "{\"schema_version\":1,\"type\":\"tool_call\",\"step\":1,\"tool\":\"read_file\",\"reason\":\"gather\"}");
-    try workspace.sessions.appendEvent(allocator, io, root, "sess_demo", "{\"schema_version\":1,\"type\":\"run_completed\",\"steps\":1,\"repair_attempts\":0}");
+    try workspace.sessions.appendEvent(allocator, io, "sess_demo", "{\"schema_version\":1,\"type\":\"session_started\",\"intent\":\"do work\"}");
+    try workspace.sessions.appendEvent(allocator, io, "sess_demo", "{\"schema_version\":1,\"type\":\"tool_call\",\"step\":1,\"tool\":\"read_file\",\"reason\":\"gather\"}");
+    try workspace.sessions.appendEvent(allocator, io, "sess_demo", "{\"schema_version\":1,\"type\":\"run_completed\",\"steps\":1,\"repair_attempts\":0}");
 
     var ws_buf: [std.fs.max_path_bytes]u8 = undefined;
     const ws = try std.fmt.bufPrint(&ws_buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});

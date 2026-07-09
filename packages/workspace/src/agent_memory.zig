@@ -187,7 +187,7 @@ test "agent memory append and list roundtrip" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     const id = try appendEntry(allocator, io, root, .{
         .kind = .preference,

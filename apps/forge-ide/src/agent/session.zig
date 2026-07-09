@@ -73,6 +73,13 @@ pub const AgentStep = struct {
     running: bool = false,
 };
 
+pub fn shouldAutoExpandStep(kind: []const u8, content: ?[]const u8) bool {
+    if (content == null) return false;
+    return std.mem.eql(u8, kind, "propose") or
+        std.mem.eql(u8, kind, "write") or
+        std.mem.eql(u8, kind, "edit");
+}
+
 pub const Session = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -135,6 +142,9 @@ pub const Session = struct {
     routing_task_intent: []const u8 = "",
     routing_profile: []const u8 = "",
     routing_tools: []const u8 = "",
+
+    max_steps: u32 = 16,
+    always_approve_tools: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Session {
         return .{
@@ -259,11 +269,22 @@ pub const Session = struct {
         self.agent_steps.clearRetainingCapacity();
     }
 
-    pub fn beginAgentStep(self: *Session, index: u32, kind: []const u8, label: []const u8) !void {
+    pub fn clearAgentSteps(self: *Session) void {
+        self.lock();
+        defer self.unlock();
+        self.clearAgentStepsUnlocked();
+    }
+
+    pub fn beginAgentStep(self: *Session, index: u32, kind: []const u8, label: []const u8, content: ?[]const u8) !void {
         const owned_kind = try self.allocator.dupe(u8, kind);
         errdefer self.allocator.free(owned_kind);
         const owned_label = try self.allocator.dupe(u8, label);
         errdefer self.allocator.free(owned_label);
+        var owned_content: ?[]const u8 = null;
+        if (content) |c| {
+            owned_content = try self.allocator.dupe(u8, c);
+        }
+        errdefer if (owned_content) |c| self.allocator.free(c);
 
         self.lock();
         defer self.unlock();
@@ -271,6 +292,8 @@ pub const Session = struct {
             .index = index,
             .kind = owned_kind,
             .summary = owned_label,
+            .expanded = shouldAutoExpandStep(owned_kind, owned_content),
+            .content = owned_content,
             .running = true,
         });
     }
@@ -625,7 +648,6 @@ pub const Session = struct {
         self.stream_text.clearRetainingCapacity();
         self.thinking_text.clearRetainingCapacity();
         self.stream_live = false;
-        self.clearAgentStepsUnlocked();
         self.freeLinesUnlocked(&self.diff_lines);
         self.clearValidationResultsUnlocked();
         self.review.clear(self.allocator);

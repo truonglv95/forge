@@ -1,7 +1,7 @@
 const std = @import("std");
+const workspace = @import("forge-workspace");
 
 const max_entries: usize = 8;
-const recent_file = "recent_workspaces.toml";
 
 pub fn record(allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8) !void {
     const paths = try loadAll(allocator, io);
@@ -24,8 +24,8 @@ pub fn record(allocator: std.mem.Allocator, io: std.Io, workspace_path: []const 
 }
 
 pub fn loadAll(allocator: std.mem.Allocator, io: std.Io) ![]const []const u8 {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const file_path = homeRecentPath(&path_buf) orelse return &.{};
+    const file_path = homeRecentPath(allocator) catch return &.{};
+    defer allocator.free(file_path);
 
     var file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch return &.{};
     defer file.close(io);
@@ -64,23 +64,19 @@ pub fn freePaths(allocator: std.mem.Allocator, paths: []const []const u8) void {
     allocator.free(paths);
 }
 
-fn homeRecentPath(out: []u8) ?[]const u8 {
-    const home = std.c.getenv("HOME") orelse return null;
-    return std.fmt.bufPrint(out, "{s}/.forge/{s}", .{ std.mem.span(home), recent_file }) catch null;
+fn homeRecentPath(allocator: std.mem.Allocator) ![]u8 {
+    return workspace.global_store.joinHome(allocator, workspace.global_store.recent_workspaces_file);
 }
 
-fn ensureHomeForgeDir() !void {
-    const home = std.c.getenv("HOME") orelse return error.NoHome;
-    var dir_buf: [std.fs.max_path_bytes:0]u8 = undefined;
-    const dir_path = std.fmt.bufPrintZ(&dir_buf, "{s}/.forge", .{std.mem.span(home)}) catch return error.PathTooLong;
-    _ = std.c.mkdir(dir_path, 0o755);
+fn ensureHomeForgeDir(io: std.Io) !void {
+    try workspace.global_store.ensureLayout(io);
 }
 
 fn save(allocator: std.mem.Allocator, io: std.Io, paths: []const []const u8) !void {
-    try ensureHomeForgeDir();
+    try ensureHomeForgeDir(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const file_path = homeRecentPath(&path_buf) orelse return error.NoHome;
+    const file_path = try homeRecentPath(allocator);
+    defer allocator.free(file_path);
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);

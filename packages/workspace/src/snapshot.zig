@@ -54,7 +54,7 @@ test "FileSnapshot reads file and computes hash" {
         try file.writeStreamingAll(io, "forge");
     }
 
-    var snap = try FileSnapshot.read(allocator, io, path.WorkspaceRoot.init(tmp.dir), try path.WorkspacePath.parse(rel_path));
+    var snap = try FileSnapshot.read(allocator, io, path.WorkspaceRoot.init(tmp.dir, "."), try path.WorkspacePath.parse(rel_path));
     defer snap.deinit();
 
     try std.testing.expectEqualStrings("forge", snap.content);

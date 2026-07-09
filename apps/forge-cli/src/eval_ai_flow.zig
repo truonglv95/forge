@@ -126,7 +126,9 @@ pub fn run(
 
             seedWorkspace(allocator, io, eval_ws.root, task.workspace_files) catch return error.WorkspaceFailed;
 
-            const provider_opts = ai_workflow.agentProviderOptionsFromFlags(flags, task.intent);
+            var eval_flags = flags;
+            if (eval_flags.provider == null) eval_flags.provider = "fake";
+            const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, eval_flags, task.intent, io, null);
             const active_file: ?[]const u8 = blk: {
                 if (!task.expect.has_import_neighbors) break :blk null;
                 if (task.workspace_files.get("main.zig") != null) break :blk "main.zig";
@@ -387,7 +389,7 @@ const EvalWorkspace = struct {
         errdefer parent_dir.deleteTree(io, directory_name) catch {};
         var dir = try parent_dir.openDir(io, directory_name, .{ .access_sub_paths = true, .iterate = true });
         errdefer dir.close(io);
-        const root = workspace.WorkspaceRoot.init(dir);
+        const root = workspace.WorkspaceRoot.init(dir, ".");
 
         var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
         const abs_len = try root.dir.realPath(io, &abs_buf);

@@ -13,7 +13,7 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
 
     // Draw "v FORGE" header
     var ws_name_buf: [128:0]u8 = undefined;
-    const basename = std.fs.path.basename(wb.workspace_path);
+    const basename = wb.workspace_name;
     var name_len: usize = 0;
     for (basename) |ch| {
         if (name_len >= ws_name_buf.len - 1) break;
@@ -23,8 +23,9 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
     ws_name_buf[name_len] = 0;
 
     // Draw chevron for workspace
-    renderer.Renderer.drawSvg(renderer.icons.chevron_down, explorer_x + 8, panel_y + 14, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
-    renderer.Renderer.drawText(ws_name_buf[0..name_len], explorer_x + 22, panel_y + 15, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
+    const chevron = if (wb.explorer_root_expanded) renderer.icons.chevron_down else renderer.icons.chevron_right;
+    renderer.Renderer.drawSvg(chevron, explorer_x + 8, panel_y + 14, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+    renderer.Renderer.drawText(ws_name_buf[0..name_len], explorer_x + 28, panel_y + 15, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
 
     const icon_c = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
     const hover_c = renderer.Color{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 };
@@ -58,16 +59,21 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
     }
     renderer.Renderer.drawSvg(renderer.icons.file, rx, action_icon_y, 16, 16, icon_c);
 
+    if (!wb.explorer_root_expanded) {
+        renderer.Renderer.clearClipRect();
+        return;
+    }
+
     var visible: std.ArrayList(@import("../../../explorer/tree.zig").VisibleEntry) = .empty;
     defer visible.deinit(state.gpa);
     wb.explorer.visibleRows(wb.activeFilePath(), &visible) catch {};
 
     var file_y: f32 = explorer_scroll.list_top - wb.explorer_scroll_y;
-    const chevron_slot_w: f32 = 12;
-    const label_gap: f32 = 8;
     for (visible.items, 0..) |row, row_index| {
         const indent = @as(f32, @floatFromInt(row.depth)) * 14.0;
-        const label_x = explorer_x + 20 + indent + chevron_slot_w + label_gap;
+        const base_x = explorer_x + 20 + indent;
+        const icon_w: f32 = 14.0;
+        const label_x = base_x + icon_w + 6.0;
 
         const row_h = explorer_scroll.row_height;
         if (file_y + row_h >= 65 and file_y < h - layout.status_height) {
@@ -87,7 +93,10 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
                     renderer.Color{ .r = 0.89, .g = 0.89, .b = 0.89, .a = 1.0 }
                 else
                     renderer.Color{ .r = 0.62, .g = 0.64, .b = 0.68, .a = 1.0 };
-                renderer.Renderer.drawSvg(if (row.expanded) renderer.icons.chevron_down else renderer.icons.chevron_right, explorer_x + 20 + indent, file_y + 1, chevron_slot_w, row_h - 2, chevron_color);
+                renderer.Renderer.drawSvg(if (row.expanded) renderer.icons.chevron_down else renderer.icons.chevron_right, base_x, file_y + 1, icon_w, row_h - 2, chevron_color);
+            } else {
+                const res = @import("../icon_resolver.zig").resolveIcon(row.name);
+                renderer.Renderer.drawSvg(res.svg, base_x, file_y + 3, icon_w, icon_w, res.color);
             }
 
             if (wb.renaming and row.selected) {

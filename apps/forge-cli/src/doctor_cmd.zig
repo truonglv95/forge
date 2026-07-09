@@ -55,7 +55,7 @@ pub fn run(
         };
         defer opened.close(io);
 
-        workspace.history.ensureLayout(io, opened.root) catch |err| {
+        workspace.history.ensureLayout(allocator, io, opened.root) catch |err| {
             const detail = try std.fmt.allocPrint(allocator, ".forge layout failed: {}", .{err});
             try appendCheck(allocator, &checks, "workspace.forge_layout", false, detail);
             return render(allocator, parsed, checks.items, writer);
@@ -129,7 +129,7 @@ fn resolveProviderKind(
             break :blk .gemini;
         },
         .auto => blk: {
-            const host = ai.ollama_provider.resolveHost(allocator, environ_map) catch return .fake;
+            const host = ai.ollama_provider.resolveHost(allocator, environ_map, null) catch return .fake;
             defer allocator.free(host);
             if (ai.ollama_provider.isReachable(allocator, io, host)) break :blk .ollama;
 

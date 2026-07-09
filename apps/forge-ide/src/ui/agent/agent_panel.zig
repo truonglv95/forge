@@ -11,12 +11,29 @@ pub const apply_banner_h: f32 = 34;
 pub const apply_banner_validation_line_h: f32 = 14;
 pub const apply_banner_validation_pad: f32 = 8;
 
-pub const resume_banner_h: f32 = 52;
-
 pub fn applyBannerHeight(validation_failed: bool, validation_count: usize) f32 {
     if (!validation_failed or validation_count == 0) return apply_banner_h;
-    const lines: f32 = @floatFromInt(@min(validation_count, 4));
-    return apply_banner_h + apply_banner_validation_pad + lines * apply_banner_validation_line_h;
+    return apply_banner_h + apply_banner_validation_pad * 2.0 + @as(f32, @floatFromInt(validation_count)) * apply_banner_validation_line_h;
+}
+
+const word_wrap = @import("../editor/word_wrap.zig");
+
+pub fn resumeBannerHeight(agent_w: f32, intent: []const u8, state: []const u8) f32 {
+    var detail_buf: [4096]u8 = undefined;
+    const detail = std.fmt.bufPrint(&detail_buf, "{s} · {s}", .{ intent, state }) catch intent;
+
+    var lines: usize = 0;
+    var start: usize = 0;
+    const max_w = agent_w - 40.0;
+    while (start < detail.len) {
+        const end = word_wrap.breakAt(detail, start, max_w, 10.0);
+        lines += 1;
+        if (end >= detail.len) break;
+        start = end;
+        while (start < detail.len and detail[start] == ' ') start += 1;
+    }
+    const text_h = @as(f32, @floatFromInt(lines)) * 14.0;
+    return 16.0 + text_h + 8.0 + 24.0 + 8.0;
 }
 
 pub const ResumeBanner = struct {
@@ -25,7 +42,7 @@ pub const ResumeBanner = struct {
 };
 
 pub const ApplyBanner = struct {
-    keep: ButtonRect,
+    primary: ButtonRect,
     undo: ButtonRect,
 };
 
@@ -34,16 +51,16 @@ pub fn applyBannerLayout(agent_x: f32, y: f32, validation_failed: bool, validati
     const button_y = if (validation_failed and validation_count > 0)
         y + apply_banner_h - 26 + apply_banner_validation_pad + @as(f32, @floatFromInt(@min(validation_count, 4))) * apply_banner_validation_line_h
     else
-        y;
+        y + 24;
     return .{
-        .keep = .{ .x = inner_x, .y = button_y, .w = 72, .h = 24 },
+        .primary = .{ .x = inner_x, .y = button_y, .w = 72, .h = 24 },
         .undo = .{ .x = inner_x + 80, .y = button_y, .w = 88, .h = 24 },
     };
 }
 
-pub fn hitApplyBanner(agent_x: f32, y: f32, px: f32, py: f32, validation_failed: bool, validation_count: usize) ?enum { keep, undo } {
+pub fn hitApplyBanner(agent_x: f32, y: f32, px: f32, py: f32, validation_failed: bool, validation_count: usize) ?enum { primary, undo } {
     const banner = applyBannerLayout(agent_x, y, validation_failed, validation_count);
-    if (banner.keep.contains(px, py)) return .keep;
+    if (banner.primary.contains(px, py)) return .primary;
     if (banner.undo.contains(px, py)) return .undo;
     return null;
 }
@@ -55,18 +72,20 @@ pub fn drawApplyBanner(
     validation_failed: bool,
     validation_results: []const agent_session.ValidationResult,
 ) void {
-    const banner_h = applyBannerHeight(validation_failed, validation_results.len);
     const banner = applyBannerLayout(agent_x, y, validation_failed, validation_results.len);
     const bg = if (validation_failed)
         renderer.Color{ .r = 0.28, .g = 0.14, .b = 0.14, .a = 1.0 }
     else
-        renderer.Color{ .r = 0.14, .g = 0.24, .b = 0.18, .a = 1.0 };
+        renderer.Color{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 };
+
+    const banner_h = applyBannerHeight(validation_failed, validation_results.len);
     renderer.Renderer.drawRoundedRect(agent_x + 10, y - 4, agent_w - 20, banner_h, 8, bg);
-    const title = if (validation_failed) "Validation failed — rollback recommended" else "Applied — keep changes?";
+
+    const title = if (validation_failed) "Apply failed" else "Plan applied successfully";
     const title_color = if (validation_failed)
-        renderer.Color{ .r = 1.0, .g = 0.72, .b = 0.55, .a = 1.0 }
+        renderer.Color{ .r = 1.0, .g = 0.7, .b = 0.7, .a = 1.0 }
     else
-        renderer.Color{ .r = 0.75, .g = 0.95, .b = 0.8, .a = 1.0 };
+        renderer.Color{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 };
     renderer.Renderer.drawText(title, agent_x + 20, y + 2, 11.0, title_color);
 
     if (validation_failed) {
@@ -93,24 +112,26 @@ pub fn drawApplyBanner(
         renderer.Color{ .r = 0.35, .g = 0.35, .b = 0.4, .a = 1.0 }
     else
         renderer.Color{ .r = 0.2, .g = 0.5, .b = 0.35, .a = 1.0 };
-    renderer.Renderer.drawRoundedRect(banner.keep.x, banner.keep.y, banner.keep.w, banner.keep.h, 5, keep_bg);
-    renderer.Renderer.drawText("Keep", banner.keep.x + 18, banner.keep.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(banner.primary.x, banner.primary.y, banner.primary.w, banner.primary.h, 5, keep_bg);
+    renderer.Renderer.drawText("Keep", banner.primary.x + 18, banner.primary.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
     const undo_label = if (validation_failed) "Rollback" else "Undo";
     renderer.Renderer.drawRoundedRect(banner.undo.x, banner.undo.y, banner.undo.w, banner.undo.h, 5, .{ .r = 0.45, .g = 0.22, .b = 0.22, .a = 1.0 });
     const undo_x = banner.undo.x + if (validation_failed) @as(f32, 12) else @as(f32, 18);
     renderer.Renderer.drawText(undo_label, undo_x, banner.undo.y + 5, 11.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
 }
 
-pub fn resumeBannerLayout(agent_x: f32, y: f32) ResumeBanner {
+pub fn resumeBannerLayout(agent_x: f32, y: f32, h: f32) ResumeBanner {
     const inner_x = agent_x + 20;
+    const btn_y = y - 4 + h - 32;
     return .{
-        .primary = .{ .x = inner_x, .y = y + 24, .w = 96, .h = 24 },
-        .dismiss = .{ .x = inner_x + 104, .y = y + 24, .w = 72, .h = 24 },
+        .primary = .{ .x = inner_x, .y = btn_y, .w = 96, .h = 24 },
+        .dismiss = .{ .x = inner_x + 104, .y = btn_y, .w = 72, .h = 24 },
     };
 }
 
-pub fn hitResumeBanner(agent_x: f32, y: f32, px: f32, py: f32) ?enum { primary, dismiss } {
-    const banner = resumeBannerLayout(agent_x, y);
+pub fn hitResumeBanner(agent_x: f32, agent_w: f32, y: f32, px: f32, py: f32, intent: []const u8, state: []const u8) ?enum { primary, dismiss } {
+    const h = resumeBannerHeight(agent_w, intent, state);
+    const banner = resumeBannerLayout(agent_x, y, h);
     if (banner.primary.contains(px, py)) return .primary;
     if (banner.dismiss.contains(px, py)) return .dismiss;
     return null;
@@ -124,24 +145,42 @@ pub fn drawResumeBanner(
     intent: []const u8,
     state: []const u8,
 ) void {
-    const banner = resumeBannerLayout(agent_x, y);
+    const h = resumeBannerHeight(agent_w, intent, state);
+    const banner = resumeBannerLayout(agent_x, y, h);
     const is_proposal = kind == .review_proposal;
     const bg = if (is_proposal)
         renderer.Color{ .r = 0.16, .g = 0.24, .b = 0.18, .a = 1.0 }
     else
         renderer.Color{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 };
-    renderer.Renderer.drawRoundedRect(agent_x + 10, y - 4, agent_w - 20, resume_banner_h, 8, bg);
+    renderer.Renderer.drawRoundedRect(agent_x + 10, y - 4, agent_w - 20, h, 8, bg);
     const title = if (is_proposal) "Proposal ready for review" else "Interrupted agent run";
     const title_color = if (is_proposal)
         renderer.Color{ .r = 0.75, .g = 0.95, .b = 0.8, .a = 1.0 }
     else
         renderer.Color{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 };
     renderer.Renderer.drawText(title, agent_x + 20, y + 2, 11.0, title_color);
-    var detail_buf: [256:0]u8 = undefined;
-    const clipped_intent = intent[0..@min(intent.len, 120)];
-    const detail = std.fmt.bufPrint(&detail_buf, "{s} · {s}", .{ clipped_intent, state }) catch clipped_intent;
-    detail_buf[@min(detail.len, detail_buf.len - 1)] = 0;
-    renderer.Renderer.drawText(@ptrCast(&detail_buf), agent_x + 20, y + 16, 10.0, .{ .r = 0.68, .g = 0.74, .b = 0.82, .a = 1.0 });
+
+    var detail_buf: [4096]u8 = undefined;
+    const detail = std.fmt.bufPrint(&detail_buf, "{s} · {s}", .{ intent, state }) catch intent;
+
+    var text_y = y + 16;
+    var start: usize = 0;
+    const max_w = agent_w - 40.0;
+    while (start < detail.len) {
+        const end = word_wrap.breakAt(detail, start, max_w, 10.0);
+        const part = detail[start..end];
+        if (part.len > 0) {
+            var part_buf: [1024:0]u8 = undefined;
+            const part_len = @min(part.len, part_buf.len - 1);
+            @memcpy(part_buf[0..part_len], part[0..part_len]);
+            part_buf[part_len] = 0;
+            renderer.Renderer.drawText(@ptrCast(&part_buf), agent_x + 20, text_y, 10.0, .{ .r = 0.68, .g = 0.74, .b = 0.82, .a = 1.0 });
+        }
+        if (end >= detail.len) break;
+        text_y += 14.0;
+        start = end;
+        while (start < detail.len and detail[start] == ' ') start += 1;
+    }
     const primary_bg = if (is_proposal)
         renderer.Color{ .r = 0.2, .g = 0.5, .b = 0.35, .a = 1.0 }
     else
@@ -231,11 +270,12 @@ pub fn hitTestSteps(wb: *@import("../../workbench.zig").Workbench, agent_x: f32,
     const state = @import("../core/state.zig");
     if (state.chat_history) |history| {
         for (history.items) |msg| {
-            if (!chatHasVisibleContent(msg.content)) continue;
-            const drawn = if (msg.role == .user)
-                chat_bubble.bubbleHeight(msg.content, content_w, false) + chat_bubble.bubble_gap
-            else
-                chat_bubble.plainMessageHeight(msg.content, content_w);
+            if (msg.role != .tool and !chatHasVisibleContent(msg.content)) continue;
+            const drawn = switch (msg.role) {
+                .user => chat_bubble.bubbleHeight(msg.content, content_w, false) + chat_bubble.bubble_gap,
+                .agent => chat_bubble.agentMessageHeight(msg.content, content_w),
+                .tool => tool_step_card.card_h + tool_step_card.card_gap + 8.0,
+            };
             content_y += drawn;
         }
     }
@@ -324,7 +364,7 @@ pub fn hitReviewAction(
     return null;
 }
 
-pub const ApprovalActions = struct { approve: ButtonRect, reject: ButtonRect };
+pub const ApprovalActions = struct { approve: ButtonRect, reject: ButtonRect, approve_always: ButtonRect };
 
 pub fn approvalOverlayTop(window_h: f32, attachment_count: usize, agent_w: f32, prompt: *const editor.Buffer) f32 {
     return agent_composer.composerTop(window_h, attachment_count, agent_w, prompt) - 112;
@@ -365,13 +405,15 @@ pub fn approvalActions(agent_x: f32, agent_w: f32, window_h: f32, attachment_cou
     return .{
         .approve = .{ .x = x, .y = y, .w = 108, .h = 28 },
         .reject = .{ .x = x + 116, .y = y, .w = 108, .h = 28 },
+        .approve_always = .{ .x = x + 232, .y = y, .w = 120, .h = 28 },
     };
 }
 
-pub fn hitApprovalAction(agent_x: f32, agent_w: f32, window_h: f32, attachment_count: usize, prompt: *const editor.Buffer, x: f32, y: f32) ?enum { approve, reject } {
+pub fn hitApprovalAction(agent_x: f32, agent_w: f32, window_h: f32, attachment_count: usize, prompt: *const editor.Buffer, x: f32, y: f32) ?enum { approve, reject, approve_always } {
     const actions = approvalActions(agent_x, agent_w, window_h, attachment_count, prompt);
     if (actions.approve.contains(x, y)) return .approve;
     if (actions.reject.contains(x, y)) return .reject;
+    if (actions.approve_always.contains(x, y)) return .approve_always;
     return null;
 }
 
@@ -387,5 +429,5 @@ pub fn composerLayout(
 
 pub fn bottomReserved(attachment_count: usize, agent_w: f32, prompt: *const editor.Buffer) f32 {
     const visual_lines = agent_composer.visualLineCount(prompt, agent_w);
-    return agent_composer.composerHeight(attachment_count, visual_lines) + context_inspector.composer_pad + context_inspector.strip_gap;
+    return agent_composer.composerHeight(attachment_count, visual_lines) + agent_composer.composer_pad;
 }

@@ -12,6 +12,24 @@ pub fn maxWidth(viewport_w: f32) f32 {
     return @max(40.0, viewport_w - 8.0);
 }
 
+fn isAsciiSlice(text: []const u8) bool {
+    for (text) |ch| {
+        if (ch >= 0x80) return false;
+    }
+    return true;
+}
+
+fn isUtf8Continuation(ch: u8) bool {
+    return (ch & 0xc0) == 0x80;
+}
+
+fn nextUtf8Boundary(line: []const u8, index: usize) usize {
+    if (index >= line.len) return line.len;
+    var next = index + 1;
+    while (next < line.len and isUtf8Continuation(line[next])) : (next += 1) {}
+    return next;
+}
+
 pub fn segmentCount(line: []const u8, max_w: f32, font_size: f32) usize {
     if (line.len == 0) return 1;
     var count: usize = 0;
@@ -91,6 +109,27 @@ pub fn breakAt(line: []const u8, start: usize, max_w: f32, font_size: f32) usize
     const rest = line[start..];
     if (editor_scroll.textWidth(rest, font_size) <= max_w) return line.len;
 
+    if (!isAsciiSlice(rest)) {
+        var end = start;
+        var last_space: ?usize = null;
+        var cursor = start;
+        while (cursor < line.len) {
+            const next = nextUtf8Boundary(line, cursor);
+            if (next <= cursor) break;
+            if (editor_scroll.textWidth(line[start..next], font_size) > max_w) break;
+            if (line[cursor] == ' ') last_space = next;
+            end = next;
+            cursor = next;
+        }
+        if (end < line.len and end > start) {
+            if (last_space) |space_end| {
+                if (space_end > start) return space_end;
+            }
+            return end;
+        }
+        return nextUtf8Boundary(line, start);
+    }
+
     var lo: usize = start + 1;
     var hi: usize = line.len;
     while (lo < hi) {
@@ -149,4 +188,17 @@ pub fn scrollToCursor(
 test "wrap long line into segments" {
     const line = "hello world this is a long line";
     try std.testing.expect(segmentCount(line, 80.0, 14.0) >= 1);
+}
+
+test "wrap keeps utf8 boundaries" {
+    const line = "caf\xc3\xa9 caf\xc3\xa9 caf\xc3\xa9 caf\xc3\xa9 caf\xc3\xa9";
+    var start: usize = 0;
+    while (start < line.len) {
+        const end = breakAt(line, start, 40.0, 14.0);
+        try std.testing.expect(end > start);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(line[start..end]));
+        if (end >= line.len) break;
+        start = end;
+        while (start < line.len and line[start] == ' ') start += 1;
+    }
 }

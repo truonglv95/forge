@@ -67,3 +67,51 @@ pub fn drawPalette(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32
         row_y += 24;
     }
 }
+
+pub fn drawWorkspaceSymbolPicker(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32) void {
+    renderer.Renderer.drawRect(0, 0, w, h, .{ .r = 0, .g = 0, .b = 0, .a = 0.55 });
+    const box_w: f32 = 640;
+    const box_h: f32 = 420;
+    const box_x = (w - box_w) / 2;
+    const box_y = (h - box_h) / 3;
+    renderer.Renderer.drawRoundedRect(box_x, box_y, box_w, box_h, 10, .{ .r = 0.16, .g = 0.16, .b = 0.18, .a = 1.0 });
+    renderer.Renderer.drawText("Workspace Symbol Search", box_x + 16, box_y + 12, 14.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+
+    var query_buf: [320:0]u8 = undefined;
+    @memcpy(query_buf[0..wb.workspace_symbol_picker.query_len], wb.workspace_symbol_picker.query[0..wb.workspace_symbol_picker.query_len]);
+    query_buf[wb.workspace_symbol_picker.query_len] = 0;
+    renderer.Renderer.drawRoundedRect(box_x + 12, box_y + 36, box_w - 24, 28, 6, .{ .r = 0.1, .g = 0.1, .b = 0.12, .a = 1.0 });
+    renderer.Renderer.drawText(@ptrCast(&query_buf), box_x + 20, box_y + 42, 14.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+
+    var row_y = box_y + 76;
+    const max_rows: usize = 12;
+    const show_rows = @min(wb.workspace_symbol_picker.entries.items.len, max_rows);
+    for (0..show_rows) |visible_index| {
+        const entry = wb.workspace_symbol_picker.entries.items[visible_index];
+        const selected = visible_index == wb.workspace_symbol_picker.selected;
+        if (selected) {
+            renderer.Renderer.drawRoundedRect(box_x + 10, row_y - 2, box_w - 20, 22, 4, .{ .r = 0.22, .g = 0.35, .b = 0.55, .a = 1.0 });
+        }
+        var line_buf: [384:0]u8 = undefined;
+        var len: usize = 0;
+
+        if (entry.container_name) |c| {
+            len = (std.fmt.bufPrint(line_buf[len..], "{s}::{s}", .{ c, entry.name }) catch entry.name).len;
+        } else {
+            len = (std.fmt.bufPrint(line_buf[len..], "{s}", .{entry.name}) catch entry.name).len;
+        }
+        const basename = std.fs.path.basename(entry.location.uri);
+        _ = std.fmt.bufPrint(line_buf[len..], "  - {s}", .{basename}) catch "";
+
+        line_buf[line_buf.len - 1] = 0;
+
+        // Find a null terminator or trim to fit
+        var term_idx: usize = 0;
+        while (term_idx < line_buf.len and line_buf[term_idx] != 0) : (term_idx += 1) {}
+        if (term_idx >= line_buf.len) term_idx = line_buf.len - 1;
+        line_buf[term_idx] = 0;
+
+        renderer.Renderer.drawText(@ptrCast(&line_buf), box_x + 18, row_y, 13.0, .{ .r = 0.92, .g = 0.92, .b = 0.92, .a = 1.0 });
+        row_y += 24;
+    }
+}

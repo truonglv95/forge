@@ -37,6 +37,7 @@ pub const Command = union(enum) {
     agent_dismiss_apply: void,
     agent_approve_spec: void,
     agent_approve_tool: void,
+    agent_approve_always_tool: void,
     agent_reject_tool: void,
     agent_continue_session: void,
     agent_dismiss_resume: void,
@@ -123,10 +124,11 @@ pub const Command = union(enum) {
     toggle_bottom_panel: void,
     toggle_agent_panel: void,
     focus_agent: void,
+    chat_clear_history: void,
+    close_proposal_review: void,
+    close_ai_settings: void,
     nav_back: void,
     nav_forward: void,
-    close_ai_settings: void,
-    close_proposal_review: void,
     open_ai_settings: void,
     ai_open_forge_toml: void,
     ai_open_mcp_config: void,
@@ -134,6 +136,9 @@ pub const Command = union(enum) {
     ai_refresh_mcp: void,
     palette_open: void,
     palette_close: void,
+    workspace_symbol_picker_open: void,
+    workspace_symbol_picker_close: void,
+    workspace_symbol_picker_select: void,
 };
 
 pub const Event = union(enum) {

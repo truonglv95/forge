@@ -31,6 +31,8 @@ pub const rename = @import("rename.zig");
 pub const format = @import("format.zig");
 pub const code_action = @import("code_action.zig");
 pub const sync = @import("sync.zig");
+pub const workspace_symbol = @import("workspace_symbol.zig");
+pub const semantic_tokens = @import("semantic_tokens.zig");
 
 pub fn acceptsRequests(state: ServerState) bool {
     return state == .ready;

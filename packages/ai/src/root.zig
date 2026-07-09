@@ -60,6 +60,8 @@ pub const mcp_client = @import("mcp_client.zig");
 pub const mcp_http = @import("mcp_http.zig");
 pub const mcp_registry = @import("mcp_registry.zig");
 pub const routing = @import("routing.zig");
+pub const intent_classifier = @import("intent_classifier.zig");
+pub const index_warm = @import("index_warm.zig");
 
 pub const ProposalStatus = enum {
     draft,

@@ -184,7 +184,7 @@ test "resolve expands folder scope" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try tmp.dir.createDirPath(io, "src");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/a.zig"), "a");
@@ -204,7 +204,7 @@ test "resolve folder scope then explicit file reuses seen safely" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try tmp.dir.createDirPath(io, "src");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/a.zig"), "a");
@@ -222,7 +222,7 @@ test "resolve handles @docs marker" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     var resolved = try resolve(allocator, io, root, &[_][]const u8{ docs_marker, "@docs:docs/rfc/plan.md" });
     defer freeResolved(allocator, &resolved);
@@ -238,7 +238,7 @@ test "resolve handles @web url scope" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     var resolved = try resolve(allocator, io, root, &[_][]const u8{ web_marker, "@web:https://ziglang.org/documentation/" });
     defer freeResolved(allocator, &resolved);

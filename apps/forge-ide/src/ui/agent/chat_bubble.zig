@@ -5,10 +5,10 @@ const chat_message_lines = @import("chat_message_lines.zig");
 
 pub const font_size: f32 = chat_markdown.body_font_size;
 pub const line_h: f32 = chat_markdown.body_line_h;
-pub const bubble_pad_x: f32 = 8.0;
-pub const bubble_pad_y: f32 = 6.0;
+pub const bubble_pad_x: f32 = 12.0;
+pub const bubble_pad_y: f32 = 10.0;
 pub const title_h: f32 = 16.0;
-pub const bubble_gap: f32 = 10.0;
+pub const bubble_gap: f32 = 16.0;
 
 pub const BubbleStyle = struct {
     bg: renderer.Color,
@@ -17,7 +17,11 @@ pub const BubbleStyle = struct {
 };
 
 pub fn textMaxWidth(content_w: f32) f32 {
-    return content_w - bubble_pad_x * 2;
+    return userBubbleWidth(content_w) - bubble_pad_x * 2;
+}
+
+fn userBubbleWidth(content_w: f32) f32 {
+    return @min(content_w, @max(180.0, content_w * 0.82));
 }
 
 pub fn visualLineCount(text: []const u8, content_w: f32) usize {
@@ -49,8 +53,10 @@ pub fn drawBubble(
     title: ?[]const u8,
     text: []const u8,
     style: BubbleStyle,
+    wb: ?*@import("../../workbench.zig").Workbench,
+    base_hash: u64,
 ) f32 {
-    return drawBubbleWithCache(allocator, agent_x, inner_x, content_w, y, title, text, style, null);
+    return drawBubbleWithCache(allocator, agent_x, inner_x, content_w, y, title, text, style, null, wb, base_hash);
 }
 
 fn cacheIsDrawable(cache: *const chat_message_lines.Entry) bool {
@@ -79,15 +85,20 @@ pub fn drawBubbleWithCache(
     text: []const u8,
     style: BubbleStyle,
     line_cache: ?*const chat_message_lines.Entry,
+    wb: ?*@import("../../workbench.zig").Workbench,
+    base_hash: u64,
 ) f32 {
     if (text.len == 0 and (title == null or title.?.len == 0)) return 0;
     const with_title = title != null and title.?.len > 0;
+    const bubble_w = userBubbleWidth(content_w);
     const text_w = textMaxWidth(content_w);
     const body_h = if (line_cache) |cache| cache.height else chat_markdown.contentHeight(text, text_w);
     const height = body_h + bubble_pad_y * 2 + (if (with_title) title_h else 0);
-    const bubble_x = agent_x + 10;
-    renderer.Renderer.drawRoundedRect(bubble_x, y - 4, content_w, height, 8.0, style.bg);
-    renderer.Renderer.pushClipRect(bubble_x, y - 4, content_w, height);
+    _ = agent_x;
+    const bubble_x = inner_x + content_w - bubble_w;
+    const text_x = bubble_x + bubble_pad_x;
+    renderer.Renderer.drawRoundedRect(bubble_x, y, bubble_w, height, 10.0, style.bg);
+    renderer.Renderer.pushClipRect(bubble_x, y, bubble_w, height);
     defer renderer.Renderer.popClipRect();
 
     var text_y = y + bubble_pad_y;
@@ -97,7 +108,7 @@ pub fn drawBubbleWithCache(
         const n = @min(title_text.len, title_buf.len - 1);
         @memcpy(title_buf[0..n], title_text[0..n]);
         title_buf[n] = 0;
-        renderer.Renderer.drawText(title_buf[0..n], inner_x + bubble_pad_x, text_y, 11.0, style.title_fg);
+        renderer.Renderer.drawText(title_buf[0..n], text_x, text_y, 11.0, style.title_fg);
         text_y += title_h;
     }
 
@@ -105,12 +116,12 @@ pub fn drawBubbleWithCache(
         const md_style = markdownStyle(style);
         if (line_cache) |cache| {
             if (cacheIsDrawable(cache)) {
-                drawCachedBody(text, cache, inner_x + bubble_pad_x, text_y, text_w, md_style);
+                drawCachedBody(text, cache, text_x, text_y, text_w, md_style);
             } else {
-                drawBubbleBody(allocator, text, inner_x, text_y, text_w, style);
+                drawBubbleBody(allocator, text, bubble_x, text_y, text_w, style, wb, base_hash);
             }
         } else {
-            drawBubbleBody(allocator, text, inner_x, text_y, text_w, style);
+            drawBubbleBody(allocator, text, bubble_x, text_y, text_w, style, wb, base_hash);
         }
     }
     return height + bubble_gap;
@@ -123,8 +134,10 @@ fn drawBubbleBody(
     text_y: f32,
     text_w: f32,
     style: BubbleStyle,
+    wb: ?*@import("../../workbench.zig").Workbench,
+    base_hash: u64,
 ) void {
-    const use_markdown = std.mem.indexOf(u8, text, "```") != null or std.mem.indexOf(u8, text, "**") != null;
+    const use_markdown = chat_markdown.usesMarkdown(text);
     if (use_markdown) {
         _ = chat_markdown.drawContent(
             allocator,
@@ -133,6 +146,8 @@ fn drawBubbleBody(
             text_y,
             text_w,
             markdownStyle(style),
+            wb,
+            base_hash,
         ) catch {
             renderer.Renderer.flushBatch();
             _ = chat_markdown.drawSimpleContent(
@@ -160,6 +175,13 @@ pub fn plainMessageHeight(text: []const u8, content_w: f32) f32 {
     return chat_markdown.contentHeight(text, content_w) + bubble_gap;
 }
 
+pub fn agentMessageHeight(text: []const u8, content_w: f32) f32 {
+    if (text.len == 0) return 0;
+    const text_h = chat_markdown.contentHeight(text, content_w - 28);
+    const min_h: f32 = 24.0;
+    return @max(text_h, min_h) + bubble_gap;
+}
+
 pub fn drawPlainMessage(
     allocator: std.mem.Allocator,
     inner_x: f32,
@@ -167,8 +189,10 @@ pub fn drawPlainMessage(
     y: f32,
     text: []const u8,
     style: chat_markdown.Style,
+    wb: ?*@import("../../workbench.zig").Workbench,
+    base_hash: u64,
 ) f32 {
-    return drawPlainMessageWithCache(allocator, inner_x, content_w, y, text, style, null);
+    return drawPlainMessageWithCache(allocator, inner_x, content_w, y, text, style, null, wb, base_hash);
 }
 
 pub fn drawPlainMessageWithCache(
@@ -179,6 +203,8 @@ pub fn drawPlainMessageWithCache(
     text: []const u8,
     style: chat_markdown.Style,
     line_cache: ?*const chat_message_lines.Entry,
+    wb: ?*@import("../../workbench.zig").Workbench,
+    base_hash: u64,
 ) f32 {
     if (text.len == 0) return 0;
     const body_h = if (line_cache) |cache| cache.height else chat_markdown.contentHeight(text, content_w);
@@ -194,13 +220,56 @@ pub fn drawPlainMessageWithCache(
 
     renderer.Renderer.pushClipRect(inner_x, y, content_w, body_h);
     defer renderer.Renderer.popClipRect();
-    const use_markdown = std.mem.indexOf(u8, text, "```") != null or std.mem.indexOf(u8, text, "**") != null;
+    const use_markdown = chat_markdown.usesMarkdown(text);
     _ = if (use_markdown)
-        chat_markdown.drawContent(allocator, text, inner_x, y, content_w, style) catch
+        chat_markdown.drawContent(allocator, text, inner_x, y, content_w, style, wb, base_hash) catch
             chat_markdown.drawSimpleContent(text, inner_x, y, content_w, style.fg)
     else
         chat_markdown.drawSimpleContent(text, inner_x, y, content_w, style.fg);
     return body_h + bubble_gap;
+}
+
+pub fn drawAgentMessageWithCache(
+    allocator: std.mem.Allocator,
+    inner_x: f32,
+    content_w: f32,
+    y: f32,
+    text: []const u8,
+    style: chat_markdown.Style,
+    line_cache: ?*const chat_message_lines.Entry,
+    wb: ?*@import("../../workbench.zig").Workbench,
+    base_hash: u64,
+) f32 {
+    if (text.len == 0) return 0;
+
+    renderer.Renderer.drawRoundedRect(inner_x, y, 20, 20, 4, .{ .r = 0.02, .g = 0.43, .b = 1.0, .a = 1.0 });
+    renderer.Renderer.drawSvg(renderer.icons.gear, inner_x + 3, y + 3, 14, 14, .{ .r = 0.92, .g = 0.96, .b = 1.0, .a = 1.0 });
+
+    const text_x = inner_x + 28;
+    const text_w = content_w - 28;
+
+    const body_h = if (line_cache) |cache| cache.height else chat_markdown.contentHeight(text, text_w);
+    const min_h: f32 = 24.0;
+    const final_h = @max(body_h, min_h);
+
+    if (line_cache) |cache| {
+        if (cacheIsDrawable(cache)) {
+            renderer.Renderer.pushClipRect(text_x, y, text_w, body_h + 8.0);
+            drawCachedBody(text, cache, text_x, y, text_w, style);
+            renderer.Renderer.popClipRect();
+            return final_h + bubble_gap + 8.0;
+        }
+    }
+
+    renderer.Renderer.pushClipRect(text_x, y, text_w, body_h + 8.0);
+    const use_markdown = chat_markdown.usesMarkdown(text);
+    _ = if (use_markdown)
+        chat_markdown.drawContent(allocator, text, text_x, y, text_w, style, wb, base_hash) catch
+            chat_markdown.drawSimpleContent(text, text_x, y, text_w, style.fg)
+    else
+        chat_markdown.drawSimpleContent(text, text_x, y, text_w, style.fg);
+    renderer.Renderer.popClipRect();
+    return final_h + bubble_gap + 8.0;
 }
 
 pub const agent_text_style = chat_markdown.Style{
@@ -218,14 +287,29 @@ pub const thinking_text_style = chat_markdown.Style{
     .code_block_bg = .{ .r = 0.12, .g = 0.13, .b = 0.16, .a = 1.0 },
 };
 
-pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8) f32 {
-    if (text.len == 0) return 0;
-    var label_buf: [320:0]u8 = undefined;
-    const clipped = if (text.len > 280) text[0..280] else text;
-    const line = std.fmt.bufPrint(&label_buf, "Thinking: {s}", .{clipped}) catch clipped;
-    label_buf[@min(line.len, label_buf.len - 1)] = 0;
-    renderer.Renderer.drawText(line[0..line.len], inner_x, y, 11.0, thinking_text_style.fg);
-    return line_h + bubble_gap;
+pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) f32 {
+    _ = text;
+    const dot_count: usize = @as(usize, @intFromFloat(@mod(anim_time * 2.8, 3.0))) + 1;
+    var label_buf: [16]u8 = undefined;
+    @memcpy(label_buf[0.."Thinking".len], "Thinking");
+    var label_len: usize = "Thinking".len;
+    var i: usize = 0;
+    while (i < dot_count) : (i += 1) {
+        label_buf[label_len] = '.';
+        label_len += 1;
+    }
+
+    const pill_w: f32 = 142;
+    const pill_h: f32 = 32;
+    renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 6, .{ .r = 0.03, .g = 0.24, .b = 0.43, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(inner_x + 1, y + 1, pill_w - 2, pill_h - 2, 5, .{ .r = 0.07, .g = 0.12, .b = 0.18, .a = 1.0 });
+    renderer.Renderer.drawSvg(renderer.icons.sparkle, inner_x + 14, y + 8, 14, 14, .{ .r = 0.18, .g = 0.58, .b = 0.95, .a = 1.0 });
+    renderer.Renderer.drawText(label_buf[0..label_len], inner_x + 34, y + 8, 12.0, .{ .r = 0.24, .g = 0.62, .b = 0.95, .a = 1.0 });
+    return thinkingLineHeight();
+}
+
+pub fn thinkingLineHeight() f32 {
+    return 32.0 + bubble_gap;
 }
 
 pub fn drawStatusLine(inner_x: f32, y: f32, text: []const u8) f32 {

@@ -9,7 +9,7 @@ pub const Op = union(enum) {
     set_phase: struct { phase: agent_session.Phase, label: []const u8 },
     append_thinking: []const u8,
     append_stream: []const u8,
-    begin_step: struct { index: u32, kind: []const u8, label: []const u8 },
+    begin_step: struct { index: u32, kind: []const u8, label: []const u8, content: ?[]const u8 = null },
     append_step: struct { index: u32, kind: []const u8, summary: []const u8 },
     run_finished: struct {
         run_id: []const u8,
@@ -39,6 +39,7 @@ pub const Op = union(enum) {
             .begin_step => |*payload| {
                 allocator.free(payload.kind);
                 allocator.free(payload.label);
+                if (payload.content) |content| allocator.free(content);
             },
             .append_step => |*payload| {
                 allocator.free(payload.kind);

@@ -14,6 +14,7 @@ pub const Host = struct {
     environ_map: ?*const std.process.Environ.Map,
     ai_provider: []const u8,
     ai_model: ?[]const u8,
+    ai_ollama_url: ?[]const u8,
     ai_mcp_enabled: bool,
     workspace_root: workspace.WorkspaceRoot,
     workspace_path: []const u8,
@@ -48,6 +49,9 @@ pub const AgentError = error{
     InvalidProposal,
     NoAcceptedHunks,
     NoCheckpoint,
+    WorkspaceFailed,
+    DuplicateLoop,
+    NoProgress,
 } || ai.provider.ProviderError;
 
 pub fn refreshContextPreview(host: *const Host, intent: ?[]const u8, active_file: ?[]const u8) AgentError!void {
@@ -149,14 +153,14 @@ pub fn spawnGenerate(host: *const Host, intent: []const u8, scope_files: []const
 
 pub fn scanResumableSession(host: *const Host) void {
     if (host.agent.worker_running) return;
-    const interrupted_opt = workspace.sessions.findLatestResumable(host.allocator, host.io, host.workspace_root) catch return;
+    const interrupted_opt = workspace.sessions.findLatestResumable(host.allocator, host.io, host.workspace_path) catch return;
     if (interrupted_opt) |value| {
         var owned = value;
         defer workspace.sessions.deinitResumable(host.allocator, &owned);
         host.agent.setResumeOffer(.continue_run, owned.session_id, owned.intent, owned.execution_state, null) catch {};
         return;
     }
-    const proposal_opt = workspace.sessions.findLatestProposalReady(host.allocator, host.io, host.workspace_root) catch return;
+    const proposal_opt = workspace.sessions.findLatestProposalReady(host.allocator, host.io, host.workspace_path) catch return;
     if (proposal_opt) |value| {
         var owned = value;
         defer workspace.sessions.deinitProposalReady(host.allocator, &owned);
@@ -169,7 +173,7 @@ pub fn dismissResumeOffer(host: *const Host) void {
 }
 
 pub fn openStoredProposal(host: *const Host, session_id: []const u8) AgentError!void {
-    var doc = workspace.sessions.loadSession(host.allocator, host.io, host.workspace_root, session_id) catch return error.ProviderFailed;
+    var doc = workspace.sessions.loadSession(host.allocator, host.io, session_id) catch return error.ProviderFailed;
     defer workspace.sessions.deinitSession(host.allocator, &doc);
     if (!workspace.sessions.isProposalReadyExecutionState(doc.execution_state)) return error.InvalidProposal;
     if (doc.proposal_path.len == 0) return error.NoProposal;
@@ -204,7 +208,7 @@ pub fn openStoredProposal(host: *const Host, session_id: []const u8) AgentError!
 pub fn spawnResumeSession(host: *const Host, session_id: []const u8) AgentError!void {
     if (host.agent.worker_running) return error.AgentBusy;
 
-    var doc = workspace.sessions.loadSession(host.allocator, host.io, host.workspace_root, session_id) catch return error.ProviderFailed;
+    var doc = workspace.sessions.loadSession(host.allocator, host.io, session_id) catch return error.ProviderFailed;
     defer workspace.sessions.deinitSession(host.allocator, &doc);
     if (!workspace.sessions.isResumableExecutionState(doc.execution_state)) return error.InvalidProposal;
 
@@ -291,7 +295,7 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
     workspace.checkpoint.linkTransaction(host.io, host.workspace_root, checkpoint_id, tx_id) catch {};
 
     host.agent.setPhase(.verifying, "Verifying applied changes...") catch {};
-    const validation = ai.validation_runner.runTasks(host.allocator, host.workspace_path, proposal.metadata.validation_tasks) catch return error.ProviderFailed;
+    const validation = ai.validation_runner.runTasks(host.allocator, host.io, host.workspace_path, proposal.metadata.validation_tasks) catch return error.ProviderFailed;
     defer ai.validation_runner.freeResults(host.allocator, validation);
     var validation_failed = false;
     for (validation) |item| {
@@ -524,6 +528,7 @@ fn providerOptions(host: *const Host, fake_response: []const u8, fake_plan: ?[]c
     return .{
         .kind = ai.provider_factory.Kind.parse(host.ai_provider),
         .model = host.ai_model,
+        .ollama_url = host.ai_ollama_url,
         .fake_response = fake_response,
         .fake_plan_response = fake_plan,
         .fake_tool_loop = for_agent,
@@ -591,7 +596,7 @@ fn resumeWorker(ctx: *ResumeContext) void {
         host.workspace_root,
         ctx.session_id,
         .{
-            .max_steps = 8,
+            .max_steps = 128,
             .provider_options = provider_options,
             .mode = if (ctx.capability_profile == .read_only) .ask else .agent,
             .capability_profile = ctx.capability_profile,
@@ -607,9 +612,9 @@ fn resumeWorker(ctx: *ResumeContext) void {
             .turn_context = host,
             .approval_callback = approvalBridge,
             .approval_context = host,
-            .edit_callback = null,
-            .edit_context = null,
-            .use_inline_edits = false,
+            .edit_callback = editBridge,
+            .edit_context = host,
+            .use_inline_edits = ctx.capability_profile != .read_only,
             .workspace_cwd = host.workspace_path,
             .mcp_enabled = host.ai_mcp_enabled,
             .recent_files = recent_files,
@@ -665,7 +670,10 @@ pub fn agentFailureMessage(err: anyerror) []const u8 {
         error.MalformedResponse => ai.provider.Provider.errorMessage(error.MalformedResponse),
         error.ProviderInternalError => ai.provider.Provider.errorMessage(error.ProviderInternalError),
         error.InvalidProposal => "Invalid proposal — model response could not be parsed or validated",
-        error.StepLimitReached => "Agent reached step limit before proposing",
+        error.StepLimitReached => "Agent reached step limit before finishing",
+        error.WorkspaceFailed => "Agent tool failed to access the workspace",
+        error.DuplicateLoop => "Agent stopped because the model repeated the same tool call",
+        error.NoProgress => "Agent stopped because it kept gathering broad context without making progress",
         else => "Agent failed",
     };
 }
@@ -814,7 +822,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
         host.workspace_root,
         ctx.intent,
         .{
-            .max_steps = 8,
+            .max_steps = 128,
             .provider_options = provider_options,
             .mode = @enumFromInt(@intFromEnum(host.agent.mode)),
             .capability_profile = capability_profile,
@@ -835,12 +843,9 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .turn_context = host,
             .approval_callback = approvalBridge,
             .approval_context = host,
-            // Agent edits remain proposals until the review transaction is
-            // explicitly approved. Never mutate the authoritative editor
-            // buffer from a model tool callback.
-            .edit_callback = null,
-            .edit_context = null,
-            .use_inline_edits = false,
+            .edit_callback = editBridge,
+            .edit_context = host,
+            .use_inline_edits = capability_profile != .read_only,
             .workspace_cwd = host.workspace_path,
             .mcp_enabled = host.ai_mcp_enabled,
             .recent_files = recent_files,
@@ -849,9 +854,15 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     ) catch |err| switch (err) {
         error.Cancelled => return error.Cancelled,
         error.ProviderFailed => return error.ProviderFailed,
+        error.AuthenticationFailed => return error.AuthenticationFailed,
+        error.RateLimitExceeded => return error.RateLimitExceeded,
+        error.ContextLengthExceeded => return error.ContextLengthExceeded,
+        error.NetworkError => return error.NetworkError,
+        error.WorkspaceFailed => return error.WorkspaceFailed,
+        error.DuplicateLoop => return error.DuplicateLoop,
+        error.NoProgress => return error.NoProgress,
         error.InvalidProposal => return error.InvalidProposal,
         error.StepLimitReached => return error.StepLimitReached,
-        else => return error.ProviderFailed,
     };
     defer ai.agent.deinitResult(host.allocator, &result);
 
@@ -1001,19 +1012,151 @@ fn stepBridge(context: ?*anyopaque, step: ai.agent.Step) void {
 fn stepBeginBridge(context: ?*anyopaque, begin: ai.agent.StepBegin) void {
     const host: *Host = @ptrCast(@alignCast(context.?));
     const kind = ai.subagent.classifyTool(begin.tool_name).label();
-    const label = ai.subagent.toolActionLabel(begin.tool_name);
     const kind_owned = host.allocator.dupe(u8, kind) catch return;
-    const label_owned = host.allocator.dupe(u8, label) catch {
+    var label_owned = host.allocator.dupe(u8, ai.subagent.toolActionLabel(begin.tool_name)) catch {
         host.allocator.free(kind_owned);
         return;
     };
+
+    var content_owned: ?[]const u8 = null;
+    if (begin.args_json.len > 0) {
+        var parsed = std.json.parseFromSlice(std.json.Value, host.allocator, begin.args_json, .{}) catch null;
+        if (parsed != null) {
+            defer parsed.?.deinit();
+            const root = parsed.?.value;
+            if (root == .object) {
+                if (std.mem.eql(u8, begin.tool_name, "replace_file_content") or std.mem.eql(u8, begin.tool_name, "multi_replace_file_content") or std.mem.eql(u8, begin.tool_name, "write_to_file") or std.mem.eql(u8, begin.tool_name, "write_file")) {
+                    const target = root.object.get("path") orelse root.object.get("TargetFile");
+                    if (target) |target_value| if (target_value == .string) {
+                        const next_label = std.fmt.allocPrint(host.allocator, "Write `{s}`", .{target_value.string}) catch {
+                            host.allocator.free(kind_owned);
+                            host.allocator.free(label_owned);
+                            return;
+                        };
+                        host.allocator.free(label_owned);
+                        label_owned = next_label;
+                        content_owned = allocWritePreview(host.allocator, root, target_value.string) catch null;
+                    };
+                } else if (std.mem.eql(u8, begin.tool_name, "run_command")) {
+                    const command = root.object.get("command") orelse root.object.get("CommandLine");
+                    if (command) |command_value| if (command_value == .string) {
+                        const next_label = std.fmt.allocPrint(host.allocator, "Run `{s}`", .{command_value.string}) catch {
+                            host.allocator.free(kind_owned);
+                            host.allocator.free(label_owned);
+                            return;
+                        };
+                        host.allocator.free(label_owned);
+                        label_owned = next_label;
+                        content_owned = std.fmt.allocPrint(host.allocator, "```bash\n{s}\n```", .{command_value.string}) catch null;
+                    };
+                } else if (std.mem.eql(u8, begin.tool_name, "read_file")) {
+                    if (root.object.get("path")) |path_val| {
+                        if (path_val == .string) {
+                            host.allocator.free(label_owned);
+                            const start_line = jsonInt(root.object.get("start_line"));
+                            const end_line = jsonInt(root.object.get("end_line"));
+                            label_owned = if (start_line != null or end_line != null)
+                                std.fmt.allocPrint(
+                                    host.allocator,
+                                    "Read `{s}` lines {d}-{d}",
+                                    .{
+                                        path_val.string,
+                                        start_line orelse 1,
+                                        end_line orelse ((start_line orelse 1) + 399),
+                                    },
+                                ) catch return
+                            else
+                                std.fmt.allocPrint(host.allocator, "Read `{s}` lines 1-400", .{path_val.string}) catch return;
+                        }
+                    }
+                } else if (std.mem.eql(u8, begin.tool_name, "list_tree")) {
+                    if (root.object.get("path")) |path_val| {
+                        if (path_val == .string) {
+                            host.allocator.free(label_owned);
+                            label_owned = std.fmt.allocPrint(host.allocator, "List `{s}`", .{path_val.string}) catch return;
+                        }
+                    }
+                } else {
+                    content_owned = std.fmt.allocPrint(host.allocator, "```json\n{s}\n```", .{begin.args_json}) catch null;
+                }
+            }
+        }
+    }
+
     host.enqueue_ui(host.context, .{
         .begin_step = .{
             .index = begin.index,
             .kind = kind_owned,
             .label = label_owned,
+            .content = content_owned,
         },
     });
+}
+
+fn jsonInt(value: ?std.json.Value) ?i64 {
+    const v = value orelse return null;
+    return switch (v) {
+        .integer => |n| n,
+        .float => |n| @intFromFloat(n),
+        else => null,
+    };
+}
+
+fn jsonStringValue(value: ?std.json.Value) ?[]const u8 {
+    const v = value orelse return null;
+    return if (v == .string) v.string else null;
+}
+
+fn utf8PrefixLen(text: []const u8, max_len: usize) usize {
+    var len = @min(text.len, max_len);
+    while (len < text.len and len > 0 and (text[len] & 0xc0) == 0x80) : (len -= 1) {}
+    return len;
+}
+
+fn allocWritePreview(allocator: std.mem.Allocator, root: std.json.Value, path: []const u8) ![]u8 {
+    const ext_idx = std.mem.lastIndexOfScalar(u8, path, '.');
+    const ext = if (ext_idx) |i| path[i + 1 ..] else "";
+    if (root != .object) return try std.fmt.allocPrint(allocator, "```{s}\n{s}\n```", .{ ext, path });
+
+    var content: []const u8 = "";
+    if (jsonStringValue(root.object.get("replacement"))) |text| {
+        content = text;
+    } else if (jsonStringValue(root.object.get("ReplacementContent"))) |text| {
+        content = text;
+    } else if (jsonStringValue(root.object.get("CodeContent"))) |text| {
+        content = text;
+    } else if (root.object.get("ReplacementChunks")) |chunks| {
+        if (chunks == .array and chunks.array.items.len > 0) {
+            const first = chunks.array.items[0];
+            if (first == .object) {
+                if (jsonStringValue(first.object.get("ReplacementContent"))) |text| {
+                    content = text;
+                }
+            }
+        }
+    } else if (jsonStringValue(root.object.get("Replacement"))) |text| {
+        content = text;
+    }
+
+    if (std.mem.startsWith(u8, content, "```")) {
+        const first_nl = std.mem.indexOfScalar(u8, content, '\n');
+        if (first_nl) |nl| {
+            content = content[nl + 1 ..];
+        }
+    }
+    content = std.mem.trimEnd(u8, content, " \n\r\t");
+    if (std.mem.endsWith(u8, content, "```")) {
+        content = content[0 .. content.len - 3];
+    }
+    content = std.mem.trimEnd(u8, content, " \n\r\t");
+
+    const preview_len = utf8PrefixLen(content, 2400);
+    const suffix = if (preview_len < content.len) "\n... truncated ..." else "";
+    return try std.fmt.allocPrint(
+        allocator,
+        "```{s}\n{s}{s}\n```",
+        .{ ext, content[0..preview_len], suffix },
+    );
 }
 
 fn turnBridge(context: ?*anyopaque, index: u32) void {

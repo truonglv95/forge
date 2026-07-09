@@ -27,10 +27,20 @@ pub const IgnoreRules = struct {
             "dist",
             "coverage",
             "out",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            ".venv",
+            "venv",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, component, b)) return true;
         }
+        if (std.mem.endsWith(u8, component, ".pyc") or
+            std.mem.endsWith(u8, component, ".pyo") or
+            std.mem.endsWith(u8, component, ".pyd"))
+            return true;
         return false;
     }
 };
@@ -48,4 +58,6 @@ test "IgnoreRules recognizes built-ins" {
     try std.testing.expect(!IgnoreRules.isIgnored("README.md"));
 
     try std.testing.expect(IgnoreRules.isIgnored(".forge"));
+    try std.testing.expect(IgnoreRules.isIgnored("__pycache__"));
+    try std.testing.expect(IgnoreRules.isIgnored("tensor.cpython-312.pyc"));
 }

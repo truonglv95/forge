@@ -85,9 +85,44 @@ pub const Tree = struct {
         var it = paths.keyIterator();
         while (it.next()) |key| try sorted.append(self.allocator, key.*);
 
-        std.sort.block([]const u8, sorted.items, {}, struct {
-            fn less(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
+        std.sort.block([]const u8, sorted.items, &paths, struct {
+            fn less(paths_map: *std.StringHashMap(std.Io.File.Kind), a: []const u8, b: []const u8) bool {
+                var it_a = std.mem.splitScalar(u8, a, '/');
+                var it_b = std.mem.splitScalar(u8, b, '/');
+
+                while (true) {
+                    const seg_a = it_a.next();
+                    const seg_b = it_b.next();
+
+                    if (seg_a == null and seg_b == null) return false;
+                    if (seg_a == null) return true;
+                    if (seg_b == null) return false;
+
+                    if (!std.mem.eql(u8, seg_a.?, seg_b.?)) {
+                        const kind_a: std.Io.File.Kind = if (it_a.rest().len > 0) .directory else paths_map.get(a).?;
+                        const kind_b: std.Io.File.Kind = if (it_b.rest().len > 0) .directory else paths_map.get(b).?;
+
+                        if (kind_a == .directory and kind_b != .directory) return true;
+                        if (kind_a != .directory and kind_b == .directory) return false;
+
+                        const a_dot = std.mem.startsWith(u8, seg_a.?, ".");
+                        const b_dot = std.mem.startsWith(u8, seg_b.?, ".");
+                        if (a_dot and !b_dot) return true;
+                        if (!a_dot and b_dot) return false;
+
+                        const min_len = @min(seg_a.?.len, seg_b.?.len);
+                        for (0..min_len) |i| {
+                            const ca = std.ascii.toLower(seg_a.?[i]);
+                            const cb = std.ascii.toLower(seg_b.?[i]);
+                            if (ca != cb) return ca < cb;
+                        }
+                        if (seg_a.?.len != seg_b.?.len) return seg_a.?.len < seg_b.?.len;
+                        for (0..min_len) |i| {
+                            if (seg_a.?[i] != seg_b.?[i]) return seg_a.?[i] < seg_b.?[i];
+                        }
+                        return false;
+                    }
+                }
             }
         }.less);
 
@@ -226,7 +261,7 @@ test "tree hides nested entries when parent collapsed" {
     defer file.close(io);
     try file.writeStreamingAll(io, "pub fn main() void {}");
 
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     var tree = Tree.init(allocator);
     defer tree.deinit();
 
