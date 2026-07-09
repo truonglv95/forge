@@ -9,6 +9,7 @@ pub const View = view.View;
 pub const Rect = view.Rect;
 pub const Color = view.Color;
 pub const icons = @import("octicons.zig");
+pub const file_icons = @import("file_icons.zig").icons;
 
 pub const TextSpan = extern struct {
     offset: usize,

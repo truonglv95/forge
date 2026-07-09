@@ -90,6 +90,7 @@ pub const Parser = struct {
             if (last_line.len > 0) try self.handleLine(last_line);
         }
         if (self.terminal_error != null) return error.MalformedResponse;
+        try self.tryExtractToolCallFromContent();
     }
 
     pub fn assembledText(self: *const Parser) []const u8 {
@@ -146,6 +147,142 @@ pub const Parser = struct {
 
         self.assembled.appendSlice(self.allocator, chunk) catch return error.MalformedResponse;
         if (self.callbacks.on_chunk) |callback| callback(self.callbacks.context, chunk);
+    }
+
+    fn tryExtractToolCallFromContent(self: *Parser) ParseError!void {
+        if (self.tool_call_name != null) return;
+        const trimmed = std.mem.trim(u8, self.assembled.items, &std.ascii.whitespace);
+        if (trimmed.len == 0) return;
+
+        if (trySalvageToolCall(self, trimmed)) {
+            self.assembled.clearRetainingCapacity();
+            return;
+        }
+
+        if (std.mem.indexOfScalar(u8, trimmed, '{')) |start| {
+            if (trySalvageToolCall(self, trimmed[start..])) {
+                self.assembled.clearRetainingCapacity();
+            }
+        }
+    }
+
+    fn trySalvageToolCall(self: *Parser, text: []const u8) bool {
+        const json_text = extractLooseJsonObject(self.allocator, text) orelse return false;
+        defer self.allocator.free(json_text);
+
+        const NamedPayload = struct {
+            name: ?[]const u8 = null,
+            arguments: ?std.json.Value = null,
+            parameters: ?std.json.Value = null,
+        };
+        if (std.json.parseFromSlice(NamedPayload, self.allocator, json_text, .{ .ignore_unknown_fields = true })) |parsed| {
+            defer parsed.deinit();
+            if (parsed.value.name) |name| {
+                if (name.len > 0) {
+                    const args = parsed.value.arguments orelse parsed.value.parameters orelse return false;
+                    return storeSalvagedCall(self, name, args);
+                }
+            }
+        } else |_| {}
+
+        const BarePayload = struct {
+            query: ?[]const u8 = null,
+            term: ?[]const u8 = null,
+            pattern: ?[]const u8 = null,
+            path: ?[]const u8 = null,
+            depth: ?usize = null,
+            start_line: ?usize = null,
+            end_line: ?usize = null,
+            command: ?[]const u8 = null,
+            url: ?[]const u8 = null,
+        };
+        var bare = std.json.parseFromSlice(BarePayload, self.allocator, json_text, .{ .ignore_unknown_fields = true }) catch return false;
+        defer bare.deinit();
+
+        if (bare.value.query != null) {
+            return storeSalvagedArgs(self, "codebase_search", json_text);
+        }
+        if (bare.value.term != null or bare.value.pattern != null) {
+            return storeSalvagedArgs(self, "search", json_text);
+        }
+        if (bare.value.command != null) {
+            return storeSalvagedArgs(self, "run_command", json_text);
+        }
+        if (bare.value.url != null) {
+            return storeSalvagedArgs(self, "fetch_url", json_text);
+        }
+        if (bare.value.path != null or bare.value.start_line != null or bare.value.end_line != null) {
+            return storeSalvagedArgs(self, "read_file", json_text);
+        }
+        if (bare.value.depth != null) {
+            const args = std.fmt.allocPrint(self.allocator, "{{\"path\":\".\",\"depth\":{d}}}", .{bare.value.depth.?}) catch return false;
+            defer self.allocator.free(args);
+            return storeSalvagedArgs(self, "list_tree", args);
+        }
+        return false;
+    }
+
+    fn storeSalvagedCall(self: *Parser, name: []const u8, args: std.json.Value) bool {
+        if (self.tool_call_name) |owned| self.allocator.free(owned);
+        if (self.tool_call_args_json) |owned| self.allocator.free(owned);
+        self.tool_call_name = self.allocator.dupe(u8, name) catch return false;
+        self.tool_call_args_json = std.json.Stringify.valueAlloc(self.allocator, args, .{}) catch return false;
+        return true;
+    }
+
+    fn storeSalvagedArgs(self: *Parser, name: []const u8, args_json: []const u8) bool {
+        if (self.tool_call_name) |owned| self.allocator.free(owned);
+        if (self.tool_call_args_json) |owned| self.allocator.free(owned);
+        self.tool_call_name = self.allocator.dupe(u8, name) catch return false;
+        self.tool_call_args_json = self.allocator.dupe(u8, args_json) catch return false;
+        return true;
+    }
+
+    fn extractLooseJsonObject(allocator: std.mem.Allocator, text: []const u8) ?[]u8 {
+        const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
+        const start = std.mem.indexOfScalar(u8, trimmed, '{') orelse return null;
+        const braced = firstJsonObject(trimmed[start..]) orelse trimmed[start..];
+
+        var slice = braced;
+        while (slice.len > 0) {
+            const parsed = std.json.parseFromSlice(std.json.Value, allocator, slice, .{ .ignore_unknown_fields = true });
+            if (parsed) |p| {
+                p.deinit();
+                return allocator.dupe(u8, slice) catch null;
+            } else |_| {}
+            if (slice.len == 0 or slice[slice.len - 1] != '}') return null;
+            slice = slice[0 .. slice.len - 1];
+        }
+        return null;
+    }
+
+    fn firstJsonObject(text: []const u8) ?[]const u8 {
+        if (text.len == 0 or text[0] != '{') return null;
+        var depth: i32 = 0;
+        var in_string = false;
+        var escape = false;
+        for (text, 0..) |byte, offset| {
+            if (in_string) {
+                if (escape) {
+                    escape = false;
+                } else switch (byte) {
+                    '\\' => escape = true,
+                    '"' => in_string = false,
+                    else => {},
+                }
+                continue;
+            }
+            switch (byte) {
+                '"' => in_string = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if (depth == 0) return text[0 .. offset + 1];
+                },
+                else => {},
+            }
+        }
+        return null;
     }
 
     fn writerDrain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
@@ -271,4 +408,68 @@ test "Parser captures streamed tool_calls" {
     }
     try std.testing.expectEqualStrings("search", call.name);
     try std.testing.expect(std.mem.indexOf(u8, call.args_json, "sample") != null);
+}
+
+test "Parser salvages bare query JSON with trailing brace" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator, .{});
+    defer parser.deinit();
+
+    const fixture =
+        \\{"message":{"role":"assistant","content":"Let's search more.\n{\"query\":\"engine\"}}"},"done":true}
+        \\
+    ;
+    try parser.feed(fixture);
+    try parser.finish();
+
+    const call = parser.takeToolCall() orelse return error.TestExpectedEqual;
+    defer {
+        allocator.free(call.name);
+        allocator.free(call.args_json);
+    }
+    try std.testing.expectEqualStrings("codebase_search", call.name);
+    try std.testing.expect(std.mem.indexOf(u8, call.args_json, "engine") != null);
+}
+
+test "Parser salvages bare depth JSON as list_tree" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator, .{});
+    defer parser.deinit();
+
+    const fixture =
+        \\{"message":{"role":"assistant","content":"{\"depth\":1}}"},"done":true}
+        \\
+    ;
+    try parser.feed(fixture);
+    try parser.finish();
+
+    const call = parser.takeToolCall() orelse return error.TestExpectedEqual;
+    defer {
+        allocator.free(call.name);
+        allocator.free(call.args_json);
+    }
+    try std.testing.expectEqualStrings("list_tree", call.name);
+    try std.testing.expect(std.mem.indexOf(u8, call.args_json, "\"depth\":1") != null);
+}
+
+test "Parser captures tool call JSON emitted in content" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator, .{});
+    defer parser.deinit();
+
+    const fixture =
+        \\{"message":{"role":"assistant","content":"{\"name\":\"search\",\"arguments\":{\"query\":\"sample\"}}"},"done":true}
+        \\
+    ;
+    try parser.feed(fixture);
+    try parser.finish();
+
+    const call = parser.takeToolCall() orelse return error.TestExpectedEqual;
+    defer {
+        allocator.free(call.name);
+        allocator.free(call.args_json);
+    }
+    try std.testing.expectEqualStrings("search", call.name);
+    try std.testing.expect(std.mem.indexOf(u8, call.args_json, "sample") != null);
+    try std.testing.expectEqual(@as(usize, 0), parser.assembledText().len);
 }

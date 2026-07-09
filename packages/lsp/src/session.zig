@@ -23,6 +23,8 @@ pub const Session = struct {
     language_id: []const u8,
     child: process_spawn.Child,
     initialized: bool = false,
+    supports_semantic_tokens: bool = false,
+    supports_workspace_symbol: bool = false,
     next_id: i32 = 1,
 
     pub fn start(
@@ -78,13 +80,31 @@ pub const Session = struct {
             const root_uri = diagnostics.fileUri(self.allocator, self.workspace_path, "") catch return error.OutOfMemory;
             defer self.allocator.free(root_uri);
             const init_req = try std.fmt.allocPrint(self.allocator,
-                \\{{"jsonrpc":"2.0","id":{d},"method":"initialize","params":{{"processId":null,"rootUri":"{s}","capabilities":{{}}}}}}
+                \\{{"jsonrpc":"2.0","id":{d},"method":"initialize","params":{{"processId":null,"rootUri":"{s}","capabilities":{{"workspace":{{"symbol":{{"dynamicRegistration":true}}}},"textDocument":{{"semanticTokens":{{"dynamicRegistration":true,"requests":{{"full":true}}}}}}}}}}}}
             , .{ init_id, root_uri });
             defer self.allocator.free(init_req);
             try self.writeMessage(init_req);
-            const init_resp = try self.readResponse(65536);
+            const init_resp = try self.readResponse(1024 * 1024);
             defer self.allocator.free(init_resp);
             if (init_resp.len == 0) return error.ReadFailed;
+
+            var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, init_resp, .{}) catch null;
+            if (parsed != null) {
+                defer parsed.?.deinit();
+                const root = parsed.?.value;
+                if (root == .object) {
+                    if (root.object.get("result")) |result| {
+                        if (result == .object) {
+                            if (result.object.get("capabilities")) |caps| {
+                                if (caps == .object) {
+                                    self.supports_semantic_tokens = caps.object.contains("semanticTokensProvider");
+                                    self.supports_workspace_symbol = caps.object.contains("workspaceSymbolProvider");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             const initialized = "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}";
             try self.writeMessage(initialized);

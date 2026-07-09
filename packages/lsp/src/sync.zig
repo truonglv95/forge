@@ -34,6 +34,20 @@ pub fn buildDidCloseNotification(allocator: std.mem.Allocator, uri: []const u8) 
     , .{uri});
 }
 
+pub fn buildSemanticTokensFullRequest(allocator: std.mem.Allocator, request_id: i32, uri: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\{{"jsonrpc":"2.0","id":{d},"method":"textDocument/semanticTokens/full","params":{{"textDocument":{{"uri":"{s}"}}}}}}
+    , .{ request_id, uri });
+}
+
+pub fn buildWorkspaceSymbolRequest(allocator: std.mem.Allocator, request_id: i32, query: []const u8) ![]const u8 {
+    const escaped = try diagnostics.escapeJsonString(allocator, query);
+    defer allocator.free(escaped);
+    return std.fmt.allocPrint(allocator,
+        \\{{"jsonrpc":"2.0","id":{d},"method":"workspace/symbol","params":{{"query":"{s}"}}}}
+    , .{ request_id, escaped });
+}
+
 test "didChange includes version and full text" {
     const allocator = std.testing.allocator;
     const msg = try buildDidChangeNotification(allocator, "file:///tmp/a.zig", 3, "pub fn main() void {}\n");

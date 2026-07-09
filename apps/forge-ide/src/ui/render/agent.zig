@@ -10,14 +10,23 @@ const scrollbar = @import("../core/scrollbar.zig");
 const agent_panel = @import("../agent/agent_panel.zig");
 const agent_scope_picker_mod = @import("../../agent/scope_picker.zig");
 const ai = @import("forge-ai");
-const render_theme = @import("theme.zig");
 const diff_line_style = @import("../diff_line_style.zig");
 
 const Workbench = @import("../../workbench.zig").Workbench;
 const chat_layout = @import("../../workbench/chat_layout.zig");
 const chat_message_lines = @import("../agent/chat_message_lines.zig");
 
+const chat_composer_gap: f32 = 12.0;
+
+fn phaseShowsLive(phase: anytype) bool {
+    return switch (phase) {
+        .building_context, .sending, .streaming, .parsing, .waiting_approval => true,
+        else => false,
+    };
+}
+
 pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
+    wb.rendered_code_blocks.clearRetainingCapacity();
     const pad: f32 = 20;
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
@@ -35,63 +44,34 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         wb.chat_scroll_y = wb.chat_layout.max_scroll;
     }
 
-    const chat_tab_x = agent_x;
-    const chat_tab_w = 120;
-    const chat_tab_y = layout.header_height; // 30
-    const chat_tab_h = 35; // Match editor tab_height
-    const subtle_border = render_theme.color(wb.theme.colors.border);
-
-    // Fill the tab bar background for the agent header
-    renderer.Renderer.drawRect(agent_x, chat_tab_y, agent_w, chat_tab_h, render_theme.color(wb.theme.colors.tab_bar_bg));
-
-    // Draw bottom border for the whole header
-    renderer.Renderer.drawRect(agent_x, chat_tab_y + chat_tab_h, agent_w, 1, subtle_border);
-
-    // Draw active tab shape for "Chat"
-    renderer.Renderer.drawRect(chat_tab_x, chat_tab_y, chat_tab_w, chat_tab_h + 1, render_theme.color(wb.theme.colors.editor_bg)); // +1 to cover bottom border
-    renderer.Renderer.drawRect(chat_tab_x, chat_tab_y, chat_tab_w, 1, subtle_border); // top
-    renderer.Renderer.drawRect(chat_tab_x, chat_tab_y, 1, chat_tab_h, subtle_border); // left
-    renderer.Renderer.drawRect(chat_tab_x + chat_tab_w - 1, chat_tab_y, 1, chat_tab_h, subtle_border); // right
-
-    var mode_buf: [64:0]u8 = undefined;
-    const mode_label = std.fmt.bufPrint(&mode_buf, "Chat", .{}) catch "Chat";
-    mode_buf[mode_label.len] = 0;
-    renderer.Renderer.drawText(@ptrCast(&mode_buf), chat_tab_x + 16, 44, 13.0, .{ .r = 0.82, .g = 0.84, .b = 0.9, .a = 1.0 });
+    const chat_tab_y = layout.header_height;
+    renderer.Renderer.drawRect(agent_x, chat_tab_y, agent_w, h - layout.header_height - layout.status_height, .{ .r = 0.055, .g = 0.055, .b = 0.06, .a = 1.0 });
+    renderer.Renderer.drawText("Forge Coding", agent_x + 16, chat_tab_y + 18, 13.0, .{ .r = 0.82, .g = 0.84, .b = 0.88, .a = 1.0 });
 
     const mx = state.last_mouse_x;
     const my = state.last_mouse_y;
 
-    const icon_c = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
+    const icon_c = renderer.Color{ .r = 0.48, .g = 0.52, .b = 0.6, .a = 1.0 };
     const hover_c = renderer.Color{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 };
-    var rx = inner_x + content_w - 20;
+    var rx = agent_x + agent_w - 34;
 
-    if (mx >= rx and mx < rx + 16 and my >= 32 and my < 52) {
-        renderer.Renderer.drawRoundedRect(rx - 2, 32, 20, 20, 4, hover_c);
-    }
-    renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx - 8, 27, 16, 16, icon_c);
-    rx -= 24;
+    const icon_y = chat_tab_y + 17;
+    const hover_y = chat_tab_y + 14;
 
-    if (mx >= rx and mx < rx + 16 and my >= 32 and my < 52) {
-        renderer.Renderer.drawRoundedRect(rx - 2, 32, 20, 20, 4, hover_c);
+    if (mx >= rx and mx < rx + 16 and my >= hover_y and my < hover_y + 20) {
+        renderer.Renderer.drawRoundedRect(rx - 2, hover_y, 20, 20, 4, hover_c);
     }
-    renderer.Renderer.drawSvg(renderer.icons.sync, rx - 8, 27, 16, 16, icon_c);
-    rx -= 24;
+    renderer.Renderer.drawSvg(renderer.icons.x, rx, icon_y, 16, 16, icon_c);
+    rx -= 30;
 
-    if (mx >= rx and mx < rx + 16 and my >= 32 and my < 52) {
-        renderer.Renderer.drawRoundedRect(rx - 2, 32, 20, 20, 4, hover_c);
+    if (mx >= rx and mx < rx + 16 and my >= hover_y and my < hover_y + 20) {
+        renderer.Renderer.drawRoundedRect(rx - 2, hover_y, 20, 20, 4, hover_c);
     }
-    renderer.Renderer.drawSvg(renderer.icons.plus, rx - 8, 27, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx, icon_y, 16, 16, icon_c);
 
     const composer_layout = agent_composer.computeLayout(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer);
     wb.clampPromptScroll(agent_w);
-    const visible_entries = context_inspector.effectiveEntryCount(&wb.agent, snap.context_entry_count);
-    wb.agent.lock();
-    const ctx_selected = wb.agent.context_selected_index;
-    const ctx_scroll = wb.agent.context_inspector_scroll_y;
-    const ctx_has_detail = ctx_selected != null and snap.context_inspector_expanded;
-    wb.agent.unlock();
-    const strip_top = context_inspector.stripTop(h, snap.context_inspector_expanded, visible_entries, snap.attachment_count, agent_w, &wb.prompt_buffer, ctx_has_detail, snap.has_routing_preview);
-    const chat_bottom = strip_top - 4;
+    const chat_bottom = composer_layout.composer_top - chat_composer_gap;
 
     const chat_top = agent_panel.chat_content_top + 8.0;
     const chat_viewport_h = @max(0, chat_bottom - chat_top);
@@ -114,22 +94,22 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
             const intent = snap.resume_intent orelse "previous run";
             const resume_state = snap.resume_state orelse "interrupted";
             agent_panel.drawResumeBanner(agent_x, agent_w, content_y, snap.resume_offer_kind, intent, resume_state);
-            content_y += agent_panel.resume_banner_h + 4;
+            content_y += agent_panel.resumeBannerHeight(agent_w, intent, resume_state) + 4;
         }
 
         const user_style = chat_bubble.BubbleStyle{
-            .bg = .{ .r = 0.2, .g = 0.2, .b = 0.25, .a = 1.0 },
-            .fg = .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 },
+            .bg = .{ .r = 0.24, .g = 0.24, .b = 0.25, .a = 1.0 },
+            .fg = .{ .r = 0.9, .g = 0.91, .b = 0.94, .a = 1.0 },
         };
         const history_prefix = content_y - (chat_top - wb.chat_scroll_y);
-        const history_count = state.chat_history.?.items.len;
+        const history_count = wb.chat_history.items.len;
         const start_i = chat_layout.firstVisibleIndex(&wb.chat_layout, wb.chat_scroll_y, history_prefix);
         const base_y = chat_top - wb.chat_scroll_y + history_prefix;
         const end_i = chat_layout.lastVisibleIndex(&wb.chat_layout, wb.chat_scroll_y, history_prefix, chat_viewport_h);
         var msg_i = start_i;
         while (msg_i < history_count and msg_i < end_i) : (msg_i += 1) {
-            const msg = state.chat_history.?.items[msg_i];
-            if (!agent_panel.chatHasVisibleContent(msg.content)) continue;
+            const msg = wb.chat_history.items[msg_i];
+            if (msg.role != .tool and !agent_panel.chatHasVisibleContent(msg.content)) continue;
             if (msg_i >= wb.chat_layout.message_heights.items.len) break;
             const msg_h = wb.chat_layout.message_heights.items[msg_i];
             if (msg_h <= 0) continue;
@@ -140,61 +120,42 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                 &wb.chat_layout.message_lines.items[msg_i]
             else
                 @as(?*const chat_message_lines.Entry, null);
-            _ = if (msg.role == .user)
-                chat_bubble.drawBubbleWithCache(wb.allocator, agent_x, inner_x, content_w, msg_y, null, msg.content, user_style, line_cache)
-            else
-                chat_bubble.drawPlainMessageWithCache(wb.allocator, inner_x, content_w, msg_y, msg.content, chat_bubble.agent_text_style, line_cache);
+            switch (msg.role) {
+                .user => _ = chat_bubble.drawBubbleWithCache(wb.allocator, agent_x, inner_x, content_w, msg_y, null, msg.content, user_style, line_cache, wb, msg_i),
+                .agent => _ = chat_bubble.drawAgentMessageWithCache(wb.allocator, inner_x, content_w, msg_y, msg.content, chat_bubble.agent_text_style, line_cache, wb, msg_i),
+                .tool => {
+                    var step = chat_layout.toolStepFromMessage(msg);
+                    _ = tool_step_card.drawStep(
+                        agent_x,
+                        inner_x,
+                        content_w,
+                        msg_y,
+                        step[0..],
+                        0,
+                        wb.allocator,
+                        state.time,
+                        snap.mode,
+                        wb,
+                        msg_i,
+                    );
+                },
+            }
         }
         content_y = base_y + wb.chat_layout.history_content_h;
 
-        const show_live_run = snap.worker_running or wb.agent.agent_steps.items.len > 0;
-        if (show_live_run) {
+        const live_active = snap.worker_running or phaseShowsLive(snap.phase);
+        if (live_active) {
             wb.agent.lock();
             defer wb.agent.unlock();
-
-            var step_i: usize = 0;
-            while (step_i < wb.agent.agent_steps.items.len) : (step_i += 1) {
-                if (content_y > chat_bottom) break;
-                const drawn = tool_step_card.drawStep(
-                    agent_x,
-                    inner_x,
-                    content_w,
-                    content_y,
-                    wb.agent.agent_steps.items,
-                    step_i,
-                    wb.allocator,
-                    state.time,
-                    snap.mode,
-                );
-                if (drawn > 0) content_y += drawn;
-            }
 
             const thinking_src = wb.agent.thinking_text.items;
             const stream_src = wb.agent.stream_text.items;
 
-            if (snap.worker_running and thinking_src.len > 0 and content_y <= chat_bottom) {
-                content_y += chat_bubble.drawThinkingLine(inner_x, content_y, thinking_src);
-            } else if (snap.worker_running and stream_src.len == 0 and content_y <= chat_bottom) {
-                var has_running_step = false;
-                for (wb.agent.agent_steps.items) |step| {
-                    if (step.running and step.parent_index == null) {
-                        has_running_step = true;
-                        break;
-                    }
-                }
-                if (!has_running_step) {
-                    var live_buf: [256:0]u8 = undefined;
-                    const live_text = if (snap.status_line.len > 0)
-                        std.fmt.bufPrint(&live_buf, "{s}", .{snap.status_line}) catch "Working..."
-                    else
-                        std.fmt.bufPrint(&live_buf, "Working...", .{}) catch "Working...";
-                    live_buf[live_text.len] = 0;
-                    content_y += chat_bubble.drawStatusLine(inner_x, content_y, live_buf[0..live_text.len :0]);
-                }
-            }
-
-            if (stream_src.len > 0 and snap.worker_running and content_y <= chat_bottom) {
-                content_y += chat_bubble.drawPlainMessageWithCache(
+            if (stream_src.len == 0) {
+                const thinking_label = if (thinking_src.len > 0) thinking_src else snap.status_line;
+                content_y += chat_bubble.drawThinkingLine(inner_x, content_y, thinking_label, state.time);
+            } else {
+                content_y += chat_bubble.drawAgentMessageWithCache(
                     wb.allocator,
                     inner_x,
                     content_w,
@@ -202,6 +163,8 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                     stream_src,
                     chat_bubble.agent_text_style,
                     &wb.chat_layout.stream_entry,
+                    wb,
+                    wb.chat_history.items.len,
                 );
             }
         }
@@ -297,6 +260,8 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         renderer.Renderer.drawText("Approve once", actions.approve.x + 10, actions.approve.y + 6, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
         renderer.Renderer.drawRoundedRect(actions.reject.x, actions.reject.y, actions.reject.w, actions.reject.h, 6, .{ .r = 0.5, .g = 0.2, .b = 0.2, .a = 1.0 });
         renderer.Renderer.drawText("Reject", actions.reject.x + 30, actions.reject.y + 6, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
+        renderer.Renderer.drawRoundedRect(actions.approve_always.x, actions.approve_always.y, actions.approve_always.w, actions.approve_always.h, 6, .{ .r = 0.2, .g = 0.35, .b = 0.55, .a = 1.0 });
+        renderer.Renderer.drawText("Always Approve", actions.approve_always.x + 10, actions.approve_always.y + 6, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
     } else {
         const chat_top_scroll = chat_top;
         const chat_viewport = @max(0, chat_bottom - chat_top_scroll);
@@ -315,26 +280,12 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         );
     }
 
-    context_inspector.draw(
-        &wb.agent,
-        agent_x,
-        agent_w,
-        h,
-        snap.context_used_bytes,
-        snap.context_max_bytes,
-        snap.context_entry_count,
-        snap.context_inspector_expanded,
-        snap.attachment_count,
-        &wb.prompt_buffer,
-        ctx_scroll,
-        ctx_selected,
-    );
-
     const show_prompt_cursor = @mod(state.time, 1.0) < 0.5 and wb.focused_panel == .agent and !snap.show_review and !snap.worker_running;
     agent_composer.draw(
         &wb.agent,
         composer_layout,
         wb.ai_model,
+        wb.ai_models,
         &wb.prompt_buffer,
         wb.prompt_scroll_y,
         show_prompt_cursor,

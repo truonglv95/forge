@@ -265,7 +265,7 @@ test "toolchain probe reads python and typescript manifests" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("pyproject.toml"), "[project]\nrequires-python = \">=3.12\"\n");
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("package.json"), "{\"devDependencies\":{\"typescript\":\"^5.4.2\"}}\n");

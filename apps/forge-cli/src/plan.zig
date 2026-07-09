@@ -19,6 +19,7 @@ pub fn run(
 
     var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
     defer opened.close(io);
+    workspace_cmd.scheduleSemanticIndex(allocator, io, environ_map, opened);
 
     var scope = try cancel_scope_mod.Scope.init(allocator);
     defer scope.deinit();
@@ -39,7 +40,7 @@ pub fn run(
         .plan,
         intent,
         parsed.flags.files,
-        ai_workflow.providerOptionsFromFlags(.plan, parsed.flags),
+        ai_workflow.providerOptionsFromFlags(allocator, .plan, parsed.flags, io, opened.root),
         .{
             .cancel_token = &cancel_token,
             .progress_writer = progress_writer,

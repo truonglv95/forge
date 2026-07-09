@@ -19,23 +19,46 @@ pub const GenerateOptions = struct {
     progress_json: bool = false,
 };
 
-pub fn providerOptionsFromFlags(mode: Mode, flags: args_mod.GlobalFlags) ai.provider_factory.Options {
+pub fn providerOptionsFromFlags(
+    allocator: std.mem.Allocator,
+    mode: Mode,
+    flags: args_mod.GlobalFlags,
+    io: std.Io,
+    root: ?workspace.WorkspaceRoot,
+) ai.provider_factory.Options {
     const fake_response = switch (mode) {
         .ask => ai.proposal_workflow.default_ask_response,
         .plan => ai.proposal_workflow.default_plan_response,
     };
     const fake_plan = if (mode == .plan) ai.proposal_workflow.default_plan_markdown else null;
 
+    var workspace_cfg: ?workspace_cmd.AiConfig = null;
+    defer if (workspace_cfg) |*cfg| cfg.deinit();
+    if (root) |opened| {
+        workspace_cfg = workspace_cmd.AiConfig.load(allocator, io, opened) catch null;
+    }
+
+    const provider_name = flags.provider orelse if (workspace_cfg) |cfg| cfg.provider else null;
+    const model_name: ?[]const u8 = if (flags.model) |model| model else if (workspace_cfg) |cfg| if (cfg.model) |model| blk: {
+        break :blk allocator.dupe(u8, model) catch null;
+    } else null else null;
+
     return .{
-        .kind = ai.provider_factory.Kind.parse(flags.provider),
-        .model = flags.model,
+        .kind = ai.provider_factory.Kind.parse(provider_name),
+        .model = model_name,
         .fake_response = fake_response,
         .fake_plan_response = fake_plan,
     };
 }
 
-pub fn agentProviderOptionsFromFlags(flags: args_mod.GlobalFlags, intent: []const u8) ai.provider_factory.Options {
-    var options = providerOptionsFromFlags(.ask, flags);
+pub fn agentProviderOptionsFromFlags(
+    allocator: std.mem.Allocator,
+    flags: args_mod.GlobalFlags,
+    intent: []const u8,
+    io: std.Io,
+    root: ?workspace.WorkspaceRoot,
+) ai.provider_factory.Options {
+    var options = providerOptionsFromFlags(allocator, .ask, flags, io, root);
     options.fake_response = ai.proposal_workflow.fakeAgentResponseForIntent(intent);
     options.fake_tool_loop = true;
     const max_steps = if (flags.max_steps > 0) flags.max_steps else 8;

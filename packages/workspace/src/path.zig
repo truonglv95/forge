@@ -32,9 +32,10 @@ pub const WorkspacePath = struct {
 
 pub const WorkspaceRoot = struct {
     dir: std.Io.Dir,
+    path: []const u8,
 
-    pub fn init(dir: std.Io.Dir) WorkspaceRoot {
-        return .{ .dir = dir };
+    pub fn init(dir: std.Io.Dir, path: []const u8) WorkspaceRoot {
+        return .{ .dir = dir, .path = path };
     }
 
     pub fn open(io: std.Io, workspace_path: []const u8) std.Io.Dir.OpenError!WorkspaceRoot {
@@ -46,7 +47,7 @@ pub const WorkspaceRoot = struct {
             try std.Io.Dir.openDirAbsolute(io, workspace_path, open_opts)
         else
             try std.Io.Dir.openDir(std.Io.Dir.cwd(), io, workspace_path, open_opts);
-        return .{ .dir = dir };
+        return .{ .dir = dir, .path = workspace_path };
     }
 
     pub fn close(self: *WorkspaceRoot, io: std.Io) void {
@@ -85,6 +86,6 @@ test "WorkspaceRoot initializes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = WorkspaceRoot.init(tmp.dir);
+    const root = WorkspaceRoot.init(tmp.dir, ".");
     _ = root;
 }

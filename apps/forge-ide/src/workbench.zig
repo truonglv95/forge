@@ -38,6 +38,7 @@ const debug_callstack_mod = @import("workbench/debug_callstack.zig");
 const recent_workspaces_mod = @import("workbench/recent_workspaces.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
+const workspace_symbol_picker_mod = @import("workbench/workspace_symbol_picker.zig");
 const editor_find_mod = @import("workbench/editor_find.zig");
 const settings_mod = @import("workbench/settings.zig");
 const ai_config_io = @import("workbench/ai_config_io.zig");
@@ -52,7 +53,17 @@ pub const ChatRole = @import("workbench/types.zig").ChatRole;
 pub const ChatMessage = struct {
     role: ChatRole,
     content: [:0]const u8,
+    tool_index: u32 = 0,
+    tool_kind: ?[:0]const u8 = null,
+    tool_content: ?[:0]const u8 = null,
+    tool_running: bool = false,
 };
+
+fn freeChatMessage(allocator: std.mem.Allocator, msg: ChatMessage) void {
+    allocator.free(msg.content);
+    if (msg.tool_kind) |kind| allocator.free(kind);
+    if (msg.tool_content) |content| allocator.free(content);
+}
 pub const Command = commands_mod.Command;
 pub const Event = commands_mod.Event;
 
@@ -60,6 +71,7 @@ pub const Workbench = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     workspace_path: []const u8,
+    workspace_name: []const u8,
     workspace_root: workspace.WorkspaceRoot,
     tabs: editor.TabGroup,
     explorer: explorer_tree.Tree,
@@ -96,6 +108,7 @@ pub const Workbench = struct {
     rename_preview: rename_preview_mod.Store,
     events: kernel.EventBus(Event),
     palette: palette_mod.Palette,
+    workspace_symbol_picker: workspace_symbol_picker_mod.Picker,
     task_output: task_output_mod.TaskOutput,
     agent: agent_session.Session,
     agent_ui_queue: agent_ui_queue_mod.Queue = .{},
@@ -150,6 +163,7 @@ pub const Workbench = struct {
     terminal_prompt_refresh_cooldown: f32 = 3.0,
     terminal_boot_pending: bool = false,
     explorer_boot_pending: bool = false,
+    explorer_root_expanded: bool = true,
     theme: workspace.Theme = workspace.Theme.darkDefault(),
     active_extension_theme: []const u8 = "",
     find_bar: editor_find_mod.FindBar,
@@ -160,20 +174,58 @@ pub const Workbench = struct {
     environ_map: ?*const std.process.Environ.Map = null,
     ai_provider: []const u8 = "auto",
     ai_model: ?[]const u8 = null,
+    ai_ollama_url: ?[]const u8 = null,
     ai_mcp_enabled: bool = true,
+    ai_models: []const @import("ui/agent/agent_composer.zig").ModelOption = &@import("ui/agent/agent_composer.zig").default_models,
 
     git_commit_msg: editor.Buffer,
     git_staged_collapsed: bool = false,
     git_changes_collapsed: bool = false,
 
+    code_scroll_x: std.AutoHashMap(u64, CodeScrollState),
+    rendered_code_blocks: std.ArrayList(RenderedCodeBlock),
+
+    pub const CodeScrollState = struct {
+        scroll_x: f32 = 0,
+        max_scroll_x: f32 = 0,
+    };
+
+    pub const RenderedCodeBlock = struct {
+        hash: u64,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    };
+
     pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8, ide_launcher: []const u8, environ_map: ?*const std.process.Environ.Map) !void {
         var root = try workspace.WorkspaceRoot.open(io, workspace_path);
         errdefer root.close(io);
+        ai.index_warm.scheduleBackground(allocator, io, environ_map, root, workspace_path);
+
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        var final_path: []const u8 = workspace_path;
+        if (std.mem.eql(u8, workspace_path, ".")) {
+            if (std.process.currentPath(io, &buf)) |len| {
+                final_path = buf[0..len];
+            } else |_| {}
+        }
+
+        var normalized_path = final_path;
+        while (normalized_path.len > 1 and (normalized_path[normalized_path.len - 1] == '/' or normalized_path[normalized_path.len - 1] == '\\')) {
+            normalized_path = normalized_path[0 .. normalized_path.len - 1];
+        }
+        var name = std.fs.path.basename(normalized_path);
+        if (name.len == 0 or std.mem.eql(u8, name, ".")) {
+            name = "WORKSPACE";
+        }
+        const workspace_name = try allocator.dupe(u8, name);
 
         self.* = .{
             .allocator = allocator,
             .io = io,
             .workspace_path = try allocator.dupe(u8, workspace_path),
+            .workspace_name = workspace_name,
             .workspace_root = root,
             .tabs = editor.TabGroup.init(allocator),
             .explorer = explorer_tree.Tree.init(allocator),
@@ -184,6 +236,7 @@ pub const Workbench = struct {
             .lsp_proxy = try lsp.Proxy.init(allocator, io, workspace_path),
             .events = kernel.EventBus(Event).init(allocator),
             .palette = try palette_mod.Palette.init(allocator),
+            .workspace_symbol_picker = try workspace_symbol_picker_mod.Picker.init(allocator, &self.lsp_proxy),
             .task_output = task_output_mod.TaskOutput.init(allocator, io),
             .agent = agent_session.Session.init(allocator, io),
             .scope_picker_paths = .empty,
@@ -204,6 +257,7 @@ pub const Workbench = struct {
             .ide_launcher = try allocator.dupe(u8, ide_launcher),
             .environ_map = environ_map,
             .ai_provider = try allocator.dupe(u8, "auto"),
+            .ai_ollama_url = null,
             .terminals = undefined,
             .lsp_sync = undefined,
             .diagnostics = undefined,
@@ -211,6 +265,8 @@ pub const Workbench = struct {
             .hover = undefined,
             .references = references_store_mod.Store.init(allocator),
             .rename_preview = rename_preview_mod.Store.init(allocator),
+            .code_scroll_x = std.AutoHashMap(u64, CodeScrollState).init(allocator),
+            .rendered_code_blocks = .empty,
         };
         errdefer self.deinit();
 
@@ -223,6 +279,7 @@ pub const Workbench = struct {
         workspace.recovery.recoverPending(allocator, io, self.workspace_root) catch {};
 
         try self.extension_host.registerBuiltin(&builtin_ext.hello_extension);
+        try self.extension_host.registerBuiltin(&builtin_ext.lsp_extension);
         self.extension_host.setHostCallbacks(wasm_bridge.hostCallbacks());
         self.marketplace_catalog = plugin.marketplace.loadCatalog(allocator, io, root) catch null;
         try self.ensureBundledExtensions();
@@ -243,7 +300,14 @@ pub const Workbench = struct {
             self.allocator.free(self.ai_provider);
             self.ai_provider = cfg.provider;
             self.ai_model = cfg.model;
+            self.ai_ollama_url = cfg.ollama_url;
             self.ai_mcp_enabled = cfg.mcp_enabled;
+            if (cfg.custom_models) |custom_models_str| {
+                defer self.allocator.free(custom_models_str);
+                if (@import("ui/agent/agent_composer.zig").parseCustomModels(self.allocator, custom_models_str)) |models_list| {
+                    self.ai_models = models_list;
+                } else |_| {}
+            }
         } else |_| {}
 
         self.explorer_boot_pending = true;
@@ -272,7 +336,7 @@ pub const Workbench = struct {
         recovery_mod.snapshotDirtyDocs(self.allocator, self.io, self.workspace_root, &self.tabs) catch {};
         if (self.conflict_path) |path| self.allocator.free(path);
         if (self.status_message.len > 0) self.allocator.free(self.status_message);
-        for (self.chat_history.items) |msg| self.allocator.free(msg.content);
+        for (self.chat_history.items) |msg| freeChatMessage(self.allocator, msg);
         self.chat_history.deinit(self.allocator);
         self.chat_layout.deinit(self.allocator);
         self.rename_buffer.deinit();
@@ -291,13 +355,19 @@ pub const Workbench = struct {
         self.lsp_sync.deinit();
         self.diagnostics.deinit();
         self.completions.deinit();
+        self.code_scroll_x.deinit();
+        self.rendered_code_blocks.deinit(self.allocator);
         self.hover.deinit();
         self.references.deinit();
         self.rename_preview.deinit();
+        self.events.deinit();
+        self.palette.deinit();
+        self.workspace_symbol_picker.deinit();
+        self.lsp_proxy.deinit();
+        self.agent_ui_queue.deinit(self.allocator);
         self.prompt_buffer.deinit();
         self.task_output.deinit();
         self.agent.deinit();
-        self.agent_ui_queue.deinit(self.allocator);
         self.clearScopePickerPaths();
         self.scope_picker_paths.deinit(self.allocator);
         self.scope_picker_filtered.deinit(self.allocator);
@@ -307,6 +377,16 @@ pub const Workbench = struct {
         self.user_settings.deinit(self.allocator);
         self.allocator.free(self.ai_provider);
         if (self.ai_model) |model| self.allocator.free(model);
+        if (self.ai_ollama_url) |url| self.allocator.free(url);
+        if (self.ai_models.ptr != @import("ui/agent/agent_composer.zig").default_models[0..].ptr) {
+            const def_len = @import("ui/agent/agent_composer.zig").default_models.len;
+            for (self.ai_models[def_len..]) |opt| {
+                self.allocator.free(opt.id);
+                self.allocator.free(opt.label);
+                self.allocator.free(opt.provider);
+            }
+            self.allocator.free(self.ai_models);
+        }
         if (self.ai_mcp_status) |status| self.allocator.free(status);
         self.allocator.free(self.ide_launcher);
         self.palette.deinit();
@@ -397,7 +477,7 @@ pub const Workbench = struct {
         try self.nav_history.record(path, self.tabs.active);
     }
 
-    pub fn dispatch(self: *Workbench, command: Command) !void {
+    pub fn dispatch(self: *Workbench, command: Command) anyerror!void {
         return @import("workbench/dispatch.zig").dispatch(self, command);
     }
 
@@ -479,9 +559,7 @@ pub const Workbench = struct {
         const attachment_count = self.agent.attachments.items.len;
         self.agent.unlock();
         const visual_lines = ac.visualLineCount(&self.prompt_buffer, agent_w);
-        const composer_h = ac.composerHeight(attachment_count, visual_lines);
-        const attachment_extra = if (attachment_count > 0) ac.attachment_row_h else 0;
-        return composer_h - ac.composer_chrome_h - attachment_extra;
+        return ac.inputTextHeight(attachment_count, visual_lines);
     }
 
     pub fn clampPromptScroll(self: *Workbench, agent_w: f32) void {
@@ -700,9 +778,7 @@ pub const Workbench = struct {
     }
 
     pub fn clampChatScroll(self: *Workbench, agent_h: f32) void {
-        _ = agent_h;
-        self.chat_follow_stream = false;
-        self.chat_scroll_y = std.math.clamp(self.chat_scroll_y, 0, self.chat_layout.max_scroll);
+        @import("workbench/scroll.zig").clampChatScroll(self, agent_h);
     }
 
     pub fn invalidateChatLayout(self: *Workbench) void {
@@ -992,7 +1068,8 @@ pub const Workbench = struct {
         renderer_mod.Renderer.getWindowSize(&w, &h);
         const geo = self.layoutGeometry(w, h);
         if (self.tabs.tabs.items.len > 0) {
-            tabs_ui.scrollToTab(self, self.tabs.active, geo.editor_x, geo.editor_w);
+            const visible_w = @max(10, geo.editor_w - 60);
+            tabs_ui.scrollToTab(self, self.tabs.active, geo.editor_x, visible_w);
         } else {
             self.tab_scroll_x = 0;
         }
@@ -1204,10 +1281,15 @@ pub const Workbench = struct {
             const role: []const u8 = switch (msg.role) {
                 .user => "user",
                 .agent => "agent",
+                .tool => "tool",
             };
             try stored.append(self.allocator, .{
                 .role = role,
                 .content = msg.content,
+                .tool_index = msg.tool_index,
+                .tool_kind = msg.tool_kind,
+                .tool_content = msg.tool_content,
+                .tool_running = msg.tool_running,
             });
         }
         try chat_persistence_mod.saveMessages(self.allocator, self.io, self.workspace_root, stored.items);
@@ -1225,23 +1307,60 @@ pub const Workbench = struct {
 
         const agent_panel_mod = @import("ui/agent/agent_panel.zig");
 
-        for (self.chat_history.items) |msg| self.allocator.free(msg.content);
+        for (self.chat_history.items) |msg| freeChatMessage(self.allocator, msg);
         self.chat_history.clearRetainingCapacity();
 
+        var normalized_history = false;
         for (loaded) |msg| {
-            if (!agent_panel_mod.chatHasVisibleContent(msg.content)) continue;
-            if (isNoiseChatMessage(msg.content)) continue;
-            const role: ChatRole = if (std.mem.eql(u8, msg.role, "user")) .user else .agent;
-            const owned = try self.allocator.dupeZ(u8, msg.content);
-            try self.chat_history.append(self.allocator, .{ .role = role, .content = owned });
+            const role: ChatRole = if (std.mem.eql(u8, msg.role, "user"))
+                .user
+            else if (std.mem.eql(u8, msg.role, "tool"))
+                .tool
+            else
+                .agent;
+            if (role != .tool and !agent_panel_mod.chatHasVisibleContent(msg.content)) continue;
+            if (role != .tool and isNoiseChatMessage(msg.content)) continue;
+            const compact_tool = if (role == .tool)
+                try chat_persistence_mod.compactToolSummaryAlloc(self.allocator, msg.content)
+            else
+                null;
+            defer if (compact_tool) |text| self.allocator.free(text);
+            const fallback_tool = if (role == .tool and compact_tool != null and std.mem.eql(u8, compact_tool.?, "Tool"))
+                chat_persistence_mod.fallbackToolSummary(msg.tool_kind)
+            else
+                null;
+            if (compact_tool) |text| {
+                if (!std.mem.eql(u8, text, msg.content) or fallback_tool != null) normalized_history = true;
+            }
+            const source = fallback_tool orelse compact_tool orelse msg.content;
+            const owned = try self.allocator.dupeZ(u8, source);
+            errdefer self.allocator.free(owned);
+            const owned_kind = if (msg.tool_kind) |kind| try self.allocator.dupeZ(u8, kind) else null;
+            errdefer if (owned_kind) |kind| self.allocator.free(kind);
+            const owned_tool_content = if (msg.tool_content) |content| try self.allocator.dupeZ(u8, content) else null;
+            errdefer if (owned_tool_content) |content| self.allocator.free(content);
+            try self.chat_history.append(self.allocator, .{
+                .role = role,
+                .content = owned,
+                .tool_index = msg.tool_index,
+                .tool_kind = owned_kind,
+                .tool_content = owned_tool_content,
+                .tool_running = false,
+            });
         }
-        if (self.chat_history.items.len != loaded.len) {
+        if (self.chat_history.items.len != loaded.len or normalized_history) {
             self.persistChatHistory() catch {};
         }
         self.chat_history_revision += 1;
         self.invalidateChatLayout();
         self.chat_scroll_to_end_on_ready = true;
         self.chat_follow_stream = false;
+    }
+
+    pub fn clearChatHistory(self: *Workbench) !void {
+        for (self.chat_history.items) |msg| freeChatMessage(self.allocator, msg);
+        self.chat_history.clearRetainingCapacity();
+        self.invalidateChatLayout();
     }
 
     pub fn restoreSessionTabs(self: *Workbench) !void {
@@ -1361,7 +1480,9 @@ pub const Workbench = struct {
     fn loadAiConfig(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !struct {
         provider: []const u8,
         model: ?[]const u8,
+        ollama_url: ?[]const u8,
         mcp_enabled: bool,
+        custom_models: ?[]const u8,
     } {
         const wp = try workspace.WorkspacePath.parse("forge.toml");
         var snap = try workspace.FileSnapshot.read(allocator, io, root, wp);
@@ -1371,7 +1492,11 @@ pub const Workbench = struct {
         errdefer allocator.free(provider);
         const model = if (config.ai_model) |value| try allocator.dupe(u8, value) else null;
         errdefer if (model) |owned| allocator.free(owned);
-        return .{ .provider = provider, .model = model, .mcp_enabled = config.ai_mcp_enabled };
+        const ollama_url = if (config.ai_ollama_url) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (ollama_url) |owned| allocator.free(owned);
+        const custom_models = if (config.ai_custom_models) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (custom_models) |owned| allocator.free(owned);
+        return .{ .provider = provider, .model = model, .ollama_url = ollama_url, .mcp_enabled = config.ai_mcp_enabled, .custom_models = custom_models };
     }
 
     fn bridgeAppendChat(context: ?*anyopaque, role: agent_workflow.ChatRole, content: []const u8) void {
@@ -1419,16 +1544,19 @@ pub const Workbench = struct {
     }
 
     pub fn tickFrame(self: *Workbench, dt: f32) !void {
+        self.workspace_symbol_picker.tick(dt);
         try self.flushAgentUi();
 
         if (self.agent.worker_running) {
             var win_w: f32 = 0;
             var win_h: f32 = 0;
             renderer.Renderer.getWindowSize(&win_w, &win_h);
-            const near_end = self.chat_scroll_y >= self.chat_layout.max_scroll - 48;
+            const was_near_end = self.chat_scroll_y >= self.chat_layout.max_scroll - 48;
             @import("workbench/chat_layout.zig").ensure(self, win_h);
-            if (self.chat_follow_stream or near_end) {
+            if (self.chat_follow_stream or was_near_end) {
                 self.chat_scroll_y = self.chat_layout.max_scroll;
+            } else {
+                self.chat_scroll_y = std.math.clamp(self.chat_scroll_y, 0, self.chat_layout.max_scroll);
             }
         }
 
@@ -1438,6 +1566,9 @@ pub const Workbench = struct {
             if (self.focused_panel != .palette and self.focused_panel != .recovery and self.focused_panel != .conflict) {
                 for (self.tabs.tabs.items) |*doc| {
                     try doc.checkExternalConflict(self.io, self.workspace_root);
+                    if (doc.external_conflict and !doc.isDirty()) {
+                        try @import("workspace_io.zig").loadDocument(self.io, self.workspace_root, doc);
+                    }
                 }
                 if (self.tabs.activeDoc()) |doc| {
                     if (doc.external_conflict) try self.openConflictDialog(doc.path);
@@ -1554,7 +1685,7 @@ pub const Workbench = struct {
             doc.saved_hash = 0;
             doc.disk_hash = 0;
 
-            try recovery_mod.deleteSnapshot(self.io, self.workspace_root, snap_path);
+            try recovery_mod.deleteSnapshot(self.allocator, self.io, self.workspace_root, snap_path);
         }
     }
 
@@ -1565,7 +1696,7 @@ pub const Workbench = struct {
             self.allocator.free(paths);
         }
         for (paths) |snap_path| {
-            try recovery_mod.deleteSnapshot(self.io, self.workspace_root, snap_path);
+            try recovery_mod.deleteSnapshot(self.allocator, self.io, self.workspace_root, snap_path);
         }
     }
 };

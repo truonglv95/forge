@@ -328,7 +328,7 @@ test "retrieveFromIntent finds matching snippet" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("auth.zig"), "pub fn authenticate() void {}\n");
 
@@ -345,7 +345,7 @@ test "collectFromIntent deduplicates many repeated windows without hash map cras
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);

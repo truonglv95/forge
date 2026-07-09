@@ -25,9 +25,9 @@ pub fn writeTomlKey(
     var wrote = false;
     var lines = std.mem.splitScalar(u8, snap.content, '\n');
     while (lines.next()) |raw_line| {
-        const trimmed = std.mem.trim(u8, &std.ascii.whitespace, raw_line);
+        const trimmed = std.mem.trim(u8, raw_line, &std.ascii.whitespace);
         if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
-            const name = std.mem.trim(u8, &std.ascii.whitespace, trimmed[1 .. trimmed.len - 1]);
+            const name = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], &std.ascii.whitespace);
             if (in_section and !wrote) {
                 try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{s} = {s}\n", .{ key, value }));
                 wrote = true;
@@ -43,7 +43,7 @@ pub fn writeTomlKey(
                 try out.append(allocator, '\n');
                 continue;
             };
-            const existing_key = std.mem.trim(u8, &std.ascii.whitespace, trimmed[0..eq]);
+            const existing_key = std.mem.trim(u8, trimmed[0..eq], &std.ascii.whitespace);
             if (std.mem.eql(u8, existing_key, key)) {
                 try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{s} = {s}\n", .{ key, value }));
                 wrote = true;
@@ -58,7 +58,11 @@ pub fn writeTomlKey(
         if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') {
             try out.append(allocator, '\n');
         }
-        try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "\n[{s}]\n{s} = {s}\n", .{ section_name, key, value }));
+        if (in_section) {
+            try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{s} = {s}\n", .{ key, value }));
+        } else {
+            try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "\n[{s}]\n{s} = {s}\n", .{ section_name, key, value }));
+        }
     }
 
     try workspace.atomic.replaceFile(io, root, wp, out.items);
@@ -95,6 +99,15 @@ pub fn writeAiModel(
     model: []const u8,
 ) !void {
     try writeTomlQuotedString(allocator, io, root, "ai", "model", model);
+}
+
+pub fn writeAiOllamaUrl(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    url: []const u8,
+) !void {
+    try writeTomlQuotedString(allocator, io, root, "ai", "ollama_url", url);
 }
 
 pub fn writeAiMcp(

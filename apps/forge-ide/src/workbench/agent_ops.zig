@@ -37,9 +37,8 @@ pub fn applyScopePickerFilter(wb: anytype) !void {
 }
 
 pub fn setAgentModelIndex(wb: anytype, index: usize) !void {
-    const agent_composer = @import("../ui/agent/agent_composer.zig");
-    if (index >= agent_composer.models.len) return;
-    const option = agent_composer.models[index];
+    if (index >= wb.ai_models.len) return;
+    const option = wb.ai_models[index];
     if (wb.ai_model) |old| wb.allocator.free(old);
     wb.ai_model = try wb.allocator.dupe(u8, option.id);
     wb.allocator.free(wb.ai_provider);
@@ -47,6 +46,12 @@ pub fn setAgentModelIndex(wb: anytype, index: usize) !void {
     wb.agent.closeMenus();
     try ai_config_io.writeAiProvider(wb.allocator, wb.io, wb.workspace_root, option.provider);
     try ai_config_io.writeAiModel(wb.allocator, wb.io, wb.workspace_root, option.id);
+    for (wb.tabs.tabs.items) |*doc| {
+        const wp = @import("forge-workspace").WorkspacePath.parse(doc.path) catch continue;
+        if (std.mem.eql(u8, wp.raw, "forge.toml")) {
+            @import("../workspace_io.zig").loadDocument(wb.io, wb.workspace_root, doc) catch {};
+        }
+    }
     try wb.setStatus("Model saved to forge.toml");
 }
 
@@ -384,6 +389,7 @@ pub fn agentHost(wb: anytype) agent_workflow.Host {
         .environ_map = wb.environ_map,
         .ai_provider = wb.ai_provider,
         .ai_model = wb.ai_model,
+        .ai_ollama_url = wb.ai_ollama_url,
         .ai_mcp_enabled = wb.ai_mcp_enabled,
         .workspace_root = wb.workspace_root,
         .workspace_path = wb.workspace_path,
@@ -605,11 +611,13 @@ pub fn snapshotAgentConversation(wb: anytype, allocator: std.mem.Allocator) ![]a
 
     const start = if (end > ai.conversation.max_turns) end - ai.conversation.max_turns else 0;
     for (wb.chat_history.items[start..end]) |msg| {
+        if (msg.role == .tool) continue;
         const slice = ai.conversation.truncateContent(msg.content);
         try turns.append(allocator, .{
             .role = switch (msg.role) {
                 .user => .user,
                 .agent => .agent,
+                .tool => unreachable,
             },
             .content = try allocator.dupe(u8, slice),
         });
@@ -646,6 +654,78 @@ pub fn bridgeEnqueueAgentUi(context: ?*anyopaque, op: agent_ui_queue_mod.Op) voi
     };
 }
 
+fn findOpenDoc(wb: anytype, path: []const u8) ?*editor.Document {
+    for (wb.tabs.tabs.items, 0..) |*doc, index| {
+        if (std.mem.eql(u8, doc.path, path)) {
+            wb.tabs.active = index;
+            return doc;
+        }
+    }
+    return null;
+}
+
+fn lineRangeOffsets(content: []const u8, start_line: usize, end_line: usize) struct { start: usize, end: usize } {
+    if (start_line == 0 and end_line == 0) return .{ .start = 0, .end = content.len };
+
+    const start_target = @max(start_line, 1);
+    var cursor: usize = 0;
+    var line_no: usize = 1;
+    while (line_no < start_target and cursor < content.len) : (line_no += 1) {
+        while (cursor < content.len and content[cursor] != '\n') cursor += 1;
+        if (cursor < content.len and content[cursor] == '\n') cursor += 1;
+    }
+
+    const start_offset = cursor;
+    if (end_line < start_target) return .{ .start = start_offset, .end = start_offset };
+
+    while (line_no <= end_line and cursor < content.len) : (line_no += 1) {
+        while (cursor < content.len and content[cursor] != '\n') cursor += 1;
+        if (cursor < content.len and content[cursor] == '\n') cursor += 1;
+    }
+
+    return .{ .start = start_offset, .end = cursor };
+}
+
+fn applyDirectAgentEdit(wb: anytype, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) !void {
+    const trimmed_path = std.mem.trim(u8, path, &std.ascii.whitespace);
+    if (trimmed_path.len == 0) return;
+
+    const doc = findOpenDoc(wb, trimmed_path) orelse blk: {
+        if (wb.openFile(trimmed_path)) |_| {
+            break :blk wb.tabs.activeDoc() orelse return;
+        } else |_| {
+            const created = try wb.tabs.openOrActivate(trimmed_path);
+            try created.buffer.loadFromSlice("");
+            wb.focused_panel = .editor;
+            break :blk created;
+        }
+    };
+
+    const old_content = try doc.buffer.content();
+    defer doc.buffer.allocator.free(old_content);
+
+    const range = lineRangeOffsets(old_content, start_line, end_line);
+    var next: std.ArrayList(u8) = .empty;
+    defer next.deinit(wb.allocator);
+    try next.appendSlice(wb.allocator, old_content[0..range.start]);
+    try next.appendSlice(wb.allocator, replacement);
+    try next.appendSlice(wb.allocator, old_content[range.end..]);
+    try doc.buffer.loadFromSlice(next.items);
+    try @import("../workspace_io.zig").saveDocument(wb.io, wb.workspace_root, doc);
+    try wb.events.publish(.{ .file_saved = doc.path });
+
+    wb.focused_panel = .editor;
+    wb.explorer.select(trimmed_path) catch {};
+    wb.diagnostics.setActivePath(trimmed_path) catch {};
+    if (@import("editor_ops.zig").lspSyncDocument(wb, doc)) |uri| {
+        wb.allocator.free(uri);
+    } else |_| {}
+
+    var status_buf: [160]u8 = undefined;
+    const status = std.fmt.bufPrint(&status_buf, "AI edited {s} lines {d}-{d}", .{ trimmed_path, start_line, end_line }) catch "AI edit applied";
+    try wb.setStatus(status);
+}
+
 pub fn flushAgentUi(wb: anytype) !void {
     const ops = try wb.agent_ui_queue.takeAll(wb.allocator);
     defer wb.allocator.free(ops);
@@ -663,18 +743,25 @@ pub fn flushAgentUi(wb: anytype) !void {
             .append_thinking => |text| {
                 try wb.agent.appendThinkingChunk(text);
                 wb.chat_follow_stream = true;
+                wb.chat_scroll_to_end_on_ready = true;
             },
             .append_stream => |text| {
                 try wb.agent.appendStreamChunk(text);
                 wb.chat_follow_stream = true;
+                wb.chat_scroll_to_end_on_ready = true;
             },
             .begin_step => |payload| {
-                try wb.agent.beginAgentStep(payload.index, payload.kind, payload.label);
+                try flushLiveAssistantBeforeTool(wb);
+                try wb.agent.beginAgentStep(payload.index, payload.kind, payload.label, payload.content);
+                try appendToolChatStep(wb, payload.index, payload.kind, payload.label, payload.content, true);
                 wb.chat_follow_stream = true;
+                wb.chat_scroll_to_end_on_ready = true;
             },
             .append_step => |payload| {
                 try wb.agent.appendAgentStep(payload.index, payload.kind, payload.summary);
+                try finishToolChatStep(wb, payload.index, payload.kind, payload.summary);
                 wb.chat_follow_stream = true;
+                wb.chat_scroll_to_end_on_ready = true;
             },
             .set_phase => |payload| {
                 if (payload.phase == .sending) {
@@ -685,6 +772,7 @@ pub fn flushAgentUi(wb: anytype) !void {
                     wb.agent.unlock();
                 }
                 try wb.agent.setPhase(payload.phase, payload.label);
+                wb.chat_scroll_to_end_on_ready = true;
             },
             .run_finished => |payload| {
                 wb.agent.lock();
@@ -727,8 +815,8 @@ pub fn flushAgentUi(wb: anytype) !void {
                     try wb.agent.setPhase(.idle, "Answer ready");
                     try wb.setStatus("Answer ready");
                 } else if (wb.agent.mode == .agent) {
-                    try wb.agent.setPhase(.idle, "Agent finished without a proposal");
-                    try wb.setStatus("Agent finished without a proposal");
+                    try wb.agent.setPhase(.idle, "Agent finished");
+                    try wb.setStatus("Agent finished");
                 } else {
                     try wb.agent.setPhase(.idle, "Spec ready — approve to continue");
                     try wb.setStatus("Spec ready — approve to continue");
@@ -747,24 +835,178 @@ pub fn flushAgentUi(wb: anytype) !void {
                 try wb.appendChat(.agent, payload.message);
                 try wb.setStatus(payload.message);
             },
-            .propose_edit => {
-                // Legacy queue event retained for schema compatibility. Model
-                // edits are rendered only from a persisted proposal review.
-                try wb.setStatus("Pending AI edit captured for proposal review");
+            .propose_edit => |payload| {
+                try applyDirectAgentEdit(wb, payload.path, payload.start_line, payload.end_line, payload.replacement);
             },
         }
     }
     if (pending_context_refresh) refreshAgentContextPreview(wb);
 }
 
+fn flushLiveAssistantBeforeTool(wb: anytype) !void {
+    wb.agent.lock();
+    const stream_snapshot = wb.allocator.dupe(u8, wb.agent.stream_text.items) catch {
+        wb.agent.unlock();
+        return;
+    };
+    wb.agent.stream_text.clearRetainingCapacity();
+    wb.agent.thinking_text.clearRetainingCapacity();
+    wb.agent.unlock();
+    defer wb.allocator.free(stream_snapshot);
+
+    const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
+    if (!agent_panel_mod.chatHasVisibleContent(stream_snapshot)) return;
+    try appendChat(wb, .agent, stream_snapshot);
+}
+
 pub fn appendChat(wb: anytype, role: ChatRole, content: []const u8) !void {
     const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
-    if (!agent_panel_mod.chatHasVisibleContent(content)) return;
-    const owned = try wb.allocator.dupeZ(u8, content);
+    const normalized = if (role == .agent) try normalizeAgentChatContent(wb.allocator, content) else null;
+    defer if (normalized) |text| wb.allocator.free(text);
+    const source = normalized orelse content;
+    if (!agent_panel_mod.chatHasVisibleContent(source)) return;
+    const owned = try wb.allocator.dupeZ(u8, source);
     try wb.chat_history.append(wb.allocator, .{ .role = role, .content = owned });
     wb.chat_history_revision += 1;
     wb.chat_follow_stream = true;
+    wb.chat_scroll_to_end_on_ready = true;
     wb.persistChatHistory() catch {};
+}
+
+fn appendToolChatStep(
+    wb: anytype,
+    index: u32,
+    kind: []const u8,
+    label: []const u8,
+    content: ?[]const u8,
+    running: bool,
+) !void {
+    const owned_label = try wb.allocator.dupeZ(u8, label);
+    errdefer wb.allocator.free(owned_label);
+    const owned_kind = try wb.allocator.dupeZ(u8, kind);
+    errdefer wb.allocator.free(owned_kind);
+    const owned_content = if (content) |text| try wb.allocator.dupeZ(u8, text) else null;
+    errdefer if (owned_content) |text| wb.allocator.free(text);
+
+    try wb.chat_history.append(wb.allocator, .{
+        .role = .tool,
+        .content = owned_label,
+        .tool_index = index,
+        .tool_kind = owned_kind,
+        .tool_content = owned_content,
+        .tool_running = running,
+    });
+    wb.chat_history_revision += 1;
+    wb.chat_follow_stream = true;
+    wb.chat_scroll_to_end_on_ready = true;
+    wb.persistChatHistory() catch {};
+}
+
+fn finishToolChatStep(wb: anytype, index: u32, kind: []const u8, summary: []const u8) !void {
+    const chat_persistence = @import("chat_persistence.zig");
+    const compact_summary = try chat_persistence.compactToolSummaryAlloc(wb.allocator, summary);
+    defer wb.allocator.free(compact_summary);
+
+    var i = wb.chat_history.items.len;
+    while (i > 0) : (i -= 1) {
+        const msg = &wb.chat_history.items[i - 1];
+        if (msg.role != .tool or msg.tool_index != index or !msg.tool_running) continue;
+        if (msg.tool_kind) |existing_kind| {
+            if (!std.mem.eql(u8, existing_kind, kind)) continue;
+        }
+        const owned_summary = try wb.allocator.dupeZ(u8, compact_summary);
+        errdefer wb.allocator.free(owned_summary);
+        const owned_kind = try wb.allocator.dupeZ(u8, kind);
+        errdefer wb.allocator.free(owned_kind);
+
+        wb.allocator.free(msg.content);
+        if (msg.tool_kind) |old| wb.allocator.free(old);
+        msg.content = owned_summary;
+        msg.tool_kind = owned_kind;
+        msg.tool_running = false;
+        wb.chat_history_revision += 1;
+        wb.chat_follow_stream = true;
+        wb.chat_scroll_to_end_on_ready = true;
+        wb.persistChatHistory() catch {};
+        return;
+    }
+
+    try appendToolChatStep(wb, index, kind, compact_summary, null, false);
+}
+
+fn normalizeAgentChatContent(allocator: std.mem.Allocator, content: []const u8) !?[]u8 {
+    const trimmed = std.mem.trim(u8, content, &std.ascii.whitespace);
+    if (trimmed.len == 0) return null;
+    if (std.mem.startsWith(u8, trimmed, "```")) return null;
+    if (trimmed[0] != '{' and trimmed[0] != '[') return null;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch return null;
+    defer parsed.deinit();
+    if (try chatWrapperJsonToContent(allocator, parsed.value)) |chat| return chat;
+    if (try proposalJsonToChat(allocator, parsed.value)) |chat| return chat;
+    const pretty = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });
+    defer allocator.free(pretty);
+    return try std.fmt.allocPrint(allocator, "```json\n{s}\n```", .{pretty});
+}
+
+fn jsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    return if (value == .string) value.string else null;
+}
+
+fn appendJsonStringList(writer: *std.Io.Writer, title: []const u8, value: ?std.json.Value) !void {
+    const array_value = value orelse return;
+    if (array_value != .array or array_value.array.items.len == 0) return;
+    try writer.print("\n\n{s}:\n", .{title});
+    for (array_value.array.items) |item| {
+        if (item == .string) {
+            try writer.print("- {s}\n", .{item.string});
+        }
+    }
+}
+
+fn chatWrapperJsonToContent(allocator: std.mem.Allocator, value: std.json.Value) !?[]u8 {
+    if (value != .object) return null;
+    const obj = value.object;
+    const content_value = obj.get("content") orelse return null;
+    if (content_value != .string) return null;
+    return try allocator.dupe(u8, content_value.string);
+}
+
+fn proposalJsonToChat(allocator: std.mem.Allocator, value: std.json.Value) !?[]u8 {
+    if (value != .object) return null;
+    const obj = value.object;
+    if (obj.get("schema_version") == null and obj.get("workspace_edit") == null) return null;
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    errdefer out.deinit();
+    const writer = &out.writer;
+
+    if (jsonString(obj, "summary")) |summary| {
+        try writer.print("{s}", .{summary});
+    } else {
+        try writer.writeAll("Agent returned a proposal result.");
+    }
+
+    try appendJsonStringList(writer, "Assumptions", obj.get("assumptions"));
+    try appendJsonStringList(writer, "Validation", obj.get("validation_tasks"));
+
+    var edit_count: usize = 0;
+    if (obj.get("workspace_edit")) |workspace_edit| {
+        if (workspace_edit == .object) {
+            if (workspace_edit.object.get("files")) |files| {
+                if (files == .array) edit_count = files.array.items.len;
+            }
+        }
+    }
+
+    if (edit_count == 0) {
+        try writer.writeAll("\n\nNo code changes were proposed.");
+    } else {
+        try writer.print("\n\nProposed changes: {d} file(s).", .{edit_count});
+    }
+
+    return try out.toOwnedSlice();
 }
 
 fn appendAgentRunChat(
@@ -776,26 +1018,39 @@ fn appendAgentRunChat(
 ) !void {
     const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
 
+    var appended_plan: ?[]const u8 = null;
     if (plan_text) |plan| {
         if (agent_panel_mod.chatHasVisibleContent(plan)) {
             try appendChat(wb, .agent, plan);
+            appended_plan = plan;
         }
     }
 
-    var appended_agent = false;
-    if (agent_panel_mod.chatHasVisibleContent(stream_snapshot)) {
-        try appendChat(wb, .agent, stream_snapshot);
-        appended_agent = true;
-    } else if (agent_panel_mod.chatHasVisibleContent(thinking_snapshot)) {
-        try appendChat(wb, .agent, thinking_snapshot);
-        appended_agent = true;
-    }
+    const final_text = if (agent_panel_mod.chatHasVisibleContent(chat_text) and
+        !std.mem.eql(u8, std.mem.trim(u8, chat_text, &std.ascii.whitespace), "Agent finished"))
+        chat_text
+    else if (agent_panel_mod.chatHasVisibleContent(stream_snapshot))
+        stream_snapshot
+    else if (agent_panel_mod.chatHasVisibleContent(thinking_snapshot))
+        thinking_snapshot
+    else
+        chat_text;
 
-    if (agent_panel_mod.chatHasVisibleContent(chat_text)) {
-        if (!appended_agent or !std.mem.eql(u8, chat_text, stream_snapshot)) {
-            try appendChat(wb, .agent, chat_text);
+    if (agent_panel_mod.chatHasVisibleContent(final_text)) {
+        if (appended_plan == null or !std.mem.eql(u8, appended_plan.?, final_text)) {
+            try appendChat(wb, .agent, final_text);
         }
     }
+}
+
+test "normalizes agent chat wrapper markdown content" {
+    const allocator = std.testing.allocator;
+    const wrapped =
+        \\{"role":"agent","content":"### Overview\n- item"}
+    ;
+    const normalized = (try normalizeAgentChatContent(allocator, wrapped)).?;
+    defer allocator.free(normalized);
+    try std.testing.expectEqualStrings("### Overview\n- item", normalized);
 }
 
 pub fn bridgeRefreshExplorer(context: ?*anyopaque) void {

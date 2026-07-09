@@ -1074,7 +1074,7 @@ test "import graph auto-neighbors respect budget" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("main.zig"),
         \\const helper = @import("helper.zig");
@@ -1115,7 +1115,7 @@ test "active file is included when not already scoped" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("open.zig"), "pub fn main() {}\n");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("other.zig"), "const x = 1;\n");
@@ -1141,7 +1141,7 @@ test "pre-retrieval adds retrieval block from intent" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("auth.zig"), "pub fn authenticate() void {}\n");
 
@@ -1171,7 +1171,7 @@ test "legacy retrieval block when fused_ranking disabled" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("auth.zig"), "pub fn authenticate() void {}\n");
 
@@ -1197,7 +1197,7 @@ test "semantic block added when @codebase scoped" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("auth.zig"), "pub fn authenticateUser() void {}\n");
 
@@ -1226,7 +1226,7 @@ test "@docs scope loads markdown documentation" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try tmp.dir.createDirPath(io, "docs/plan");
     try tmp.dir.createDirPath(io, "src");
@@ -1259,7 +1259,7 @@ test "agent memory block injected when memories exist" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     const memory_id = try workspace.agent_memory.appendEntry(allocator, io, root, .{
         .kind = .decision,
@@ -1295,7 +1295,7 @@ test "@web scope loads cached web documentation" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     const url = "https://example.com/docs";
     try root.dir.createDirPath(io, ".forge");
@@ -1335,7 +1335,7 @@ test "build with active file triggers import graph without crashing" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try tmp.dir.createDirPath(io, "lib");
     try tmp.dir.createDirPath(io, "apps");
@@ -1369,7 +1369,7 @@ test "fused rerank survives keyword candidate cleanup before rerank" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("auth.zig"), "pub fn authenticateUser() void {}\n");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("other.zig"), "const x = 1;\n");
@@ -1400,7 +1400,7 @@ test "cursor-compatible rules files are loaded" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse(".cursorrules"), "Use zig fmt.\n");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("AGENTS.md"), "# Agents\nBe careful.\n");

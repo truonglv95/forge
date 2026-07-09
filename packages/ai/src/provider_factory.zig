@@ -24,6 +24,7 @@ pub const Kind = enum {
 pub const Options = struct {
     kind: Kind = .auto,
     model: ?[]const u8 = null,
+    ollama_url: ?[]const u8 = null,
     fake_response: []const u8,
     fake_plan_response: ?[]const u8 = null,
     fake_tool_loop: bool = false,
@@ -59,7 +60,7 @@ pub fn create(
     environ_map: ?*const std.process.Environ.Map,
     options: Options,
 ) !Handle {
-    const resolved = try resolveKind(allocator, io, environ_map, options.kind);
+    const resolved = try resolveKind(allocator, io, environ_map, options.kind, options.ollama_url);
 
     return switch (resolved) {
         .fake => .{
@@ -87,7 +88,7 @@ pub fn create(
             ),
         },
         .ollama => blk: {
-            const host = try ollama_provider.resolveHost(allocator, environ_map);
+            const host = try ollama_provider.resolveHost(allocator, environ_map, options.ollama_url);
             defer allocator.free(host);
             break :blk .{
                 .allocator = allocator,
@@ -96,6 +97,7 @@ pub fn create(
                     io,
                     host,
                     options.model orelse ollama_provider.default_model,
+                    ollama_provider.resolveNumCtx(environ_map),
                     options.stream_callback,
                     options.stream_context,
                 ),
@@ -115,6 +117,7 @@ fn resolveKind(
     io: std.Io,
     environ_map: ?*const std.process.Environ.Map,
     kind: Kind,
+    ollama_url: ?[]const u8,
 ) !ResolvedKind {
     return switch (kind) {
         .fake => .fake,
@@ -128,7 +131,7 @@ fn resolveKind(
         },
         .ollama => .ollama,
         .auto => {
-            const host = try ollama_provider.resolveHost(allocator, environ_map);
+            const host = try ollama_provider.resolveHost(allocator, environ_map, ollama_url);
             defer allocator.free(host);
             if (ollama_provider.isReachable(allocator, io, host)) return .ollama;
 

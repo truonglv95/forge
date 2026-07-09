@@ -37,8 +37,8 @@ pub const CheckpointError = error{
     OutOfMemory,
 } || snapshot.FileSnapshot.ReadError || path_mod.WorkspacePath.ValidationError || std.Io.File.OpenError;
 
-pub fn ensureLayout(io: std.Io, root: path_mod.WorkspaceRoot) !void {
-    try history.ensureLayout(io, root);
+pub fn ensureLayout(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !void {
+    try history.ensureLayout(allocator, io, root);
     try root.dir.createDirPath(io, checkpoints_dir);
 }
 
@@ -107,7 +107,7 @@ pub fn createFromEdits(
     file_edits: []const edit.FileEdit,
     options: CreateOptions,
 ) CheckpointError!u64 {
-    ensureLayout(io, root) catch return error.WorkspaceFailed;
+    ensureLayout(allocator, io, root) catch return error.WorkspaceFailed;
     const id = try nextId(allocator, io, root);
     const timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
 
@@ -346,7 +346,7 @@ test "checkpoint create and restore roundtrip" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("sample.txt"), "version one\n");
 

@@ -2,8 +2,7 @@ const std = @import("std");
 const path_mod = @import("path.zig");
 const atomic = @import("atomic.zig");
 
-pub const runs_dir = ".forge/runs";
-pub const runs_index = ".forge/runs/index.jsonl";
+const global_store = @import("global_store.zig");
 
 pub const IndexEntry = struct {
     run_id: []const u8,
@@ -25,29 +24,34 @@ pub const IndexList = struct {
     }
 };
 
-pub fn ensureLayout(io: std.Io, root: path_mod.WorkspaceRoot) !void {
-    try root.dir.createDirPath(io, ".forge");
-    try root.dir.createDirPath(io, runs_dir);
+pub fn ensureLayout(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !void {
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const dir = try std.fmt.allocPrint(allocator, "{s}/runs", .{session_dir});
+    defer allocator.free(dir);
+    std.Io.Dir.createDirPath(.cwd(), io, dir) catch {};
 }
 
-pub fn persistRun(io: std.Io, root: path_mod.WorkspaceRoot, run_id: []const u8, json_body: []const u8) !void {
-    try ensureLayout(io, root);
-
-    var path_buf: [128]u8 = undefined;
-    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}.json", .{ runs_dir, run_id });
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(rel), json_body);
+pub fn persistRun(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, run_id: []const u8, json_body: []const u8) !void {
+    try ensureLayout(allocator, io, root);
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const abs_path = try std.fmt.allocPrint(allocator, "{s}/runs/{s}.json", .{ session_dir, run_id });
+    defer allocator.free(abs_path);
+    try global_store.replaceAbsoluteFile(io, abs_path, json_body);
 }
 
 pub fn appendIndex(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, line: []const u8) !void {
-    try ensureLayout(io, root);
+    try ensureLayout(allocator, io, root);
 
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
 
-    const existing = readRelativeFile(allocator, io, root, runs_index) catch |err| switch (err) {
-        error.FileNotFound => null,
-        else => return err,
-    };
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const runs_index = try std.fmt.allocPrint(allocator, "{s}/runs/index.jsonl", .{session_dir});
+    defer allocator.free(runs_index);
+    const existing = global_store.readAbsoluteFile(allocator, io, runs_index) catch null;
     if (existing) |bytes| {
         defer allocator.free(bytes);
         try buffer.appendSlice(allocator, bytes);
@@ -55,7 +59,7 @@ pub fn appendIndex(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
     }
 
     try buffer.appendSlice(allocator, line);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(runs_index), buffer.items);
+    try global_store.replaceAbsoluteFile(io, runs_index, buffer.items);
 }
 
 pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !IndexList {
@@ -68,10 +72,11 @@ pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
         items.deinit(allocator);
     }
 
-    const content = readRelativeFile(allocator, io, root, runs_index) catch |err| switch (err) {
-        error.FileNotFound => return IndexList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) },
-        else => return err,
-    };
+    const session_dir = global_store.getSessionDir(allocator, io, root) catch return IndexList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) };
+    defer allocator.free(session_dir);
+    const runs_index = std.fmt.allocPrint(allocator, "{s}/runs/index.jsonl", .{session_dir}) catch return IndexList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) };
+    defer allocator.free(runs_index);
+    const content = global_store.readAbsoluteFile(allocator, io, runs_index) catch return IndexList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) };
     defer allocator.free(content);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -95,9 +100,11 @@ pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
 }
 
 pub fn loadRunJson(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, run_id: []const u8) ![]u8 {
-    var path_buf: [128]u8 = undefined;
-    const rel = try std.fmt.bufPrint(&path_buf, "{s}/{s}.json", .{ runs_dir, run_id });
-    return readRelativeFile(allocator, io, root, rel);
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const abs_path = try std.fmt.allocPrint(allocator, "{s}/runs/{s}.json", .{ session_dir, run_id });
+    defer allocator.free(abs_path);
+    return try global_store.readAbsoluteFile(allocator, io, abs_path);
 }
 
 pub fn updateRunState(
@@ -150,7 +157,7 @@ pub fn updateRunState(
         },
     );
     defer allocator.free(updated);
-    try persistRun(io, root, run_id, updated);
+    try persistRun(allocator, io, root, run_id, updated);
     try updateIndexState(allocator, io, root, run_id, new_state);
 }
 
@@ -161,10 +168,11 @@ pub fn updateIndexState(
     run_id: []const u8,
     new_state: []const u8,
 ) !void {
-    const content = readRelativeFile(allocator, io, root, runs_index) catch |err| switch (err) {
-        error.FileNotFound => return,
-        else => return err,
-    };
+    const session_dir = global_store.getSessionDir(allocator, io, root) catch return;
+    defer allocator.free(session_dir);
+    const runs_index = std.fmt.allocPrint(allocator, "{s}/runs/index.jsonl", .{session_dir}) catch return;
+    defer allocator.free(runs_index);
+    const content = global_store.readAbsoluteFile(allocator, io, runs_index) catch return;
     defer allocator.free(content);
 
     var out: std.ArrayList(u8) = .empty;
@@ -195,7 +203,7 @@ pub fn updateIndexState(
         }
     }
 
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(runs_index), out.items);
+    try global_store.replaceAbsoluteFile(io, runs_index, out.items);
 }
 
 fn readRelativeFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, rel_path: []const u8) ![]u8 {
@@ -216,12 +224,12 @@ test "updateRunState rewrites run json and index" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     const initial =
         \\{"schema_version":1,"run_id":"run_42","surface":"ide","intent":"fix bug","state":"proposed","proposal_path":".forge/proposals/run_42.json","transaction_id":0,"provider_id":"fake","model_id":"fake","timestamp_ms":42}
     ;
-    try persistRun(io, root, "run_42", initial);
+    try persistRun(allocator, io, root, "run_42", initial);
     try appendIndex(allocator, io, root, "{\"run_id\":\"run_42\",\"state\":\"proposed\",\"timestamp_ms\":42}\n");
 
     try updateRunState(allocator, io, root, "run_42", "done", 7);
@@ -243,7 +251,7 @@ test "runs list parses index jsonl" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     try appendIndex(allocator, io, root, "{\"run_id\":\"run_1\",\"state\":\"proposed\",\"timestamp_ms\":100}\n");
 

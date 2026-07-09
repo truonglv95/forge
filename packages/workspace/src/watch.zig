@@ -136,7 +136,7 @@ test "watch diff detects created file" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     {
         var file = try tmp.dir.createFile(io, "a.txt", .{});

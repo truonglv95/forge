@@ -149,6 +149,11 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             )) |hit| {
                 wb.handleDebugClick(hit) catch {};
             }
+        } else if (geo.shell_mode == .ide and wb.sidebar_view == .explorer and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height and event.y < explorer_scroll.list_top) {
+            wb.focused_panel = .explorer;
+            if (event.x < geo.explorer_x + geo.explorer_w - 90) {
+                wb.explorer_root_expanded = !wb.explorer_root_expanded;
+            }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .explorer and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= explorer_scroll.list_top) {
             wb.focused_panel = .explorer;
             const float_row = (event.y - explorer_scroll.list_top + wb.explorer_scroll_y) / explorer_scroll.row_height;
@@ -159,37 +164,16 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
             const agent_panel = @import("../agent/agent_panel.zig");
-            const context_inspector_mod = @import("../agent/context_inspector.zig");
             const agent_composer_mod = @import("../agent/agent_composer.zig");
             wb.agent.lock();
-            const entry_count = wb.agent.context_entries.items.len;
-            const expanded = wb.agent.context_inspector_expanded;
-            const has_detail = wb.agent.context_selected_index != null and expanded;
             const attachment_count = wb.agent.attachments.items.len;
-            const ctx_scroll = wb.agent.context_inspector_scroll_y;
             wb.agent.unlock();
-            if (context_inspector_mod.hitToggle(geo.agent_x, geo.agent_w, h, entry_count, attachment_count, &wb.prompt_buffer, has_detail, event.x, event.y)) {
-                wb.dispatch(.agent_toggle_context_inspector) catch {};
-                return;
-            }
-            if (expanded) {
-                if (context_inspector_mod.hitEntryRow(geo.agent_x, geo.agent_w, h, entry_count, attachment_count, &wb.prompt_buffer, ctx_scroll, event.x, event.y)) |row| {
-                    wb.agent.lock();
-                    if (wb.agent.context_selected_index) |sel| {
-                        wb.agent.context_selected_index = if (sel == row) null else row;
-                    } else {
-                        wb.agent.context_selected_index = row;
-                    }
-                    wb.agent.unlock();
-                    return;
-                }
-            }
             const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer);
             if (agent_composer_mod.hitAttachmentRemove(&wb.agent, composer_layout, event.x, event.y)) |index| {
                 wb.dispatch(.{ .agent_remove_attachment = index }) catch {};
                 return;
             }
-            const hit = agent_composer_mod.hitTest(&wb.agent, composer_layout, event.x, event.y);
+            const hit = agent_composer_mod.hitTest(&wb.agent, composer_layout, wb.ai_models, event.x, event.y);
             switch (hit) {
                 .mode_menu => {
                     wb.dispatch(.agent_toggle_mode_menu) catch {};
@@ -206,7 +190,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     return;
                 },
                 .model_item => {
-                    if (agent_composer_mod.modelIndexAt(&wb.agent, composer_layout, event.x, event.y)) |index| {
+                    if (agent_composer_mod.modelIndexAt(&wb.agent, composer_layout, wb.ai_models, event.x, event.y)) |index| {
                         wb.dispatch(.{ .agent_set_model = index }) catch {};
                     }
                     return;
@@ -239,6 +223,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     switch (action) {
                         .approve => wb.dispatch(.agent_approve_tool) catch {},
                         .reject => wb.dispatch(.agent_reject_tool) catch {},
+                        .approve_always => wb.dispatch(.agent_approve_always_tool) catch {},
                     }
                     return;
                 }
@@ -249,23 +234,31 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             const validation_failed = wb.agent.phase == .failed and post_apply;
             const validation_count = wb.agent.validation_results.items.len;
             const resume_offer = wb.agent.resume_offer_visible;
+            var intent: []const u8 = "previous run";
+            var resume_state: []const u8 = "interrupted";
+            if (resume_offer) {
+                if (wb.agent.resume_intent) |i| intent = i;
+                if (wb.agent.resume_state) |s| resume_state = s;
+            }
             wb.agent.unlock();
+
             if (post_apply) {
                 const banner_y = agent_panel.chat_content_top + 8 - wb.chat_scroll_y;
                 if (agent_panel.hitApplyBanner(geo.agent_x, banner_y, event.x, event.y, validation_failed, validation_count)) |action| {
                     switch (action) {
-                        .keep => wb.dispatch(.agent_dismiss_apply) catch {},
+                        .primary => wb.dispatch(.agent_dismiss_apply) catch {},
                         .undo => wb.dispatch(.agent_rollback) catch {},
                     }
                     return;
                 }
             }
+
             if (resume_offer) {
                 var banner_y = agent_panel.chat_content_top + 8 - wb.chat_scroll_y;
                 if (post_apply) {
                     banner_y += agent_panel.applyBannerHeight(validation_failed, validation_count) + 4;
                 }
-                if (agent_panel.hitResumeBanner(geo.agent_x, banner_y, event.x, event.y)) |action| {
+                if (agent_panel.hitResumeBanner(geo.agent_x, geo.agent_w, banner_y, event.x, event.y, intent, resume_state)) |action| {
                     switch (action) {
                         .primary => wb.dispatch(.agent_continue_session) catch {},
                         .dismiss => wb.dispatch(.agent_dismiss_resume) catch {},
@@ -332,7 +325,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.focused_panel = .editor;
                 var tab_layouts: std.ArrayList(tabs_ui.TabLayout) = .empty;
                 defer tab_layouts.deinit(state.gpa);
-                tabs_ui.collectLayouts(wb, geo.editor_x, &tab_layouts) catch {};
+                tabs_ui.collectLayouts(wb, geo.editor_x, geo.editor_w, &tab_layouts) catch {};
                 switch (tabs_ui.hitTest(tab_layouts.items, event.x, event.y)) {
                     .close => |index| wb.dispatch(.{ .close_tab = index }) catch {},
                     .activate => |index| wb.dispatch(.{ .activate_tab = index }) catch {},
@@ -595,8 +588,25 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     wb.prompt_scroll_y += scroll_delta_y;
                     wb.clampPromptScroll(geo.agent_w);
                 } else {
-                    wb.chat_scroll_y += scroll_delta_y;
-                    wb.clampChatScroll(h);
+                    var scrolled_code_block = false;
+                    if (scroll_delta_x != 0) {
+                        for (wb.rendered_code_blocks.items) |block| {
+                            if (mx >= block.x and mx < block.x + block.w and my >= block.y and my < block.y + block.h) {
+                                if (wb.code_scroll_x.getPtr(block.hash)) |st| {
+                                    if (st.max_scroll_x > 0) {
+                                        st.scroll_x += scroll_delta_x;
+                                        st.scroll_x = @max(0, @min(st.max_scroll_x, st.scroll_x));
+                                        scrolled_code_block = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (!scrolled_code_block) {
+                        wb.chat_scroll_y += scroll_delta_y;
+                        wb.clampChatScroll(h);
+                    }
                 }
             }
         } else if (geo.shell_mode == .ide and my >= tabs_ui.tab_bar_top and my < tabs_ui.tab_bar_top + tabs_ui.tab_bar_height and mx >= geo.editor_x and mx < geo.agent_splitter_x) {

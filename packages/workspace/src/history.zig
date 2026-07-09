@@ -1,4 +1,5 @@
 const std = @import("std");
+const global_store = @import("global_store.zig");
 const edit = @import("edit.zig");
 const path_mod = @import("path.zig");
 const transaction = @import("transaction.zig");
@@ -6,11 +7,6 @@ const atomic = @import("atomic.zig");
 const snapshot = @import("snapshot.zig");
 const proposal_mod = @import("proposal.zig");
 
-pub const forge_dir = ".forge";
-pub const history_file = ".forge/history.jsonl";
-pub const active_marker = ".forge/active.tx";
-pub const proposals_dir = ".forge/proposals";
-pub const backups_dir = ".forge/backups";
 pub const backup_manifest = "manifest.json";
 
 pub const Entry = struct {
@@ -43,10 +39,15 @@ pub const LoadedRecord = struct {
     }
 };
 
-pub fn ensureLayout(io: std.Io, root: path_mod.WorkspaceRoot) !void {
-    try root.dir.createDirPath(io, forge_dir);
-    try root.dir.createDirPath(io, proposals_dir);
-    try root.dir.createDirPath(io, backups_dir);
+pub fn ensureLayout(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !void {
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const proposals_dir = try std.fmt.allocPrint(allocator, "{s}/proposals", .{session_dir});
+    defer allocator.free(proposals_dir);
+    const backups_dir = try std.fmt.allocPrint(allocator, "{s}/backups", .{session_dir});
+    defer allocator.free(backups_dir);
+    std.Io.Dir.createDirPath(.cwd(), io, proposals_dir) catch {};
+    std.Io.Dir.createDirPath(.cwd(), io, backups_dir) catch {};
 }
 
 pub fn nextTransactionId(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !u64 {
@@ -64,10 +65,11 @@ pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
         items.deinit(allocator);
     }
 
-    const content = readRelativeFile(allocator, io, root, history_file) catch |err| switch (err) {
-        error.FileNotFound => return EntryList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) },
-        else => return err,
-    };
+    const session_dir = global_store.getSessionDir(allocator, io, root) catch return EntryList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) };
+    defer allocator.free(session_dir);
+    const hist_path = std.fmt.allocPrint(allocator, "{s}/history.jsonl", .{session_dir}) catch return EntryList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) };
+    defer allocator.free(hist_path);
+    const content = global_store.readAbsoluteFile(allocator, io, hist_path) catch return EntryList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) };
     defer allocator.free(content);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -93,37 +95,48 @@ pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
     return EntryList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) };
 }
 
-pub fn writeActiveMarker(io: std.Io, root: path_mod.WorkspaceRoot, id: u64) !void {
-    try ensureLayout(io, root);
+pub fn writeActiveMarker(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, id: u64) !void {
+    try ensureLayout(allocator, io, root);
     var buf: [32]u8 = undefined;
     const text = try std.fmt.bufPrint(&buf, "{d}\n", .{id});
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(active_marker), text);
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const marker_path = try std.fmt.allocPrint(allocator, "{s}/active.tx", .{session_dir});
+    defer allocator.free(marker_path);
+    try global_store.replaceAbsoluteFile(io, marker_path, text);
 }
 
-pub fn clearActiveMarker(io: std.Io, root: path_mod.WorkspaceRoot) void {
-    root.dir.deleteFile(io, active_marker) catch {};
+pub fn clearActiveMarker(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) void {
+    const session_dir = global_store.getSessionDir(allocator, io, root) catch return;
+    defer allocator.free(session_dir);
+    const marker_path = std.fmt.allocPrint(allocator, "{s}/active.tx", .{session_dir}) catch return;
+    defer allocator.free(marker_path);
+    global_store.deleteAbsoluteFile(io, marker_path);
 }
 
-pub fn readActiveMarker(io: std.Io, root: path_mod.WorkspaceRoot) !?u64 {
-    const content = readRelativeFile(std.heap.page_allocator, io, root, active_marker) catch |err| switch (err) {
-        error.FileNotFound => return null,
-        else => return err,
-    };
-    defer std.heap.page_allocator.free(content);
+pub fn readActiveMarker(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !?u64 {
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const marker_path = try std.fmt.allocPrint(allocator, "{s}/active.tx", .{session_dir});
+    defer allocator.free(marker_path);
+    const content = global_store.readAbsoluteFile(allocator, io, marker_path) catch return null;
+    defer allocator.free(content);
     const trimmed = std.mem.trim(u8, content, " \n\r\t");
     return try std.fmt.parseInt(u64, trimmed, 10);
 }
 
 pub fn appendEntry(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, entry: Entry) !void {
-    try ensureLayout(io, root);
+    try ensureLayout(allocator, io, root);
 
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
 
-    const existing = readRelativeFile(allocator, io, root, history_file) catch |err| switch (err) {
-        error.FileNotFound => null,
-        else => return err,
-    };
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const hist_path = try std.fmt.allocPrint(allocator, "{s}/history.jsonl", .{session_dir});
+    defer allocator.free(hist_path);
+
+    const existing = global_store.readAbsoluteFile(allocator, io, hist_path) catch null;
     if (existing) |bytes| {
         defer allocator.free(bytes);
         try buffer.appendSlice(allocator, bytes);
@@ -138,25 +151,27 @@ pub fn appendEntry(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
     defer allocator.free(line);
     try buffer.appendSlice(allocator, line);
 
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(history_file), buffer.items);
+    try global_store.replaceAbsoluteFile(io, hist_path, buffer.items);
 }
 
 pub fn persistBackups(
+    allocator: std.mem.Allocator,
     io: std.Io,
     root: path_mod.WorkspaceRoot,
     record: *const transaction.TransactionRecord,
 ) !void {
-    try ensureLayout(io, root);
-
-    var backup_root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const backup_root_rel = try std.fmt.bufPrint(&backup_root_buf, "{s}/{d}", .{ backups_dir, record.id });
-    try root.dir.createDirPath(io, backup_root_rel);
+    try ensureLayout(allocator, io, root);
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const backup_root = try std.fmt.allocPrint(allocator, "{s}/backups/{d}", .{ session_dir, record.id });
+    defer allocator.free(backup_root);
+    std.Io.Dir.createDirPath(.cwd(), io, backup_root) catch {};
 
     for (record.backups) |backup| {
         if (!backup.existed) continue;
-        var backup_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const backup_rel = try std.fmt.bufPrint(&backup_path_buf, "{s}/{s}", .{ backup_root_rel, backup.path });
-        try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(backup_rel), backup.content);
+        const backup_abs = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ backup_root, backup.path });
+        defer allocator.free(backup_abs);
+        try global_store.replaceAbsoluteFile(io, backup_abs, backup.content);
     }
 
     const ManifestEntry = struct { path: []const u8, existed: bool };
@@ -167,9 +182,9 @@ pub fn persistBackups(
     }
     const manifest_body = try std.json.Stringify.valueAlloc(std.heap.page_allocator, entries, .{});
     defer std.heap.page_allocator.free(manifest_body);
-    var manifest_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const manifest_rel = try std.fmt.bufPrint(&manifest_path_buf, "{s}/{s}", .{ backup_root_rel, backup_manifest });
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(manifest_rel), manifest_body);
+    const manifest_abs = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ backup_root, backup_manifest });
+    defer allocator.free(manifest_abs);
+    try global_store.replaceAbsoluteFile(io, manifest_abs, manifest_body);
 }
 
 pub fn persistApplied(
@@ -179,16 +194,18 @@ pub fn persistApplied(
     record: *const transaction.TransactionRecord,
     proposal_path: []const u8,
 ) !void {
-    try ensureLayout(io, root);
+    try ensureLayout(allocator, io, root);
 
     var proposal_src = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse(proposal_path));
     defer proposal_src.deinit();
 
-    var proposal_rel_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const proposal_rel = try std.fmt.bufPrint(&proposal_rel_buf, "{s}/{d}.json", .{ proposals_dir, record.id });
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(proposal_rel), proposal_src.content);
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const proposal_abs = try std.fmt.allocPrint(allocator, "{s}/proposals/{d}.json", .{ session_dir, record.id });
+    defer allocator.free(proposal_abs);
+    try global_store.replaceAbsoluteFile(io, proposal_abs, proposal_src.content);
 
-    try persistBackups(io, root, record);
+    try persistBackups(allocator, io, root, record);
 
     try appendEntry(allocator, io, root, .{
         .id = record.id,
@@ -211,9 +228,13 @@ pub fn loadRecord(
         if (item.id == id) break item;
     } else return error.TransactionNotFound;
 
-    var proposal_rel_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const proposal_rel = try std.fmt.bufPrint(&proposal_rel_buf, "{s}/{d}.json", .{ proposals_dir, id });
-    var proposal = try proposal_mod.OwnedProposal.readPath(allocator, io, root, proposal_rel);
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const proposal_abs = try std.fmt.allocPrint(allocator, "{s}/proposals/{d}.json", .{ session_dir, id });
+    defer allocator.free(proposal_abs);
+    const proposal_content = try global_store.readAbsoluteFile(allocator, io, proposal_abs);
+    defer allocator.free(proposal_content);
+    var proposal = try proposal_mod.OwnedProposal.parseJson(allocator, proposal_content);
 
     var backups: std.ArrayList(transaction.FileBackup) = .empty;
     errdefer {
@@ -225,29 +246,22 @@ pub fn loadRecord(
         proposal.deinit();
     }
 
-    var backup_root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const backup_root_rel = try std.fmt.bufPrint(&backup_root_buf, "{s}/{d}", .{ backups_dir, id });
+    const backup_root = try std.fmt.allocPrint(allocator, "{s}/backups/{d}", .{ session_dir, id });
+    defer allocator.free(backup_root);
 
     for (proposal.files) |file_edit| {
-        var backup_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const backup_rel = try std.fmt.bufPrint(&backup_path_buf, "{s}/{s}", .{ backup_root_rel, file_edit.path });
-        const backup_wp = try path_mod.WorkspacePath.parse(backup_rel);
-        const existed = blk: {
-            root.dir.access(io, backup_wp.raw, .{}) catch |err| switch (err) {
-                error.FileNotFound => break :blk false,
-                else => return err,
-            };
-            break :blk true;
+        const backup_abs = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ backup_root, file_edit.path });
+        defer allocator.free(backup_abs);
+        const content = global_store.readAbsoluteFile(allocator, io, backup_abs) catch |err| switch (err) {
+            error.FileNotFound => "",
+            else => return err,
         };
-        const content: []const u8 = if (existed) blk: {
-            var snap = try snapshot.FileSnapshot.read(allocator, io, root, backup_wp);
-            defer snap.deinit();
-            break :blk try allocator.dupe(u8, snap.content);
-        } else "";
+        const existed = content.len > 0 or (std.Io.Dir.openFileAbsolute(io, backup_abs, .{}) catch null) != null;
+        const stored_content = if (existed) content else "";
         try backups.append(allocator, .{
             .path = try allocator.dupe(u8, file_edit.path),
             .existed = existed,
-            .content = content,
+            .content = stored_content,
         });
     }
 
@@ -269,6 +283,9 @@ pub fn updateEntryState(io: std.Io, root: path_mod.WorkspaceRoot, id: u64, state
     defer arena.deinit();
     const allocator = arena.allocator();
 
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    const hist_path = try std.fmt.allocPrint(allocator, "{s}/history.jsonl", .{session_dir});
+
     var list = try listEntries(allocator, io, root);
     defer list.deinit();
 
@@ -285,7 +302,7 @@ pub fn updateEntryState(io: std.Io, root: path_mod.WorkspaceRoot, id: u64, state
         try buffer.appendSlice(allocator, line);
     }
 
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(history_file), buffer.items);
+    try global_store.replaceAbsoluteFile(io, hist_path, buffer.items);
 }
 
 fn readRelativeFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, rel_path: []const u8) ![]u8 {
@@ -306,7 +323,7 @@ test "history persists apply and supports undo reload" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     const proposal_source =
         \\{"files":[{"path":"note.txt","operation":"create","edits":[{"start":0,"end":0,"replacement":"hi"}]}]}

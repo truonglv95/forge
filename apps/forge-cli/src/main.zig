@@ -12,6 +12,7 @@ const undo_cmd = @import("undo.zig");
 const history_cmd = @import("history.zig");
 const task_cmd = @import("task.zig");
 const check_cmd = @import("check.zig");
+const index_cmd = @import("index_cmd.zig");
 const context_cmd = @import("context_cmd.zig");
 const ask_cmd = @import("ask.zig");
 const plan_cmd = @import("plan.zig");
@@ -89,6 +90,9 @@ fn run(
         .check => {
             return check_cmd.run(allocator, io, parsed, writer) catch 2;
         },
+        .index => {
+            return index_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
         .context => {
             return context_cmd.run(allocator, io, parsed, writer) catch 2;
         },
@@ -148,6 +152,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  history    Show transaction history
         \\  task       Run a workspace task
         \\  check      Run validation checks
+        \\  index      Build or inspect the semantic codebase index (status)
         \\  context    Preview AI context preparation
         \\  ask        Ask AI to propose a change (no auto-apply)
         \\  run        List or show AI run records (list|show)
@@ -165,8 +170,8 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --dry-run            Dry-run flag (used with apply)
         \\  --yes                Approve apply without interactive prompt
         \\  --file <path>        Include file in AI context (repeatable)
-        \\  --provider <name>    AI provider: auto|fake|gemini|ollama (default: auto)
-        \\  --model <name>       Model id (default: gemini-2.5-flash or qwen2.5-coder:7b for ollama)
+        \\  --provider <name>    AI provider: auto|fake|gemini|ollama (default: from forge.toml or auto)
+        \\  --model <name>       Model id (default: from forge.toml or provider default)
         \\  --budget-bytes <n>   Context byte budget for forge context (default: 1MiB)
         \\  --capability <name>  Agent capability: read_only|propose|propose_and_task
         \\  --mode <name>        Routing mode for forge context: ask|plan|agent
@@ -231,7 +236,7 @@ test "CLI workflow apply undo in temp workspace" {
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
 
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge\n");
 
     var ws_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -274,7 +279,7 @@ test "CLI ask records run list entry" {
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
 
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello\n");
 
     var ws_buf: [std.fs.max_path_bytes]u8 = undefined;

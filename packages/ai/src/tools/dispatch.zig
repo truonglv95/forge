@@ -20,9 +20,9 @@ pub fn execute(
         }
     }
     if (std.mem.eql(u8, call.name, "search")) {
-        const term = args.parseSearchTerm(allocator, call.args_json) catch return error.ParseFailed;
-        defer allocator.free(term);
-        const out = tool_executor.search(tool_ctx, term) catch |err| return mapTool(err);
+        const search_args = args.parseSearchArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer args.freeSearchArgs(allocator, search_args);
+        const out = tool_executor.search(tool_ctx, search_args) catch |err| return mapTool(err);
         defer allocator.free(out.summary);
         defer allocator.free(out.observation);
         defer if (out.first_match_path) |path| allocator.free(path);

@@ -27,11 +27,12 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
     const ui_size = theme.ui_font_size;
     renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top, editor_w, tabs_ui.tab_bar_height, syntax.color(theme.colors.tab_bar_bg));
     renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top + tabs_ui.tab_bar_height - 1, editor_w, 1, syntax.color(theme.colors.border));
-    renderer.Renderer.setClipRect(editor_x, tabs_ui.tab_bar_top, editor_w, tabs_ui.tab_bar_height);
+    const visible_tab_w = @max(10, editor_w - 60);
+    renderer.Renderer.setClipRect(editor_x, tabs_ui.tab_bar_top, visible_tab_w, tabs_ui.tab_bar_height);
 
     var tab_layouts: std.ArrayList(tabs_ui.TabLayout) = .empty;
     defer tab_layouts.deinit(state.gpa);
-    tabs_ui.collectLayouts(wb, editor_x, &tab_layouts) catch {};
+    tabs_ui.collectLayouts(wb, editor_x, editor_w, &tab_layouts) catch {};
 
     for (tab_layouts.items) |tab_layout| {
         const tab_index = tab_layout.index;
@@ -41,28 +42,29 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
         const is_active = tab_index == wb.tabs.active;
 
         if (is_active) {
-            // Draw the active tab background (overwriting the tab bar border)
+            // Draw the active tab background
             renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, tabs_ui.tab_height + 1, syntax.color(theme.colors.editor_bg));
 
-            // Draw subtle borders: top, left, right
-            const border = syntax.color(theme.colors.border);
-            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, 1, border); // top
-            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, 1, tabs_ui.tab_height, border); // left
-            renderer.Renderer.drawRect(tab_layout.x + tab_layout.width - 1, tabs_ui.tab_y, 1, tabs_ui.tab_height, border); // right
+            // Clean modern top border highlight
+            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, 1.5, syntax.color(theme.colors.accent));
         } else {
-            // Optional: Draw a separator line between inactive tabs
-            const border = syntax.color(theme.colors.border);
             // Draw a subtle left separator for inactive tabs (unless it's the first tab)
+            const border = syntax.color(theme.colors.border);
             if (tab_index > 0 and tab_index - 1 != wb.tabs.active) {
                 renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y + 8, 1, tabs_ui.tab_height - 16, .{ .r = border.r, .g = border.g, .b = border.b, .a = border.a * 0.5 });
             }
         }
+
+        // Draw icon
+        const res = @import("../icon_resolver.zig").resolveIcon(label);
+        renderer.Renderer.drawSvg(res.svg, tab_layout.x + 12, 33, 14, 14, res.color);
+
         var tab_label_buf: [128:0]u8 = undefined;
         const max_label_chars = @min(label.len, tab_label_buf.len - 1);
         @memcpy(tab_label_buf[0..max_label_chars], label[0..max_label_chars]);
         tab_label_buf[max_label_chars] = 0;
         const color = if (is_active) syntax.color(theme.colors.text_primary) else syntax.color(theme.colors.text_muted);
-        renderer.Renderer.drawText(@ptrCast(&tab_label_buf), tab_layout.x + 12, 43, ui_size, color);
+        renderer.Renderer.drawText(@ptrCast(&tab_label_buf), tab_layout.x + 32, 43, ui_size, color);
 
         if (doc.external_conflict) {
             renderer.Renderer.drawText("!", tab_layout.x + tab_layout.width - tabs_ui.close_button_width - 10, 43, ui_size, syntax.color(theme.colors.warning));
@@ -73,11 +75,11 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
         renderer.Renderer.drawText("x", close_x, 43, ui_size, close_color);
     }
 
-    const max_tab_scroll = tabs_ui.maxScroll(wb, editor_w);
+    const max_tab_scroll = tabs_ui.maxScroll(wb, visible_tab_w);
     if (max_tab_scroll > 0) {
         const scroll_ratio = wb.tab_scroll_x / max_tab_scroll;
-        const bar_w: f32 = @max(24.0, editor_w * (editor_w / tabs_ui.totalContentWidth(wb)));
-        const bar_x = editor_x + scroll_ratio * (editor_w - bar_w);
+        const bar_w: f32 = @max(24.0, visible_tab_w * (visible_tab_w / tabs_ui.totalContentWidth(wb)));
+        const bar_x = editor_x + scroll_ratio * (visible_tab_w - bar_w);
         renderer.Renderer.drawRoundedRect(bar_x, tabs_ui.tab_bar_top + tabs_ui.tab_bar_height - 4, bar_w, 3, 1.5, .{ .r = 0.35, .g = 0.35, .b = 0.35, .a = 0.7 });
     }
 

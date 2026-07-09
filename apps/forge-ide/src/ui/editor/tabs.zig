@@ -23,30 +23,40 @@ pub fn tabWidth(label_len: usize) f32 {
     return @min(raw, max_tab_width);
 }
 
-pub fn collectLayouts(wb: *const Workbench, editor_x: f32, out: *std.ArrayList(TabLayout)) !void {
-    var x = editor_x + tab_padding_start - wb.tab_scroll_x;
-    for (wb.tabs.tabs.items, 0..) |_, tab_index| {
+pub fn collectLayouts(wb: *const Workbench, editor_x: f32, editor_w: f32, out: *std.ArrayList(TabLayout)) !void {
+    const visible_tab_w = @max(10.0, editor_w - 60.0);
+    const num_tabs = wb.tabs.tabs.items.len;
+    if (num_tabs == 0) return;
+
+    var total_raw: f32 = tab_padding_start;
+    for (0..num_tabs) |tab_index| {
         var label_buf: [128]u8 = undefined;
         const label = wb.tabLabel(tab_index, &label_buf);
-        const width = tabWidth(label.len);
-        try out.append(wb.allocator, .{ .index = tab_index, .x = x, .width = width });
-        x += width + tab_gap;
+        total_raw += tabWidth(label.len) + tab_gap;
+    }
+    if (num_tabs > 0) total_raw -= tab_gap;
+
+    const scale = if (total_raw > visible_tab_w) visible_tab_w / total_raw else 1.0;
+    var x = editor_x + tab_padding_start * scale;
+
+    for (0..num_tabs) |tab_index| {
+        var label_buf: [128]u8 = undefined;
+        const label = wb.tabLabel(tab_index, &label_buf);
+        const w = tabWidth(label.len) * scale;
+        try out.append(wb.allocator, .{ .index = tab_index, .x = x, .width = w });
+        x += w + tab_gap * scale;
     }
 }
 
 pub fn totalContentWidth(wb: *const Workbench) f32 {
-    var total: f32 = tab_padding_start;
-    for (wb.tabs.tabs.items, 0..) |_, tab_index| {
-        var label_buf: [128]u8 = undefined;
-        const label = wb.tabLabel(tab_index, &label_buf);
-        total += tabWidth(label.len) + tab_gap;
-    }
-    if (wb.tabs.tabs.items.len > 0) total -= tab_gap;
-    return total;
+    _ = wb;
+    return 0; // Handled by shrinking now
 }
 
 pub fn maxScroll(wb: *const Workbench, editor_w: f32) f32 {
-    return @max(0, totalContentWidth(wb) - editor_w);
+    _ = wb;
+    _ = editor_w;
+    return 0;
 }
 
 pub fn clampScroll(scroll_x: f32, wb: *const Workbench, editor_w: f32) f32 {

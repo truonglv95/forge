@@ -64,8 +64,12 @@ pub fn saveSession(
         }
     }
 
-    const wp = try workspace.WorkspacePath.parse(state_path);
-    try workspace.atomic.replaceFile(io, root, wp, out.items);
+    const session_dir = try workspace.global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    const global_state_path = try std.fmt.allocPrint(allocator, "{s}/last_session.toml", .{session_dir});
+    defer allocator.free(global_state_path);
+
+    try workspace.global_store.replaceAbsoluteFile(io, global_state_path, out.items);
 }
 
 pub fn loadSession(
@@ -73,9 +77,13 @@ pub fn loadSession(
     io: std.Io,
     root: workspace.WorkspaceRoot,
 ) !LoadResult {
-    const wp = workspace.WorkspacePath.parse(state_path) catch return emptyResult();
-    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return emptyResult();
-    defer snap.deinit();
+    const session_dir = workspace.global_store.getSessionDir(allocator, io, root) catch return emptyResult();
+    defer allocator.free(session_dir);
+    const global_state_path = std.fmt.allocPrint(allocator, "{s}/last_session.toml", .{session_dir}) catch return emptyResult();
+    defer allocator.free(global_state_path);
+
+    const content = workspace.global_store.readAbsoluteFile(allocator, io, global_state_path) catch return emptyResult();
+    defer allocator.free(content);
 
     var tabs: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -93,7 +101,7 @@ pub fn loadSession(
     var section: []const u8 = "";
     var pending_bp_path: ?[]const u8 = null;
 
-    var lines = std.mem.splitScalar(u8, snap.content, '\n');
+    var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, &std.ascii.whitespace, raw_line);
         if (line.len == 0 or line[0] == '#') continue;

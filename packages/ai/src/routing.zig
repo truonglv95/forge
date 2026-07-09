@@ -35,56 +35,242 @@ pub fn intentLabel(intent: TaskIntent) []const u8 {
     };
 }
 
+/// Phrases that clearly signal a read-only question even when they contain a
+/// verb that would otherwise look like an edit (e.g. "làm gì" = "does what").
+fn isQuestionIntent(intent: []const u8) bool {
+    return containsAny(intent, &.{
+        "explain",              "what is",           "what are",           "what does",   "why does",     "how does",         "how do",
+        "tell me about",        "describe ",         "does what",          "used for",    "meaning of",   "assess",           "evaluate",
+        "review overall",       "overall review",    "overall assessment", "need to add", "needs adding", "anything missing", "what is missing",
+        "what should be added", "is there anything", "is it ok",           "is this ok",
+        "giải thích",
+        "là gì",
+        "tại sao",
+        "làm gì",
+        "lam gi",
+        "để làm gì",
+        "de lam gi",
+        "dùng để",
+        "dung de",
+        "hoạt động",
+        "hoat dong",
+        "nghĩa là",
+        "nghia la",             "giai thich",
+        "đánh giá",
+        "danh gia",
+        "tổng thể",
+        "tong the",
+        "nhận xét",
+        "nhan xet",
+        "có cần",
+        "co can",
+        "cần bổ sung",
+        "can bo sung",
+        "bổ sung thêm gì",
+        "bo sung them gi",
+        "có thiếu",
+        "co thieu",
+        "thiếu gì",
+        "thieu gi",
+        "ok chưa",
+        "ok chua",
+        "đã ok chưa",
+        "da ok chua",
+    });
+}
+
 pub fn classify(input: RouteInput) TaskIntent {
     if (input.mode == .plan) return .plan_change;
 
     if (containsAny(input.intent, &.{ "fix", "bug", "error", "fail", "failing", "broken", "crash", "debug", "regression", "validation failed", "lỗi", "sửa lỗi", "hỏng" }))
         return .debug_failure;
 
+    // Read-only questions take priority so they never get misrouted to edit_code
+    // just because they mention a verb like "làm" or "do".
+    if (isQuestionIntent(input.intent)) {
+        if (input.mode == .ask) return .answer_question;
+        return .explore_codebase;
+    }
+
     if (input.mode == .agent and containsAny(input.intent, &.{
-        "implement", "change", "update", "refactor", "add ", "remove", "modify", "rewrite", "create ", "edit ", "patch", "replace ",
+        "tiep tuc",
+        "tiếp tục",
+        "lam tiep",
+        "làm tiếp",
+        "continue",
+        "keep going",
+        "go on",
+    }))
+        return .edit_code;
+
+    if (input.mode == .agent and containsAny(input.intent, &.{
+        "implement",  "change", "update", "refactor", "add ", "remove", "modify", "rewrite", "create ", "edit ", "patch", "replace ", "build ", "code ",
         "sửa",
+        "sua ",
         "thêm",
+        "them ",
         "tạo",
+        "tao ",
         "xóa",
+        "xoa ",
         "chỉnh",
+        "chinh ",
         "cập nhật",
+        "cap nhat ",
         "viết",
-        "làm",
+        "viet ",
         "triển khai",
+        "trien khai", "lam ",
+        "làm ",
     }))
         return .edit_code;
 
     if (containsAny(input.intent, &.{ "plan", "design", "architecture", "spec", "roadmap", "approach", "strategy", "proposal for" }))
         return .plan_change;
 
-    if (containsAny(input.intent, &.{ "search", "find", "where", "list", "explore", "locate", "show me", "grep", "scan", "tìm", "ở đâu" }))
+    if (containsAny(input.intent, &.{
+        "search",       "find",    "where", "list", "explore", "locate", "show me", "grep", "scan", "xem",
+        "tìm",
+        "ở đâu",
+        "toi dau",
+        "tôi đâu",
+        "o dau",        "dau roi",
+        "đâu rồi",
+        "nam o",
+        "nằm ở",
+        "cho nao",
+        "chỗ nào",
+        "mat roi",
+        "mất rồi",
+        "dang toi dau",
+        "đang tới đâu",
+        "hien tai",
+        "hiện tại",
+    }))
         return .explore_codebase;
 
     if (input.mode == .ask) return .answer_question;
 
     // Agent mode defaults to edit_code so edit/run tools stay available unless the
-    // user clearly asked a read-only explanation question.
-    if (input.mode == .agent) {
-        if (containsAny(input.intent, &.{ "explain", "what is", "why does", "what are", "tell me about", "describe ", "giải thích", "là gì", "tại sao" }) and
-            !containsAny(input.intent, &.{ "implement", "fix", "add", "change", "create", "edit", "run", "build", "sửa", "thêm", "tạo", "chạy", "làm", "viết" }))
-        {
-            return .answer_question;
-        }
-        return .edit_code;
-    }
+    // user clearly asked a read-only explanation question (handled above).
+    if (input.mode == .agent) return .edit_code;
 
     return .explore_codebase;
 }
 
 pub fn plan(input: RouteInput, base: context_loader.LoadOptions) RoutePlan {
-    const intent = classify(input);
-    const capability_profile = tools.profileForMode(input.mode);
+    return planWithIntent(classify(input), input, base);
+}
+
+pub fn planWithIntent(
+    intent: TaskIntent,
+    input: RouteInput,
+    base: context_loader.LoadOptions,
+) RoutePlan {
+    const capability_profile = capabilityForIntent(input.mode, intent);
     const context = applyContextPolicy(intent, input, base);
     return .{
         .intent = intent,
         .capability_profile = capability_profile,
         .context = context,
+    };
+}
+
+/// True when heuristic classification is uncertain and an LLM arbiter may help.
+pub fn heuristicNeedsLlm(input: RouteInput, heuristic_intent: TaskIntent) bool {
+    if (input.mode == .plan or input.mode == .ask) return false;
+
+    if (isQuestionIntent(input.intent)) return false;
+    if (heuristic_intent == .debug_failure) return false;
+    if (heuristic_intent == .plan_change) return false;
+
+    if (heuristic_intent == .edit_code and hasClearEditVerb(input.intent)) return false;
+    if (heuristic_intent == .explore_codebase and hasClearExploreVerb(input.intent)) return false;
+
+    // Agent default edit_code without a clear edit verb is the main ambiguous case.
+    if (heuristic_intent == .edit_code) return true;
+
+    // Very short prompts ("tensor.py", "reshape") are hard to classify by keywords.
+    if (wordCount(input.intent) <= 2) return true;
+
+    // Mixed signals: question phrasing plus an edit verb.
+    if (isQuestionIntent(input.intent) and hasClearEditVerb(input.intent)) return true;
+
+    return false;
+}
+
+fn hasClearEditVerb(intent: []const u8) bool {
+    return containsAny(intent, &.{
+        "implement",  "change",   "update", "refactor", "add ", "remove", "modify", "rewrite", "create ", "edit ", "patch", "replace ", "build ", "code ",
+        "sửa",
+        "sua ",
+        "thêm",
+        "them ",
+        "tạo",
+        "tao ",
+        "xóa",
+        "xoa ",
+        "chỉnh",
+        "chinh ",
+        "cập nhật",
+        "cap nhat ",
+        "viết",
+        "viet ",
+        "triển khai",
+        "trien khai", "tiep tuc",
+        "tiếp tục",
+        "lam tiep",
+        "làm tiếp",
+        "continue",
+    });
+}
+
+fn hasClearExploreVerb(intent: []const u8) bool {
+    return containsAny(intent, &.{
+        "search",       "find",    "where", "list", "explore", "locate", "show me", "grep", "scan", "xem",
+        "tìm",
+        "ở đâu",
+        "toi dau",
+        "tôi đâu",
+        "o dau",        "dau roi",
+        "đâu rồi",
+        "nam o",
+        "nằm ở",
+        "cho nao",
+        "chỗ nào",
+        "mat roi",
+        "mất rồi",
+        "dang toi dau",
+        "đang tới đâu",
+        "hien tai",
+        "hiện tại",
+    });
+}
+
+fn wordCount(text: []const u8) usize {
+    var count: usize = 0;
+    var in_word = false;
+    for (text) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '/') {
+            if (!in_word) {
+                count += 1;
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+        }
+    }
+    return count;
+}
+
+/// Least-privilege capability inferred from the classified intent. Question and
+/// exploration intents stay read-only so the agent answers instead of forcing a
+/// proposal; only edit/debug/plan intents unlock proposing tools.
+pub fn capabilityForIntent(mode: tools.Mode, intent: TaskIntent) tools.CapabilityProfile {
+    if (mode == .ask or mode == .plan) return .read_only;
+    return switch (intent) {
+        .answer_question, .explore_codebase => .read_only,
+        .edit_code, .debug_failure, .plan_change => .propose_and_task,
     };
 }
 
@@ -271,6 +457,83 @@ fn toLowerBounded(text: []const u8, buf: []u8) []const u8 {
         buf[i] = std.ascii.toLower(c);
     }
     return buf[0..n];
+}
+
+test "heuristicNeedsLlm skips clear question intents" {
+    const input = RouteInput{ .mode = .agent, .intent = "tensor.py lam gi" };
+    const intent = classify(input);
+    try std.testing.expect(!heuristicNeedsLlm(input, intent));
+}
+
+test "heuristicNeedsLlm flags agent default edit_code" {
+    const input = RouteInput{ .mode = .agent, .intent = "chat panel scroll behavior" };
+    const intent = classify(input);
+    try std.testing.expectEqual(TaskIntent.edit_code, intent);
+    try std.testing.expect(heuristicNeedsLlm(input, intent));
+}
+
+test "heuristicNeedsLlm skips clear edit verbs" {
+    const input = RouteInput{ .mode = .agent, .intent = "refactor tensor.py to add reshape" };
+    const intent = classify(input);
+    try std.testing.expect(!heuristicNeedsLlm(input, intent));
+}
+
+test "heuristicNeedsLlm flags very short prompts" {
+    const input = RouteInput{ .mode = .agent, .intent = "tensor.py" };
+    const intent = classify(input);
+    try std.testing.expect(heuristicNeedsLlm(input, intent));
+}
+
+test "planWithIntent respects override intent" {
+    const route = planWithIntent(.explore_codebase, .{ .mode = .agent, .intent = "tensor.py" }, .{});
+    try std.testing.expectEqual(TaskIntent.explore_codebase, route.intent);
+    try std.testing.expectEqual(tools.CapabilityProfile.read_only, route.capability_profile);
+}
+
+test "classify maps Vietnamese location questions to explore_codebase" {
+    const intent = classify(.{ .mode = .agent, .intent = "tiny llm nay toi dau roi" });
+    try std.testing.expectEqual(TaskIntent.explore_codebase, intent);
+}
+
+test "agent question intent auto-downgrades to read_only" {
+    const route = plan(.{ .mode = .agent, .intent = "tiny llm nay toi dau roi" }, .{});
+    try std.testing.expectEqual(TaskIntent.explore_codebase, route.intent);
+    try std.testing.expectEqual(tools.CapabilityProfile.read_only, route.capability_profile);
+}
+
+test "agent edit intent unlocks propose_and_task" {
+    const route = plan(.{ .mode = .agent, .intent = "refactor tensor.py to add reshape" }, .{});
+    try std.testing.expectEqual(TaskIntent.edit_code, route.intent);
+    try std.testing.expectEqual(tools.CapabilityProfile.propose_and_task, route.capability_profile);
+}
+
+test "agent 'lam gi' question is read-only not edit" {
+    const route = plan(.{ .mode = .agent, .intent = "tensor.py lam gi" }, .{});
+    try std.testing.expectEqual(TaskIntent.explore_codebase, route.intent);
+    try std.testing.expectEqual(tools.CapabilityProfile.read_only, route.capability_profile);
+}
+
+test "agent 'lam gi' with diacritics is read-only" {
+    const route = plan(.{ .mode = .agent, .intent = "hàm reshape làm gì" }, .{});
+    try std.testing.expectEqual(tools.CapabilityProfile.read_only, route.capability_profile);
+}
+
+test "agent Vietnamese assessment question is read-only" {
+    const route = plan(.{ .mode = .agent, .intent = "tinh nang lsp trong project co can bo sung them gi khong" }, .{});
+    try std.testing.expectEqual(TaskIntent.explore_codebase, route.intent);
+    try std.testing.expectEqual(tools.CapabilityProfile.read_only, route.capability_profile);
+}
+
+test "agent Vietnamese ok-chua question is read-only" {
+    const route = plan(.{ .mode = .agent, .intent = "hay xem tinh nang lsp trong project da ok chua" }, .{});
+    try std.testing.expectEqual(TaskIntent.explore_codebase, route.intent);
+    try std.testing.expectEqual(tools.CapabilityProfile.read_only, route.capability_profile);
+}
+
+test "agent Vietnamese overall assessment is read-only" {
+    const route = plan(.{ .mode = .agent, .intent = "danh gia tong the forge ide" }, .{});
+    try std.testing.expectEqual(TaskIntent.explore_codebase, route.intent);
+    try std.testing.expectEqual(tools.CapabilityProfile.read_only, route.capability_profile);
 }
 
 test "classify uses has_selection for agent edit_code hint" {

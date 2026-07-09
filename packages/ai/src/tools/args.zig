@@ -35,12 +35,46 @@ pub const RememberArgs = struct {
     tags: []const []const u8,
 };
 
-pub fn parseSearchTerm(allocator: std.mem.Allocator, args_json: []const u8) ![]const u8 {
-    const Args = struct { term: ?[]const u8 = null };
-    var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
+pub const SearchArgs = struct {
+    pattern: []const u8,
+    path: []const u8,
+    glob: ?[]const u8 = null,
+    case_sensitive: bool = false,
+    head_limit: usize = 50,
+};
+
+pub fn parseSearchArgs(allocator: std.mem.Allocator, args_json: []const u8) !SearchArgs {
+    const Json = struct {
+        pattern: ?[]const u8 = null,
+        term: ?[]const u8 = null,
+        path: ?[]const u8 = null,
+        glob: ?[]const u8 = null,
+        case_sensitive: ?bool = null,
+        head_limit: ?usize = null,
+    };
+    var parsed = try std.json.parseFromSlice(Json, allocator, args_json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
-    const term = parsed.value.term orelse return error.MissingArg;
-    return try allocator.dupe(u8, term);
+    const raw_pattern = parsed.value.pattern orelse parsed.value.term orelse return error.MissingArg;
+    const glob = if (parsed.value.glob) |g| try allocator.dupe(u8, g) else null;
+    return .{
+        .pattern = try allocator.dupe(u8, raw_pattern),
+        .path = try allocator.dupe(u8, parsed.value.path orelse "."),
+        .glob = glob,
+        .case_sensitive = parsed.value.case_sensitive orelse false,
+        .head_limit = @min(parsed.value.head_limit orelse 50, 200),
+    };
+}
+
+pub fn freeSearchArgs(allocator: std.mem.Allocator, args: SearchArgs) void {
+    allocator.free(args.pattern);
+    allocator.free(args.path);
+    if (args.glob) |glob| allocator.free(glob);
+}
+
+pub fn parseSearchTerm(allocator: std.mem.Allocator, args_json: []const u8) ![]const u8 {
+    const args = try parseSearchArgs(allocator, args_json);
+    defer freeSearchArgs(allocator, args);
+    return try allocator.dupe(u8, args.pattern);
 }
 
 pub fn parseCodebaseQuery(allocator: std.mem.Allocator, args_json: []const u8) ![]const u8 {

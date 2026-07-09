@@ -64,7 +64,7 @@ test "collectWorkspaceDocs finds docs markdown" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     try tmp.dir.createDirPath(io, "docs");
     try tmp.dir.createDirPath(io, "src");

@@ -54,7 +54,7 @@ const TrialWorkspace = struct {
         errdefer parent_dir.deleteTree(io, directory_name) catch {};
         var sandbox_dir = try parent_dir.openDir(io, directory_name, .{ .access_sub_paths = true, .iterate = true });
         errdefer sandbox_dir.close(io);
-        const sandbox_root = workspace.WorkspaceRoot.init(sandbox_dir);
+        const sandbox_root = workspace.WorkspaceRoot.init(sandbox_dir, ".");
 
         var walker = try source_root.dir.walk(allocator);
         defer walker.deinit();
@@ -221,7 +221,7 @@ test "repair trial applies only inside disposable snapshot" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("source.txt"), "before\n");
 
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;

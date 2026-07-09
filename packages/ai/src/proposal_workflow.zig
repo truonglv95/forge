@@ -13,6 +13,8 @@ const run_record = @import("run_record.zig");
 const spec_writer = @import("spec_writer.zig");
 const validation_hints = @import("validation_hints.zig");
 const repair_loop = @import("repair_loop.zig");
+const proposal_normalize = @import("proposal_normalize.zig");
+const proposal_precondition = @import("proposal_precondition.zig");
 
 pub const Mode = enum { ask, plan };
 
@@ -62,9 +64,12 @@ pub const Result = struct {
 };
 
 pub fn validateProposalBody(allocator: std.mem.Allocator, proposal_body: []const u8) WorkflowError!void {
+    const normalized = proposal_normalize.normalize(allocator, proposal_body) catch return error.InvalidProposal;
+    defer allocator.free(normalized);
     // Do not log raw model output here: proposals may contain source or secrets.
-    var parsed_proposal = workspace.OwnedProposal.parseJson(allocator, proposal_body) catch return error.InvalidProposal;
+    var parsed_proposal = workspace.OwnedProposal.parseJson(allocator, normalized) catch return error.InvalidProposal;
     defer parsed_proposal.deinit();
+    if (parsed_proposal.files.len == 0) return;
     parsed_proposal.workspaceEdit().validate() catch return error.InvalidProposal;
 }
 
@@ -174,14 +179,14 @@ pub fn generateAndPersist(
         const plan_rel = std.fmt.bufPrint(&plan_path_buf, ".forge/plans/{s}.md", .{run_id}) catch return error.ProviderFailed;
         owned_plan_rel = allocator.dupe(u8, plan_rel) catch return error.ProviderFailed;
 
-        workspace.history.ensureLayout(io, root) catch return error.ProviderFailed;
+        workspace.history.ensureLayout(allocator, io, root) catch return error.ProviderFailed;
         root.dir.createDirPath(io, ".forge/plans") catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return error.ProviderFailed,
         };
         workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(plan_rel) catch return error.ProviderFailed, plan_body) catch return error.ProviderFailed;
 
-        spec_writer.persistFromPlan(io, root, run_id, plan_body, intent) catch {};
+        spec_writer.persistFromPlan(allocator, io, root, run_id, plan_body, intent) catch {};
 
         ctx_builder.addBlock(.intent, "implementation_plan", plan_body) catch return error.ProviderFailed;
         plan_inst = planner.Planner.init(allocator, llm, &ctx_builder, options.conversation, images);
@@ -209,7 +214,7 @@ pub fn generateAndPersist(
         };
         const json_body = run_record.formatJson(allocator, record) catch return error.ProviderFailed;
         defer allocator.free(json_body);
-        workspace.runs.persistRun(io, root, run_id, json_body) catch return error.ProviderFailed;
+        workspace.runs.persistRun(allocator, io, root, run_id, json_body) catch return error.ProviderFailed;
         const index_line = run_record.formatIndexLine(allocator, record) catch return error.ProviderFailed;
         defer allocator.free(index_line);
         workspace.runs.appendIndex(allocator, io, root, index_line) catch return error.ProviderFailed;
@@ -234,9 +239,12 @@ pub fn generateAndPersist(
     var last_validation_report: ?[]u8 = null;
     errdefer if (last_validation_report) |report| allocator.free(report);
     var attempt: u8 = 0;
+    var use_repair_prompt = false;
+    var json_repair_attempts: u8 = 0;
 
     while (true) {
-        if (attempt == 0) {
+        response.writer.end = 0;
+        if (!use_repair_prompt) {
             emitProgress(options, .sending);
             plan_inst.plan(&response.writer, cancel_token) catch |err| {
                 if (cancel_token.isCancelled()) return error.Cancelled;
@@ -244,7 +252,6 @@ pub fn generateAndPersist(
             };
         } else {
             emitProgress(options, .repairing);
-            response.writer.end = 0;
             plan_inst.planRepair(&response.writer, cancel_token, last_validation_report.?, owned_body.?) catch |err| {
                 if (cancel_token.isCancelled()) return error.Cancelled;
                 return err;
@@ -254,9 +261,46 @@ pub fn generateAndPersist(
         emitProgress(options, .parsing);
 
         const proposal_body = response.writer.buffer[0..response.writer.end];
-        try validateProposalBody(allocator, proposal_body);
+        const normalized = proposal_normalize.normalize(allocator, proposal_body) catch {
+            if (json_repair_attempts < 2) {
+                json_repair_attempts += 1;
+                use_repair_prompt = true;
+                if (last_validation_report) |old| allocator.free(old);
+                last_validation_report = std.fmt.allocPrint(
+                    allocator,
+                    "proposal JSON normalization failed. Output ONLY raw JSON for schema_version 1.\n\nModel output (truncated):\n{s}",
+                    .{if (proposal_body.len > 1500) proposal_body[0..1500] else proposal_body},
+                ) catch return error.InvalidProposal;
+                if (owned_body) |old| allocator.free(old);
+                owned_body = allocator.dupe(u8, proposal_body) catch return error.ProviderFailed;
+                continue;
+            }
+            return error.InvalidProposal;
+        };
+        defer allocator.free(normalized);
 
-        const augmented_body = validation_hints.augmentProposalJson(allocator, proposal_body) catch return error.ProviderFailed;
+        const prepared = proposal_precondition.fillMissingExpectedHashes(allocator, io, root, normalized) catch normalized;
+        defer if (prepared.ptr != normalized.ptr) allocator.free(prepared);
+
+        validateProposalBody(allocator, prepared) catch {
+            if (json_repair_attempts < 2) {
+                json_repair_attempts += 1;
+                use_repair_prompt = true;
+                if (last_validation_report) |old| allocator.free(old);
+                last_validation_report = std.fmt.allocPrint(
+                    allocator,
+                    "proposal JSON validation failed. For modify/delete set expected_hash from file snapshot context, or use operation create for new files. Output ONLY valid WorkspaceEdit JSON.\n\nModel output (truncated):\n{s}",
+                    .{if (prepared.len > 1500) prepared[0..1500] else prepared},
+                ) catch return error.InvalidProposal;
+                if (owned_body) |old| allocator.free(old);
+                owned_body = allocator.dupe(u8, prepared) catch return error.ProviderFailed;
+                continue;
+            }
+            return error.InvalidProposal;
+        };
+        use_repair_prompt = false;
+
+        const augmented_body = validation_hints.augmentProposalJson(allocator, prepared) catch return error.ProviderFailed;
         defer allocator.free(augmented_body);
 
         if (owned_body) |old| allocator.free(old);
@@ -302,6 +346,7 @@ pub fn generateAndPersist(
             allocator.free(trial.hint_paths);
         }
         allocator.free(trial.report);
+        use_repair_prompt = true;
         attempt += 1;
     }
 
@@ -310,7 +355,7 @@ pub fn generateAndPersist(
     const final_body = owned_body orelse return error.ProviderFailed;
     owned_body = null;
 
-    workspace.history.ensureLayout(io, root) catch return error.ProviderFailed;
+    workspace.history.ensureLayout(allocator, io, root) catch return error.ProviderFailed;
 
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.ProviderFailed;
@@ -331,7 +376,7 @@ pub fn generateAndPersist(
 
     const json_body = run_record.formatJson(allocator, record) catch return error.ProviderFailed;
     defer allocator.free(json_body);
-    workspace.runs.persistRun(io, root, run_id, json_body) catch return error.ProviderFailed;
+    workspace.runs.persistRun(allocator, io, root, run_id, json_body) catch return error.ProviderFailed;
 
     const index_line = run_record.formatIndexLine(allocator, record) catch return error.ProviderFailed;
     defer allocator.free(index_line);
@@ -539,7 +584,7 @@ test "project rules are included in context manifest" {
     try std.testing.expect(found_rules);
 }
 
-test "generateAndPersist rejects invalid proposal json" {
+test "generateAndPersist wraps unparseable model text into empty proposal" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -552,10 +597,10 @@ test "generateAndPersist rejects invalid proposal json" {
         .fake_response = "not valid proposal json",
     };
 
-    try std.testing.expectError(
-        error.InvalidProposal,
-        generateAndPersist(allocator, io, null, root, "test", &.{}, provider_options, .{}),
-    );
+    var result = try generateAndPersist(allocator, io, null, root, "test", &.{}, provider_options, .{});
+    defer deinitResult(allocator, &result);
+    try std.testing.expect(std.mem.indexOf(u8, result.proposal_body, "\"workspace_edit\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.proposal_body, "\"files\":[]") != null);
 }
 
 test "generateAndPersist with ollama when server is running" {

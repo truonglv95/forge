@@ -168,7 +168,7 @@ pub fn search(
 ) ![]ScoredChunk {
     defer if (builtin.is_test) clearSearchCaches(allocator);
 
-    try ensureIndex(allocator, io, root, options);
+    ensureIndex(allocator, io, root, options) catch {};
 
     var local_index: LoadedIndex = undefined;
     const index: *const LoadedIndex = if (builtin.is_test) blk: {
@@ -300,7 +300,11 @@ fn shouldSkip(path: []const u8, skip_paths: []const []const u8) bool {
 }
 
 fn readManifestDim(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?u32 {
-    const manifest_bytes = readRelative(allocator, io, root, workspace.codebase_index.manifest_file) catch return null;
+    const manifest_bytes = ((blk: {
+        const p = workspace.codebase_index.getManifestFile(allocator, io, root) catch return null;
+        defer allocator.free(p);
+        break :blk workspace.global_store.readAbsoluteFile(allocator, io, p);
+    }) catch return null);
     defer allocator.free(manifest_bytes);
 
     const ManifestJson = struct { dim: u32 };
@@ -310,7 +314,11 @@ fn readManifestDim(allocator: std.mem.Allocator, io: std.Io, root: workspace.Wor
 }
 
 fn loadIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !LoadedIndex {
-    const manifest_bytes = readRelative(allocator, io, root, workspace.codebase_index.manifest_file) catch return emptyIndex(allocator);
+    const manifest_bytes = ((blk: {
+        const p = workspace.codebase_index.getManifestFile(allocator, io, root) catch return emptyIndex(allocator);
+        defer allocator.free(p);
+        break :blk workspace.global_store.readAbsoluteFile(allocator, io, p);
+    }) catch return emptyIndex(allocator));
     defer allocator.free(manifest_bytes);
 
     const ManifestJson = struct {
@@ -320,10 +328,18 @@ fn loadIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Workspace
     var manifest_parsed = try std.json.parseFromSlice(ManifestJson, allocator, manifest_bytes, .{ .ignore_unknown_fields = true });
     defer manifest_parsed.deinit();
 
-    const chunks_bytes = readRelative(allocator, io, root, workspace.codebase_index.chunks_file) catch return emptyIndex(allocator);
+    const chunks_bytes = ((blk: {
+        const p = workspace.codebase_index.getChunksFile(allocator, io, root) catch return emptyIndex(allocator);
+        defer allocator.free(p);
+        break :blk workspace.global_store.readAbsoluteFile(allocator, io, p);
+    }) catch return emptyIndex(allocator));
     defer allocator.free(chunks_bytes);
 
-    const vectors_bytes = readRelative(allocator, io, root, workspace.codebase_index.vectors_file) catch return emptyIndex(allocator);
+    const vectors_bytes = ((blk: {
+        const p = workspace.codebase_index.getVectorsFile(allocator, io, root) catch return emptyIndex(allocator);
+        defer allocator.free(p);
+        break :blk workspace.global_store.readAbsoluteFile(allocator, io, p);
+    }) catch return emptyIndex(allocator));
     defer allocator.free(vectors_bytes);
 
     var chunks: std.ArrayList(StoredChunk) = .empty;
@@ -392,7 +408,11 @@ fn emptyIndex(allocator: std.mem.Allocator) LoadedIndex {
 }
 
 fn indexFingerprint(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?u64 {
-    const manifest_bytes = readRelative(allocator, io, root, workspace.codebase_index.manifest_file) catch return null;
+    const manifest_bytes = ((blk: {
+        const p = workspace.codebase_index.getManifestFile(allocator, io, root) catch return null;
+        defer allocator.free(p);
+        break :blk workspace.global_store.readAbsoluteFile(allocator, io, p);
+    }) catch return null);
     defer allocator.free(manifest_bytes);
     return std.hash.Wyhash.hash(0, manifest_bytes);
 }
@@ -482,7 +502,7 @@ test "local semantic index achieves recall at one on symbol corpus" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("auth.zig"),
         \\/// Validate user credentials and create a login session.
         \\pub fn authenticateUserSession() void {}

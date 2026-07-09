@@ -170,7 +170,7 @@ test "parser sync records bundled grammar metadata" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
 
     var grammars = [_]parser_resolver.ResolvedGrammar{
         .{ .language = "python", .grammar_tag = "v0.23.6", .project_version = "3.12.0", .source = "pyproject.toml" },

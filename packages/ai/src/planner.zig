@@ -42,6 +42,36 @@ pub const Planner = struct {
         }
     }
 
+    fn writeJsonContractInstructions(self: *Planner, p_writer: *std.Io.Writer) provider.ProviderError!void {
+        const is_local = std.mem.eql(u8, self.prov.metadata().provider_name, "ollama");
+        p_writer.writeAll(
+            \\Respond ONLY with valid JSON. Do not use markdown blocks or prose before/after the object.
+            \\The response must start with '{' and end with '}'.
+            \\Schema (proposal v1):
+            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["auto:test","property: fuzz changed parsers if applicable"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}}
+            \\For modify/delete include expected_hash from the current file snapshot.
+            \\If no file edits are required yet, return workspace_edit.files as an empty array.
+            \\
+            \\CODE QUALITY & STYLE RULES:
+            \\- Strictly follow the project's coding conventions (e.g. idiomatic Zig, standard naming, avoid deprecated APIs).
+            \\- Ensure logic correctness, handle edge cases, and double-check syntax before generating the final JSON.
+            \\- Preserve existing code comments and indentation levels.
+            \\- For `modify` operations, provide a complete drop-in replacement that logically fits without breaking the surrounding context.
+        ) catch return error.ProviderInternalError;
+        if (is_local) {
+            p_writer.writeAll(
+                \\
+                \\LOCAL MODEL RULES (strict):
+                \\- Never wrap JSON in ``` fences.
+                \\- Never explain the proposal outside the JSON object.
+                \\- Keep summary short; put details in assumptions or file edits.
+                \\- For questions/reviews with no code changes, use workspace_edit.files: [] and put the answer in summary.
+                \\- Example (no edits): {"schema_version":1,"summary":"Project uses Zig monorepo layout.","assumptions":[],"validation_tasks":[],"workspace_edit":{"files":[]}}
+                \\
+            ) catch return error.ProviderInternalError;
+        }
+    }
+
     /// Generates a WorkspaceEdit JSON response by prompting the AI provider
     pub fn plan(self: *Planner, writer: *std.Io.Writer, cancel_token: *const kernel.cancellation.CancellationToken) provider.ProviderError!void {
         var p_alloc = std.Io.Writer.Allocating.init(self.allocator);
@@ -53,12 +83,7 @@ pub const Planner = struct {
         );
 
         p_writer.writeAll("--- INSTRUCTIONS ---\n") catch return error.ProviderInternalError;
-        p_writer.writeAll(
-            \\Respond ONLY with valid JSON. Do not use markdown blocks.
-            \\Schema (proposal v1):
-            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["zig build test","property: fuzz changed parsers if applicable"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}}
-            \\For modify/delete include expected_hash from the current file snapshot.
-        ) catch return error.ProviderInternalError;
+        try self.writeJsonContractInstructions(p_writer);
 
         // Call the provider
         const prompt_items = p_alloc.writer.buffer[0..p_alloc.writer.end];
@@ -108,11 +133,8 @@ pub const Planner = struct {
         p_writer.writeAll(validation_report) catch return error.ProviderInternalError;
 
         p_writer.writeAll("\n\n--- INSTRUCTIONS ---\n") catch return error.ProviderInternalError;
+        try self.writeJsonContractInstructions(p_writer);
         p_writer.writeAll(
-            \\Respond ONLY with valid JSON. Do not use markdown blocks.
-            \\Schema (proposal v1):
-            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["zig build test","property: fuzz changed parsers if applicable"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}}
-            \\For modify/delete include expected_hash from the current file snapshot.
             \\Address every validation failure shown above.
         ) catch return error.ProviderInternalError;
 

@@ -142,8 +142,8 @@ pub fn clampBottomPanelScroll(wb: anytype, panel_h: f32) void {
 }
 
 pub fn clampChatScroll(wb: anytype, agent_h: f32) void {
-    _ = agent_h;
     wb.chat_follow_stream = false;
+    @import("chat_layout.zig").ensure(wb, agent_h);
     wb.chat_scroll_y = std.math.clamp(wb.chat_scroll_y, 0, wb.chat_layout.max_scroll);
 }
 
@@ -164,6 +164,6 @@ pub fn clampReviewScroll(wb: anytype, agent_h: f32) void {
 }
 
 pub fn clampTabScroll(wb: anytype, editor_w: f32) void {
-    const tabs_ui = @import("../ui/editor/tabs.zig");
-    wb.tab_scroll_x = tabs_ui.clampScroll(wb.tab_scroll_x, wb, editor_w);
+    const visible_w = @max(10, editor_w - 60);
+    wb.tab_scroll_x = @import("../ui/editor/tabs.zig").clampScroll(wb.tab_scroll_x, wb, visible_w);
 }

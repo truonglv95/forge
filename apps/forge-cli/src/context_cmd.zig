@@ -15,6 +15,7 @@ fn parseMode(value: ?[]const u8) ai.tools.Mode {
 pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
     var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
     defer opened.close(io);
+    workspace_cmd.scheduleSemanticIndex(allocator, io, null, opened);
 
     const intent = if (parsed.positional.len > 0) parsed.positional[0] else null;
     const intent_text = intent orelse "";

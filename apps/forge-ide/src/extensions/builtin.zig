@@ -34,3 +34,40 @@ pub const hello_extension = plugin.BuiltinExtension{
     .activate = helloActivate,
     .executeCommand = helloExecute,
 };
+
+fn lspActivate(ctx: *plugin.ActivationContext) !void {
+    const langs = &ctx.host.contributions.languages;
+    const allocator = ctx.allocator;
+
+    try langs.append(allocator, .{
+        .id = try allocator.dupe(u8, "zig"),
+        .server = try allocator.dupe(u8, "zls"),
+        .args = try allocator.dupe(u8, ""),
+        .file_pattern = try allocator.dupe(u8, "*.zig"),
+        .extension_id = try allocator.dupe(u8, ctx.extension_id),
+    });
+
+    try langs.append(allocator, .{
+        .id = try allocator.dupe(u8, "python"),
+        .server = try allocator.dupe(u8, "pyright-langserver"),
+        .args = try allocator.dupe(u8, "--stdio"),
+        .file_pattern = try allocator.dupe(u8, "*.py"),
+        .extension_id = try allocator.dupe(u8, ctx.extension_id),
+    });
+
+    try langs.append(allocator, .{
+        .id = try allocator.dupe(u8, "go"),
+        .server = try allocator.dupe(u8, "gopls"),
+        .args = try allocator.dupe(u8, ""),
+        .file_pattern = try allocator.dupe(u8, "*.go"),
+        .extension_id = try allocator.dupe(u8, ctx.extension_id),
+    });
+}
+
+pub const lsp_extension = plugin.BuiltinExtension{
+    .id = "forge.builtin.lsp",
+    .name = "Builtin LSP Configurations",
+    .version = "1.0.0",
+    .commands = &.{},
+    .activate = lspActivate,
+};

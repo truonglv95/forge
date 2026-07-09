@@ -10,13 +10,14 @@ pub const SpecError = error{
 
 /// Splits a plan markdown document into formal spec files under `.forge/specs/{run_id}/`.
 pub fn persistFromPlan(
+    allocator: std.mem.Allocator,
     io: std.Io,
     root: workspace.WorkspaceRoot,
     run_id: []const u8,
     plan_markdown: []const u8,
     intent: []const u8,
 ) SpecError!void {
-    workspace.history.ensureLayout(io, root) catch return error.WorkspaceFailed;
+    workspace.history.ensureLayout(allocator, io, root) catch return error.WorkspaceFailed;
 
     var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const spec_root = std.fmt.bufPrint(&dir_buf, "{s}/{s}", .{ specs_dir, run_id }) catch return error.WorkspaceFailed;

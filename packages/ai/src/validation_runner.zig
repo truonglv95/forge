@@ -42,7 +42,7 @@ pub fn runTasks(
 
         if (std.mem.eql(u8, task, "auto:test")) {
             const resolved: ?[]const u8 =
-                if (hasBuildZig(io, cwd)) "zig build test" else if (hasNodeProject(io, cwd)) "npm test" else if (hasPythonProject(io, cwd)) "python -m pytest" else null;
+                if (hasBuildZig(io, cwd)) "zig build test" else if (hasCargoProject(io, cwd)) "cargo test" else if (hasGoProject(io, cwd)) "go test ./..." else if (hasNodeProject(io, cwd)) "npm test" else if (hasPythonProject(io, cwd)) "python -m pytest" else if (hasDartProject(io, cwd)) "dart test" else if (hasMakefile(io, cwd)) "make test" else null;
             if (resolved) |resolved_task| {
                 const nested = try runTasks(allocator, io, cwd, &.{resolved_task});
                 defer freeResults(allocator, nested);
@@ -78,18 +78,59 @@ pub fn runTasks(
             continue;
         }
 
-        const argv = argvForTask(allocator, task) catch |err| switch (err) {
-            error.TaskFailed => {
-                try items.append(allocator, .{
-                    .task = try allocator.dupe(u8, task),
-                    .exit_code = 1,
-                    .output = try allocator.dupe(u8, "validation task is not allowlisted"),
-                });
-                continue;
-            },
-            else => return error.OutOfMemory,
+        if (isGoTask(task) and !hasGoProject(io, cwd)) {
+            const output = try std.fmt.allocPrint(allocator, "(skip) {s} (no go.mod in workspace)", .{task});
+            try items.append(allocator, .{
+                .task = try allocator.dupe(u8, task),
+                .exit_code = 0,
+                .output = output,
+                .skipped = true,
+            });
+            continue;
+        }
+
+        if (isCargoTask(task) and !hasCargoProject(io, cwd)) {
+            const output = try std.fmt.allocPrint(allocator, "(skip) {s} (no Cargo.toml in workspace)", .{task});
+            try items.append(allocator, .{
+                .task = try allocator.dupe(u8, task),
+                .exit_code = 0,
+                .output = output,
+                .skipped = true,
+            });
+            continue;
+        }
+
+        if (isMakeTask(task) and !hasMakefile(io, cwd)) {
+            const output = try std.fmt.allocPrint(allocator, "(skip) {s} (no Makefile in workspace)", .{task});
+            try items.append(allocator, .{
+                .task = try allocator.dupe(u8, task),
+                .exit_code = 0,
+                .output = output,
+                .skipped = true,
+            });
+            continue;
+        }
+
+        if (isDartTask(task) and !hasDartProject(io, cwd)) {
+            const output = try std.fmt.allocPrint(allocator, "(skip) {s} (no pubspec.yaml in workspace)", .{task});
+            try items.append(allocator, .{
+                .task = try allocator.dupe(u8, task),
+                .exit_code = 0,
+                .output = output,
+                .skipped = true,
+            });
+            continue;
+        }
+
+        const argv = argvForTask(allocator, task) catch {
+            try items.append(allocator, .{
+                .task = try allocator.dupe(u8, task),
+                .exit_code = 1,
+                .output = try allocator.dupe(u8, "validation task is not allowlisted"),
+            });
+            continue;
         };
-        defer allocator.free(argv);
+        // argv is statically allocated from allowedCommandArgv now
 
         const captured = kernel.process.runCapture(allocator, .{
             .argv = argv,
@@ -115,6 +156,22 @@ pub fn runTasks(
     return try items.toOwnedSlice(allocator);
 }
 
+fn isGoTask(task: []const u8) bool {
+    return std.mem.startsWith(u8, task, "go ") or std.mem.eql(u8, task, "gofmt -l .");
+}
+
+fn isCargoTask(task: []const u8) bool {
+    return std.mem.startsWith(u8, task, "cargo ");
+}
+
+fn isMakeTask(task: []const u8) bool {
+    return std.mem.startsWith(u8, task, "make");
+}
+
+fn isDartTask(task: []const u8) bool {
+    return std.mem.startsWith(u8, task, "dart ") or std.mem.startsWith(u8, task, "flutter ");
+}
+
 fn isZigTask(task: []const u8) bool {
     return std.mem.eql(u8, task, "zig build test") or
         std.mem.eql(u8, task, "zig build") or
@@ -123,6 +180,22 @@ fn isZigTask(task: []const u8) bool {
 
 fn hasBuildZig(io: std.Io, cwd: []const u8) bool {
     return hasFile(io, cwd, "build.zig");
+}
+
+fn hasGoProject(io: std.Io, cwd: []const u8) bool {
+    return hasFile(io, cwd, "go.mod");
+}
+
+fn hasCargoProject(io: std.Io, cwd: []const u8) bool {
+    return hasFile(io, cwd, "Cargo.toml");
+}
+
+fn hasMakefile(io: std.Io, cwd: []const u8) bool {
+    return hasFile(io, cwd, "Makefile") or hasFile(io, cwd, "makefile") or hasFile(io, cwd, "GNUmakefile");
+}
+
+fn hasDartProject(io: std.Io, cwd: []const u8) bool {
+    return hasFile(io, cwd, "pubspec.yaml");
 }
 
 fn hasNodeProject(io: std.Io, cwd: []const u8) bool {
@@ -156,7 +229,13 @@ pub fn formatLines(allocator: std.mem.Allocator, results: []Result) ![]const u8 
         const status = if (item.skipped) "skip" else if (item.exit_code == 0) "ok" else "fail";
         try out.writer.print("validation [{s}] {s} (exit {d})\n", .{ status, item.task, item.exit_code });
         if (item.output.len > 0) {
-            try out.writer.writeAll(item.output);
+            if (item.output.len > 4000) {
+                try out.writer.writeAll(item.output[0..2000]);
+                try out.writer.writeAll("\n... [output truncated] ...\n");
+                try out.writer.writeAll(item.output[item.output.len - 2000 .. item.output.len]);
+            } else {
+                try out.writer.writeAll(item.output);
+            }
             if (item.output[item.output.len - 1] != '\n') try out.writer.writeAll("\n");
         }
     }
@@ -210,48 +289,14 @@ fn endsWithAny(path: []const u8, exts: []const []const u8) bool {
 }
 
 fn argvForTask(allocator: std.mem.Allocator, task: []const u8) ![]const []const u8 {
-    if (std.mem.eql(u8, task, "zig build test")) {
-        const argv = try allocator.alloc([]const u8, 3);
-        argv[0] = "zig";
-        argv[1] = "build";
-        argv[2] = "test";
-        return argv;
-    }
-    if (std.mem.eql(u8, task, "zig build")) {
-        const argv = try allocator.alloc([]const u8, 2);
-        argv[0] = "zig";
-        argv[1] = "build";
-        return argv;
-    }
-    if (std.mem.eql(u8, task, "zig fmt --check .")) {
-        const argv = try allocator.alloc([]const u8, 4);
-        argv[0] = "zig";
-        argv[1] = "fmt";
-        argv[2] = "--check";
-        argv[3] = ".";
-        return argv;
-    }
-    if (std.mem.eql(u8, task, "npm test")) {
-        const argv = try allocator.alloc([]const u8, 2);
-        argv[0] = "npm";
-        argv[1] = "test";
-        return argv;
-    }
-    if (std.mem.eql(u8, task, "python -m pytest")) {
-        const argv = try allocator.alloc([]const u8, 3);
-        argv[0] = "python";
-        argv[1] = "-m";
-        argv[2] = "pytest";
-        return argv;
-    }
-
+    _ = allocator;
+    if (@import("tool_executor.zig").allowedCommandArgv(task)) |argv| return argv;
     return error.TaskFailed;
 }
 
 test "argvForTask parses zig build test" {
     const allocator = std.testing.allocator;
     const argv = try argvForTask(allocator, "zig build test");
-    defer allocator.free(argv);
     try std.testing.expectEqual(@as(usize, 3), argv.len);
 }
 

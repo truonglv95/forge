@@ -131,7 +131,7 @@ test "loadTheme falls back to defaults when forge.toml missing" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     const theme = try loadTheme(allocator, io, root, null);
     try std.testing.expectEqual(workspace.ThemePreset.dark, theme.preset);
     try std.testing.expect(theme.measured_char_width > 0);

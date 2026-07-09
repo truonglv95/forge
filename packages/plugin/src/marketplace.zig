@@ -159,7 +159,10 @@ pub fn findEntry(catalog: *const Catalog, extension_id: []const u8) ?*const Cata
 pub fn isInstalled(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, entry: *const CatalogEntry) !bool {
     const dest_name = try destinationName(allocator, entry);
     defer allocator.free(dest_name);
-    const dest_rel = try std.fmt.allocPrint(allocator, ".forge/extensions/{s}/forge.toml", .{dest_name});
+    const global_store = @import("forge-workspace").global_store;
+    const global_ext = try global_store.getExtensionsDir(allocator);
+    defer allocator.free(global_ext);
+    const dest_rel = try std.fmt.allocPrint(allocator, "{s}/{s}/forge.toml", .{ global_ext, dest_name });
     defer allocator.free(dest_rel);
     const wp = workspace.WorkspacePath.parse(dest_rel) catch return false;
     var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return false;
@@ -178,7 +181,10 @@ pub fn install(
 
     const src_prefix = try std.fmt.allocPrint(allocator, "extensions/{s}", .{entry.source});
     defer allocator.free(src_prefix);
-    const dst_prefix = try std.fmt.allocPrint(allocator, ".forge/extensions/{s}", .{dest_name});
+    const global_store = @import("forge-workspace").global_store;
+    const global_ext = try global_store.getExtensionsDir(allocator);
+    defer allocator.free(global_ext);
+    const dst_prefix = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ global_ext, dest_name });
     defer allocator.free(dst_prefix);
 
     try copyTree(allocator, io, root, src_prefix, dst_prefix);
@@ -191,7 +197,10 @@ pub fn uninstall(allocator: std.mem.Allocator, io: std.Io, root: workspace.Works
     const entry = findEntry(&catalog, extension_id) orelse return error.ExtensionNotInCatalog;
     const dest_name = try destinationName(allocator, entry);
     defer allocator.free(dest_name);
-    const dst_prefix = try std.fmt.allocPrint(allocator, ".forge/extensions/{s}", .{dest_name});
+    const global_store = @import("forge-workspace").global_store;
+    const global_ext = try global_store.getExtensionsDir(allocator);
+    defer allocator.free(global_ext);
+    const dst_prefix = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ global_ext, dest_name });
     defer allocator.free(dst_prefix);
     try deleteTree(allocator, io, root, dst_prefix);
 }

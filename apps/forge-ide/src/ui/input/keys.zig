@@ -154,6 +154,17 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
+    if (wb.workspace_symbol_picker.open) {
+        // We'll create handleWorkspaceSymbolPickerKeys next
+        keys_dialogs.handleWorkspaceSymbolPickerKeys(wb, event);
+        return;
+    }
+
+    if (event.keycode == 17 and event.modifiers & shared.cmd_mask != 0) { // 17 is T
+        wb.dispatch(.workspace_symbol_picker_open) catch {};
+        return;
+    }
+
     if (event.keycode == 35 and (event.modifiers & (shared.cmd_mask | shared.shift_mask)) == (shared.cmd_mask | shared.shift_mask)) {
         wb.dispatch(.palette_open) catch {};
         return;

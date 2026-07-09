@@ -80,14 +80,14 @@ pub const TransactionService = struct {
         }
 
         record.state = .applying;
-        try recovery.writeRecord(self.io, self.root, record);
+        try recovery.writeRecord(self.allocator, self.io, self.root, record);
         errdefer {
             // Ordinary errors run rollback below and must not masquerade as a
             // process crash on the next launch. A real crash skips defers and
             // intentionally leaves the active marker for startup recovery.
             record.state = .approved;
-            recovery.writeRecord(self.io, self.root, record) catch {};
-            history.clearActiveMarker(self.io, self.root);
+            recovery.writeRecord(self.allocator, self.io, self.root, record) catch {};
+            history.clearActiveMarker(self.allocator, self.io, self.root);
         }
 
         for (record.workspace_edit.files) |file_edit| {
@@ -96,7 +96,7 @@ pub const TransactionService = struct {
         }
 
         record.backups = try backups.toOwnedSlice(self.allocator);
-        try history.persistBackups(self.io, self.root, record);
+        try history.persistBackups(self.allocator, self.io, self.root, record);
 
         var applied_index: usize = 0;
         errdefer rollbackApplied(self, record.backups[0..applied_index]) catch {};
@@ -119,7 +119,7 @@ pub const TransactionService = struct {
         }
 
         record.state = .applied;
-        try recovery.writeRecord(self.io, self.root, record);
+        try recovery.writeRecord(self.allocator, self.io, self.root, record);
     }
 
     pub fn undo(self: *TransactionService, record: *TransactionRecord) !void {
@@ -147,7 +147,7 @@ pub const TransactionService = struct {
         }
 
         record.state = .undone;
-        try recovery.writeRecord(self.io, self.root, record);
+        try recovery.writeRecord(self.allocator, self.io, self.root, record);
     }
 
     fn validateUndoPreconditions(self: *TransactionService, record: *const TransactionRecord) !void {
@@ -247,7 +247,7 @@ test "apply modify and undo restores original content" {
         try file.writeStreamingAll(io, "hello world");
     }
 
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
     const changes = [_]edit.TextEdit{.{ .start = 0, .end = 5, .replacement = "goodbye" }};
     const files = [_]edit.FileEdit{.{
         .path = rel_path,
@@ -295,7 +295,7 @@ test "apply rejects stale content hash" {
         try file.writeStreamingAll(io, "version one");
     }
 
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
     const changes = [_]edit.TextEdit{.{ .start = 0, .end = 7, .replacement = "version" }};
     const files = [_]edit.FileEdit{.{
         .path = rel_path,
@@ -335,7 +335,7 @@ test "multi-file apply rolls back when a later file fails" {
         try file.writeStreamingAll(io, "alpha");
     }
 
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
     const first_changes = [_]edit.TextEdit{.{ .start = 0, .end = 5, .replacement = "beta" }};
     const files = [_]edit.FileEdit{
         .{
@@ -372,7 +372,7 @@ test "multi-file apply rolls back when a later file fails" {
     var restored = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse(first_path));
     defer restored.deinit();
     try std.testing.expectEqualStrings("alpha", restored.content);
-    try std.testing.expect((try history.readActiveMarker(io, root)) == null);
+    try std.testing.expect((try history.readActiveMarker(std.testing.allocator, io, root)) == null);
     try std.testing.expectEqual(TransactionState.approved, record.state);
 }
 
@@ -390,7 +390,7 @@ test "apply delete and undo restores deleted file" {
         try file.writeStreamingAll(io, "gone soon");
     }
 
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
     const files = [_]edit.FileEdit{.{
         .path = rel_path,
         .operation = .delete,
@@ -426,7 +426,7 @@ test "apply create and undo removes created file" {
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
 
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
     const files = [_]edit.FileEdit{.{
         .path = "new.txt",
         .operation = .create,
@@ -461,7 +461,7 @@ test "undo rejects a modified file changed after apply without partial restore" 
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("a.txt"), "before-a");
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("b.txt"), "before-b");
 
@@ -492,7 +492,7 @@ test "undo rejects recreation of a file deleted by the transaction" {
 
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = path_mod.WorkspaceRoot.init(tmp.dir);
+    const root = path_mod.WorkspaceRoot.init(tmp.dir, ".");
     try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse("deleted.txt"), "original");
 
     const files = [_]edit.FileEdit{.{

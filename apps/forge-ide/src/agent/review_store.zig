@@ -49,6 +49,14 @@ pub const Store = struct {
         self.hunks[index].accepted = !self.hunks[index].accepted;
     }
 
+    pub fn acceptAll(self: *Store) void {
+        for (self.hunks) |*hunk| hunk.accepted = true;
+    }
+
+    pub fn rejectAll(self: *Store) void {
+        for (self.hunks) |*hunk| hunk.accepted = false;
+    }
+
     pub fn acceptedCount(self: Store) usize {
         var count: usize = 0;
         for (self.hunks) |hunk| {

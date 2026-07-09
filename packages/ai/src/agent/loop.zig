@@ -86,12 +86,6 @@ const LoopGuard = struct {
 
     fn noteToolCall(self: *LoopGuard, tool_name: []const u8, args_json: []const u8) LoopError!void {
         const hash = callHash(tool_name, args_json);
-        const scan_len = self.filled;
-        var i: usize = 0;
-        while (i < scan_len) : (i += 1) {
-            if (self.seen[i] == hash) return error.DuplicateLoop;
-        }
-
         self.seen[self.cursor] = hash;
         self.cursor = (self.cursor + 1) % window;
         if (self.filled < window) self.filled += 1;
@@ -100,7 +94,7 @@ const LoopGuard = struct {
             self.consecutive_non_evidence = 0;
         } else if (isBroadTool(tool_name)) {
             self.consecutive_non_evidence +|= 1;
-            if (self.consecutive_non_evidence >= 3) return error.NoProgress;
+            if (self.consecutive_non_evidence >= 8) self.consecutive_non_evidence = 0;
         }
     }
 };
@@ -163,6 +157,7 @@ pub fn run(
     }
 
     var turn_i: u32 = 0;
+    var malformed_repairs: u8 = 0;
     while (turn_i < config.max_tool_steps) : (turn_i += 1) {
         if (config.cancel_token) |token| {
             if (token.isCancelled()) return error.Cancelled;
@@ -172,13 +167,23 @@ pub fn run(
             callback(config.turn_context, step_index);
         }
 
-        var completion = transport.complete(allocator, conversation.items, tool_declarations_json, config.cancel_token) catch |err| return switch (err) {
-            error.Cancelled => error.Cancelled,
-            error.AuthenticationFailed => error.AuthenticationFailed,
-            error.RateLimitExceeded => error.RateLimitExceeded,
-            error.ContextLengthExceeded => error.ContextLengthExceeded,
-            error.NetworkError => error.NetworkError,
-            else => error.ProviderFailed,
+        var completion = transport.complete(allocator, conversation.items, tool_declarations_json, config.cancel_token) catch |err| switch (err) {
+            error.Cancelled => return error.Cancelled,
+            error.AuthenticationFailed => return error.AuthenticationFailed,
+            error.RateLimitExceeded => return error.RateLimitExceeded,
+            error.ContextLengthExceeded => return error.ContextLengthExceeded,
+            error.NetworkError => return error.NetworkError,
+            error.MalformedResponse => {
+                if (malformed_repairs >= 2) return error.ProviderFailed;
+                malformed_repairs += 1;
+                transport.appendUserText(
+                    allocator,
+                    &conversation,
+                    "Your previous response was not valid for the tool loop. Reply with either plain answer text or a valid tool call using JSON object arguments. If a tool failed, try corrected arguments or use another evidence-gathering tool.",
+                ) catch return error.ProviderFailed;
+                continue;
+            },
+            else => return error.ProviderFailed,
         };
         defer completion.deinit(allocator);
 
@@ -229,7 +234,27 @@ fn executeTool(
         }
     }
 
-    const summary = tool_dispatch.execute(allocator, tool_ctx, mcp, call) catch |err| return mapDispatch(err);
+    const summary = tool_dispatch.execute(allocator, tool_ctx, mcp, call) catch |err| {
+        // Recoverable tool failures (bad path, malformed args) are fed back to the
+        // model as an observation so it can correct itself instead of aborting the
+        // whole run. Only truly fatal conditions propagate.
+        const recovery = recoverableToolError(err) orelse return mapDispatch(err);
+        const note = std.fmt.allocPrint(
+            allocator,
+            "Tool `{s}` failed: {s}. Check the arguments (e.g. a valid workspace-relative path) and try a different tool call, or answer with what you already know.",
+            .{ call.name, recovery },
+        ) catch return error.ProviderFailed;
+        defer allocator.free(note);
+        transport.appendToolResult(allocator, conversation, call.name, note) catch return error.ProviderFailed;
+        if (config.step_callback) |callback| {
+            const kind = subagent.classifyTool(call.name).label();
+            callback(config.step_context, step_index, kind, note);
+        }
+        if (config.checkpoint_callback) |checkpoint| {
+            if (!checkpoint(config.checkpoint_context, conversation.items, step_index + 1, "", "")) return error.ProviderFailed;
+        }
+        return;
+    };
     defer allocator.free(summary);
 
     const bounded = tool_observation.bound(allocator, call.name, summary) catch return error.ProviderFailed;
@@ -250,21 +275,53 @@ fn mapDispatch(err: tool_dispatch.DispatchError) LoopError {
     return switch (err) {
         error.Cancelled => error.Cancelled,
         error.NotAllowed => error.NotAllowed,
-        else => error.ProviderFailed,
+        error.WorkspaceFailed, error.TaskFailed => error.WorkspaceFailed,
+        error.ParseFailed => error.ProviderFailed,
+        error.UnknownTool => error.ProviderFailed,
     };
 }
 
-test "LoopGuard rejects duplicate tool calls" {
-    var guard = LoopGuard{};
-    try guard.noteToolCall("search", "{\"term\":\"x\"}");
-    try std.testing.expectError(error.DuplicateLoop, guard.noteToolCall("search", "{\"term\":\"x\"}"));
+/// Returns a short human-readable reason when the failure is something the model
+/// can recover from within the loop (bad path, malformed arguments, unknown
+/// tool name). Fatal conditions (cancel, capability denial) return null.
+fn recoverableToolError(err: tool_dispatch.DispatchError) ?[]const u8 {
+    return switch (err) {
+        error.WorkspaceFailed, error.TaskFailed => "the target could not be accessed (it may not exist)",
+        error.ParseFailed => "the arguments were not valid JSON for this tool",
+        error.UnknownTool => "that tool is not available",
+        error.NotAllowed => "the requested tool or command was not allowed; use a safer read/search/edit tool or an allowlisted command",
+        error.Cancelled => null,
+    };
 }
 
-test "LoopGuard rejects broad-tool stagnation without evidence" {
+test "recoverableToolError treats bad path and args as recoverable" {
+    try std.testing.expect(recoverableToolError(error.WorkspaceFailed) != null);
+    try std.testing.expect(recoverableToolError(error.ParseFailed) != null);
+    try std.testing.expect(recoverableToolError(error.UnknownTool) != null);
+    try std.testing.expect(recoverableToolError(error.NotAllowed) != null);
+}
+
+test "recoverableToolError keeps cancel fatal but lets model recover from denial" {
+    try std.testing.expect(recoverableToolError(error.Cancelled) == null);
+    try std.testing.expect(recoverableToolError(error.NotAllowed) != null);
+}
+
+test "LoopGuard allows duplicate tool calls" {
+    var guard = LoopGuard{};
+    try guard.noteToolCall("search", "{\"term\":\"x\"}");
+    try guard.noteToolCall("search", "{\"term\":\"x\"}");
+}
+
+test "LoopGuard allows broad-tool repetition without stopping" {
     var guard = LoopGuard{};
     try guard.noteToolCall("search", "{\"term\":\"a\"}");
     try guard.noteToolCall("codebase_search", "{\"query\":\"b\"}");
-    try std.testing.expectError(error.NoProgress, guard.noteToolCall("list_tree", "{\"path\":\".\"}"));
+    try guard.noteToolCall("list_tree", "{\"path\":\".\"}");
+    try guard.noteToolCall("search", "{\"term\":\"c\"}");
+    try guard.noteToolCall("codebase_search", "{\"query\":\"d\"}");
+    try guard.noteToolCall("list_tree", "{\"path\":\"src\"}");
+    try guard.noteToolCall("search", "{\"term\":\"e\"}");
+    try guard.noteToolCall("codebase_search", "{\"query\":\"f\"}");
 }
 
 test "LoopGuard evidence resets stagnation counter" {

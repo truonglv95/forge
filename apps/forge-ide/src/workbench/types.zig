@@ -1,1 +1,1 @@
-pub const ChatRole = enum { user, agent };
+pub const ChatRole = enum { user, agent, tool };

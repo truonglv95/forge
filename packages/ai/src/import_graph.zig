@@ -286,7 +286,7 @@ test "extract zig imports" {
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
 
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try tmp.dir.createDirPath(io, "lib");
     try tmp.dir.createDirPath(io, "apps");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("lib/util.zig"), "pub fn util() void {}\n");
@@ -308,7 +308,7 @@ test "extract C includes" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try tmp.dir.createDirPath(io, "src");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/main.c"),
         \\#include "util.h"
@@ -327,7 +327,7 @@ test "collectNeighborPaths does not use freed import keys in seen set" {
     var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
     defer tmp.cleanup();
 
-    const root = workspace.WorkspaceRoot.init(tmp.dir);
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
     try tmp.dir.createDirPath(io, "lib");
     try tmp.dir.createDirPath(io, "apps");
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("lib/util.zig"), "pub fn util() void {}\n");
