@@ -50,6 +50,37 @@ pub const Status = struct {
         if (self.branch) |branch| allocator.free(branch);
         self.* = undefined;
     }
+
+    /// Returns the first entry that starts with `path`. Since entries are sorted,
+    /// if `path` is a directory (e.g. "src/"), this finds the first file inside it.
+    /// If `path` is a file, this finds the exact match if it exists.
+    pub fn findFirstStartingWith(self: *const Status, path: []const u8) ?usize {
+        var l: usize = 0;
+        var r: usize = self.entries.len;
+        while (l < r) {
+            const m = l + (r - l) / 2;
+            const entry_path = self.entries[m].path;
+            const cmp_len = @min(entry_path.len, path.len);
+            const ord = std.mem.order(u8, entry_path[0..cmp_len], path);
+            switch (ord) {
+                .lt => l = m + 1,
+                .gt => r = m,
+                .eq => {
+                    if (entry_path.len < path.len) {
+                        l = m + 1;
+                    } else {
+                        // We found a prefix match, but it might not be the *first* one.
+                        // So we continue searching to the left.
+                        r = m;
+                    }
+                },
+            }
+        }
+        if (l < self.entries.len and std.mem.startsWith(u8, self.entries[l].path, path)) {
+            return l;
+        }
+        return null;
+    }
 };
 
 /// Uses raw pipe/fork instead of std.process.spawn(Io) so C-opened PTY fds are not reused.
@@ -93,6 +124,12 @@ pub fn refresh(allocator: std.mem.Allocator, workspace_path: []const u8) !Status
     }
 
     const entries = try list.toOwnedSlice(allocator);
+
+    std.sort.pdq(Entry, entries, {}, struct {
+        pub fn less(_: void, a: Entry, b: Entry) bool {
+            return std.mem.lessThan(u8, a.path, b.path);
+        }
+    }.less);
 
     var staged_ptrs: std.ArrayList(*const Entry) = .empty;
     var unstaged_ptrs: std.ArrayList(*const Entry) = .empty;
