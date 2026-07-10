@@ -88,15 +88,11 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
         } else if (status.entries.len == 0) {
             renderer.Renderer.drawText("Working tree clean.", panel_x + 16, y, 12.0, .{ .r = 0.6, .g = 0.8, .b = 0.6, .a = 1.0 });
         } else {
-            var staged_count: usize = 0;
-            var changes_count: usize = 0;
-            for (status.entries) |e| {
-                if (e.isStaged()) staged_count += 1;
-                if (e.isUnstaged()) changes_count += 1;
-            }
+            const staged_count: usize = status.staged_ptrs.len;
+            const changes_count: usize = status.unstaged_ptrs.len;
 
             const drawSection = struct {
-                fn draw(py: *f32, count: usize, title: [:0]const u8, is_collapsed: bool, entries: []const @import("../../../git/status.zig").Entry, is_staged_section: bool, px: f32, pw: f32, ch: f32, my_y: f32, mx_x: f32, hc: renderer.Color) void {
+                fn draw(py: *f32, count: usize, title: [:0]const u8, is_collapsed: bool, ptrs: []const *const @import("../../../git/status.zig").Entry, is_staged_section: bool, px: f32, pw: f32, ch: f32, my_y: f32, mx_x: f32, hc: renderer.Color) void {
                     if (count == 0) return;
 
                     if (mx_x >= px and mx_x < px + pw and my_y >= py.* and my_y < py.* + 24) {
@@ -117,12 +113,27 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                     py.* += 24;
 
                     if (!is_collapsed) {
-                        for (entries) |entry| {
-                            if ((is_staged_section and !entry.isStaged()) or (!is_staged_section and !entry.isUnstaged())) continue;
-                            if (py.* + 22 >= 65 and py.* < ch - layout.status_height) {
-                                const is_hovered = mx_x >= px and mx_x < px + pw and my_y >= py.* and my_y < py.* + 22;
+                        const row_h: f32 = 22.0;
+                        const header_h: f32 = 65.0; // layout top area
+                        const visible_top = header_h;
+                        const visible_bottom = ch - layout.status_height;
+
+                        // We compute which elements are within the visible bounds: [visible_top, visible_bottom]
+                        // py.* starts at the first item's top.
+                        const view_top = @max(0, visible_top - py.*);
+                        const view_bottom = @max(0, visible_bottom - py.*);
+
+                        const start_idx: usize = @as(usize, @intFromFloat(view_top / row_h));
+                        const end_idx = @min(ptrs.len, @as(usize, @intFromFloat(view_bottom / row_h)) + 2);
+
+                        // Increment py.* by the hidden rows we skipped above
+                        py.* += @as(f32, @floatFromInt(start_idx)) * row_h;
+
+                        for (ptrs[start_idx..end_idx]) |entry| {
+                            if (py.* + row_h >= visible_top and py.* < visible_bottom) {
+                                const is_hovered = mx_x >= px and mx_x < px + pw and my_y >= py.* and my_y < py.* + row_h;
                                 if (is_hovered) {
-                                    renderer.Renderer.drawRect(px, py.*, pw, 22, hc);
+                                    renderer.Renderer.drawRect(px, py.*, pw, row_h, hc);
                                     if (is_staged_section) {
                                         renderer.Renderer.drawSvg(renderer.icons.dash, px + pw - 34, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
                                     } else {
@@ -182,14 +193,19 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                                     renderer.Renderer.drawText("M", px + pw - 16, py.* + 2, 11.0, text_color);
                                 }
                             }
-                            py.* += 22;
+                            // If it's not visible at all, we don't draw anything (fast skip)
+                            py.* += row_h;
+                        }
+                        // Add the space for rows after end_idx that we didn't iterate
+                        if (end_idx < ptrs.len) {
+                            py.* += @as(f32, @floatFromInt(ptrs.len - end_idx)) * row_h;
                         }
                     }
                 }
-            }.draw;
+            };
 
-            drawSection(&y, staged_count, "Staged Changes", wb.git_staged_collapsed, status.entries, true, panel_x, panel_w, h, my, mx, hover_c);
-            drawSection(&y, changes_count, "Changes", wb.git_changes_collapsed, status.entries, false, panel_x, panel_w, h, my, mx, hover_c);
+            drawSection.draw(&y, staged_count, "STAGED CHANGES", wb.git_staged_collapsed, status.staged_ptrs, true, panel_x, panel_w, h, my, mx, hover_c);
+            drawSection.draw(&y, changes_count, "CHANGES", wb.git_changes_collapsed, status.unstaged_ptrs, false, panel_x, panel_w, h, my, mx, hover_c);
         }
     }
 
