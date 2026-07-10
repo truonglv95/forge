@@ -80,13 +80,19 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                 const task_state = wb.task_output.snapshotState();
                 wb.task_output.lock();
                 defer wb.task_output.unlock();
-                for (wb.task_output.lines.items) |line| {
+                const line_h: f32 = 14.0;
+                const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
+                const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+                const end_idx = @min(wb.task_output.lines.items.len, start_idx + visual_count);
+
+                var y = line_y + @as(f32, @floatFromInt(start_idx)) * line_h;
+                for (wb.task_output.lines.items[start_idx..end_idx]) |line| {
                     var buf: [512:0]u8 = undefined;
                     const clipped = if (line.len > 511) line[0..511] else line;
                     @memcpy(buf[0..clipped.len], clipped);
                     buf[clipped.len] = 0;
-                    renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.85, .g = 0.85, .b = 0.85, .a = 1.0 });
-                    line_y += 14.0;
+                    renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, y, 12.0, .{ .r = 0.85, .g = 0.85, .b = 0.85, .a = 1.0 });
+                    y += line_h;
                 }
                 if (task_state.last_exit_code) |code| {
                     var exit_buf: [64:0]u8 = undefined;
@@ -133,12 +139,17 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             if (wb.terminal_selection) |sel| {
                 terminal_panel.drawSelection(editor_x, panel_y, wb.task_scroll_y, terminal.lines.items, sel);
             }
-            var line_y = content_top - wb.task_scroll_y;
-            for (terminal.lines.items) |line| {
-                if (line_y + terminal_panel.line_h >= content_top and line_y < content_top + content_h) {
+            const line_h = terminal_panel.line_h;
+            const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
+            const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+            const end_idx = @min(terminal.lines.items.len, start_idx + visual_count);
+
+            var line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
+            for (terminal.lines.items[start_idx..end_idx]) |line| {
+                if (line_y + line_h >= content_top and line_y < content_top + content_h) {
                     terminal_panel.drawStyledLine(editor_x, editor_w, line_y, line, wb.workspace_path, git_ptr);
                 }
-                line_y += terminal_panel.line_h;
+                line_y += line_h;
             }
             if (terminal.local_input != null or terminal.isActive()) {
                 if (line_y + terminal_panel.line_h >= content_top and line_y < content_top + content_h) {
@@ -164,14 +175,19 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             const content_top = panel_y + 34.0;
             const content_h = panel_h - 34.0;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
-            var line_y = content_top - wb.task_scroll_y;
-            for (wb.debug_console.lines.items) |line| {
+            const line_h: f32 = 14.0;
+            const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
+            const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+            const end_idx = @min(wb.debug_console.lines.items.len, start_idx + visual_count);
+
+            var line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
+            for (wb.debug_console.lines.items[start_idx..end_idx]) |line| {
                 var buf: [512:0]u8 = undefined;
                 const clipped = if (line.len > 511) line[0..511] else line;
                 @memcpy(buf[0..clipped.len], clipped);
                 buf[clipped.len] = 0;
                 renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.75, .g = 0.85, .b = 1.0, .a = 1.0 });
-                line_y += 14.0;
+                line_y += line_h;
             }
             if (wb.debug_console.lines.items.len == 0) {
                 renderer.Renderer.drawText("Debug console ready.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
@@ -186,7 +202,13 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                 renderer.Renderer.drawText("LOCAL VARIABLES", editor_x + 20, line_y, 10.0, .{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 });
             }
             line_y += 16;
-            for (wb.debug_variables.items.items) |entry| {
+            const line_h: f32 = 14.0;
+            const start_idx: usize = if (wb.task_scroll_y > 16) @as(usize, @intFromFloat((wb.task_scroll_y - 16) / line_h)) else 0;
+            const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+            const end_idx = @min(wb.debug_variables.items.items.len, start_idx + visual_count);
+
+            line_y = content_top - wb.task_scroll_y + 16 + @as(f32, @floatFromInt(start_idx)) * line_h;
+            for (wb.debug_variables.items.items[start_idx..end_idx]) |entry| {
                 if (line_y + 14 < content_top or line_y >= content_top + content_h) {
                     line_y += 14;
                     continue;
@@ -212,7 +234,13 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                 renderer.Renderer.drawText("CALL STACK", editor_x + 20, line_y, 10.0, .{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 });
             }
             line_y += 16;
-            for (wb.debug_callstack.items.items) |frame| {
+            const line_h: f32 = 14.0;
+            const start_idx: usize = if (wb.task_scroll_y > 16) @as(usize, @intFromFloat((wb.task_scroll_y - 16) / line_h)) else 0;
+            const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+            const end_idx = @min(wb.debug_callstack.items.items.len, start_idx + visual_count);
+
+            line_y = content_top - wb.task_scroll_y + 16 + @as(f32, @floatFromInt(start_idx)) * line_h;
+            for (wb.debug_callstack.items.items[start_idx..end_idx]) |frame| {
                 if (line_y + 14 < content_top or line_y >= content_top + content_h) {
                     line_y += 14;
                     continue;
