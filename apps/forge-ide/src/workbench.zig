@@ -194,7 +194,17 @@ pub const Workbench = struct {
     wrap_cache: std.AutoHashMap(u64, *WrapCache),
     max_line_len_cache: std.AutoHashMap(u64, MaxLineLenCache),
 
+    bracket_match_cache: BracketMatchCache = .{},
+
     pub const MaxLineLenCache = struct { revision: u64, len: usize };
+
+    pub const BracketMatchCache = struct {
+        file_path_hash: u64 = 0,
+        revision: u64 = 0,
+        row: usize = 0,
+        col: usize = 0,
+        match: ?@import("ui/editor/bracket_match.zig").Match = null,
+    };
 
     pub const CodeScrollState = struct {
         scroll_x: f32 = 0,
