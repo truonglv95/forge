@@ -8,6 +8,7 @@
 //! Defaults to Ollama + qwen2.5-coder:7b for low-latency local completions.
 
 const std = @import("std");
+const forge_util = @import("forge-util");
 
 /// Debounce delay in milliseconds before a completion request fires.
 pub const debounce_ms: f32 = 600.0;
@@ -54,6 +55,8 @@ pub const Store = struct {
     // from concurrent requests are silently discarded.
     generation: u64 = 0,
 
+    mutex: forge_util.sync.Mutex = .{},
+
     pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
@@ -67,25 +70,31 @@ pub const Store = struct {
     }
 
     pub fn deinit(self: *Store) void {
-        self.clearGhost();
+        self.clearGhostUnlocked();
     }
 
     // -----------------------------------------------------------------------
     // State helpers
 
-    pub fn hasGhost(self: *const Store) bool {
+    pub fn hasGhost(self: *Store) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         return self.ghost_text != null;
     }
 
     /// Clear active ghost text and reset debounce.
     pub fn dismiss(self: *Store) void {
-        self.clearGhost();
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.clearGhostUnlocked();
         self.debounce_remaining = 0;
     }
 
     /// Tick the debounce countdown. `delta_ms` is the frame time in milliseconds.
     /// Returns true when the debounce has expired and a request should fire.
     pub fn tick(self: *Store, delta_ms: f32) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.debounce_remaining <= 0) return false;
         self.debounce_remaining -= delta_ms;
         if (self.debounce_remaining <= 0) {
@@ -98,8 +107,10 @@ pub const Store = struct {
     /// Notify the store that the buffer changed at position (row, col).
     /// Resets debounce and invalidates any existing ghost text.
     pub fn onBufferChanged(self: *Store, row: usize, col: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (!self.config.enabled) return;
-        self.clearGhost();
+        self.clearGhostUnlocked();
         self.trigger_row = row;
         self.trigger_col = col;
         self.debounce_remaining = debounce_ms;
@@ -107,9 +118,11 @@ pub const Store = struct {
 
     /// Invalidate ghost text if the cursor has moved away from the trigger position.
     pub fn onCursorMoved(self: *Store, row: usize, col: usize) void {
-        if (!self.hasGhost()) return;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.ghost_text == null) return;
         if (row != self.trigger_row or col != self.trigger_col) {
-            self.clearGhost();
+            self.clearGhostUnlocked();
         }
     }
 
@@ -118,6 +131,8 @@ pub const Store = struct {
 
     /// Remove and return the ghost text — caller must free the returned slice.
     pub fn accept(self: *Store) ?[]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const text = self.ghost_text orelse return null;
         self.ghost_text = null;
         self.debounce_remaining = 0;
@@ -126,6 +141,40 @@ pub const Store = struct {
 
     // -----------------------------------------------------------------------
     // Async fetch
+
+    const FetchContext = struct {
+        store: *Store,
+        prefix: []const u8,
+        suffix: []const u8,
+        gen: u64,
+        row: usize,
+        col: usize,
+    };
+
+    fn fetchWorker(ctx: *FetchContext) void {
+        defer {
+            ctx.store.allocator.free(ctx.prefix);
+            ctx.store.allocator.free(ctx.suffix);
+            ctx.store.allocator.destroy(ctx);
+            ctx.store.pending.store(false, .release);
+        }
+
+        const result = ctx.store.fetchBlocking(ctx.prefix, ctx.suffix, ctx.gen);
+
+        if (result) |text| {
+            ctx.store.mutex.lock();
+            defer ctx.store.mutex.unlock();
+
+            if (ctx.store.generation == ctx.gen) {
+                ctx.store.clearGhostUnlocked();
+                ctx.store.ghost_text = text;
+                ctx.store.trigger_row = ctx.row;
+                ctx.store.trigger_col = ctx.col;
+            } else {
+                ctx.store.allocator.free(text);
+            }
+        }
+    }
 
     /// Kick off a completion request using the configured provider.
     pub fn requestCompletion(
@@ -142,8 +191,11 @@ pub const Store = struct {
         // Only trigger when cursor is after an identifier-like character.
         if (!shouldTrigger(line_content, col)) return;
 
+        self.mutex.lock();
         self.generation +%= 1;
         const gen = self.generation;
+        self.mutex.unlock();
+
         self.pending.store(true, .release);
 
         const prefix_copy = self.allocator.dupe(u8, prefix[0..@min(prefix.len, max_prefix_bytes)]) catch {
@@ -156,27 +208,35 @@ pub const Store = struct {
             return;
         };
 
-        const result = self.fetchBlocking(prefix_copy, suffix_copy, gen);
-        self.allocator.free(prefix_copy);
-        self.allocator.free(suffix_copy);
-        self.pending.store(false, .release);
+        const ctx = self.allocator.create(FetchContext) catch {
+            self.allocator.free(prefix_copy);
+            self.allocator.free(suffix_copy);
+            self.pending.store(false, .release);
+            return;
+        };
+        ctx.* = .{
+            .store = self,
+            .prefix = prefix_copy,
+            .suffix = suffix_copy,
+            .gen = gen,
+            .row = row,
+            .col = col,
+        };
 
-        if (result) |text| {
-            if (self.generation != gen) {
-                self.allocator.free(text);
-                return;
-            }
-            self.clearGhost();
-            self.ghost_text = text;
-            self.trigger_row = row;
-            self.trigger_col = col;
-        }
+        const thread = std.Thread.spawn(.{}, fetchWorker, .{ctx}) catch {
+            self.allocator.free(prefix_copy);
+            self.allocator.free(suffix_copy);
+            self.allocator.destroy(ctx);
+            self.pending.store(false, .release);
+            return;
+        };
+        thread.detach();
     }
 
     // -----------------------------------------------------------------------
     // Private
 
-    fn clearGhost(self: *Store) void {
+    fn clearGhostUnlocked(self: *Store) void {
         if (self.ghost_text) |t| {
             self.allocator.free(t);
             self.ghost_text = null;
@@ -203,7 +263,7 @@ pub const Store = struct {
         const prompt = try self.buildFimPrompt(prefix, suffix);
         defer self.allocator.free(prompt);
 
-        const payload = try std.json.stringifyAlloc(self.allocator, .{
+        const payload = try std.json.Stringify.valueAlloc(self.allocator, .{
             .model = self.config.model,
             .prompt = prompt,
             .stream = false,
@@ -218,8 +278,8 @@ pub const Store = struct {
         );
         defer self.allocator.free(endpoint);
 
-        var response_body = std.ArrayList(u8).init(self.allocator);
-        defer response_body.deinit();
+        var response_alloc = std.Io.Writer.Allocating.init(self.allocator);
+        defer response_alloc.deinit();
 
         var client = std.http.Client{ .allocator = self.allocator, .io = self.io };
         defer client.deinit();
@@ -229,15 +289,16 @@ pub const Store = struct {
             .method = .POST,
             .payload = payload,
             .headers = .{ .content_type = .{ .override = "application/json" } },
-            .response_storage = .{ .dynamic = &response_body },
+            .response_writer = &response_alloc.writer,
         }) catch return error.NetworkError;
 
         if (result.status != .ok) return error.NetworkError;
 
+        const response_body = response_alloc.writer.buffer[0..response_alloc.writer.end];
         const parsed = std.json.parseFromSlice(
             std.json.Value,
             self.allocator,
-            response_body.items,
+            response_body,
             .{},
         ) catch return error.ParseError;
         defer parsed.deinit();
@@ -252,7 +313,7 @@ pub const Store = struct {
 
         // Trim to first newline for single-line ghost text (standard UX).
         const single_line = if (std.mem.indexOfScalar(u8, text, '\n')) |nl| text[0..nl] else text;
-        const trimmed = std.mem.trimRight(u8, single_line, &std.ascii.whitespace);
+        const trimmed = std.mem.trimEnd(u8, single_line, &std.ascii.whitespace);
         if (trimmed.len == 0) return error.EmptyCompletion;
 
         return self.allocator.dupe(u8, trimmed[0..@min(trimmed.len, max_completion_bytes)]);
@@ -265,8 +326,8 @@ pub const Store = struct {
         var key_buf: [256]u8 = undefined;
         const api_key = blk: {
             if (self.config.gemini_api_key.len > 0) break :blk self.config.gemini_api_key;
-            const env_key = std.process.getEnvVarOwned(self.allocator, "GEMINI_API_KEY") catch return error.AuthFailed;
-            defer self.allocator.free(env_key);
+            const env_key_c = std.c.getenv("GEMINI_API_KEY") orelse return error.AuthFailed;
+            const env_key = std.mem.span(env_key_c);
             const copied = key_buf[0..@min(env_key.len, key_buf.len)];
             @memcpy(copied, env_key[0..copied.len]);
             break :blk copied;
@@ -279,7 +340,7 @@ pub const Store = struct {
         );
         defer self.allocator.free(endpoint);
 
-        const payload = try std.json.stringifyAlloc(self.allocator, .{
+        const payload = try std.json.Stringify.valueAlloc(self.allocator, .{
             .contents = [_]struct {
                 role: []const u8,
                 parts: [1]struct { text: []const u8 },
@@ -288,8 +349,8 @@ pub const Store = struct {
         }, .{});
         defer self.allocator.free(payload);
 
-        var response_body = std.ArrayList(u8).init(self.allocator);
-        defer response_body.deinit();
+        var response_alloc = std.Io.Writer.Allocating.init(self.allocator);
+        defer response_alloc.deinit();
 
         var client = std.http.Client{ .allocator = self.allocator, .io = self.io };
         defer client.deinit();
@@ -299,15 +360,16 @@ pub const Store = struct {
             .method = .POST,
             .payload = payload,
             .headers = .{ .content_type = .{ .override = "application/json" } },
-            .response_storage = .{ .dynamic = &response_body },
+            .response_writer = &response_alloc.writer,
         }) catch return error.NetworkError;
 
         if (result.status != .ok) return error.NetworkError;
 
+        const response_body = response_alloc.writer.buffer[0..response_alloc.writer.end];
         const parsed = std.json.parseFromSlice(
             std.json.Value,
             self.allocator,
-            response_body.items,
+            response_body,
             .{},
         ) catch return error.ParseError;
         defer parsed.deinit();
@@ -325,7 +387,7 @@ pub const Store = struct {
 
         if (text.len == 0) return error.EmptyCompletion;
         const single_line = if (std.mem.indexOfScalar(u8, text, '\n')) |nl| text[0..nl] else text;
-        const trimmed = std.mem.trimRight(u8, single_line, &std.ascii.whitespace);
+        const trimmed = std.mem.trimEnd(u8, single_line, &std.ascii.whitespace);
         if (trimmed.len == 0) return error.EmptyCompletion;
 
         return self.allocator.dupe(u8, trimmed[0..@min(trimmed.len, max_completion_bytes)]);

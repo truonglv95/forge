@@ -1,5 +1,7 @@
 const std = @import("std");
 const forge_util = @import("forge-util");
+const kernel = @import("forge-kernel");
+const workspace = @import("forge-workspace");
 const review_store = @import("review_store.zig");
 const ai = @import("forge-ai");
 
@@ -103,6 +105,7 @@ pub const Session = struct {
     post_apply_visible: bool = false,
     diff_lines: std.ArrayList([]const u8),
     review: review_store.Store = .{},
+    ephemeral_proposal: ?workspace.OwnedProposal = null,
     run_history: std.ArrayList(RunEntry),
     scope_files: std.ArrayList([]const u8),
     scope_picker_open: bool = false,
@@ -641,6 +644,8 @@ pub const Session = struct {
         self.summary = null;
         if (self.run_active_file) |path| self.allocator.free(path);
         self.run_active_file = null;
+        if (self.ephemeral_proposal) |*p| p.deinit();
+        self.ephemeral_proposal = null;
         self.show_review = false;
         self.review_scroll_y = 0;
         self.post_apply_visible = false;

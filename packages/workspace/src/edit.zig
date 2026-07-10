@@ -1,11 +1,13 @@
 const std = @import("std");
+const fast_apply = @import("fast_apply.zig");
 
 pub const FileOperation = enum { create, modify, delete };
 
 /// A byte range in the exact file version identified by `expected_hash`.
 pub const TextEdit = struct {
-    start: u64,
-    end: u64,
+    start: u64 = 0,
+    end: u64 = 0,
+    search: ?[]const u8 = null,
     replacement: []const u8,
 };
 
@@ -32,6 +34,58 @@ pub const WorkspaceEdit = struct {
         OverlappingEdits,
         UnexpectedTextEdits,
     };
+
+    pub fn clone(self: WorkspaceEdit, allocator: std.mem.Allocator) !WorkspaceEdit {
+        var files = try allocator.alloc(FileEdit, self.files.len);
+        errdefer {
+            for (files) |*f| {
+                if (f.edits.len > 0) allocator.free(f.edits);
+                allocator.free(f.path);
+            }
+            allocator.free(files);
+        }
+
+        for (self.files, 0..) |f, i| {
+            var edits = try allocator.alloc(TextEdit, f.edits.len);
+            errdefer {
+                for (edits) |*e| {
+                    allocator.free(e.replacement);
+                    if (e.search) |s| allocator.free(s);
+                }
+                allocator.free(edits);
+            }
+
+            for (f.edits, 0..) |e, j| {
+                edits[j] = .{
+                    .start = e.start,
+                    .end = e.end,
+                    .search = if (e.search) |s| try allocator.dupe(u8, s) else null,
+                    .replacement = try allocator.dupe(u8, e.replacement),
+                };
+            }
+
+            files[i] = .{
+                .path = try allocator.dupe(u8, f.path),
+                .operation = f.operation,
+                .expected_hash = f.expected_hash,
+                .edits = edits,
+            };
+        }
+
+        return .{ .files = files };
+    }
+
+    pub fn deinit(self: *WorkspaceEdit, allocator: std.mem.Allocator) void {
+        for (self.files) |f| {
+            for (f.edits) |e| {
+                allocator.free(e.replacement);
+                if (e.search) |s| allocator.free(s);
+            }
+            allocator.free(f.edits);
+            allocator.free(f.path);
+        }
+        allocator.free(self.files);
+    }
 
     pub fn validate(self: WorkspaceEdit) ValidationError!void {
         if (self.files.len == 0) return error.EmptyTransaction;
@@ -88,7 +142,31 @@ pub const WorkspaceEdit = struct {
 pub fn applyTextEdits(allocator: std.mem.Allocator, content: []const u8, edits: []const TextEdit) ![]u8 {
     if (edits.len == 0) return try allocator.dupe(u8, content);
 
-    var result: std.ArrayList(u8) = .empty;
+    var uses_search = false;
+    for (edits) |edit| {
+        if (edit.search != null) uses_search = true;
+    }
+
+    if (uses_search) {
+        var current_content = try allocator.dupe(u8, content);
+        errdefer allocator.free(current_content);
+
+        for (edits) |edit| {
+            if (edit.search) |search_text| {
+                const new_content = try fast_apply.applyEdit(allocator, current_content, .{
+                    .search = search_text,
+                    .replace = edit.replacement,
+                });
+                allocator.free(current_content);
+                current_content = new_content;
+            } else {
+                return error.MixedEditTypes;
+            }
+        }
+        return current_content;
+    }
+
+    var result: std.ArrayListUnmanaged(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var src_pos: usize = 0;

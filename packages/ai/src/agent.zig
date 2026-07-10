@@ -62,8 +62,10 @@ pub const Config = struct {
     step_begin_context: ?*anyopaque = null,
     turn_callback: ?*const fn (?*anyopaque, u32) void = null,
     turn_context: ?*anyopaque = null,
-    edit_callback: ?*const fn (?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void = null,
+    edit_callback: ?*const fn (?*anyopaque, edit: workspace.edit.WorkspaceEdit) void = null,
     edit_context: ?*anyopaque = null,
+    lsp_request_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 = null,
+    lsp_context: ?*anyopaque = null,
     use_inline_edits: bool = false,
     resume_conversation_json: []const u8 = "",
     resume_next_step_index: u32 = 1,
@@ -231,6 +233,8 @@ pub fn run(
         .environ_map = environ_map,
         .edit_callback = effective_config.edit_callback,
         .edit_context = effective_config.edit_context,
+        .lsp_request_callback = effective_config.lsp_request_callback,
+        .lsp_context = effective_config.lsp_context,
         .cache = &tool_cache,
     };
 

@@ -413,10 +413,9 @@ const eval_sample_seed = "hello forge search\n";
 
 pub const default_agent_modify_sample_response = blk: {
     const hash = workspace.edit.contentHash(eval_sample_seed);
-    const end: comptime_int = eval_sample_seed.len;
     break :blk std.fmt.comptimePrint(
-        \\{{"schema_version":1,"summary":"Add reliability marker to sample.txt","assumptions":["sample.txt matches eval seed"],"validation_tasks":["zig build test"],"workspace_edit":{{"files":[{{"path":"sample.txt","operation":"modify","expected_hash":{d},"edits":[{{"start":{d},"end":{d},"replacement":"reliability marker\\n"}}]}}]}}}}
-    , .{ hash, end, end });
+        \\{{"schema_version":1,"summary":"Add reliability marker to sample.txt","assumptions":["sample.txt matches eval seed"],"validation_tasks":["zig build test"],"workspace_edit":{{"files":[{{"path":"sample.txt","operation":"modify","expected_hash":{d},"edits":[{{"search":"hello forge search\n","replacement":"hello forge search\nreliability marker\n"}}]}}]}}}}
+    , .{hash});
 };
 
 /// Picks deterministic fake agent proposals for eval fixtures and CLI dogfood.

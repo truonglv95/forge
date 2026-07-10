@@ -118,13 +118,13 @@ pub fn tickGhostCompletion(wb: anytype, delta_s: f32) void {
     // Sync cursor position — dismiss if moved.
     wb.ghost.onCursorMoved(doc.buffer.cursor.row, doc.buffer.cursor.col);
 
-    if (!wb.ghost.tick(delta_s)) return;
+    if (!wb.ghost.tick(delta_s * 1000.0)) return;
 
     // Build prefix: content from the start of file up to cursor.
     const row = doc.buffer.cursor.row;
     const col = doc.buffer.cursor.col;
 
-    var prefix_buf = std.ArrayList(u8).init(wb.allocator);
+    var prefix_buf: std.ArrayList(u8) = .empty;
     defer prefix_buf.deinit(wb.allocator);
     for (doc.buffer.lines.items, 0..) |line, r| {
         if (r < row) {
@@ -138,7 +138,7 @@ pub fn tickGhostCompletion(wb: anytype, delta_s: f32) void {
     }
 
     // Build suffix: content from cursor to end (truncated).
-    var suffix_buf = std.ArrayList(u8).init(wb.allocator);
+    var suffix_buf: std.ArrayList(u8) = .empty;
     defer suffix_buf.deinit(wb.allocator);
     for (doc.buffer.lines.items, 0..) |line, r| {
         if (r == row) {

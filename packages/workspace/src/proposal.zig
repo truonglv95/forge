@@ -20,7 +20,10 @@ pub const OwnedProposal = struct {
     pub fn deinit(self: *OwnedProposal) void {
         for (self.files) |file| {
             self.allocator.free(file.path);
-            for (file.edits) |text_edit| self.allocator.free(text_edit.replacement);
+            for (file.edits) |text_edit| {
+                if (text_edit.search) |s| self.allocator.free(s);
+                self.allocator.free(text_edit.replacement);
+            }
             self.allocator.free(file.edits);
         }
         self.allocator.free(self.files);
@@ -37,7 +40,7 @@ pub const OwnedProposal = struct {
     }
 
     pub fn parseJson(allocator: std.mem.Allocator, source: []const u8) !OwnedProposal {
-        const JsonEdit = struct { start: u64, end: u64, replacement: []const u8 };
+        const JsonEdit = struct { start: u64 = 0, end: u64 = 0, search: ?[]const u8 = null, replacement: []const u8 };
         const JsonFile = struct {
             path: []const u8,
             operation: []const u8,
@@ -75,6 +78,7 @@ pub const OwnedProposal = struct {
                 edits[edit_index] = .{
                     .start = json_edit.start,
                     .end = json_edit.end,
+                    .search = if (json_edit.search) |s| try allocator.dupe(u8, s) else null,
                     .replacement = try allocator.dupe(u8, json_edit.replacement),
                 };
             }
