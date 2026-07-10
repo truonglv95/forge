@@ -126,16 +126,14 @@ pub fn tickGhostCompletion(wb: anytype, delta_s: f32) void {
 
     var prefix_buf: std.ArrayList(u8) = .empty;
     defer prefix_buf.deinit(wb.allocator);
-    for (doc.buffer.lines.items, 0..) |line, r| {
-        if (r < row) {
-            prefix_buf.appendSlice(wb.allocator, line.items) catch return;
-            prefix_buf.append(wb.allocator, '\n') catch return;
-        } else if (r == row) {
-            const end_col = @min(col, line.items.len);
-            prefix_buf.appendSlice(wb.allocator, line.items[0..end_col]) catch return;
-            break;
-        }
+    const start_row = if (row > 200) row - 200 else 0;
+    for (doc.buffer.lines.items[start_row..row]) |line| {
+        prefix_buf.appendSlice(wb.allocator, line.items) catch return;
+        prefix_buf.append(wb.allocator, '\n') catch return;
     }
+    const current_line = doc.buffer.lines.items[row].items;
+    const end_col = @min(col, current_line.len);
+    prefix_buf.appendSlice(wb.allocator, current_line[0..end_col]) catch return;
 
     // Build suffix: content from cursor to end (truncated).
     var suffix_buf: std.ArrayList(u8) = .empty;
