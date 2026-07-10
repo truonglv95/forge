@@ -85,11 +85,39 @@ pub fn drawEditorViewport(
     };
 
     const diag_store = @import("../../../workbench/diagnostics_store.zig");
-    var line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
+
+    const resolved_hunks = review_overlay.resolveHunks(wb, editor_buf, file_path);
+
+    var ghost_newlines: f32 = 0;
+    var ghost_row: ?usize = null;
+    wb.ghost.mutex.lock();
+    if (wb.ghost.ghost_text) |gt| {
+        if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+            ghost_row = editor_buf.cursor.row;
+            for (gt) |c| {
+                if (c == '\n') {
+                    ghost_newlines += 1.0;
+                }
+            }
+        }
+    }
+    wb.ghost.mutex.unlock();
+
+    const safe_margin: f32 = 2000;
+    var start_idx: usize = 0;
+    if (scroll_y > safe_margin) {
+        start_idx = @intFromFloat((scroll_y - safe_margin) / line_h);
+    }
+
+    var line_num_y = editor_scroll.firstLineY(theme) - scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
+    const initial_line_num_y = line_num_y;
 
     if (wrap_enabled) {
         const visual_count = wrap_cache_opt.?.cachedTotalVisualLines(editor_buf, viewport_w, font_size);
-        for (0..visual_count) |visual_idx| {
+        const cursor_visual = wrap_cache_opt.?.cachedVisualIndexForCursor(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col, viewport_w, font_size);
+        if (cursor_visual < start_idx) line_num_y += ghost_newlines * line_h;
+        for (start_idx..visual_count) |visual_idx| {
+            if (line_num_y > 65 + editor_view_h) break;
             if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
                 const seg = wrap_cache_opt.?.cachedSegmentAt(editor_buf, visual_idx, viewport_w, font_size);
                 if (seg.start_col == 0) {
@@ -130,7 +158,9 @@ pub fn drawEditorViewport(
             line_num_y += line_h;
         }
     } else {
-        for (0..line_count) |idx| {
+        if (ghost_row != null and ghost_row.? < start_idx) line_num_y += ghost_newlines * line_h;
+        for (start_idx..line_count) |idx| {
+            if (line_num_y > 65 + editor_view_h) break;
             if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
                 if (wb.breakpoints.hasAt(file_path, idx)) {
                     renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, syntax.color(theme.colors.warning));
@@ -164,7 +194,7 @@ pub fn drawEditorViewport(
                         renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
                     }
                 }
-                if (review_overlay.reviewLineHasChange(wb, editor_buf, file_path, idx)) {
+                if (review_overlay.reviewLineHasChange(resolved_hunks.slice(), idx)) {
                     renderer.Renderer.drawText("±", editor_x + gutter - 14, line_num_y, font_size, .{ .r = 0.55, .g = 0.85, .b = 0.95, .a = 1.0 });
                 }
             }
@@ -173,12 +203,14 @@ pub fn drawEditorViewport(
     }
 
     renderer.Renderer.setClipRect(editor_x + gutter, 65, editor_w - gutter, editor_view_h);
-    line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
+    line_num_y = initial_line_num_y;
 
     if (wrap_enabled) {
         const visual_count = wrap_cache_opt.?.cachedTotalVisualLines(editor_buf, viewport_w, font_size);
         const cursor_visual = wrap_cache_opt.?.cachedVisualIndexForCursor(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col, viewport_w, font_size);
-        for (0..visual_count) |visual_idx| {
+        if (cursor_visual < start_idx) line_num_y += ghost_newlines * line_h;
+        for (start_idx..visual_count) |visual_idx| {
+            if (line_num_y > 65 + editor_view_h) break;
             if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
                 const seg = wrap_cache_opt.?.cachedSegmentAt(editor_buf, visual_idx, viewport_w, font_size);
                 const slice = editor_buf.lineAt(seg.buf_line)[seg.start_col..seg.end_col];
@@ -197,7 +229,7 @@ pub fn drawEditorViewport(
                 }
                 decorations.drawDecorations(editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, viewport_w);
                 bracket.drawSelectionInSegment(editor_buf, seg.buf_line, seg.start_col, seg.end_col, seg_text_x, line_num_y, line_h, font_size, .{ .r = 0.35, .g = 0.55, .b = 0.95, .a = 0.35 });
-                review_overlay.drawReviewLineOverlay(wb, theme, editor_buf, file_path, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
+                review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
                 overlays.drawFindHighlights(wb, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
 
                 const semantic_tokens = blk: {
@@ -269,7 +301,9 @@ pub fn drawEditorViewport(
             line_num_y += line_h;
         }
     } else {
-        for (0..line_count) |idx| {
+        if (ghost_row != null and ghost_row.? < start_idx) line_num_y += ghost_newlines * line_h;
+        for (start_idx..line_count) |idx| {
+            if (line_num_y > 65 + editor_view_h) break;
             if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
                 const debug_here = blk: {
                     if (wb.debug_stop_path) |stop_path| {
@@ -284,7 +318,7 @@ pub fn drawEditorViewport(
                 }
                 decorations.drawDecorations(editor_buf, idx, text_x, line_num_y, line_h, content_w);
                 bracket.drawSelectionInSegment(editor_buf, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, .{ .r = 0.35, .g = 0.55, .b = 0.95, .a = 0.35 });
-                review_overlay.drawReviewLineOverlay(wb, theme, editor_buf, file_path, idx, text_x, line_num_y, line_h, font_size);
+                review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, idx, text_x, line_num_y, line_h, font_size);
                 overlays.drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
 
                 const semantic_tokens = blk: {
