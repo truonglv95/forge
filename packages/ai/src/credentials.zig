@@ -1,13 +1,6 @@
 const std = @import("std");
 const process_spawn = @import("forge-util").process_spawn;
 
-pub const gemini_env_vars = &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" };
-pub const keychain_service = "forge-gemini";
-pub const keychain_account = "default";
-pub const openrouter_env_vars = &[_][]const u8{"OPENROUTER_API_KEY"};
-pub const openrouter_keychain_service = "forge-openrouter";
-pub const openrouter_keychain_account = "default";
-
 pub const Credentials = struct {
     allocator: std.mem.Allocator,
     api_key: []u8,
@@ -31,15 +24,18 @@ pub const Credentials = struct {
         };
     }
 
-    /// Tries GEMINI_API_KEY / GOOGLE_API_KEY, then macOS Keychain (`forge-gemini` / `default`).
-    pub fn loadGemini(
+    /// Tries the given environment variables, then macOS Keychain with the given service / account.
+    pub fn load(
         allocator: std.mem.Allocator,
         io: std.Io,
         environ_map: ?*const std.process.Environ.Map,
+        env_vars: []const []const u8,
+        keychain_service: []const u8,
+        keychain_account: []const u8,
     ) !Credentials {
         _ = io;
         if (environ_map) |map| {
-            for (gemini_env_vars) |env_var| {
+            for (env_vars) |env_var| {
                 if (loadFromEnvMap(allocator, map, env_var)) |creds| {
                     return creds;
                 } else |err| switch (err) {
@@ -50,27 +46,6 @@ pub const Credentials = struct {
         }
 
         return loadFromKeychain(allocator, keychain_service, keychain_account);
-    }
-
-    /// Tries OPENROUTER_API_KEY, then macOS Keychain (`forge-openrouter` / `default`).
-    pub fn loadOpenRouter(
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        environ_map: ?*const std.process.Environ.Map,
-    ) !Credentials {
-        _ = io;
-        if (environ_map) |map| {
-            for (openrouter_env_vars) |env_var| {
-                if (loadFromEnvMap(allocator, map, env_var)) |creds| {
-                    return creds;
-                } else |err| switch (err) {
-                    error.NotFound => {},
-                    else => return err,
-                }
-            }
-        }
-
-        return loadFromKeychain(allocator, openrouter_keychain_service, openrouter_keychain_account);
     }
 
     pub fn loadFromKeychain(

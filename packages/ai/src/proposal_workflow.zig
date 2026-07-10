@@ -92,7 +92,8 @@ pub fn generateAndPersist(
     options: GenerateOptions,
 ) WorkflowError!Result {
     var provider_handle = provider_factory.create(allocator, io, environ_map, .{
-        .kind = provider_options.kind,
+        .provider_name = provider_options.provider_name,
+        .base_url = provider_options.base_url,
         .model = provider_options.model,
         .fake_response = provider_options.fake_response,
         .fake_plan_response = provider_options.fake_plan_response,
@@ -100,11 +101,13 @@ pub fn generateAndPersist(
         .stream_context = options.stream_context,
         .thinking_callback = options.thinking_callback,
         .thinking_context = options.thinking_context,
-    }) catch |err| switch (err) {
-        provider_factory.FactoryError.MissingCredentials => return error.MissingProviderCredentials,
-        else => return error.ProviderFailed,
+    }) catch |err| {
+        if (err == error.MissingCredentials) {
+            return error.MissingProviderCredentials;
+        }
+        return error.ProviderInternalError;
     };
-    defer provider_handle.deinit();
+    defer provider_handle.deinit(allocator);
 
     const route = routing.plan(.{
         .mode = switch (options.mode) {
@@ -146,7 +149,7 @@ pub fn generateAndPersist(
         run_record.makeRunId(allocator, timestamp_ms) catch return error.ProviderFailed;
     errdefer allocator.free(run_id);
 
-    const llm = provider_handle.interface();
+    const llm = provider_handle;
     const meta = llm.metadata();
 
     const images = multimodal.loadImages(allocator, io, root, options.attachments) catch &[_]provider.ImagePart{};
@@ -490,7 +493,7 @@ test "cli and ide surfaces produce identical proposal bodies" {
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello\n");
 
     const provider_options = provider_factory.Options{
-        .kind = .fake,
+        .provider_name = "fake",
         .fake_response = default_ask_response,
     };
 
@@ -534,7 +537,7 @@ test "cli and ide proposals have identical apply and undo outcomes" {
     const ide_root = workspace.WorkspaceRoot.init(ide_tmp.dir, ".");
 
     const provider_options = provider_factory.Options{
-        .kind = .fake,
+        .provider_name = "fake",
         .fake_response = default_ask_response,
     };
     var cli_result = try generateAndPersist(allocator, io, null, cli_root, "create notes", &.{}, provider_options, .{ .surface = .cli });
@@ -608,7 +611,7 @@ test "generateAndPersist wraps unparseable model text into empty proposal" {
     const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     const provider_options = provider_factory.Options{
-        .kind = .fake,
+        .provider_name = "fake",
         .fake_response = "not valid proposal json",
     };
 
@@ -634,7 +637,7 @@ test "generateAndPersist with ollama when server is running" {
     try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello\n");
 
     const provider_options = provider_factory.Options{
-        .kind = .ollama,
+        .provider_name = "ollama",
         .model = ollama_provider.default_model,
         .fake_response = "",
     };
@@ -671,7 +674,7 @@ test "generateAndPersist ollama via WorkspaceRoot.open path" {
     defer opened_root.close(io);
 
     const provider_options = provider_factory.Options{
-        .kind = .ollama,
+        .provider_name = "ollama",
         .model = ollama_provider.default_model,
         .fake_response = "",
     };

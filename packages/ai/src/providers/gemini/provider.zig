@@ -46,36 +46,48 @@ pub const GeminiProvider = struct {
     thinking_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     thinking_context: ?*anyopaque = null,
 
-    pub fn init(
+    pub fn create(
         allocator: std.mem.Allocator,
         io: std.Io,
-        creds: credentials.Credentials,
-        model_name: []const u8,
-        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
-        stream_context: ?*anyopaque,
-        thinking_callback: ?*const fn (?*anyopaque, []const u8) void,
-        thinking_context: ?*anyopaque,
-    ) GeminiProvider {
-        return .{
+        environ_map: ?*const std.process.Environ.Map,
+        options: anytype,
+    ) !provider.Provider {
+        const creds = credentials.Credentials.load(
+            allocator,
+            io,
+            environ_map,
+            &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" },
+            "forge-gemini",
+            "default",
+        ) catch |err| switch (err) {
+            error.NotFound => return error.MissingCredentials,
+            else => return err,
+        };
+
+        const ptr = try allocator.create(GeminiProvider);
+        ptr.* = .{
             .allocator = allocator,
             .io = io,
             .creds = creds,
-            .model_name = model_name,
+            .model_name = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse default_model else options.model) else default_model,
             .meta = .{
                 .provider_name = "gemini",
-                .model_name = model_name,
+                .model_name = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse default_model else options.model) else default_model,
                 .context_window = 1_048_576,
             },
             .latest_usage = .{},
-            .stream_callback = stream_callback,
-            .stream_context = stream_context,
-            .thinking_callback = thinking_callback,
-            .thinking_context = thinking_context,
+            .stream_callback = if (@hasField(@TypeOf(options), "stream_callback")) options.stream_callback else null,
+            .stream_context = if (@hasField(@TypeOf(options), "stream_context")) options.stream_context else null,
+            .thinking_callback = if (@hasField(@TypeOf(options), "thinking_callback")) options.thinking_callback else null,
+            .thinking_context = if (@hasField(@TypeOf(options), "thinking_context")) options.thinking_context else null,
         };
+        return ptr.providerInterface();
     }
 
-    pub fn deinit(self: *GeminiProvider) void {
+    pub fn deinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *GeminiProvider = @ptrCast(@alignCast(ptr));
         self.creds.deinit();
+        allocator.destroy(self);
     }
 
     pub fn providerInterface(self: *GeminiProvider) provider.Provider {
@@ -91,6 +103,7 @@ pub const GeminiProvider = struct {
                 .append_tool_user_text = appendToolUserTextImpl,
                 .append_tool_call = appendToolCallImpl,
                 .append_tool_result = appendToolResultImpl,
+                .deinit = deinit,
             },
         };
     }
@@ -478,9 +491,25 @@ test "GeminiProvider test mode" {
     };
 
     // GeminiProvider takes ownership of credentials.
-    var gemini = GeminiProvider.init(allocator, std.testing.io, creds, default_model, null, null, null, null);
-    defer gemini.deinit();
-    const p = gemini.providerInterface();
+    const ptr = try allocator.create(GeminiProvider);
+    ptr.* = GeminiProvider{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .creds = creds,
+        .model_name = default_model,
+        .meta = .{
+            .provider_name = "gemini",
+            .model_name = default_model,
+            .context_window = 1_048_576,
+        },
+        .latest_usage = .{},
+        .stream_callback = null,
+        .stream_context = null,
+        .thinking_callback = null,
+        .thinking_context = null,
+    };
+    var p = ptr.providerInterface();
+    defer p.deinit(allocator);
 
     var w_alloc = std.Io.Writer.Allocating.init(allocator);
     defer w_alloc.deinit();

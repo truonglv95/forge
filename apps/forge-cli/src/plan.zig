@@ -32,7 +32,7 @@ pub fn run(
     const progress_writer: ?*std.Io.Writer = if (parsed.flags.quiet or parsed.flags.json) null else writer;
     var cancel_token = scope.token();
 
-    var provider_options = ai_workflow.providerOptionsFromFlags(allocator, .plan, parsed.flags, io, opened.root);
+    var provider_options = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, "plan", io, opened.root);
     defer provider_options.deinit(allocator);
 
     const generated = ai_workflow.generateAndPersist(
@@ -43,7 +43,7 @@ pub fn run(
         .plan,
         intent,
         parsed.flags.files,
-        provider_options,
+        provider_options.options,
         .{
             .cancel_token = &cancel_token,
             .progress_writer = progress_writer,

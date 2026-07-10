@@ -41,20 +41,35 @@ pub const OpenRouterProvider = struct {
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
 
-    pub fn init(
+    pub fn create(
         allocator: std.mem.Allocator,
         io: std.Io,
-        creds: credentials.Credentials,
-        base_url: []const u8,
-        model_name: []const u8,
-        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
-        stream_context: ?*anyopaque,
-    ) !OpenRouterProvider {
+        environ_map: ?*const std.process.Environ.Map,
+        options: anytype,
+    ) !provider.Provider {
+        const creds = credentials.Credentials.load(
+            allocator,
+            io,
+            environ_map,
+            &[_][]const u8{"OPENROUTER_API_KEY"},
+            "forge-openrouter",
+            "default",
+        ) catch |err| switch (err) {
+            error.NotFound => return error.MissingCredentials,
+            else => return err,
+        };
+
+        const base_url = try resolveBaseUrl(allocator, environ_map, if (@hasField(@TypeOf(options), "base_url")) (if (@typeInfo(@TypeOf(options.base_url)) == .optional) options.base_url else options.base_url) else null);
+        defer allocator.free(base_url);
+        const model_name: []const u8 = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse default_model else options.model) else default_model;
+
         const owned_base = try allocator.dupe(u8, base_url);
         errdefer allocator.free(owned_base);
         const owned_model = try allocator.dupe(u8, model_name);
         errdefer allocator.free(owned_model);
-        return .{
+
+        const ptr = try allocator.create(OpenRouterProvider);
+        ptr.* = .{
             .allocator = allocator,
             .io = io,
             .creds = creds,
@@ -66,15 +81,18 @@ pub const OpenRouterProvider = struct {
                 .context_window = default_context_window,
             },
             .latest_usage = .{},
-            .stream_callback = stream_callback,
-            .stream_context = stream_context,
+            .stream_callback = if (@hasField(@TypeOf(options), "stream_callback")) options.stream_callback else null,
+            .stream_context = if (@hasField(@TypeOf(options), "stream_context")) options.stream_context else null,
         };
+        return ptr.providerInterface();
     }
 
-    pub fn deinit(self: *OpenRouterProvider) void {
+    pub fn deinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *OpenRouterProvider = @ptrCast(@alignCast(ptr));
         self.creds.deinit();
         self.allocator.free(self.base_url);
         self.allocator.free(self.model_name);
+        allocator.destroy(self);
     }
 
     pub fn providerInterface(self: *OpenRouterProvider) provider.Provider {
@@ -90,6 +108,7 @@ pub const OpenRouterProvider = struct {
                 .append_tool_user_text = appendToolUserTextImpl,
                 .append_tool_call = appendToolCallImpl,
                 .append_tool_result = appendToolResultImpl,
+                .deinit = deinit,
             },
         };
     }

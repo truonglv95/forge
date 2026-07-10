@@ -117,7 +117,9 @@ fn resolveEmbedBackend(
 
     if (options.embedding.provider != .local and options.prefer_gemini) {
         if (options.environ_map) |map| {
-            if (credentials.Credentials.loadGemini(allocator, io, map)) |creds| {
+            if (credentials.Credentials.load(allocator, io, map, &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" }, "forge-gemini", "default")) |creds_val| {
+                var creds = creds_val;
+                creds.deinit();
                 return .{
                     .allocator = allocator,
                     .dim = @intCast(gemini_embedder.dim),

@@ -121,36 +121,26 @@ fn resolveProviderKind(
     environ_map: *const std.process.Environ.Map,
     parsed: args_mod.CliArgs,
 ) ProviderKind {
-    const kind = ai.provider_factory.Kind.parse(parsed.flags.provider);
-    return switch (kind) {
-        .fake => .fake,
-        .ollama => .ollama,
-        .gemini => blk: {
-            var creds = ai.credentials.Credentials.loadGemini(allocator, io, environ_map) catch return .missing;
-            creds.deinit();
-            break :blk .gemini;
-        },
-        .openrouter => blk: {
-            var creds = ai.credentials.Credentials.loadOpenRouter(allocator, io, environ_map) catch return .missing;
-            creds.deinit();
-            break :blk .openrouter;
-        },
-        .auto => blk: {
-            const host = ai.ollama_provider.resolveHost(allocator, environ_map, null) catch return .fake;
-            defer allocator.free(host);
-            if (ai.ollama_provider.isReachable(allocator, io, host)) break :blk .ollama;
+    const name = parsed.flags.provider orelse "auto";
+    if (std.mem.eql(u8, name, "fake")) return .fake;
+    if (std.mem.eql(u8, name, "ollama")) return .ollama;
+    if (std.mem.eql(u8, name, "openrouter")) return .openrouter;
+    if (std.mem.eql(u8, name, "gemini")) return .gemini;
 
-            var openrouter_creds = ai.credentials.Credentials.loadOpenRouter(allocator, io, environ_map) catch null;
-            if (openrouter_creds) |*creds| {
-                creds.deinit();
-                break :blk .openrouter;
-            }
-
-            var creds = ai.credentials.Credentials.loadGemini(allocator, io, environ_map) catch return .fake;
-            creds.deinit();
-            break :blk .gemini;
-        },
-    };
+    if (std.mem.eql(u8, name, "auto")) {
+        if (ai.ollama_provider.isReachable(allocator, io, ai.ollama_provider.default_host)) return .ollama;
+        if (ai.credentials.Credentials.load(allocator, io, environ_map, &[_][]const u8{"OPENROUTER_API_KEY"}, "forge-openrouter", "default")) |c| {
+            var mut_c = c;
+            mut_c.deinit();
+            return .openrouter;
+        } else |_| {}
+        if (ai.credentials.Credentials.load(allocator, io, environ_map, &[_][]const u8{"GEMINI_API_KEY"}, "forge-gemini", "default")) |c| {
+            var mut_c = c;
+            mut_c.deinit();
+            return .gemini;
+        } else |_| {}
+    }
+    return .fake;
 }
 
 fn appendCheck(allocator: std.mem.Allocator, checks: *std.ArrayList(Check), name: []const u8, ok: bool, detail: []const u8) !void {

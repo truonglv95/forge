@@ -168,6 +168,7 @@ pub const Provider = struct {
             tool_name: []const u8,
             result: []const u8,
         ) ProviderError!void,
+        deinit: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void,
     };
 
     pub const ToolLoopBinding = struct {
@@ -313,6 +314,10 @@ pub const Provider = struct {
         result: []const u8,
     ) ProviderError!void {
         return self.vtable.append_tool_result(self.ptr, allocator, conversation, tool_name, result);
+    }
+
+    pub fn deinit(self: Provider, allocator: std.mem.Allocator) void {
+        self.vtable.deinit(self.ptr, allocator);
     }
 
     pub fn toolLoopBinding(

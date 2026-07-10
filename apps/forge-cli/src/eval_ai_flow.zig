@@ -136,12 +136,12 @@ pub fn run(
             };
             var result = ai.agent.run(allocator, io, environ_map, eval_ws.root, task.intent, .{
                 .max_steps = max_steps,
-                .provider_options = provider_opts,
+                .provider_options = provider_opts.options,
                 .workspace_cwd = ".",
                 .active_file = active_file,
                 .mode = .agent,
                 .capability_profile = .propose,
-                .max_repair_attempts = if (provider_opts.kind == .fake) 0 else 2,
+                .max_repair_attempts = if (std.mem.eql(u8, provider_opts.options.provider_name, "fake")) 0 else 2,
             }) catch {
                 const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
                 try latencies.append(allocator, latency_ms);
