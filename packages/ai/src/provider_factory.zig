@@ -42,9 +42,22 @@ const CreateFn = *const fn (
     options: Options,
 ) anyerror!provider_mod.Provider;
 
+const CredentialAvailability = struct {
+    env_vars: []const []const u8,
+    keychain_service: []const u8,
+    keychain_account: []const u8 = "default",
+};
+
+const Availability = union(enum) {
+    always,
+    ollama_probe,
+    credentials: CredentialAvailability,
+};
+
 const ProviderDef = struct {
     name: []const u8,
     create: CreateFn,
+    availability: Availability,
 };
 
 fn wrapCreateFake(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
@@ -61,11 +74,78 @@ fn wrapCreateOpenRouter(allocator: std.mem.Allocator, io: std.Io, environ_map: ?
 }
 
 const registry = [_]ProviderDef{
-    .{ .name = "fake", .create = wrapCreateFake },
-    .{ .name = "gemini", .create = wrapCreateGemini },
-    .{ .name = "ollama", .create = wrapCreateOllama },
-    .{ .name = "openrouter", .create = wrapCreateOpenRouter },
+    .{ .name = "ollama", .create = wrapCreateOllama, .availability = .ollama_probe },
+    .{
+        .name = "openrouter",
+        .create = wrapCreateOpenRouter,
+        .availability = .{ .credentials = .{
+            .env_vars = &[_][]const u8{"OPENROUTER_API_KEY"},
+            .keychain_service = "forge-openrouter",
+        } },
+    },
+    .{
+        .name = "gemini",
+        .create = wrapCreateGemini,
+        .availability = .{ .credentials = .{
+            .env_vars = &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" },
+            .keychain_service = "forge-gemini",
+        } },
+    },
+    .{ .name = "fake", .create = wrapCreateFake, .availability = .always },
 };
+
+fn findProvider(name: []const u8) ?*const ProviderDef {
+    for (&registry) |*def| {
+        if (std.mem.eql(u8, def.name, name)) return def;
+    }
+    return null;
+}
+
+fn providerAvailable(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    options: Options,
+    def: ProviderDef,
+) bool {
+    return switch (def.availability) {
+        .always => true,
+        .ollama_probe => blk: {
+            const host = ollama_provider.resolveHost(allocator, environ_map, options.base_url) catch break :blk false;
+            defer allocator.free(host);
+            break :blk ollama_provider.isReachable(allocator, io, host);
+        },
+        .credentials => |cred| blk: {
+            if (credentials.Credentials.load(
+                allocator,
+                io,
+                environ_map,
+                cred.env_vars,
+                cred.keychain_service,
+                cred.keychain_account,
+            )) |creds_val| {
+                var creds = creds_val;
+                creds.deinit();
+                break :blk true;
+            } else |_| {
+                break :blk false;
+            }
+        },
+    };
+}
+
+fn resolveProviderName(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    options: Options,
+) []const u8 {
+    if (!std.mem.eql(u8, options.provider_name, "auto")) return options.provider_name;
+    for (registry) |def| {
+        if (providerAvailable(allocator, io, environ_map, options, def)) return def.name;
+    }
+    return "fake";
+}
 
 pub fn create(
     allocator: std.mem.Allocator,
@@ -73,38 +153,14 @@ pub fn create(
     environ_map: ?*const std.process.Environ.Map,
     options: Options,
 ) !provider_mod.Provider {
-    var resolved_name = options.provider_name;
+    const resolved_name = resolveProviderName(allocator, io, environ_map, options);
 
-    if (std.mem.eql(u8, resolved_name, "auto")) {
-        resolved_name = "fake"; // Fallback
-
-        if (ollama_provider.isReachable(allocator, io, ollama_provider.default_host)) {
-            resolved_name = "ollama";
-        } else {
-            // Check if openrouter key exists
-            if (credentials.Credentials.load(allocator, io, environ_map, &[_][]const u8{"OPENROUTER_API_KEY"}, "forge-openrouter", "default")) |creds_val| {
-                var creds = creds_val;
-                creds.deinit();
-                resolved_name = "openrouter";
-            } else |_| {
-                // Check if gemini key exists
-                if (credentials.Credentials.load(allocator, io, environ_map, &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" }, "forge-gemini", "default")) |creds_val2| {
-                    var creds2 = creds_val2;
-                    creds2.deinit();
-                    resolved_name = "gemini";
-                } else |_| {}
-            }
-        }
-    }
-
-    for (registry) |def| {
-        if (std.mem.eql(u8, def.name, resolved_name)) {
-            return def.create(allocator, io, environ_map, options) catch |err| switch (err) {
-                error.MissingCredentials => return error.MissingCredentials,
-                error.OutOfMemory => return error.OutOfMemory,
-                else => return error.ProviderInternalError,
-            };
-        }
+    if (findProvider(resolved_name)) |def| {
+        return def.create(allocator, io, environ_map, options) catch |err| switch (err) {
+            error.MissingCredentials => return error.MissingCredentials,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.ProviderInternalError,
+        };
     }
 
     // Fallback to fake if unknown

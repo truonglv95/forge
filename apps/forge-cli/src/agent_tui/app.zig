@@ -687,7 +687,7 @@ pub const App = struct {
         }
 
         const mode = self.agent_mode;
-        const route = ai.routing.plan(.{
+        const route = ai.route_resolver.resolveHeuristic(.{
             .mode = mode,
             .intent = "",
             .has_active_file = self.parsed.flags.files.len > 0,
@@ -696,7 +696,7 @@ pub const App = struct {
             .explicit_files = explicit,
             .max_bytes = contextBudgetBytes(self.parsed.flags),
             .workspace_cwd = self.opened.path,
-        });
+        }).route;
 
         var ctx_builder = try ai.context_loader.build(self.allocator, self.io, self.opened.root, route.context);
         defer ctx_builder.deinit();
@@ -1292,7 +1292,7 @@ pub const App = struct {
         var embedding = ai_workflow.embeddingOptionsFromFlags(self.allocator, self.parsed.flags, self.io, self.opened.root);
         defer embedding.deinit(self.allocator);
 
-        const route = ai.routing.plan(.{
+        const route = ai.route_resolver.resolveHeuristic(.{
             .mode = self.agent_mode,
             .intent = intent,
             .has_active_file = self.parsed.flags.files.len > 0,
@@ -1302,7 +1302,7 @@ pub const App = struct {
             .max_bytes = contextBudgetBytes(self.parsed.flags),
             .workspace_cwd = self.opened.path,
             .embedding = embedding.options,
-        });
+        }).route;
 
         var ctx_builder = ai.context_loader.build(self.allocator, self.io, self.opened.root, route.context) catch return null;
         defer ctx_builder.deinit();

@@ -8,6 +8,7 @@ const tool_step_card = @import("../agent/tool_step_card.zig");
 const agent_composer = @import("../agent/agent_composer.zig");
 const scrollbar = @import("../core/scrollbar.zig");
 const agent_panel = @import("../agent/agent_panel.zig");
+const tokens = @import("../tokens.zig");
 const agent_scope_picker_mod = @import("../../agent/scope_picker.zig");
 const ai = @import("forge-ai");
 const diff_line_style = @import("../diff_line_style.zig");
@@ -16,7 +17,7 @@ const Workbench = @import("../../workbench.zig").Workbench;
 const chat_layout = @import("../../workbench/chat_layout.zig");
 const chat_message_lines = @import("../agent/chat_message_lines.zig");
 
-const chat_composer_gap: f32 = 12.0;
+const chat_composer_gap: f32 = tokens.space.lg;
 
 fn phaseShowsLive(phase: anytype) bool {
     return switch (phase) {
@@ -27,7 +28,7 @@ fn phaseShowsLive(phase: anytype) bool {
 
 pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     wb.rendered_code_blocks.clearRetainingCapacity();
-    const pad: f32 = 20;
+    const pad: f32 = tokens.space.xxl;
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
     renderer.Renderer.pushClipRect(agent_x, layout.header_height, agent_w, h - layout.header_height - layout.status_height);
@@ -45,14 +46,14 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     }
 
     const chat_tab_y = layout.header_height;
-    renderer.Renderer.drawRect(agent_x, chat_tab_y, agent_w, h - layout.header_height - layout.status_height, .{ .r = 0.055, .g = 0.055, .b = 0.06, .a = 1.0 });
-    renderer.Renderer.drawText("Forge Coding", agent_x + 16, chat_tab_y + 18, 13.0, .{ .r = 0.82, .g = 0.84, .b = 0.88, .a = 1.0 });
+    renderer.Renderer.drawRect(agent_x, chat_tab_y, agent_w, h - layout.header_height - layout.status_height, tokens.color.surface);
+    renderer.Renderer.drawText("Forge Coding", agent_x + tokens.space.xl, chat_tab_y + 18, 13.0, tokens.color.text_secondary);
 
     const mx = state.last_mouse_x;
     const my = state.last_mouse_y;
 
-    const icon_c = renderer.Color{ .r = 0.48, .g = 0.52, .b = 0.6, .a = 1.0 };
-    const hover_c = renderer.Color{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 };
+    const icon_c = tokens.color.text_muted;
+    const hover_c = tokens.color.surface_raised;
     var rx = agent_x + agent_w - 34;
 
     const icon_y = chat_tab_y + 17;
@@ -99,7 +100,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
 
         const user_style = chat_bubble.BubbleStyle{
             .bg = .{ .r = 0.24, .g = 0.24, .b = 0.25, .a = 1.0 },
-            .fg = .{ .r = 0.9, .g = 0.91, .b = 0.94, .a = 1.0 },
+            .fg = tokens.color.text_primary,
         };
         const history_prefix = content_y - (chat_top - wb.chat_scroll_y);
         const history_count = wb.chat_history.items.len;

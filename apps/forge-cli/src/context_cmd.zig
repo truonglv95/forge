@@ -26,7 +26,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
     var embedding = ai_workflow.embeddingOptionsFromFlags(allocator, parsed.flags, io, opened.root);
     defer embedding.deinit(allocator);
 
-    const route = ai.routing.plan(.{
+    const route = ai.route_resolver.resolveHeuristic(.{
         .mode = mode,
         .intent = intent_text,
         .has_active_file = parsed.flags.files.len > 0,
@@ -36,7 +36,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
         .max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else default_context_budget_bytes,
         .workspace_cwd = opened.path,
         .embedding = embedding.options,
-    });
+    }).route;
 
     var tools_buf: [256]u8 = undefined;
     const tools_summary = ai.routing.formatToolsSummary(

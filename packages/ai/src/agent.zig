@@ -14,6 +14,8 @@ const tool_executor = @import("tool_executor.zig");
 const proposal_workflow = @import("proposal_workflow.zig");
 const conversation = @import("conversation.zig");
 const multimodal = @import("multimodal.zig");
+const context_phase = @import("agent/context_phase.zig");
+const tool_phase = @import("agent/tool_phase.zig");
 const agent_loop = @import("agent/loop.zig");
 const mcp_registry = @import("mcp_registry.zig");
 const progress = @import("progress.zig");
@@ -23,7 +25,7 @@ const proposal_normalize = @import("proposal_normalize.zig");
 const proposal_precondition = @import("proposal_precondition.zig");
 const subagent = @import("subagent.zig");
 const routing = @import("routing.zig");
-const intent_classifier = @import("intent_classifier.zig");
+const route_resolver = @import("route_resolver.zig");
 const context_manifest = @import("context_manifest.zig");
 const agent_event = @import("agent_event.zig");
 
@@ -181,18 +183,16 @@ pub fn run(
         .embedding = effective_config.embedding,
     };
 
-    const resolved: intent_classifier.ResolveResult = if (effective_config.auto_capability and config.resume_session_id == null)
-        intent_classifier.resolveIntent(
-            allocator,
-            route_input,
-            provider_handle,
-            effective_config.cancel_token,
-            .{},
-        )
-    else
-        .{ .intent = routing.classify(route_input), .used_llm = false };
-
-    const route = routing.planWithIntent(resolved.intent, route_input, load_opts);
+    var resolved_context = context_phase.build(allocator, io, root, .{
+        .route = route_input,
+        .load = load_opts,
+        .provider = if (effective_config.auto_capability and config.resume_session_id == null) provider_handle else null,
+        .cancel_token = effective_config.cancel_token,
+        .resolver = .{ .use_llm = effective_config.auto_capability and config.resume_session_id == null },
+    }) catch return error.WorkspaceFailed;
+    defer resolved_context.deinit();
+    const resolved_route = resolved_context.route;
+    const route = resolved_route.route;
 
     // Let the classified intent pick the least-privilege capability unless the
     // caller pinned one explicitly. On resume we keep the persisted profile.
@@ -200,20 +200,9 @@ pub fn run(
         effective_config.capability_profile = route.capability_profile;
     }
 
-    var ctx_builder = context_loader.build(allocator, io, root, route.context) catch return error.WorkspaceFailed;
-    defer ctx_builder.deinit();
-    {
-        var routing_buf: [160]u8 = undefined;
-        const summary = std.fmt.bufPrint(&routing_buf, "mode={s} task={s} profile={s}{s}", .{
-            @tagName(config.mode),
-            routing.intentLabel(route.intent),
-            @tagName(route.capability_profile),
-            if (resolved.used_llm) " classifier=llm" else "",
-        }) catch "mode=unknown task=unknown profile=unknown";
-        ctx_builder.addBlock(.intent, "routing", summary) catch {};
-    }
+    var ctx_builder = &resolved_context.builder;
     emitProgress(effective_config, .context_built);
-    event_logger.contextManifestBuilt(&ctx_builder) catch {};
+    event_logger.contextManifestBuilt(ctx_builder) catch {};
 
     var tool_cache = tool_executor.ToolCache.init(allocator);
     defer tool_cache.deinit();
@@ -246,88 +235,109 @@ pub fn run(
     defer if (explore_text) |text| allocator.free(text);
     const used_native_loop = blk: {
         const llm = provider_handle;
-        if (llm.supportsToolLoop()) {
-            const NativeCtx = struct {
-                allocator: std.mem.Allocator,
-                io: std.Io,
-                workspace_path: []const u8,
-                session_id: []const u8,
-                intent: []const u8,
-                steps: *std.ArrayList(Step),
-                config: Config,
-                provider_kind: []const u8,
+        const NativeCtx = struct {
+            allocator: std.mem.Allocator,
+            io: std.Io,
+            workspace_path: []const u8,
+            session_id: []const u8,
+            intent: []const u8,
+            steps: *std.ArrayList(Step),
+            config: Config,
+            provider_kind: []const u8,
 
-                fn onStep(ctx: ?*anyopaque, index: u32, kind: []const u8, summary: []const u8) void {
-                    const self: *@This() = @ptrCast(@alignCast(ctx.?));
-                    appendStep(self.allocator, self.steps, index, kind, summary, null, self.config) catch {};
+            fn onTurn(ctx: ?*anyopaque, index: u32) void {
+                const self: *@This() = @ptrCast(@alignCast(ctx.?));
+                if (self.config.turn_callback) |callback| {
+                    callback(self.config.turn_context, index);
                 }
+            }
 
-                fn onCheckpoint(ctx: ?*anyopaque, conversation_json: []const u8, next_step_index: u32, pending_tool: []const u8, pending_args_json: []const u8) bool {
-                    const self: *@This() = @ptrCast(@alignCast(ctx.?));
-                    const body = formatCheckpointSessionJson(
-                        self.allocator,
-                        self.session_id,
-                        self.intent,
-                        self.config,
-                        self.steps.items,
-                        conversation_json,
-                        next_step_index,
-                        pending_tool,
-                        pending_args_json,
-                        self.provider_kind,
-                        if (pending_tool.len > 0) "tool_pending" else "exploring",
-                    ) catch return false;
-                    defer self.allocator.free(body);
-                    workspace.sessions.persistSession(self.io, self.workspace_path, self.session_id, body) catch return false;
-                    return true;
+            fn onStepBegin(ctx: ?*anyopaque, index: u32, tool_name: []const u8, args_json: []const u8) void {
+                const self: *@This() = @ptrCast(@alignCast(ctx.?));
+                if (self.config.step_begin_callback) |callback| {
+                    callback(self.config.step_begin_context, .{ .index = index, .tool_name = tool_name, .args_json = args_json });
                 }
-            };
-            var native_ctx = NativeCtx{
-                .allocator = allocator,
-                .io = io,
-                .workspace_path = effective_config.workspace_cwd,
-                .session_id = session_id,
-                .intent = intent,
-                .steps = &steps,
-                .config = effective_config,
-                .provider_kind = llm.metadata().provider_name,
-            };
+            }
 
-            var tool_binding = llm.toolLoopBinding(io, &mcp, effective_config.cancel_token);
-            const raw_declarations = llm.toolDeclarationsJson(allocator, &mcp) catch return error.ProviderFailed;
-            defer allocator.free(raw_declarations);
-            const preloaded_retrieval = context_manifest.hasPreloadedRetrieval(&ctx_builder);
-            const declarations = routing.filterDeclarationsForRoute(
-                allocator,
-                raw_declarations,
-                effective_config.capability_profile,
-                route.intent,
-                intent,
-                preloaded_retrieval,
-            ) catch return error.ProviderFailed;
-            defer allocator.free(declarations);
-            var loop_state = try runExploreLoop(
-                allocator,
-                tool_binding.transport(),
-                declarations,
-                intent,
-                &ctx_builder,
-                tool_ctx,
-                &mcp,
-                effective_config,
-                route.intent,
-                preloaded_retrieval,
-                NativeCtx.onStep,
-                &native_ctx,
-                NativeCtx.onCheckpoint,
-                &native_ctx,
-            );
+            fn onStep(ctx: ?*anyopaque, index: u32, kind: []const u8, summary: []const u8) void {
+                const self: *@This() = @ptrCast(@alignCast(ctx.?));
+                appendStep(self.allocator, self.steps, index, kind, summary, null, self.config) catch {};
+            }
+
+            fn onCheckpoint(ctx: ?*anyopaque, conversation_json: []const u8, next_step_index: u32, pending_tool: []const u8, pending_args_json: []const u8) bool {
+                const self: *@This() = @ptrCast(@alignCast(ctx.?));
+                const body = formatCheckpointSessionJson(
+                    self.allocator,
+                    self.session_id,
+                    self.intent,
+                    self.config,
+                    self.steps.items,
+                    conversation_json,
+                    next_step_index,
+                    pending_tool,
+                    pending_args_json,
+                    self.provider_kind,
+                    if (pending_tool.len > 0) "tool_pending" else "exploring",
+                ) catch return false;
+                defer self.allocator.free(body);
+                workspace.sessions.persistSession(self.io, self.workspace_path, self.session_id, body) catch return false;
+                return true;
+            }
+        };
+        var native_ctx = NativeCtx{
+            .allocator = allocator,
+            .io = io,
+            .workspace_path = effective_config.workspace_cwd,
+            .session_id = session_id,
+            .intent = intent,
+            .steps = &steps,
+            .config = effective_config,
+            .provider_kind = llm.metadata().provider_name,
+        };
+
+        if (tool_phase.runNative(allocator, .{
+            .io = io,
+            .llm = llm,
+            .mcp = &mcp,
+            .intent = intent,
+            .ctx_builder = ctx_builder,
+            .tool_ctx = tool_ctx,
+            .profile = effective_config.capability_profile,
+            .task_intent = route.intent,
+            .max_steps = effective_config.max_steps,
+            .cancel_token = effective_config.cancel_token,
+            .turn_callback = if (effective_config.turn_callback != null) NativeCtx.onTurn else null,
+            .turn_context = &native_ctx,
+            .step_begin_callback = if (effective_config.step_begin_callback != null) NativeCtx.onStepBegin else null,
+            .step_begin_context = &native_ctx,
+            .step_callback = NativeCtx.onStep,
+            .step_context = &native_ctx,
+            .checkpoint_callback = NativeCtx.onCheckpoint,
+            .checkpoint_context = &native_ctx,
+            .initial_conversation_json = effective_config.resume_conversation_json,
+            .initial_step_index = effective_config.resume_next_step_index,
+            .pending_tool = effective_config.resume_pending_tool,
+            .pending_args_json = effective_config.resume_pending_tool_args,
+            .approval_callback = effective_config.approval_callback,
+            .approval_context = effective_config.approval_context,
+            .approve_every_time_tools = effective_config.approve_every_time_tools,
+        })) |maybe_loop_state| {
+            var loop_state = maybe_loop_state orelse break :blk false;
             defer loop_state.deinit(allocator);
             explore_conversation = allocator.dupe(u8, loop_state.conversation_json) catch return error.WorkspaceFailed;
             if (loop_state.final_text) |text| explore_text = allocator.dupe(u8, text) catch return error.WorkspaceFailed;
             break :blk true;
+        } else |err| switch (err) {
+            error.Cancelled => return error.Cancelled,
+            error.AuthenticationFailed => return error.AuthenticationFailed,
+            error.RateLimitExceeded => return error.RateLimitExceeded,
+            error.ContextLengthExceeded => return error.ContextLengthExceeded,
+            error.NetworkError => return error.NetworkError,
+            error.StepLimitReached => return error.StepLimitReached,
+            error.DuplicateLoop => return error.DuplicateLoop,
+            error.NoProgress => return error.NoProgress,
+            else => return error.ProviderFailed,
         }
-        break :blk false;
     };
 
     if (used_native_loop) {
@@ -424,7 +434,7 @@ pub fn run(
     const images = multimodal.loadImages(allocator, io, root, config.attachments) catch &[_]provider_mod.ImagePart{};
     defer if (images.len > 0) multimodal.freeImages(allocator, images);
 
-    var planner_inst = planner.Planner.init(allocator, llm, &ctx_builder, effective_config.conversation, images);
+    var planner_inst = planner.Planner.init(allocator, llm, ctx_builder, effective_config.conversation, images);
 
     var response = std.Io.Writer.Allocating.init(allocator);
     defer response.deinit();
@@ -444,7 +454,7 @@ pub fn run(
         environ_map,
         &planner_inst,
         cancel_token,
-        &ctx_builder,
+        ctx_builder,
         &event_logger,
     )) |plan_text_opt| {
         if (plan_text_opt) |plan_text| {
@@ -711,21 +721,28 @@ fn maybeAugmentValidationReportWithSubagents(
         const sub_intent = std.fmt.allocPrint(allocator, "{s}\n\n# Validation report\n{s}\n", .{ spec.prompt, clipped_report }) catch continue;
         defer allocator.free(sub_intent);
 
-        const sub_route = routing.plan(.{
-            .mode = .agent,
-            .intent = sub_intent,
-            .has_active_file = config.active_file != null,
-            .has_selection = config.has_selection,
-        }, .{
-            .intent = sub_intent,
-            .explicit_files = config.explicit_files,
-            .active_file = config.active_file,
-            .attachments = &.{},
-            .include_project_rules = true,
-            .workspace_cwd = config.workspace_cwd,
-            .recent_files = &.{},
-            .max_bytes = spec.max_bytes,
-        });
+        const sub_route = route_resolver.resolve(
+            allocator,
+            .{
+                .mode = .agent,
+                .intent = sub_intent,
+                .has_active_file = config.active_file != null,
+                .has_selection = config.has_selection,
+            },
+            .{
+                .intent = sub_intent,
+                .explicit_files = config.explicit_files,
+                .active_file = config.active_file,
+                .attachments = &.{},
+                .include_project_rules = true,
+                .workspace_cwd = config.workspace_cwd,
+                .recent_files = &.{},
+                .max_bytes = spec.max_bytes,
+            },
+            llm,
+            config.cancel_token,
+            .{},
+        ).route;
         var sub_ctx_builder = context_loader.build(allocator, io, tool_ctx.root, sub_route.context) catch continue;
         defer sub_ctx_builder.deinit();
 
@@ -748,7 +765,7 @@ fn maybeAugmentValidationReportWithSubagents(
                 return false;
             }
         };
-        var loop_state = runExploreLoop(
+        var loop_state = tool_phase.runTransport(
             allocator,
             binding.transport(),
             declarations,
@@ -757,21 +774,15 @@ fn maybeAugmentValidationReportWithSubagents(
             sub_tool_ctx,
             mcp,
             .{
-                .max_steps = spec.max_steps,
-                .provider_options = config.provider_options,
-                .mode = .agent,
-                .capability_profile = .read_only,
-                .workspace_cwd = config.workspace_cwd,
+                .max_tool_steps = spec.max_steps,
                 .cancel_token = config.cancel_token,
-                .max_repair_attempts = 0,
-                .mcp_enabled = false,
+                .step_callback = Noop.onStep,
+                .step_context = null,
+                .checkpoint_callback = Noop.onCheckpoint,
+                .checkpoint_context = null,
+                .task_intent = .debug_failure,
+                .preloaded_retrieval = preloaded_retrieval,
             },
-            .debug_failure,
-            preloaded_retrieval,
-            Noop.onStep,
-            null,
-            Noop.onCheckpoint,
-            null,
         ) catch continue;
         defer loop_state.deinit(allocator);
 
@@ -976,75 +987,6 @@ fn appendStep(
         .summary = allocator.dupe(u8, summary) catch return error.WorkspaceFailed,
         .run_id = if (run_id) |id| allocator.dupe(u8, id) catch return error.WorkspaceFailed else null,
     }) catch return error.WorkspaceFailed;
-}
-
-fn runExploreLoop(
-    allocator: std.mem.Allocator,
-    transport: @import("agent/turn.zig").Transport,
-    declarations: []const u8,
-    intent: []const u8,
-    ctx_builder: *const @import("context.zig").ContextBuilder,
-    tool_ctx: tool_executor.Context,
-    mcp: *mcp_registry.Registry,
-    config: Config,
-    task_intent: routing.TaskIntent,
-    preloaded_retrieval: bool,
-    on_step: agent_loop.StepCallback,
-    on_step_ctx: ?*anyopaque,
-    on_checkpoint: agent_loop.CheckpointCallback,
-    on_checkpoint_ctx: ?*anyopaque,
-) AgentError!agent_loop.RunState {
-    const LoopBridge = struct {
-        config: Config,
-
-        fn onTurn(ctx: ?*anyopaque, index: u32) void {
-            const self: *@This() = @ptrCast(@alignCast(ctx.?));
-            if (self.config.turn_callback) |callback| {
-                callback(self.config.turn_context, index);
-            }
-        }
-
-        fn onStepBegin(ctx: ?*anyopaque, index: u32, tool_name: []const u8, args_json: []const u8) void {
-            const self: *@This() = @ptrCast(@alignCast(ctx.?));
-            if (self.config.step_begin_callback) |callback| {
-                callback(self.config.step_begin_context, .{ .index = index, .tool_name = tool_name, .args_json = args_json });
-            }
-        }
-    };
-    var loop_bridge = LoopBridge{ .config = config };
-
-    return agent_loop.run(allocator, transport, declarations, intent, ctx_builder, tool_ctx, mcp, .{
-        .max_tool_steps = config.max_steps,
-        .cancel_token = config.cancel_token,
-        .turn_callback = if (config.turn_callback != null) LoopBridge.onTurn else null,
-        .turn_context = &loop_bridge,
-        .step_begin_callback = if (config.step_begin_callback != null) LoopBridge.onStepBegin else null,
-        .step_begin_context = &loop_bridge,
-        .step_callback = on_step,
-        .step_context = on_step_ctx,
-        .checkpoint_callback = on_checkpoint,
-        .checkpoint_context = on_checkpoint_ctx,
-        .initial_conversation_json = config.resume_conversation_json,
-        .initial_step_index = config.resume_next_step_index,
-        .pending_tool = config.resume_pending_tool,
-        .pending_args_json = config.resume_pending_tool_args,
-        .approval_callback = config.approval_callback,
-        .approval_context = config.approval_context,
-        .approve_every_time_tools = config.approve_every_time_tools,
-        .task_intent = task_intent,
-        .preloaded_retrieval = preloaded_retrieval,
-    }) catch |err| switch (err) {
-        error.Cancelled => return error.Cancelled,
-        error.AuthenticationFailed => return error.AuthenticationFailed,
-        error.RateLimitExceeded => return error.RateLimitExceeded,
-        error.ContextLengthExceeded => return error.ContextLengthExceeded,
-        error.NetworkError => return error.NetworkError,
-        error.StepLimitReached => return error.StepLimitReached,
-        error.DuplicateLoop => return error.DuplicateLoop,
-        error.NoProgress => return error.NoProgress,
-        error.WorkspaceFailed => return error.WorkspaceFailed,
-        else => return error.ProviderFailed,
-    };
 }
 
 fn mapToolError(err: tool_executor.AgentToolError) AgentError {

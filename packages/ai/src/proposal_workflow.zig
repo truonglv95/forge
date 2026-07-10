@@ -5,6 +5,7 @@ const provider_factory = @import("provider_factory.zig");
 const context_loader = @import("context_loader.zig");
 const codebase_search = @import("codebase_search.zig");
 const routing = @import("routing.zig");
+const context_phase = @import("agent/context_phase.zig");
 const tools = @import("tools.zig");
 const planner = @import("planner.zig");
 const multimodal = @import("multimodal.zig");
@@ -109,37 +110,31 @@ pub fn generateAndPersist(
     };
     defer provider_handle.deinit(allocator);
 
-    const route = routing.plan(.{
+    const route_input = routing.RouteInput{
         .mode = switch (options.mode) {
             .ask => tools.Mode.ask,
             .plan => tools.Mode.plan,
         },
         .intent = intent,
         .has_active_file = options.active_file != null,
-    }, .{
-        .intent = intent,
-        .explicit_files = files,
-        .include_project_rules = options.include_project_rules,
-        .active_file = options.active_file,
-        .attachments = options.attachments,
-        .workspace_cwd = options.workspace_cwd,
-        .recent_files = options.recent_files,
-        .embedding = options.embedding,
-    });
-    var ctx_builder = context_loader.build(allocator, io, root, route.context) catch return error.ProviderFailed;
-    defer ctx_builder.deinit();
-    {
-        var routing_buf: [128]u8 = undefined;
-        const summary = routing.formatRoutingSummary(&routing_buf, .{
-            .mode = switch (options.mode) {
-                .ask => tools.Mode.ask,
-                .plan => tools.Mode.plan,
-            },
+    };
+    var resolved_context = context_phase.build(allocator, io, root, .{
+        .route = route_input,
+        .load = .{
             .intent = intent,
-            .has_active_file = options.active_file != null,
-        }, route);
-        ctx_builder.addBlock(.intent, "routing", summary) catch {};
-    }
+            .explicit_files = files,
+            .include_project_rules = options.include_project_rules,
+            .active_file = options.active_file,
+            .attachments = options.attachments,
+            .workspace_cwd = options.workspace_cwd,
+            .recent_files = options.recent_files,
+            .embedding = options.embedding,
+        },
+        .provider = provider_handle,
+        .cancel_token = options.cancel_token,
+    }) catch return error.ProviderFailed;
+    defer resolved_context.deinit();
+    var ctx_builder = &resolved_context.builder;
     emitProgress(options, .context_built);
 
     const timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
@@ -155,7 +150,7 @@ pub fn generateAndPersist(
     const images = multimodal.loadImages(allocator, io, root, options.attachments) catch &[_]provider.ImagePart{};
     defer if (images.len > 0) multimodal.freeImages(allocator, images);
 
-    var plan_inst = planner.Planner.init(allocator, llm, &ctx_builder, options.conversation, images);
+    var plan_inst = planner.Planner.init(allocator, llm, ctx_builder, options.conversation, images);
 
     var cancel_src = kernel.cancellation.CancellationTokenSource.init(allocator) catch return error.ProviderFailed;
     defer cancel_src.deinit();
@@ -195,7 +190,7 @@ pub fn generateAndPersist(
         spec_writer.persistFromPlan(allocator, io, root, run_id, plan_body, intent) catch {};
 
         ctx_builder.addBlock(.intent, "implementation_plan", plan_body) catch return error.ProviderFailed;
-        plan_inst = planner.Planner.init(allocator, llm, &ctx_builder, options.conversation, images);
+        plan_inst = planner.Planner.init(allocator, llm, ctx_builder, options.conversation, images);
     } else if (options.mode == .plan and options.plan_phase == .proposal_only) {
         var plan_path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const plan_rel = std.fmt.bufPrint(&plan_path_buf, ".forge/plans/{s}.md", .{run_id}) catch return error.ProviderFailed;
@@ -204,7 +199,7 @@ pub fn generateAndPersist(
         owned_plan_body = allocator.dupe(u8, plan_snap.content) catch return error.ProviderFailed;
         owned_plan_rel = allocator.dupe(u8, plan_rel) catch return error.ProviderFailed;
         ctx_builder.addBlock(.intent, "implementation_plan", plan_snap.content) catch return error.ProviderFailed;
-        plan_inst = planner.Planner.init(allocator, llm, &ctx_builder, options.conversation, images);
+        plan_inst = planner.Planner.init(allocator, llm, ctx_builder, options.conversation, images);
     }
 
     if (options.mode == .plan and options.plan_phase == .plan_only) {
@@ -337,7 +332,7 @@ pub fn generateAndPersist(
             return error.ProviderFailed;
         };
         ctx_builder.addBlock(.intent, "failed_proposal", owned_body.?) catch return error.ProviderFailed;
-        plan_inst = planner.Planner.init(allocator, llm, &ctx_builder, options.conversation, images);
+        plan_inst = planner.Planner.init(allocator, llm, ctx_builder, options.conversation, images);
         if (last_validation_report) |old| allocator.free(old);
         last_validation_report = allocator.dupe(u8, trial.report) catch {
             if (trial.hint_paths.len > 0) {

@@ -214,7 +214,7 @@ fn runAgent(
     if (event_stream and !is_resume) {
         // Mirror `forge context` at run start, but as an event. Resume runs
         // can reconstruct context from the saved session state later.
-        const route = ai.routing.plan(.{
+        const route = ai.route_resolver.resolveHeuristic(.{
             .mode = mode,
             .intent = target,
             .has_active_file = parsed.flags.files.len > 0,
@@ -224,7 +224,7 @@ fn runAgent(
             .max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else default_context_budget_bytes,
             .workspace_cwd = opened.path,
             .embedding = embedding.options,
-        });
+        }).route;
         context_event: {
             var ctx_builder = ai.context_loader.build(allocator, io, opened.root, route.context) catch break :context_event;
             defer ctx_builder.deinit();

@@ -2,26 +2,27 @@ const std = @import("std");
 const renderer = @import("forge-renderer");
 const word_wrap = @import("../editor/word_wrap.zig");
 const diff_line_style = @import("../diff_line_style.zig");
+const tokens = @import("../tokens.zig");
 
-pub const body_font_size: f32 = 14.0;
-pub const body_line_h: f32 = 18.0;
-pub const code_font_size: f32 = 12.0;
-pub const code_line_h: f32 = 21.0;
-pub const code_pad: f32 = 6.0;
-pub const code_gap: f32 = 4.0;
-pub const heading_font_size: f32 = 15.0;
-pub const heading_line_h: f32 = 20.0;
+pub const body_font_size: f32 = tokens.font.body;
+pub const body_line_h: f32 = tokens.font.body_line;
+pub const code_font_size: f32 = tokens.font.code;
+pub const code_line_h: f32 = tokens.font.code_line;
+pub const code_pad: f32 = tokens.space.sm;
+pub const code_gap: f32 = tokens.space.xs;
+pub const heading_font_size: f32 = tokens.font.heading;
+pub const heading_line_h: f32 = tokens.font.heading_line;
 pub const list_indent: f32 = 14.0;
 pub const quote_indent: f32 = 10.0;
-pub const markdown_block_gap: f32 = 4.0;
+pub const markdown_block_gap: f32 = tokens.space.xs;
 
 pub const Style = struct {
     fg: renderer.Color,
-    bold_fg: renderer.Color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
-    inline_code_fg: renderer.Color = .{ .r = 0.85, .g = 0.92, .b = 1.0, .a = 1.0 },
-    inline_code_bg: renderer.Color = .{ .r = 0.22, .g = 0.24, .b = 0.3, .a = 1.0 },
-    code_block_fg: renderer.Color = .{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 },
-    code_block_bg: renderer.Color = .{ .r = 0.1, .g = 0.11, .b = 0.14, .a = 1.0 },
+    bold_fg: renderer.Color = tokens.color.text_primary,
+    inline_code_fg: renderer.Color = tokens.color.inline_code_fg,
+    inline_code_bg: renderer.Color = tokens.color.inline_code_bg,
+    code_block_fg: renderer.Color = tokens.color.code_fg,
+    code_block_bg: renderer.Color = tokens.color.surface_recessed,
     top_square: bool = false,
 };
 

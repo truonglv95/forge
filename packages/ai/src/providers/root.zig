@@ -19,3 +19,4 @@ pub const ollama_embedder = @import("ollama/embedder.zig");
 pub const ollama_ndjson = @import("ollama/ndjson.zig");
 
 pub const openai_sse = @import("openai/sse.zig");
+pub const openai_compat = @import("openai/compat.zig");

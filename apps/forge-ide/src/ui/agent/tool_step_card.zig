@@ -2,12 +2,13 @@ const std = @import("std");
 const renderer = @import("forge-renderer");
 const agent_session = @import("../../agent/session.zig");
 const chat_markdown = @import("chat_markdown.zig");
+const tokens = @import("../tokens.zig");
 
 pub const card_h: f32 = 28;
-pub const card_gap: f32 = 4;
+pub const card_gap: f32 = tokens.space.xs;
 pub const child_h: f32 = 20;
 pub const child_indent: f32 = 28;
-pub const expanded_content_pad: f32 = 8;
+pub const expanded_content_pad: f32 = tokens.space.md;
 
 fn drawClippedText(text: []const u8, x: f32, y: f32, max_w: f32, font_size: f32, color: renderer.Color) void {
     if (max_w <= 0 or text.len == 0) return;
@@ -23,13 +24,13 @@ pub fn stepVisibleInMode(mode: agent_session.Mode, kind: []const u8) bool {
 
 pub fn kindAccent(kind: []const u8) renderer.Color {
     if (std.mem.eql(u8, kind, "explore")) return .{ .r = 0.45, .g = 0.72, .b = 0.95, .a = 1.0 };
-    if (std.mem.eql(u8, kind, "bash")) return .{ .r = 0.95, .g = 0.72, .b = 0.4, .a = 1.0 };
+    if (std.mem.eql(u8, kind, "bash")) return tokens.color.warning;
     if (std.mem.eql(u8, kind, "mcp")) return .{ .r = 0.72, .g = 0.55, .b = 0.95, .a = 1.0 };
     if (std.mem.eql(u8, kind, "web")) return .{ .r = 0.5, .g = 0.85, .b = 0.75, .a = 1.0 };
     if (std.mem.eql(u8, kind, "remember")) return .{ .r = 0.95, .g = 0.78, .b = 0.45, .a = 1.0 };
     if (std.mem.eql(u8, kind, "propose")) return .{ .r = 0.55, .g = 0.9, .b = 0.55, .a = 1.0 };
     if (std.mem.eql(u8, kind, "thought")) return .{ .r = 0.65, .g = 0.68, .b = 0.78, .a = 1.0 };
-    return .{ .r = 0.6, .g = 0.65, .b = 0.72, .a = 1.0 };
+    return tokens.color.text_muted;
 }
 
 pub fn formatTitle(
@@ -150,19 +151,19 @@ pub fn drawStep(
     if (!stepVisibleInMode(mode, step.kind)) return 0;
 
     const accent = if (step.running)
-        renderer.Color{ .r = 0.4, .g = 0.7, .b = 1.0, .a = 1.0 }
+        tokens.color.accent
     else
-        renderer.Color{ .r = 0.2, .g = 0.8, .b = 0.4, .a = 1.0 }; // Green dot when done
+        tokens.color.success;
 
     const card_x = inner_x;
     const card_w = content_w;
 
     // Very subtle border, dark background
-    const border_color: renderer.Color = .{ .r = 0.22, .g = 0.22, .b = 0.24, .a = 1.0 };
-    const card_bg: renderer.Color = .{ .r = 0.14, .g = 0.14, .b = 0.15, .a = 1.0 };
+    const border_color: renderer.Color = tokens.color.border;
+    const card_bg: renderer.Color = tokens.color.surface_raised;
 
-    renderer.Renderer.drawRoundedRect(card_x, y, card_w, card_h, 6, border_color);
-    renderer.Renderer.drawRoundedRect(card_x + 1, y + 1, card_w - 2, card_h - 2, 5, card_bg);
+    renderer.Renderer.drawRoundedRect(card_x, y, card_w, card_h, tokens.radius.md, border_color);
+    renderer.Renderer.drawRoundedRect(card_x + 1, y + 1, card_w - 2, card_h - 2, tokens.radius.md - 1, card_bg);
 
     const is_propose = std.mem.eql(u8, step.kind, "propose");
     const is_write = std.mem.eql(u8, step.kind, "write_to_file");

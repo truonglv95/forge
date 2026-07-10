@@ -3,6 +3,7 @@ const provider = @import("../../provider.zig");
 const credentials = @import("../../credentials.zig");
 const kernel = @import("forge-kernel");
 const proposal_normalize = @import("../../proposal_normalize.zig");
+const openai_compat = @import("../openai/compat.zig");
 const openai_sse = @import("../openai/sse.zig");
 const agent_turn = @import("../../agent/turn.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
@@ -13,22 +14,6 @@ pub const default_model = "openai/gpt-4o-mini";
 pub const base_url_env_var = "OPENROUTER_BASE_URL";
 pub const default_context_window: usize = 128_000;
 pub const test_mode_prompt = "test_mode";
-
-const ChatMessage = struct {
-    role: []const u8,
-    content: []const u8,
-};
-
-const JsonResponseFormat = struct {
-    type: []const u8,
-};
-
-const ChatRequest = struct {
-    model: []const u8,
-    messages: []const ChatMessage,
-    stream: bool = true,
-    response_format: ?JsonResponseFormat = null,
-};
 
 pub const OpenRouterProvider = struct {
     allocator: std.mem.Allocator,
@@ -253,14 +238,10 @@ pub fn resolveBaseUrl(
     environ_map: ?*const std.process.Environ.Map,
     configured_url: ?[]const u8,
 ) ![]u8 {
-    if (configured_url) |url| {
-        const trimmed = std.mem.trim(u8, url, &std.ascii.whitespace);
-        if (trimmed.len > 0) return allocator.dupe(u8, trimmed);
-    }
-    if (environ_map) |map| {
-        if (map.get(base_url_env_var)) |url| return allocator.dupe(u8, url);
-    }
-    return allocator.dupe(u8, default_base_url);
+    return openai_compat.resolveBaseUrl(allocator, environ_map, configured_url, .{
+        .default_base_url = default_base_url,
+        .base_url_env_var = base_url_env_var,
+    });
 }
 
 fn fetchChatInto(
@@ -306,26 +287,12 @@ fn fetchChatInto(
 }
 
 pub fn buildChatEndpoint(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
-    const trimmed = trimTrailingSlash(base_url);
-    return std.fmt.allocPrint(allocator, "{s}/chat/completions", .{trimmed});
+    return openai_compat.buildChatEndpoint(allocator, base_url);
 }
 
 fn buildRequestPayload(allocator: std.mem.Allocator, model_name: []const u8, prompt: []const u8) ![]u8 {
-    const messages = [_]ChatMessage{.{ .role = "user", .content = prompt }};
-    const wants_json = std.mem.startsWith(u8, prompt, "INTENT_CLASSIFIER_MODE") or
-        std.mem.indexOf(u8, prompt, "MARKDOWN PLAN MODE") == null;
-    return try std.json.Stringify.valueAlloc(allocator, ChatRequest{
-        .model = model_name,
-        .messages = &messages,
-        .stream = true,
-        .response_format = if (wants_json) .{ .type = "json_object" } else null,
-    }, .{});
-}
-
-fn trimTrailingSlash(url: []const u8) []const u8 {
-    var end = url.len;
-    while (end > 0 and url[end - 1] == '/') end -= 1;
-    return url[0..end];
+    const messages = [_]openai_compat.ChatMessage{.{ .role = "user", .content = prompt }};
+    return openai_compat.buildChatPayload(allocator, model_name, &messages, openai_compat.promptWantsJson(prompt));
 }
 
 test "buildChatEndpoint appends OpenAI-compatible route" {
