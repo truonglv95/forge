@@ -10,6 +10,7 @@ const tool_observation = @import("../tool_observation.zig");
 const loop_prompt = @import("loop_prompt.zig");
 const routing = @import("../routing.zig");
 const turn = @import("turn.zig");
+const compaction = @import("compaction.zig");
 
 pub const StepCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
 pub const StepBeginCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
@@ -48,6 +49,7 @@ pub const Config = struct {
     approve_every_time_tools: bool = false,
     task_intent: routing.TaskIntent = .explore_codebase,
     preloaded_retrieval: bool = false,
+    max_context_recovery_attempts: u8 = 2,
 };
 
 pub const RunState = struct {
@@ -158,6 +160,7 @@ pub fn run(
 
     var turn_i: u32 = 0;
     var malformed_repairs: u8 = 0;
+    var context_recoveries: u8 = 0;
     while (turn_i < config.max_tool_steps) : (turn_i += 1) {
         if (config.cancel_token) |token| {
             if (token.isCancelled()) return error.Cancelled;
@@ -171,7 +174,25 @@ pub fn run(
             error.Cancelled => return error.Cancelled,
             error.AuthenticationFailed => return error.AuthenticationFailed,
             error.RateLimitExceeded => return error.RateLimitExceeded,
-            error.ContextLengthExceeded => return error.ContextLengthExceeded,
+            error.ContextLengthExceeded => {
+                if (context_recoveries >= config.max_context_recovery_attempts) return error.ContextLengthExceeded;
+                context_recoveries += 1;
+                const recovery_prompt = compaction.buildRecoveryPrompt(
+                    allocator,
+                    intent,
+                    ctx_builder,
+                    conversation.items,
+                    config.task_intent,
+                    .{ .attempt = context_recoveries },
+                ) catch return error.ProviderFailed;
+                defer allocator.free(recovery_prompt);
+                conversation.clearRetainingCapacity();
+                transport.appendUserText(allocator, &conversation, recovery_prompt) catch return error.ProviderFailed;
+                if (config.checkpoint_callback) |checkpoint| {
+                    if (!checkpoint(config.checkpoint_context, conversation.items, step_index, "", "")) return error.ProviderFailed;
+                }
+                continue;
+            },
             error.NetworkError => return error.NetworkError,
             error.MalformedResponse => {
                 if (malformed_repairs >= 2) return error.ProviderFailed;
@@ -331,4 +352,94 @@ test "LoopGuard evidence resets stagnation counter" {
     try guard.noteToolCall("search", "{\"term\":\"b\"}");
     try guard.noteToolCall("codebase_search", "{\"query\":\"c\"}");
     try guard.noteToolCall("read_file", "{\"path\":\"y\"}");
+}
+
+test "run compacts and retries after context length exceeded" {
+    const allocator = std.testing.allocator;
+
+    const MockTransport = struct {
+        calls: u8 = 0,
+        user_appends: u8 = 0,
+
+        fn transport(self: *@This()) turn.Transport {
+            return .{
+                .ptr = self,
+                .complete_turn = complete,
+                .append_user_text = appendUser,
+                .append_tool_call = appendToolCall,
+                .append_tool_result = appendToolResult,
+            };
+        }
+
+        fn complete(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation_json: []const u8,
+            tool_declarations_json: []const u8,
+            cancel_token: ?*const kernel.cancellation.CancellationToken,
+        ) turn.TransportError!turn.Completion {
+            _ = conversation_json;
+            _ = tool_declarations_json;
+            _ = cancel_token;
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.calls += 1;
+            if (self.calls == 1) return error.ContextLengthExceeded;
+            return .{ .text = try alloc.dupe(u8, "Recovered answer.") };
+        }
+
+        fn appendUser(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            text: []const u8,
+        ) turn.TransportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.user_appends += 1;
+            conversation.clearRetainingCapacity();
+            try conversation.appendSlice(alloc, text);
+        }
+
+        fn appendToolCall(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            call: turn.ToolCall,
+        ) turn.TransportError!void {
+            _ = ptr;
+            _ = alloc;
+            _ = conversation;
+            _ = call;
+        }
+
+        fn appendToolResult(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            tool_name: []const u8,
+            result: []const u8,
+        ) turn.TransportError!void {
+            _ = ptr;
+            _ = alloc;
+            _ = conversation;
+            _ = tool_name;
+            _ = result;
+        }
+    };
+
+    var builder = context.ContextBuilder.init(allocator, 4096);
+    defer builder.deinit();
+    try builder.addBlock(.intent, "intent", "large task");
+    try builder.addBlock(.file, "src/main.zig", "pub fn main() void {}");
+
+    var mock = MockTransport{};
+    const tool_ctx: tool_executor.Context = undefined;
+    var state = try run(allocator, mock.transport(), "[]", "large task", &builder, tool_ctx, null, .{
+        .max_tool_steps = 3,
+        .max_context_recovery_attempts = 1,
+    });
+    defer state.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u8, 2), mock.calls);
+    try std.testing.expectEqual(@as(u8, 2), mock.user_appends);
+    try std.testing.expectEqualStrings("Recovered answer.", state.final_text.?);
 }

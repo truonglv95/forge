@@ -30,6 +30,7 @@ pub const SessionDoc = struct {
     pending_tool: []const u8 = "",
     pending_tool_args: []const u8 = "",
     conversation_json: []const u8 = "",
+    compact_summary: []const u8 = "",
     provider_kind: []const u8 = "",
     capability_profile: []const u8 = "propose",
     max_steps: u32 = 8,
@@ -343,6 +344,7 @@ pub fn deinitSession(allocator: std.mem.Allocator, doc: *SessionDoc) void {
     allocator.free(doc.pending_tool);
     allocator.free(doc.pending_tool_args);
     allocator.free(doc.conversation_json);
+    allocator.free(doc.compact_summary);
     allocator.free(doc.provider_kind);
     allocator.free(doc.capability_profile);
     for (doc.run_ids) |run_id| allocator.free(run_id);
@@ -426,6 +428,7 @@ fn parseSessionDoc(allocator: std.mem.Allocator, json_body: []const u8) !Session
         .pending_tool = try allocator.dupe(u8, value.pending_tool),
         .pending_tool_args = try allocator.dupe(u8, value.pending_tool_args),
         .conversation_json = try allocator.dupe(u8, value.conversation_json),
+        .compact_summary = try allocator.dupe(u8, value.compact_summary),
         .provider_kind = try allocator.dupe(u8, value.provider_kind),
         .capability_profile = try allocator.dupe(u8, value.capability_profile),
         .max_steps = value.max_steps,

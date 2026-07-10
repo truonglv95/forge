@@ -5,6 +5,7 @@ const context_supplement = @import("context_supplement.zig");
 const codebase_search = @import("codebase_search.zig");
 const context_rank = @import("context_rank.zig");
 const context_rerank = @import("context_rerank.zig");
+const context_query = @import("context_query.zig");
 const docs_loader = @import("docs_loader.zig");
 const scope_resolver = @import("scope_resolver.zig");
 const web_fetcher = @import("web_fetcher.zig");
@@ -559,13 +560,16 @@ fn loadRetrievalBlock(
     options: LoadOptions,
     builder: *context.ContextBuilder,
 ) !void {
+    const expanded_intent = context_query.expandForCodeSearch(allocator, intent) catch intent;
+    defer if (expanded_intent.ptr != intent.ptr) allocator.free(expanded_intent);
+
     const skip = collectLoadedPaths(allocator, builder, options) catch return;
     defer {
         for (skip) |path| allocator.free(path);
         allocator.free(skip);
     }
 
-    const block = context_retrieval.retrieveFromIntent(allocator, io, root, intent, skip, .{
+    const block = context_retrieval.retrieveFromIntent(allocator, io, root, expanded_intent, skip, .{
         .max_chunks = options.retrieval_max_chunks,
     }) catch return;
     if (block) |text| {
@@ -602,6 +606,9 @@ fn loadFusedBlock(
     builder: *context.ContextBuilder,
     explicit_codebase: bool,
 ) !void {
+    const expanded_intent = context_query.expandForCodeSearch(allocator, intent) catch intent;
+    defer if (expanded_intent.ptr != intent.ptr) allocator.free(expanded_intent);
+
     const skip = collectLoadedPathsFrom(allocator, builder, resolved.files, options.active_file) catch return;
     defer {
         for (skip) |path| allocator.free(path);
@@ -621,7 +628,7 @@ fn loadFusedBlock(
     }
 
     if (options.include_pre_retrieval) {
-        const keyword = context_retrieval.collectFromIntent(allocator, io, root, intent, skip, .{
+        const keyword = context_retrieval.collectFromIntent(allocator, io, root, expanded_intent, skip, .{
             .max_chunks = pool_k,
         }) catch @as([]context_retrieval.CandidateChunk, &.{});
         defer if (keyword.len > 0) context_retrieval.freeCandidates(allocator, keyword);
@@ -643,7 +650,7 @@ fn loadFusedBlock(
     }
 
     if (options.include_semantic_search) {
-        const semantic = codebase_search.search(allocator, io, root, intent, skip, .{
+        const semantic = codebase_search.search(allocator, io, root, expanded_intent, skip, .{
             .top_k = pool_k,
             .prefer_gemini = options.prefer_gemini_embeddings,
             .embedding = options.embedding,
@@ -677,7 +684,7 @@ fn loadFusedBlock(
         inputs.deinit(allocator);
     }
 
-    const intent_terms = context_retrieval.intentTerms(allocator, intent, 6) catch &[_][]const u8{};
+    const intent_terms = context_retrieval.intentTerms(allocator, expanded_intent, 6) catch &[_][]const u8{};
     defer context_retrieval.freeIntentTerms(allocator, intent_terms);
 
     const git_paths = if (options.workspace_cwd) |cwd|
@@ -736,13 +743,16 @@ fn loadSemanticBlock(
     builder: *context.ContextBuilder,
     explicit_codebase: bool,
 ) !void {
+    const expanded_intent = context_query.expandForCodeSearch(allocator, intent) catch intent;
+    defer if (expanded_intent.ptr != intent.ptr) allocator.free(expanded_intent);
+
     const skip = collectLoadedPathsFrom(allocator, builder, scoped_files, options.active_file) catch return;
     defer {
         for (skip) |path| allocator.free(path);
         allocator.free(skip);
     }
 
-    const results = codebase_search.search(allocator, io, root, intent, skip, .{
+    const results = codebase_search.search(allocator, io, root, expanded_intent, skip, .{
         .top_k = options.retrieval_max_chunks,
         .prefer_gemini = options.prefer_gemini_embeddings,
         .embedding = options.embedding,

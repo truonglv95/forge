@@ -16,6 +16,7 @@ const conversation = @import("conversation.zig");
 const multimodal = @import("multimodal.zig");
 const context_phase = @import("agent/context_phase.zig");
 const tool_phase = @import("agent/tool_phase.zig");
+const agent_compaction = @import("agent/compaction.zig");
 const agent_loop = @import("agent/loop.zig");
 const mcp_registry = @import("mcp_registry.zig");
 const progress = @import("progress.zig");
@@ -27,6 +28,7 @@ const subagent = @import("subagent.zig");
 const routing = @import("routing.zig");
 const route_resolver = @import("route_resolver.zig");
 const context_manifest = @import("context_manifest.zig");
+const context_budget = @import("context_budget.zig");
 const agent_event = @import("agent_event.zig");
 
 pub const Config = struct {
@@ -73,6 +75,8 @@ pub const Config = struct {
     approval_context: ?*anyopaque = null,
     approve_every_time_tools: bool = false,
     max_repair_attempts: u8 = 2,
+    max_context_recovery_attempts: u8 = 2,
+    context_budget_tier: context_budget.BudgetTier = .full,
 };
 
 pub const Step = struct {
@@ -171,6 +175,8 @@ pub fn run(
         .has_active_file = effective_config.active_file != null,
         .has_selection = effective_config.has_selection,
     };
+    const model_context_bytes = context_budget.safePromptBytesForWindow(provider_handle.metadata().context_window);
+    const context_max_bytes = @min(effective_config.context_max_bytes, model_context_bytes);
     const load_opts = context_loader.LoadOptions{
         .intent = intent,
         .explicit_files = effective_config.explicit_files,
@@ -179,7 +185,7 @@ pub fn run(
         .include_project_rules = true,
         .workspace_cwd = effective_config.workspace_cwd,
         .recent_files = effective_config.recent_files,
-        .max_bytes = effective_config.context_max_bytes,
+        .max_bytes = context_max_bytes,
         .embedding = effective_config.embedding,
     };
 
@@ -189,6 +195,7 @@ pub fn run(
         .provider = if (effective_config.auto_capability and config.resume_session_id == null) provider_handle else null,
         .cancel_token = effective_config.cancel_token,
         .resolver = .{ .use_llm = effective_config.auto_capability and config.resume_session_id == null },
+        .budget_tier = effective_config.context_budget_tier,
     }) catch return error.WorkspaceFailed;
     defer resolved_context.deinit();
     const resolved_route = resolved_context.route;
@@ -321,6 +328,7 @@ pub fn run(
             .approval_callback = effective_config.approval_callback,
             .approval_context = effective_config.approval_context,
             .approve_every_time_tools = effective_config.approve_every_time_tools,
+            .max_context_recovery_attempts = effective_config.max_context_recovery_attempts,
         })) |maybe_loop_state| {
             var loop_state = maybe_loop_state orelse break :blk false;
             defer loop_state.deinit(allocator);
@@ -1316,8 +1324,11 @@ fn formatCheckpointSessionJson(
         pending_tool: []const u8,
         pending_tool_args: []const u8,
         conversation_json: []const u8,
+        compact_summary: []const u8,
         provider_kind: []const u8,
     };
+    const compact_summary = try buildCompactSummary(allocator, intent, steps, null, conversation_json);
+    defer allocator.free(compact_summary);
     return std.json.Stringify.valueAlloc(allocator, CheckpointDoc{
         .session_id = session_id,
         .intent = intent,
@@ -1330,6 +1341,7 @@ fn formatCheckpointSessionJson(
         .pending_tool = pending_tool,
         .pending_tool_args = pending_tool_args,
         .conversation_json = conversation_json,
+        .compact_summary = compact_summary,
         .provider_kind = provider_kind,
     }, .{});
 }
@@ -1392,12 +1404,15 @@ fn formatSessionJson(
         pending_tool: []const u8,
         pending_tool_args: []const u8,
         conversation_json: []const u8,
+        compact_summary: []const u8,
         provider_kind: []const u8,
     };
 
     const run_ids = try allocator.alloc([]const u8, 1);
     defer allocator.free(run_ids);
     run_ids[0] = run_id;
+    const compact_summary = try buildCompactSummary(allocator, intent, steps, null, conversation_json);
+    defer allocator.free(compact_summary);
 
     return std.json.Stringify.valueAlloc(allocator, SessionDoc{
         .session_id = session_id,
@@ -1414,8 +1429,28 @@ fn formatSessionJson(
         .pending_tool = "",
         .pending_tool_args = "",
         .conversation_json = conversation_json,
+        .compact_summary = compact_summary,
         .provider_kind = provider_kind,
     }, .{});
+}
+
+fn buildCompactSummary(
+    allocator: std.mem.Allocator,
+    intent: []const u8,
+    steps: []const Step,
+    final_text: ?[]const u8,
+    conversation_json: []const u8,
+) ![]u8 {
+    var items = try allocator.alloc(agent_compaction.SummaryStep, steps.len);
+    defer allocator.free(items);
+    for (steps, 0..) |step, index| {
+        items[index] = .{
+            .index = step.index,
+            .kind = step.kind,
+            .summary = step.summary,
+        };
+    }
+    return agent_compaction.buildSessionSummary(allocator, intent, items, final_text, conversation_json);
 }
 
 fn resolveHomeDir(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
