@@ -195,6 +195,7 @@ pub const Workbench = struct {
     max_line_len_cache: std.AutoHashMap(u64, MaxLineLenCache),
 
     bracket_match_cache: BracketMatchCache = .{},
+    review_hunks_cache: ReviewHunksCache = .{},
 
     pub const MaxLineLenCache = struct { revision: u64, len: usize };
 
@@ -204,6 +205,13 @@ pub const Workbench = struct {
         row: usize = 0,
         col: usize = 0,
         match: ?@import("ui/editor/bracket_match.zig").Match = null,
+    };
+
+    pub const ReviewHunksCache = struct {
+        file_path_hash: u64 = 0,
+        buf_revision: u64 = 0,
+        review_revision: u64 = 0,
+        hunks: @import("ui/render/editor/review_overlay.zig").ReviewHunks = .{},
     };
 
     pub const CodeScrollState = struct {
