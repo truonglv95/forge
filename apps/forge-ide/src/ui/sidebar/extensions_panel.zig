@@ -42,6 +42,7 @@ pub fn installedContentHeight(host: *const plugin.Host, filter: []const u8) f32 
 
 pub fn marketplaceContentHeight(catalog: ?*const plugin.MarketplaceCatalog, filter: []const u8) f32 {
     const catalog_ptr = catalog orelse return footer_h;
+    if (filter.len == 0) return footer_h + @as(f32, @floatFromInt(catalog_ptr.entries.len)) * marketplace_row_h;
     var total: f32 = footer_h;
     for (catalog_ptr.entries) |*entry| {
         if (catalogMatchesFilter(filter, entry)) total += marketplace_row_h;

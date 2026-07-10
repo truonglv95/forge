@@ -138,23 +138,53 @@ pub fn drawExtensionsPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) v
             renderer.Renderer.drawText("Add forge.toml to extensions/", panel_x + 16, extensions_panel.list_top + 26, 10.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
         }
     } else if (wb.marketplace_catalog) |catalog| {
-        for (catalog.entries, 0..) |entry, index| {
-            if (filter.len > 0 and !agent_scope_picker_mod.matchesQuery(filter, entry.name) and !agent_scope_picker_mod.matchesQuery(filter, entry.id) and !agent_scope_picker_mod.matchesQuery(filter, entry.description)) continue;
-            if (y + extensions_panel.marketplace_row_h >= 65 and y < h - layout.status_height) {
-                renderer.Renderer.drawRoundedRect(panel_x + 8, y, panel_w - 16, extensions_panel.marketplace_row_h - 6, 4, shared.color(theme.colors.selection));
-                var title_buf: [128:0]u8 = undefined;
-                const title = std.fmt.bufPrint(&title_buf, "{s}  v{s}", .{ entry.name, entry.version }) catch entry.name;
-                title_buf[title.len] = 0;
-                renderer.Renderer.drawText(@ptrCast(&title_buf), panel_x + 16, y + 4, 12.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
-                var desc_buf: [192:0]u8 = undefined;
-                @memcpy(desc_buf[0..@min(entry.description.len, desc_buf.len - 1)], entry.description);
-                desc_buf[@min(entry.description.len, desc_buf.len - 1)] = 0;
-                renderer.Renderer.drawText(@ptrCast(&desc_buf), panel_x + 16, y + 20, 10.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
-                renderer.Renderer.drawText("Install", panel_x + 16, y + 36, 10.0, shared.color(theme.colors.accent));
-                renderer.Renderer.drawText("Details >", panel_x + panel_w - 80, y + 36, 10.0, .{ .r = 0.65, .g = 0.75, .b = 0.95, .a = 1.0 });
-                _ = index;
+        if (filter.len == 0) {
+            const row_h = extensions_panel.marketplace_row_h;
+            const view_top = @max(0, 65 - y);
+            const view_bottom = @max(0, h - layout.status_height - y);
+            const start_idx = @as(usize, @intFromFloat(view_top / row_h));
+            const end_idx = @min(catalog.entries.len, @as(usize, @intFromFloat(view_bottom / row_h)) + 2);
+
+            y += @as(f32, @floatFromInt(start_idx)) * row_h;
+            for (catalog.entries[start_idx..end_idx], start_idx..) |entry, index| {
+                if (y + row_h >= 65 and y < h - layout.status_height) {
+                    renderer.Renderer.drawRoundedRect(panel_x + 8, y, panel_w - 16, row_h - 6, 4, shared.color(theme.colors.selection));
+                    var title_buf: [128:0]u8 = undefined;
+                    const title = std.fmt.bufPrint(&title_buf, "{s}  v{s}", .{ entry.name, entry.version }) catch entry.name;
+                    title_buf[title.len] = 0;
+                    renderer.Renderer.drawText(@ptrCast(&title_buf), panel_x + 16, y + 4, 12.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+                    var desc_buf: [192:0]u8 = undefined;
+                    @memcpy(desc_buf[0..@min(entry.description.len, desc_buf.len - 1)], entry.description);
+                    desc_buf[@min(entry.description.len, desc_buf.len - 1)] = 0;
+                    renderer.Renderer.drawText(@ptrCast(&desc_buf), panel_x + 16, y + 20, 10.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                    renderer.Renderer.drawText("Install", panel_x + 16, y + 36, 10.0, shared.color(theme.colors.accent));
+                    renderer.Renderer.drawText("Details >", panel_x + panel_w - 80, y + 36, 10.0, .{ .r = 0.65, .g = 0.75, .b = 0.95, .a = 1.0 });
+                    _ = index;
+                }
+                y += row_h;
             }
-            y += extensions_panel.marketplace_row_h;
+            if (end_idx < catalog.entries.len) {
+                y += @as(f32, @floatFromInt(catalog.entries.len - end_idx)) * row_h;
+            }
+        } else {
+            for (catalog.entries, 0..) |entry, index| {
+                if (!agent_scope_picker_mod.matchesQuery(filter, entry.name) and !agent_scope_picker_mod.matchesQuery(filter, entry.id) and !agent_scope_picker_mod.matchesQuery(filter, entry.description)) continue;
+                if (y + extensions_panel.marketplace_row_h >= 65 and y < h - layout.status_height) {
+                    renderer.Renderer.drawRoundedRect(panel_x + 8, y, panel_w - 16, extensions_panel.marketplace_row_h - 6, 4, shared.color(theme.colors.selection));
+                    var title_buf: [128:0]u8 = undefined;
+                    const title = std.fmt.bufPrint(&title_buf, "{s}  v{s}", .{ entry.name, entry.version }) catch entry.name;
+                    title_buf[title.len] = 0;
+                    renderer.Renderer.drawText(@ptrCast(&title_buf), panel_x + 16, y + 4, 12.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+                    var desc_buf: [192:0]u8 = undefined;
+                    @memcpy(desc_buf[0..@min(entry.description.len, desc_buf.len - 1)], entry.description);
+                    desc_buf[@min(entry.description.len, desc_buf.len - 1)] = 0;
+                    renderer.Renderer.drawText(@ptrCast(&desc_buf), panel_x + 16, y + 20, 10.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                    renderer.Renderer.drawText("Install", panel_x + 16, y + 36, 10.0, shared.color(theme.colors.accent));
+                    renderer.Renderer.drawText("Details >", panel_x + panel_w - 80, y + 36, 10.0, .{ .r = 0.65, .g = 0.75, .b = 0.95, .a = 1.0 });
+                    _ = index;
+                }
+                y += extensions_panel.marketplace_row_h;
+            }
         }
         if (catalog.entries.len == 0) {
             renderer.Renderer.drawText("Catalog is empty.", panel_x + 16, y + 8, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });

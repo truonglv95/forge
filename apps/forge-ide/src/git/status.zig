@@ -35,6 +35,8 @@ pub const Entry = struct {
 
 pub const Status = struct {
     entries: []Entry,
+    staged_ptrs: []*const Entry,
+    unstaged_ptrs: []*const Entry,
     is_repo: bool,
     branch: ?[]const u8 = null,
     ahead: u32 = 0,
@@ -43,6 +45,8 @@ pub const Status = struct {
     pub fn deinit(self: *Status, allocator: std.mem.Allocator) void {
         for (self.entries) |*entry| entry.deinit(allocator);
         allocator.free(self.entries);
+        allocator.free(self.staged_ptrs);
+        allocator.free(self.unstaged_ptrs);
         if (self.branch) |branch| allocator.free(branch);
         self.* = undefined;
     }
@@ -52,12 +56,12 @@ pub const Status = struct {
 pub fn refresh(allocator: std.mem.Allocator, workspace_path: []const u8) !Status {
     const output = runCapture(allocator, workspace_path, &.{
         "git", "status", "--porcelain=v1", "-b",
-    }) catch return .{ .entries = &.{}, .is_repo = false };
+    }) catch return .{ .entries = &.{}, .staged_ptrs = &.{}, .unstaged_ptrs = &.{}, .is_repo = false };
     defer allocator.free(output);
 
     if (output.len == 0) {
         const is_repo = runExitCode(workspace_path, &.{ "git", "rev-parse", "--is-inside-work-tree" }) == 0;
-        return .{ .entries = &.{}, .is_repo = is_repo };
+        return .{ .entries = &.{}, .staged_ptrs = &.{}, .unstaged_ptrs = &.{}, .is_repo = is_repo };
     }
 
     var branch: ?[]const u8 = null;
@@ -88,8 +92,19 @@ pub fn refresh(allocator: std.mem.Allocator, workspace_path: []const u8) !Status
         });
     }
 
+    const entries = try list.toOwnedSlice(allocator);
+
+    var staged_ptrs: std.ArrayList(*const Entry) = .empty;
+    var unstaged_ptrs: std.ArrayList(*const Entry) = .empty;
+    for (entries) |*entry| {
+        if (entry.isStaged()) try staged_ptrs.append(allocator, entry);
+        if (entry.isUnstaged()) try unstaged_ptrs.append(allocator, entry);
+    }
+
     return .{
-        .entries = try list.toOwnedSlice(allocator),
+        .entries = entries,
+        .staged_ptrs = try staged_ptrs.toOwnedSlice(allocator),
+        .unstaged_ptrs = try unstaged_ptrs.toOwnedSlice(allocator),
         .is_repo = true,
         .branch = branch,
         .ahead = ahead,
