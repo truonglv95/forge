@@ -285,8 +285,9 @@ pub fn drawEditorViewport(
                     bracket.drawBracketHighlight(editor_buf, pair, seg.buf_line, seg.start_col, seg.end_col, seg_text_x, line_num_y, line_h, font_size, theme);
                 }
                 if (show_diags) {
-                    for (wb.diagnostics.list.items) |diag| {
-                        if (diag.line != seg.buf_line) continue;
+                    const start_idx_diag = diag_store.firstForLine(wb.diagnostics.list, seg.buf_line);
+                    for (wb.diagnostics.list.items[start_idx_diag..]) |diag| {
+                        if (diag.line != seg.buf_line) break;
                         const line = editor_buf.lineAt(seg.buf_line);
                         const start_x = seg_text_x + editor_scroll.cursorX(line, @max(seg.start_col, @min(diag.character, seg.end_col)), font_size) - editor_scroll.cursorX(line, seg.start_col, font_size);
                         const end_col = @min(if (diag.end_line == seg.buf_line) diag.end_character else line.len, seg.end_col);
@@ -374,8 +375,9 @@ pub fn drawEditorViewport(
                     bracket.drawBracketHighlight(editor_buf, pair, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, theme);
                 }
                 if (show_diags) {
-                    for (wb.diagnostics.list.items) |diag| {
-                        if (diag.line != idx) continue;
+                    const start_idx_diag = diag_store.firstForLine(wb.diagnostics.list, idx);
+                    for (wb.diagnostics.list.items[start_idx_diag..]) |diag| {
+                        if (diag.line != idx) break;
                         const line = editor_buf.lineAt(idx);
                         const start_x = text_x + editor_scroll.cursorX(line, @min(diag.character, line.len), font_size);
                         const end_col = @min(if (diag.end_line == idx) diag.end_character else line.len, line.len);

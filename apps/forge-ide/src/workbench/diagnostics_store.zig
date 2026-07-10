@@ -117,25 +117,55 @@ pub const Store = struct {
             return;
         }
         self.clearListUnlocked();
+
+        // Sort diagnostics by line then character for binary search later
+        std.sort.pdq(lsp.diagnostics.Diagnostic, list.items, {}, struct {
+            pub fn less(_: void, a: lsp.diagnostics.Diagnostic, b: lsp.diagnostics.Diagnostic) bool {
+                if (a.line != b.line) return a.line < b.line;
+                return a.character < b.character;
+            }
+        }.less);
+
         self.list = list;
     }
 };
 
+fn findFirstForLine(items: []lsp.diagnostics.Diagnostic, line_index: usize) usize {
+    var l: usize = 0;
+    var r: usize = items.len;
+    while (l < r) {
+        const m = l + (r - l) / 2;
+        if (items[m].line < line_index) {
+            l = m + 1;
+        } else {
+            r = m;
+        }
+    }
+    return l;
+}
+
 pub fn countForLine(list: lsp.diagnostics.List, line_index: usize) usize {
+    const start_idx = findFirstForLine(list.items, line_index);
     var count: usize = 0;
-    for (list.items) |item| {
-        if (item.line == line_index) count += 1;
+    for (list.items[start_idx..]) |item| {
+        if (item.line != line_index) break;
+        count += 1;
     }
     return count;
 }
 
 pub fn worstSeverityOnLine(list: lsp.diagnostics.List, line_index: usize) ?lsp.diagnostics.Severity {
+    const start_idx = findFirstForLine(list.items, line_index);
     var found: ?lsp.diagnostics.Severity = null;
-    for (list.items) |item| {
-        if (item.line != line_index) continue;
+    for (list.items[start_idx..]) |item| {
+        if (item.line != line_index) break;
         if (found == null or @intFromEnum(item.severity) < @intFromEnum(found.?)) {
             found = item.severity;
         }
     }
     return found;
+}
+
+pub fn firstForLine(list: lsp.diagnostics.List, line_index: usize) usize {
+    return findFirstForLine(list.items, line_index);
 }

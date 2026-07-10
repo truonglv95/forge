@@ -57,24 +57,37 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             var line_y = content_top - wb.task_scroll_y;
             if (wb.rename_preview.active) {
+                const line_h: f32 = 14.0;
+                const start_idx: usize = if (wb.task_scroll_y > 14.0) @as(usize, @intFromFloat((wb.task_scroll_y - 14.0) / line_h)) else 0;
+                const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+                const end_idx = @min(wb.rename_preview.lines.len, start_idx + visual_count);
+
+                line_y = content_top - wb.task_scroll_y;
                 renderer.Renderer.drawText("Rename preview — Enter=Accept  Esc=Reject", editor_x + 20, line_y, 12.0, .{ .r = 0.95, .g = 0.85, .b = 0.45, .a = 1.0 });
-                line_y += 14.0;
-                for (wb.rename_preview.lines) |item| {
+                line_y += line_h;
+                line_y += @as(f32, @floatFromInt(start_idx)) * line_h;
+                for (wb.rename_preview.lines[start_idx..end_idx]) |item| {
                     var buf: [512:0]u8 = undefined;
                     const clipped = if (item.label.len > 511) item.label[0..511] else item.label;
                     @memcpy(buf[0..clipped.len], clipped);
                     buf[clipped.len] = 0;
                     renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.85, .g = 0.95, .b = 0.75, .a = 1.0 });
-                    line_y += 14.0;
+                    line_y += line_h;
                 }
             } else if (wb.references.active) {
-                for (wb.references.items) |item| {
+                const line_h: f32 = 14.0;
+                const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
+                const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+                const end_idx = @min(wb.references.items.len, start_idx + visual_count);
+
+                line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
+                for (wb.references.items[start_idx..end_idx]) |item| {
                     var buf: [512:0]u8 = undefined;
                     const clipped = if (item.label.len > 511) item.label[0..511] else item.label;
                     @memcpy(buf[0..clipped.len], clipped);
                     buf[clipped.len] = 0;
                     renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.75, .g = 0.85, .b = 1.0, .a = 1.0 });
-                    line_y += 14.0;
+                    line_y += line_h;
                 }
             } else {
                 const task_state = wb.task_output.snapshotState();
@@ -106,8 +119,13 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             const content_top = panel_y + 34.0;
             const content_h = panel_h - 34.0;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
-            var line_y = content_top - wb.task_scroll_y;
-            for (wb.diagnostics.list.items) |item| {
+            const line_h: f32 = 14.0;
+            const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
+            const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+            const end_idx = @min(wb.diagnostics.list.items.len, start_idx + visual_count);
+
+            var line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
+            for (wb.diagnostics.list.items[start_idx..end_idx]) |item| {
                 var buf: [512:0]u8 = undefined;
                 const line = std.fmt.bufPrint(&buf, "L{d}:{d}  {s}", .{ item.line + 1, item.character + 1, item.message }) catch item.message;
                 buf[line.len] = 0;
@@ -117,7 +135,7 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                     else => renderer.Color{ .r = 0.85, .g = 0.85, .b = 0.85, .a = 1.0 },
                 };
                 renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, color);
-                line_y += 14.0;
+                line_y += line_h;
             }
             if (wb.diagnostics.list.items.len == 0) {
                 renderer.Renderer.drawText("No problems for active file.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
