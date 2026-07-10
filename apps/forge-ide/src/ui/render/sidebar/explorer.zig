@@ -128,12 +128,15 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
                             rel_path = rel_path[1..];
                         }
 
-                        for (status.entries) |entry| {
-                            if (std.mem.eql(u8, entry.path, rel_path)) {
-                                if (entry.status[0] == 'M' or entry.status[1] == 'M') is_modified = true;
-                                if (entry.status[0] == 'A') is_added = true;
-                                if (entry.status[0] == '?') is_untracked = true;
-                            } else if (row.kind == .directory and std.mem.startsWith(u8, entry.path, rel_path) and entry.path.len > rel_path.len and (entry.path[rel_path.len] == '/' or entry.path[rel_path.len] == '\\')) {
+                        var dir_prefix_buf: [512]u8 = undefined;
+                        const prefix = if (row.kind == .directory) blk: {
+                            const p = std.fmt.bufPrint(&dir_prefix_buf, "{s}/", .{rel_path}) catch rel_path;
+                            break :blk p;
+                        } else rel_path;
+
+                        if (status.findFirstStartingWith(prefix)) |start_idx_git| {
+                            for (status.entries[start_idx_git..]) |entry| {
+                                if (!std.mem.startsWith(u8, entry.path, prefix)) break;
                                 if (entry.status[0] == 'M' or entry.status[1] == 'M') is_modified = true;
                                 if (entry.status[0] == 'A') is_added = true;
                                 if (entry.status[0] == '?') is_untracked = true;
