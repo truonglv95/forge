@@ -132,12 +132,19 @@ pub fn clampRunScroll(wb: anytype, window_h: f32) void {
 
 pub fn clampBottomPanelScroll(wb: anytype, panel_h: f32) void {
     const panel_scroll = @import("../ui/core/panel_scroll.zig");
-    const viewport = panel_scroll.bottomViewportHeight(panel_h);
+    const line_h = if (wb.bottom_panel_mode == .terminal)
+        @import("../ui/panel/terminal_panel.zig").line_h
+    else
+        panel_scroll.bottom_line_h;
+    const viewport = if (wb.bottom_panel_mode == .terminal)
+        @max(0, panel_h - @import("../ui/panel/terminal_panel.zig").contentTop(0))
+    else
+        panel_scroll.bottomViewportHeight(panel_h);
     wb.task_scroll_y = panel_scroll.clampScrollY(
         wb.task_scroll_y,
         wb.bottomPanelLineCount(),
         viewport,
-        panel_scroll.bottom_line_h,
+        line_h,
     );
 }
 

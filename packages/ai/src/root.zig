@@ -9,7 +9,10 @@ pub const provider = @import("provider.zig");
 pub const fake_provider = @import("fake_provider.zig");
 pub const gemini_provider = @import("gemini_provider.zig");
 pub const ollama_provider = @import("ollama_provider.zig");
+pub const openrouter_provider = @import("openrouter_provider.zig");
+pub const ollama_embedder = @import("ollama_embedder.zig");
 pub const ollama_ndjson = @import("ollama_ndjson.zig");
+pub const openai_sse = @import("openai_sse.zig");
 pub const credentials = @import("credentials.zig");
 pub const provider_factory = @import("provider_factory.zig");
 pub const agent = @import("agent.zig");
@@ -22,6 +25,7 @@ pub const agent_loop = @import("agent/loop.zig");
 pub const agent_turn = @import("agent/turn.zig");
 pub const gemini_tool_transport = @import("providers/gemini/tool_transport.zig");
 pub const ollama_tool_transport = @import("providers/ollama/tool_transport.zig");
+pub const openrouter_tool_transport = @import("providers/openrouter/tool_transport.zig");
 pub const fake_tool_transport = @import("providers/fake/tool_transport.zig");
 pub const tool_executor = @import("tool_executor.zig");
 pub const progress = @import("progress.zig");
@@ -87,4 +91,9 @@ test {
     // Zig's lazy analysis can report a green package while most module tests
     // were never compiled or executed.
     std.testing.refAllDecls(@This());
+}
+
+// Pull in verification tests.
+comptime {
+    _ = @import("fake_provider_test.zig");
 }

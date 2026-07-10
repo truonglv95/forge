@@ -210,10 +210,39 @@ pub fn drawEditorViewport(
                         renderer.Renderer.drawRect(start_x, underline_y, @max(4, end_x - start_x), 2, underline_color);
                     }
                 }
-                if (show_editor_cursor and visual_idx == cursor_visual) {
+                if (visual_idx == cursor_visual) {
                     const line = editor_buf.lineAt(seg.buf_line);
                     const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
-                    renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                    if (show_editor_cursor) {
+                        renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                    }
+                    if (wb.ghost.ghost_text) |gt| {
+                        if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+                            var ghost_y = line_num_y;
+                            var it = std.mem.splitScalar(u8, gt, '\n');
+                            var is_first = true;
+                            while (it.next()) |gline| {
+                                if (is_first) {
+                                    renderer.Renderer.drawText(gline, cursor_x, ghost_y, font_size, syntax.color(theme.colors.text_muted));
+                                    is_first = false;
+                                } else {
+                                    ghost_y += line_h;
+                                    renderer.Renderer.drawText(gline, text_x + editor_scroll.cursorX(line, 0, font_size), ghost_y, font_size, syntax.color(theme.colors.text_muted));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (visual_idx == cursor_visual) {
+                if (wb.ghost.ghost_text) |gt| {
+                    if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+                        var newlines: f32 = 0;
+                        for (gt) |c| {
+                            if (c == '\n') newlines += 1.0;
+                        }
+                        line_num_y += newlines * line_h;
+                    }
                 }
             }
             line_num_y += line_h;
@@ -264,10 +293,39 @@ pub fn drawEditorViewport(
                         renderer.Renderer.drawRect(start_x, underline_y, @max(4, end_x - start_x), 2, underline_color);
                     }
                 }
-                if (show_editor_cursor and idx == editor_buf.cursor.row) {
+                if (idx == editor_buf.cursor.row) {
                     const line = editor_buf.lineAt(idx);
                     const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
-                    renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                    if (show_editor_cursor) {
+                        renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                    }
+                    if (wb.ghost.ghost_text) |gt| {
+                        if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+                            var ghost_y = line_num_y;
+                            var it = std.mem.splitScalar(u8, gt, '\n');
+                            var is_first = true;
+                            while (it.next()) |gline| {
+                                if (is_first) {
+                                    renderer.Renderer.drawText(gline, cursor_x, ghost_y, font_size, syntax.color(theme.colors.text_muted));
+                                    is_first = false;
+                                } else {
+                                    ghost_y += line_h;
+                                    renderer.Renderer.drawText(gline, text_x + editor_scroll.cursorX(line, 0, font_size), ghost_y, font_size, syntax.color(theme.colors.text_muted));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (idx == editor_buf.cursor.row) {
+                if (wb.ghost.ghost_text) |gt| {
+                    if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+                        var newlines: f32 = 0;
+                        for (gt) |c| {
+                            if (c == '\n') newlines += 1.0;
+                        }
+                        line_num_y += newlines * line_h;
+                    }
                 }
             }
             line_num_y += line_h;

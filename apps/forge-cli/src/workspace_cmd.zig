@@ -7,20 +7,45 @@ pub const AiConfig = struct {
     allocator: std.mem.Allocator,
     provider: []const u8,
     model: ?[]const u8 = null,
+    ollama_url: ?[]const u8 = null,
+    openrouter_url: ?[]const u8 = null,
+    embedding_provider: ?[]const u8 = null,
+    embedding_model: ?[]const u8 = null,
+    embedding_url: ?[]const u8 = null,
 
     pub fn deinit(self: *AiConfig) void {
         self.allocator.free(self.provider);
         if (self.model) |model| self.allocator.free(model);
+        if (self.ollama_url) |url| self.allocator.free(url);
+        if (self.openrouter_url) |url| self.allocator.free(url);
+        if (self.embedding_provider) |provider| self.allocator.free(provider);
+        if (self.embedding_model) |model| self.allocator.free(model);
+        if (self.embedding_url) |url| self.allocator.free(url);
         self.* = undefined;
     }
 
     pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?AiConfig {
         var provider: []const u8 = "auto";
         var model: ?[]const u8 = null;
+        var ollama_url: ?[]const u8 = null;
+        var openrouter_url: ?[]const u8 = null;
+        var embedding_provider: ?[]const u8 = null;
+        var embedding_model: ?[]const u8 = null;
+        var embedding_url: ?[]const u8 = null;
         var owned_provider: ?[]u8 = null;
         defer if (owned_provider) |value| allocator.free(value);
         var owned_model: ?[]u8 = null;
         defer if (owned_model) |value| allocator.free(value);
+        var owned_ollama_url: ?[]u8 = null;
+        defer if (owned_ollama_url) |value| allocator.free(value);
+        var owned_openrouter_url: ?[]u8 = null;
+        defer if (owned_openrouter_url) |value| allocator.free(value);
+        var owned_embedding_provider: ?[]u8 = null;
+        defer if (owned_embedding_provider) |value| allocator.free(value);
+        var owned_embedding_model: ?[]u8 = null;
+        defer if (owned_embedding_model) |value| allocator.free(value);
+        var owned_embedding_url: ?[]u8 = null;
+        defer if (owned_embedding_url) |value| allocator.free(value);
 
         if (workspace.global_store.joinHome(allocator, workspace.global_store.config_file)) |global_path| {
             defer allocator.free(global_path);
@@ -33,25 +58,78 @@ pub const AiConfig = struct {
                         owned_model = try allocator.dupe(u8, model_name);
                         model = owned_model;
                     }
+                    if (parsed.ai_ollama_url) |value| {
+                        owned_ollama_url = try allocator.dupe(u8, value);
+                        ollama_url = owned_ollama_url;
+                    }
+                    if (parsed.ai_openrouter_url) |value| {
+                        owned_openrouter_url = try allocator.dupe(u8, value);
+                        openrouter_url = owned_openrouter_url;
+                    }
+                    if (parsed.ai_embedding_provider) |value| {
+                        owned_embedding_provider = try allocator.dupe(u8, value);
+                        embedding_provider = owned_embedding_provider;
+                    }
+                    if (parsed.ai_embedding_model) |value| {
+                        owned_embedding_model = try allocator.dupe(u8, value);
+                        embedding_model = owned_embedding_model;
+                    }
+                    if (parsed.ai_embedding_url) |value| {
+                        owned_embedding_url = try allocator.dupe(u8, value);
+                        embedding_url = owned_embedding_url;
+                    }
                 } else |_| {}
             } else |_| {}
         } else |_| {}
 
-        const wp = workspace.WorkspacePath.parse("forge.toml") catch return try finalizeAiConfig(allocator, provider, model);
-        var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return try finalizeAiConfig(allocator, provider, model);
+        const wp = workspace.WorkspacePath.parse("forge.toml") catch return try finalizeAiConfig(allocator, provider, model, ollama_url, openrouter_url, embedding_provider, embedding_model, embedding_url);
+        var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return try finalizeAiConfig(allocator, provider, model, ollama_url, openrouter_url, embedding_provider, embedding_model, embedding_url);
         defer snap.deinit();
-        const parsed = workspace.Config.parse(snap.content) catch return try finalizeAiConfig(allocator, provider, model);
-        return try finalizeAiConfig(allocator, parsed.ai_provider, parsed.ai_model orelse model);
+        const parsed = workspace.Config.parse(snap.content) catch return try finalizeAiConfig(allocator, provider, model, ollama_url, openrouter_url, embedding_provider, embedding_model, embedding_url);
+        return try finalizeAiConfig(
+            allocator,
+            parsed.ai_provider,
+            parsed.ai_model orelse model,
+            parsed.ai_ollama_url orelse ollama_url,
+            parsed.ai_openrouter_url orelse openrouter_url,
+            parsed.ai_embedding_provider orelse embedding_provider,
+            parsed.ai_embedding_model orelse embedding_model,
+            parsed.ai_embedding_url orelse embedding_url,
+        );
     }
 
-    fn finalizeAiConfig(allocator: std.mem.Allocator, provider_name: []const u8, model: ?[]const u8) !?AiConfig {
+    fn finalizeAiConfig(
+        allocator: std.mem.Allocator,
+        provider_name: []const u8,
+        model: ?[]const u8,
+        ollama_url: ?[]const u8,
+        openrouter_url: ?[]const u8,
+        embedding_provider: ?[]const u8,
+        embedding_model: ?[]const u8,
+        embedding_url: ?[]const u8,
+    ) !?AiConfig {
         const provider = try allocator.dupe(u8, provider_name);
         errdefer allocator.free(provider);
         const owned_model = if (model) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (owned_model) |value| allocator.free(value);
+        const owned_ollama_url = if (ollama_url) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (owned_ollama_url) |value| allocator.free(value);
+        const owned_openrouter_url = if (openrouter_url) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (owned_openrouter_url) |value| allocator.free(value);
+        const owned_embedding_provider = if (embedding_provider) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (owned_embedding_provider) |value| allocator.free(value);
+        const owned_embedding_model = if (embedding_model) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (owned_embedding_model) |value| allocator.free(value);
+        const owned_embedding_url = if (embedding_url) |value| try allocator.dupe(u8, value) else null;
         return .{
             .allocator = allocator,
             .provider = provider,
             .model = owned_model,
+            .ollama_url = owned_ollama_url,
+            .openrouter_url = owned_openrouter_url,
+            .embedding_provider = owned_embedding_provider,
+            .embedding_model = owned_embedding_model,
+            .embedding_url = owned_embedding_url,
         };
     }
 };

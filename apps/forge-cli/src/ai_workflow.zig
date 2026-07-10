@@ -44,14 +44,70 @@ pub fn providerOptionsFromFlags(
         owned_model = allocator.dupe(u8, model) catch null;
         break :blk owned_model;
     } else null else null;
+    var owned_ollama_url: ?[]u8 = null;
+    const ollama_url: ?[]const u8 = if (workspace_cfg) |cfg| if (cfg.ollama_url) |url| blk: {
+        owned_ollama_url = allocator.dupe(u8, url) catch null;
+        break :blk owned_ollama_url;
+    } else null else null;
+    var owned_openrouter_url: ?[]u8 = null;
+    const openrouter_url: ?[]const u8 = if (workspace_cfg) |cfg| if (cfg.openrouter_url) |url| blk: {
+        owned_openrouter_url = allocator.dupe(u8, url) catch null;
+        break :blk owned_openrouter_url;
+    } else null else null;
 
     return .{
         .kind = ai.provider_factory.Kind.parse(provider_name),
         .model = model_name,
         .owned_model = owned_model,
+        .ollama_url = ollama_url,
+        .owned_ollama_url = owned_ollama_url,
+        .openrouter_url = openrouter_url,
+        .owned_openrouter_url = owned_openrouter_url,
         .fake_response = fake_response,
         .fake_plan_response = fake_plan,
     };
+}
+
+pub const OwnedEmbeddingOptions = struct {
+    options: ai.codebase_search.EmbeddingOptions = .{},
+    owned_model: ?[]u8 = null,
+    owned_url: ?[]u8 = null,
+
+    pub fn deinit(self: *OwnedEmbeddingOptions, allocator: std.mem.Allocator) void {
+        if (self.owned_model) |value| allocator.free(value);
+        if (self.owned_url) |value| allocator.free(value);
+        self.* = .{};
+    }
+};
+
+pub fn embeddingOptionsFromFlags(
+    allocator: std.mem.Allocator,
+    flags: args_mod.GlobalFlags,
+    io: std.Io,
+    root: ?workspace.WorkspaceRoot,
+) OwnedEmbeddingOptions {
+    _ = flags;
+    var workspace_cfg: ?workspace_cmd.AiConfig = null;
+    defer if (workspace_cfg) |*cfg| cfg.deinit();
+    if (root) |opened| {
+        workspace_cfg = workspace_cmd.AiConfig.load(allocator, io, opened) catch null;
+    }
+    if (workspace_cfg) |cfg| {
+        var owned = OwnedEmbeddingOptions{};
+        if (cfg.embedding_model) |model| {
+            owned.owned_model = allocator.dupe(u8, model) catch null;
+        }
+        if (cfg.embedding_url orelse cfg.ollama_url) |url| {
+            owned.owned_url = allocator.dupe(u8, url) catch null;
+        }
+        owned.options = .{
+            .provider = ai.codebase_search.EmbeddingProvider.parse(cfg.embedding_provider),
+            .model = owned.owned_model,
+            .url = owned.owned_url,
+        };
+        return owned;
+    }
+    return .{};
 }
 
 pub fn agentProviderOptionsFromFlags(
@@ -94,6 +150,8 @@ pub fn generateAndPersist(
         .writer = generate_options.progress_writer,
         .json = generate_options.progress_json,
     };
+    var embedding = embeddingOptionsFromFlags(allocator, .{}, io, opened.root);
+    defer embedding.deinit(allocator);
 
     var inner = ai.proposal_workflow.generateAndPersist(
         allocator,
@@ -110,6 +168,7 @@ pub fn generateAndPersist(
             .progress_callback = progressBridge,
             .progress_context = &bridge,
             .workspace_cwd = opened.path,
+            .embedding = embedding.options,
             .enable_repair_loop = provider_options.kind != .fake,
             .max_repair_attempts = 2,
         },

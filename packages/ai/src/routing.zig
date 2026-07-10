@@ -287,8 +287,8 @@ pub fn applyContextPolicy(
             out.include_web = intentNeedsWeb(input.intent);
             out.include_import_graph = input.has_active_file or input.has_selection;
             out.include_agent_memory = true;
-            out.retrieval_max_chunks = 8;
-            out.recent_file_limit = 4;
+            out.retrieval_max_chunks = 16;
+            out.recent_file_limit = 12;
         },
         .plan_change => {
             out.include_git_diff = true;
@@ -296,14 +296,16 @@ pub fn applyContextPolicy(
             out.include_web = true;
             out.include_agent_memory = true;
             out.include_import_graph = true;
-            out.retrieval_max_chunks = 16;
+            out.retrieval_max_chunks = 32;
+            out.recent_file_limit = 20;
         },
         .edit_code => {
             out.include_git_diff = true;
             out.include_diagnostics = true;
             out.include_import_graph = true;
             out.include_semantic_search = true;
-            out.retrieval_max_chunks = 12;
+            out.retrieval_max_chunks = 24;
+            out.recent_file_limit = 16;
         },
         .debug_failure => {
             out.include_git_diff = true;
@@ -311,14 +313,16 @@ pub fn applyContextPolicy(
             out.include_semantic_search = true;
             out.auto_semantic_search = true;
             out.include_import_graph = input.has_active_file;
-            out.retrieval_max_chunks = 10;
+            out.retrieval_max_chunks = 24;
+            out.recent_file_limit = 16;
         },
         .explore_codebase => {
             out.include_git_diff = false;
             out.include_semantic_search = true;
             out.fused_ranking = true;
             out.include_diagnostics = false;
-            out.retrieval_max_chunks = 16;
+            out.retrieval_max_chunks = 32;
+            out.recent_file_limit = 24;
         },
     }
     return out;

@@ -3,7 +3,31 @@ const workspace = @import("forge-workspace");
 const local_vector = @import("local_vector.zig");
 const credentials = @import("credentials.zig");
 const gemini_embedder = @import("gemini_embedder.zig");
+const ollama_embedder = @import("ollama_embedder.zig");
+const ollama_provider = @import("ollama_provider.zig");
 const builtin = @import("builtin");
+
+pub const EmbeddingProvider = enum {
+    auto,
+    gemini,
+    ollama,
+    local,
+
+    pub fn parse(name: ?[]const u8) EmbeddingProvider {
+        const value = name orelse return .auto;
+        if (std.mem.eql(u8, value, "gemini")) return .gemini;
+        if (std.mem.eql(u8, value, "ollama")) return .ollama;
+        if (std.mem.eql(u8, value, "local")) return .local;
+        if (std.mem.eql(u8, value, "auto")) return .auto;
+        return .auto;
+    }
+};
+
+pub const EmbeddingOptions = struct {
+    provider: EmbeddingProvider = .auto,
+    model: ?[]const u8 = null,
+    url: ?[]const u8 = null,
+};
 
 pub const scope_resolver = @import("scope_resolver.zig");
 
@@ -11,6 +35,7 @@ pub const SearchOptions = struct {
     top_k: usize = 10,
     max_bytes: usize = 24 * 1024,
     prefer_gemini: bool = true,
+    embedding: EmbeddingOptions = .{},
     environ_map: ?*const std.process.Environ.Map = null,
     allow_rebuild: bool = true,
     /// Minimum cosine similarity to include a chunk.
@@ -63,12 +88,17 @@ const StoredChunk = struct {
 };
 
 const EmbedBackend = struct {
+    allocator: std.mem.Allocator,
     dim: u32,
+    provider_name: []const u8,
+    model_name: []const u8,
     embed: *const fn (std.mem.Allocator, []const u8, []f32) anyerror!void,
     creds: ?credentials.Credentials = null,
+    ollama_base_url: ?[]u8 = null,
 
     pub fn deinit(self: *EmbedBackend) void {
         if (self.creds) |*owned| owned.deinit();
+        if (self.ollama_base_url) |url| self.allocator.free(url);
     }
 };
 
@@ -77,11 +107,22 @@ fn resolveEmbedBackend(
     io: std.Io,
     options: SearchOptions,
 ) !EmbedBackend {
-    if (options.prefer_gemini) {
+    if (options.embedding.provider == .ollama) {
+        return try resolveOllamaBackend(allocator, io, options);
+    }
+
+    if (options.embedding.provider == .auto and options.embedding.url != null) {
+        if (resolveOllamaBackend(allocator, io, options)) |backend| return backend else |_| {}
+    }
+
+    if (options.embedding.provider != .local and options.prefer_gemini) {
         if (options.environ_map) |map| {
             if (credentials.Credentials.loadGemini(allocator, io, map)) |creds| {
                 return .{
+                    .allocator = allocator,
                     .dim = @intCast(gemini_embedder.dim),
+                    .provider_name = "gemini",
+                    .model_name = gemini_embedder.default_model,
                     .embed = geminiEmbedAdapter,
                     .creds = creds,
                 };
@@ -90,8 +131,31 @@ fn resolveEmbedBackend(
     }
 
     return .{
+        .allocator = allocator,
         .dim = @intCast(local_vector.dim),
+        .provider_name = "local",
+        .model_name = "hashed-token-vector",
         .embed = localEmbedAdapter,
+    };
+}
+
+fn resolveOllamaBackend(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: SearchOptions,
+) !EmbedBackend {
+    const host = try ollama_provider.resolveHost(allocator, options.environ_map, options.embedding.url);
+    errdefer allocator.free(host);
+    const model = options.embedding.model orelse ollama_embedder.default_model;
+    const probe = try ollama_embedder.embedAlloc(allocator, io, .{ .base_url = host, .model = model }, "forge embedding dimension probe");
+    defer allocator.free(probe);
+    return .{
+        .allocator = allocator,
+        .dim = @intCast(probe.len),
+        .provider_name = "ollama",
+        .model_name = model,
+        .embed = ollamaEmbedAdapter,
+        .ollama_base_url = host,
     };
 }
 
@@ -107,6 +171,14 @@ const GeminiEmbedContext = struct {
 
 threadlocal var gemini_embed_ctx: ?GeminiEmbedContext = null;
 
+const OllamaEmbedContext = struct {
+    io: std.Io,
+    base_url: []const u8,
+    model: []const u8,
+};
+
+threadlocal var ollama_embed_ctx: ?OllamaEmbedContext = null;
+
 /// Adapter used when BUILDING the index — embeds chunks as RETRIEVAL_DOCUMENT.
 fn geminiEmbedAdapter(allocator: std.mem.Allocator, text: []const u8, out: []f32) !void {
     const ctx = gemini_embed_ctx orelse return error.ProviderFailed;
@@ -119,22 +191,45 @@ fn geminiQueryEmbedAdapter(allocator: std.mem.Allocator, text: []const u8, out: 
     return gemini_embedder.embedIntoWithTaskType(allocator, ctx.io, ctx.creds.*, text, out, .retrieval_query);
 }
 
+fn ollamaEmbedAdapter(allocator: std.mem.Allocator, text: []const u8, out: []f32) !void {
+    const ctx = ollama_embed_ctx orelse return error.ProviderFailed;
+    return ollama_embedder.embedInto(allocator, ctx.io, .{ .base_url = ctx.base_url, .model = ctx.model }, text, out);
+}
+
 pub fn ensureIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, options: SearchOptions) !void {
     if (!options.allow_rebuild) return;
 
     var backend = try resolveEmbedBackend(allocator, io, options);
     defer backend.deinit();
 
-    const manifest_dim = readManifestDim(allocator, io, root) catch null;
+    const embedding_matches = manifestEmbeddingMatches(allocator, io, root, backend) catch false;
     const needs = try workspace.codebase_index.needsRebuild(allocator, io, root);
-    if (needs or manifest_dim == null or manifest_dim.? != backend.dim) {
+    if (needs or !embedding_matches) {
         clearSearchCaches(allocator);
+        const metadata: workspace.codebase_index.EmbeddingMetadata = .{
+            .provider = backend.provider_name,
+            .model = backend.model_name,
+        };
+        const force_full_rebuild = !embedding_matches;
         if (backend.creds) |*owned| {
             gemini_embed_ctx = .{ .io = io, .creds = owned };
             defer gemini_embed_ctx = null;
-            _ = try workspace.codebase_index.refresh(allocator, io, root, backend.dim, geminiEmbedAdapter);
+            _ = if (force_full_rebuild)
+                try workspace.codebase_index.buildWithMetadata(allocator, io, root, backend.dim, geminiEmbedAdapter, metadata)
+            else
+                try workspace.codebase_index.refreshWithMetadata(allocator, io, root, backend.dim, geminiEmbedAdapter, metadata);
+        } else if (backend.ollama_base_url) |base_url| {
+            ollama_embed_ctx = .{ .io = io, .base_url = base_url, .model = backend.model_name };
+            defer ollama_embed_ctx = null;
+            _ = if (force_full_rebuild)
+                try workspace.codebase_index.buildWithMetadata(allocator, io, root, backend.dim, ollamaEmbedAdapter, metadata)
+            else
+                try workspace.codebase_index.refreshWithMetadata(allocator, io, root, backend.dim, ollamaEmbedAdapter, metadata);
         } else {
-            _ = try workspace.codebase_index.refresh(allocator, io, root, backend.dim, localEmbedAdapter);
+            _ = if (force_full_rebuild)
+                try workspace.codebase_index.buildWithMetadata(allocator, io, root, backend.dim, localEmbedAdapter, metadata)
+            else
+                try workspace.codebase_index.refreshWithMetadata(allocator, io, root, backend.dim, localEmbedAdapter, metadata);
         }
     }
 }
@@ -329,18 +424,24 @@ fn shouldSkip(path: []const u8, skip_paths: []const []const u8) bool {
     return false;
 }
 
-fn readManifestDim(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?u32 {
+fn manifestEmbeddingMatches(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, backend: EmbedBackend) !bool {
     const manifest_bytes = ((blk: {
-        const p = workspace.codebase_index.getManifestFile(allocator, io, root) catch return null;
+        const p = workspace.codebase_index.getManifestFile(allocator, io, root) catch return false;
         defer allocator.free(p);
         break :blk workspace.global_store.readAbsoluteFile(allocator, io, p);
-    }) catch return null);
+    }) catch return false);
     defer allocator.free(manifest_bytes);
 
-    const ManifestJson = struct { dim: u32 };
+    const ManifestJson = struct {
+        dim: u32,
+        embedding_provider: []const u8 = "",
+        embedding_model: []const u8 = "",
+    };
     var manifest_parsed = try std.json.parseFromSlice(ManifestJson, allocator, manifest_bytes, .{ .ignore_unknown_fields = true });
     defer manifest_parsed.deinit();
-    return manifest_parsed.value.dim;
+    return manifest_parsed.value.dim == backend.dim and
+        std.mem.eql(u8, manifest_parsed.value.embedding_provider, backend.provider_name) and
+        std.mem.eql(u8, manifest_parsed.value.embedding_model, backend.model_name);
 }
 
 fn loadIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !LoadedIndex {
@@ -492,6 +593,10 @@ fn embedQueryCached(
         gemini_embed_ctx = .{ .io = io, .creds = owned };
         defer gemini_embed_ctx = null;
         try geminiQueryEmbedAdapter(allocator, query, out);
+    } else if (backend.ollama_base_url) |base_url| {
+        ollama_embed_ctx = .{ .io = io, .base_url = base_url, .model = backend.model_name };
+        defer ollama_embed_ctx = null;
+        try ollamaEmbedAdapter(allocator, query, out);
     } else {
         try localEmbedAdapter(allocator, query, out);
     }

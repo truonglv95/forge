@@ -139,6 +139,10 @@ pub const Command = union(enum) {
     workspace_symbol_picker_open: void,
     workspace_symbol_picker_close: void,
     workspace_symbol_picker_select: void,
+    // Ghost text (inline AI completion)
+    ghost_completion_accept: void,
+    ghost_completion_dismiss: void,
+    ghost_completion_toggle: void,
 };
 
 pub const Event = union(enum) {

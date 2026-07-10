@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Allow outbound network connections (AI provider API calls) -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <!-- Allow running child processes (terminal, LSP servers, zig toolchain) -->
+  <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+  <array/>
+  <!-- Hardened runtime: allow JIT (needed for WASM extension host via zware) -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <!-- Hardened runtime: allow unsigned executable memory (Wasm interpreter) -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- Hardened runtime: disable library validation for extensions -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <!-- File access: user-selected files for workspace -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <!-- File access: downloads folder (for project templates) -->
+  <key>com.apple.security.files.downloads.read-write</key>
+  <true/>
+</dict>
+</plist>

@@ -99,9 +99,12 @@ pub fn buildForeground(
 ) !BuildReport {
     const before = readManifestCounts(allocator, io, root) catch null;
     const needs = workspace.codebase_index.needsRebuild(allocator, io, root) catch true;
+    var embedding = loadEmbeddingOptions(allocator, io, root, environ_map);
+    defer embedding.deinit(allocator);
 
     try codebase_search.ensureIndex(allocator, io, root, .{
         .prefer_gemini = environ_map != null,
+        .embedding = embedding.options,
         .environ_map = environ_map,
         .allow_rebuild = true,
     });
@@ -176,12 +179,56 @@ fn backgroundWorker(ctx: *WorkerCtx) void {
 
     var root = workspace.WorkspaceRoot.open(ctx.io, ctx.path) catch return;
     defer root.close(ctx.io);
+    var embedding = loadEmbeddingOptions(ctx.allocator, ctx.io, root, ctx.environ_map);
+    defer embedding.deinit(ctx.allocator);
 
     codebase_search.ensureIndex(ctx.allocator, ctx.io, root, .{
         .prefer_gemini = ctx.environ_map != null,
+        .embedding = embedding.options,
         .environ_map = ctx.environ_map,
         .allow_rebuild = true,
     }) catch {};
+}
+
+const OwnedEmbeddingOptions = struct {
+    options: codebase_search.EmbeddingOptions = .{},
+    owned_model: ?[]u8 = null,
+    owned_url: ?[]u8 = null,
+
+    fn deinit(self: *OwnedEmbeddingOptions, allocator: std.mem.Allocator) void {
+        if (self.owned_model) |value| allocator.free(value);
+        if (self.owned_url) |value| allocator.free(value);
+        self.* = .{};
+    }
+};
+
+fn loadEmbeddingOptions(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    environ_map: ?*const std.process.Environ.Map,
+) OwnedEmbeddingOptions {
+    var out = OwnedEmbeddingOptions{};
+    const wp = workspace.WorkspacePath.parse("forge.toml") catch return out;
+    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return out;
+    defer snap.deinit();
+    const cfg = workspace.Config.parse(snap.content) catch return out;
+    if (cfg.ai_embedding_model) |model| out.owned_model = allocator.dupe(u8, model) catch null;
+    if (cfg.ai_embedding_url orelse cfg.ai_ollama_url) |url| out.owned_url = allocator.dupe(u8, url) catch null;
+    out.options = .{
+        .provider = codebase_search.EmbeddingProvider.parse(cfg.ai_embedding_provider),
+        .model = out.owned_model,
+        .url = out.owned_url,
+    };
+    if (out.options.provider == .auto and out.options.url == null) {
+        if (environ_map) |map| {
+            if (map.get("OLLAMA_HOST")) |url| {
+                out.owned_url = allocator.dupe(u8, url) catch null;
+                out.options.url = out.owned_url;
+            }
+        }
+    }
+    return out;
 }
 
 const ManifestCounts = struct {

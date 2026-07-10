@@ -41,8 +41,9 @@ pub fn run(
     const provider_detail = switch (provider_kind) {
         .gemini => "gemini (credentials found)",
         .ollama => "ollama (local server reachable)",
-        .fake => "fake (no ollama/gemini; auto mode)",
-        .missing => "none (--provider gemini but no credentials)",
+        .openrouter => "openrouter (credentials found)",
+        .fake => "fake (no ollama/openrouter/gemini; auto mode)",
+        .missing => "none (provider credentials or server missing)",
     };
     const provider_ok = provider_kind != .missing;
     try appendCheck(allocator, &checks, "ai.provider", provider_ok, provider_detail);
@@ -97,6 +98,7 @@ pub fn run(
 const ProviderKind = enum {
     gemini,
     ollama,
+    openrouter,
     fake,
     missing,
 };
@@ -128,10 +130,21 @@ fn resolveProviderKind(
             creds.deinit();
             break :blk .gemini;
         },
+        .openrouter => blk: {
+            var creds = ai.credentials.Credentials.loadOpenRouter(allocator, io, environ_map) catch return .missing;
+            creds.deinit();
+            break :blk .openrouter;
+        },
         .auto => blk: {
             const host = ai.ollama_provider.resolveHost(allocator, environ_map, null) catch return .fake;
             defer allocator.free(host);
             if (ai.ollama_provider.isReachable(allocator, io, host)) break :blk .ollama;
+
+            var openrouter_creds = ai.credentials.Credentials.loadOpenRouter(allocator, io, environ_map) catch null;
+            if (openrouter_creds) |*creds| {
+                creds.deinit();
+                break :blk .openrouter;
+            }
 
             var creds = ai.credentials.Credentials.loadGemini(allocator, io, environ_map) catch return .fake;
             creds.deinit();

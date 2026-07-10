@@ -46,6 +46,7 @@ const navigation_history_mod = @import("workbench/navigation_history.zig");
 const session_restore_mod = @import("workbench/session_restore.zig");
 const chat_persistence_mod = @import("workbench/chat_persistence.zig");
 const agent_ui_queue_mod = @import("workbench/agent_ui_queue.zig");
+const ghost_completion_mod = @import("workbench/ghost_completion.zig");
 
 pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, ai_settings, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename };
 pub const EditorPane = enum { primary, secondary };
@@ -117,6 +118,8 @@ pub const Workbench = struct {
     scope_picker_filtered: std.ArrayList(usize),
     prompt_buffer: editor.Buffer,
     rename_buffer: editor.Buffer,
+    // Ghost text / inline AI completion
+    ghost: ghost_completion_mod.Store,
     chat_history: std.ArrayList(ChatMessage),
     focused_panel: PanelFocus = .editor,
     previous_focus: PanelFocus = .editor,
@@ -175,6 +178,10 @@ pub const Workbench = struct {
     ai_provider: []const u8 = "auto",
     ai_model: ?[]const u8 = null,
     ai_ollama_url: ?[]const u8 = null,
+    ai_openrouter_url: ?[]const u8 = null,
+    ai_embedding_provider: ?[]const u8 = null,
+    ai_embedding_model: ?[]const u8 = null,
+    ai_embedding_url: ?[]const u8 = null,
     ai_mcp_enabled: bool = true,
     ai_models: []const @import("ui/agent/agent_composer.zig").ModelOption = &@import("ui/agent/agent_composer.zig").default_models,
 
@@ -258,6 +265,10 @@ pub const Workbench = struct {
             .environ_map = environ_map,
             .ai_provider = try allocator.dupe(u8, "auto"),
             .ai_ollama_url = null,
+            .ai_openrouter_url = null,
+            .ai_embedding_provider = null,
+            .ai_embedding_model = null,
+            .ai_embedding_url = null,
             .terminals = undefined,
             .lsp_sync = undefined,
             .diagnostics = undefined,
@@ -267,6 +278,8 @@ pub const Workbench = struct {
             .rename_preview = rename_preview_mod.Store.init(allocator),
             .code_scroll_x = std.AutoHashMap(u64, CodeScrollState).init(allocator),
             .rendered_code_blocks = .empty,
+            // Ghost completion: will be fully initialized after settings load below.
+            .ghost = ghost_completion_mod.Store.init(allocator, io, .{}),
         };
         errdefer self.deinit();
 
@@ -295,12 +308,30 @@ pub const Workbench = struct {
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
+        // Re-initialize ghost completion with config read from user settings.
+        self.ghost.deinit();
+        self.ghost = ghost_completion_mod.Store.init(allocator, io, .{
+            .provider = self.user_settings.ghost_provider,
+            .model = self.user_settings.ghost_model,
+            .ollama_url = self.user_settings.ghost_ollama_url,
+            .enabled = self.user_settings.ghost_enabled,
+        });
 
         if (loadAiConfig(allocator, io, root)) |cfg| {
             self.allocator.free(self.ai_provider);
             self.ai_provider = cfg.provider;
+            if (self.ai_model) |model| self.allocator.free(model);
             self.ai_model = cfg.model;
+            if (self.ai_ollama_url) |url| self.allocator.free(url);
             self.ai_ollama_url = cfg.ollama_url;
+            if (self.ai_openrouter_url) |url| self.allocator.free(url);
+            self.ai_openrouter_url = cfg.openrouter_url;
+            if (self.ai_embedding_provider) |provider| self.allocator.free(provider);
+            self.ai_embedding_provider = cfg.embedding_provider;
+            if (self.ai_embedding_model) |model| self.allocator.free(model);
+            self.ai_embedding_model = cfg.embedding_model;
+            if (self.ai_embedding_url) |url| self.allocator.free(url);
+            self.ai_embedding_url = cfg.embedding_url;
             self.ai_mcp_enabled = cfg.mcp_enabled;
             if (cfg.custom_models) |custom_models_str| {
                 defer self.allocator.free(custom_models_str);
@@ -355,6 +386,7 @@ pub const Workbench = struct {
         self.lsp_sync.deinit();
         self.diagnostics.deinit();
         self.completions.deinit();
+        self.ghost.deinit();
         self.code_scroll_x.deinit();
         self.rendered_code_blocks.deinit(self.allocator);
         self.hover.deinit();
@@ -378,6 +410,10 @@ pub const Workbench = struct {
         self.allocator.free(self.ai_provider);
         if (self.ai_model) |model| self.allocator.free(model);
         if (self.ai_ollama_url) |url| self.allocator.free(url);
+        if (self.ai_openrouter_url) |url| self.allocator.free(url);
+        if (self.ai_embedding_provider) |provider| self.allocator.free(provider);
+        if (self.ai_embedding_model) |model| self.allocator.free(model);
+        if (self.ai_embedding_url) |url| self.allocator.free(url);
         if (self.ai_models.ptr != @import("ui/agent/agent_composer.zig").default_models[0..].ptr) {
             const def_len = @import("ui/agent/agent_composer.zig").default_models.len;
             for (self.ai_models[def_len..]) |opt| {
@@ -1481,6 +1517,10 @@ pub const Workbench = struct {
         provider: []const u8,
         model: ?[]const u8,
         ollama_url: ?[]const u8,
+        openrouter_url: ?[]const u8,
+        embedding_provider: ?[]const u8,
+        embedding_model: ?[]const u8,
+        embedding_url: ?[]const u8,
         mcp_enabled: bool,
         custom_models: ?[]const u8,
     } {
@@ -1494,9 +1534,27 @@ pub const Workbench = struct {
         errdefer if (model) |owned| allocator.free(owned);
         const ollama_url = if (config.ai_ollama_url) |value| try allocator.dupe(u8, value) else null;
         errdefer if (ollama_url) |owned| allocator.free(owned);
+        const openrouter_url = if (config.ai_openrouter_url) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (openrouter_url) |owned| allocator.free(owned);
+        const embedding_provider = if (config.ai_embedding_provider) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (embedding_provider) |owned| allocator.free(owned);
+        const embedding_model = if (config.ai_embedding_model) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (embedding_model) |owned| allocator.free(owned);
+        const embedding_url = if (config.ai_embedding_url) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (embedding_url) |owned| allocator.free(owned);
         const custom_models = if (config.ai_custom_models) |value| try allocator.dupe(u8, value) else null;
         errdefer if (custom_models) |owned| allocator.free(owned);
-        return .{ .provider = provider, .model = model, .ollama_url = ollama_url, .mcp_enabled = config.ai_mcp_enabled, .custom_models = custom_models };
+        return .{
+            .provider = provider,
+            .model = model,
+            .ollama_url = ollama_url,
+            .openrouter_url = openrouter_url,
+            .embedding_provider = embedding_provider,
+            .embedding_model = embedding_model,
+            .embedding_url = embedding_url,
+            .mcp_enabled = config.ai_mcp_enabled,
+            .custom_models = custom_models,
+        };
     }
 
     fn bridgeAppendChat(context: ?*anyopaque, role: agent_workflow.ChatRole, content: []const u8) void {
@@ -1620,7 +1678,7 @@ pub const Workbench = struct {
         const viewport = panel_scroll.bottomViewportHeight(geo.task_panel_h) - terminal_panel.session_tab_h;
         const char_w = @max(1.0, renderer_mod.Renderer.measureText("M", terminal_panel.font_size));
         const cols: u16 = @intFromFloat(@floor(@max(10.0, (geo.editor_w - terminal_panel.text_inset_x * 2) / char_w)));
-        const rows: u16 = @intFromFloat(@floor(@max(3.0, viewport / panel_scroll.bottom_line_h)));
+        const rows: u16 = @intFromFloat(@floor(@max(3.0, viewport / terminal_panel.line_h)));
         self.activeTerminal().resize(cols, rows);
     }
 

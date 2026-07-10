@@ -7,6 +7,8 @@ const ai_workflow = @import("ai_workflow.zig");
 const cancel_scope_mod = @import("cancel_scope.zig");
 const events_render = @import("events_render.zig");
 
+const default_context_budget_bytes: usize = 8 * 1024 * 1024;
+
 pub fn run(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -173,6 +175,8 @@ fn runAgent(
     }
     const mode = modeFromFlags(parsed.flags);
     const capability = capabilityFromFlags(parsed.flags);
+    var embedding = ai_workflow.embeddingOptionsFromFlags(allocator, parsed.flags, io, opened.root);
+    defer embedding.deinit(allocator);
     // Without an explicit --capability, let the classified intent choose the
     // least-privilege profile (questions stay read-only, edits unlock proposals).
     const auto_capability = parsed.flags.capability == null;
@@ -187,6 +191,8 @@ fn runAgent(
 
     const agent_config = ai.agent.Config{
         .max_steps = max_steps,
+        .context_max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else default_context_budget_bytes,
+        .embedding = embedding.options,
         .provider_options = provider_opts,
         .mode = mode,
         .capability_profile = capability,
@@ -215,8 +221,9 @@ fn runAgent(
         }, .{
             .intent = target,
             .explicit_files = parsed.flags.files,
-            .max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else 1024 * 1024,
+            .max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else default_context_budget_bytes,
             .workspace_cwd = opened.path,
+            .embedding = embedding.options,
         });
         context_event: {
             var ctx_builder = ai.context_loader.build(allocator, io, opened.root, route.context) catch break :context_event;
@@ -442,6 +449,7 @@ fn providerName(kind: ai.provider_factory.Kind) []const u8 {
         .fake => "fake",
         .gemini => "gemini",
         .ollama => "ollama",
+        .openrouter => "openrouter",
     };
 }
 

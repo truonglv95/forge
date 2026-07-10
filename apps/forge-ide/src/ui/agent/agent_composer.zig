@@ -36,6 +36,8 @@ pub const default_models = [_]ModelOption{
     .{ .id = "gemini-2.5-flash", .label = "Gemini 2.5 Flash", .provider = "gemini" },
     .{ .id = "gemini-2.5-pro", .label = "Gemini 2.5 Pro", .provider = "gemini" },
     .{ .id = "gemini-2.0-flash", .label = "Gemini 2.0 Flash", .provider = "gemini" },
+    .{ .id = "openai/gpt-4o-mini", .label = "GPT-4o Mini (OpenRouter)", .provider = "openrouter" },
+    .{ .id = "anthropic/claude-sonnet-4", .label = "Claude Sonnet 4 (OpenRouter)", .provider = "openrouter" },
 };
 
 pub fn parseCustomModels(allocator: std.mem.Allocator, custom_str: []const u8) ![]ModelOption {

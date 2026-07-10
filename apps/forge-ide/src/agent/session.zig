@@ -95,7 +95,7 @@ pub const Session = struct {
     context_lines: std.ArrayList([]const u8),
     context_entries: std.ArrayList(ContextEntry),
     context_used_bytes: usize = 0,
-    context_max_bytes: usize = 1024 * 1024,
+    context_max_bytes: usize = 8 * 1024 * 1024,
     context_inspector_expanded: bool = true,
     context_inspector_scroll_y: f32 = 0,
     context_selected_index: ?usize = null,

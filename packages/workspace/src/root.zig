@@ -89,6 +89,10 @@ pub const Config = struct {
     ai_provider: []const u8 = "auto",
     ai_model: ?[]const u8 = null,
     ai_ollama_url: ?[]const u8 = null,
+    ai_openrouter_url: ?[]const u8 = null,
+    ai_embedding_provider: ?[]const u8 = null,
+    ai_embedding_model: ?[]const u8 = null,
+    ai_embedding_url: ?[]const u8 = null,
     ai_mcp_enabled: bool = true,
     ai_custom_models: ?[]const u8 = null,
     theme: theme_mod.ThemeSettings = .{},
@@ -129,6 +133,14 @@ pub const Config = struct {
                 config.ai_model = try parseString(value);
             } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "ollama_url")) {
                 config.ai_ollama_url = try parseString(value);
+            } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "openrouter_url")) {
+                config.ai_openrouter_url = try parseString(value);
+            } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "embedding_provider")) {
+                config.ai_embedding_provider = try parseString(value);
+            } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "embedding_model")) {
+                config.ai_embedding_model = try parseString(value);
+            } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "embedding_url")) {
+                config.ai_embedding_url = try parseString(value);
             } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "custom_models")) {
                 config.ai_custom_models = try parseString(value);
             } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "mcp")) {
@@ -170,12 +182,20 @@ test "workspace config parses theme settings" {
         \\[ai]
         \\apply_mode = "review"
         \\ollama_url = "http://127.0.0.1:11434"
+        \\openrouter_url = "https://openrouter.ai/api/v1"
+        \\embedding_provider = "ollama"
+        \\embedding_model = "nomic-embed-text"
+        \\embedding_url = "http://127.0.0.1:11434"
     );
     try std.testing.expectEqualStrings("forge", config.name);
     try std.testing.expectEqual(@as(u8, 2), config.tab_width);
     try std.testing.expectEqual(ThemePreset.light, config.theme.preset);
     try std.testing.expectEqual(@as(f32, 16), config.theme.font_size);
     try std.testing.expectEqual(FontWeight.medium, config.theme.font_weight);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", config.ai_openrouter_url.?);
+    try std.testing.expectEqualStrings("ollama", config.ai_embedding_provider.?);
+    try std.testing.expectEqualStrings("nomic-embed-text", config.ai_embedding_model.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434", config.ai_embedding_url.?);
 }
 
 test "workspace config parses the supported schema" {
@@ -191,6 +211,7 @@ test "workspace config parses the supported schema" {
     try std.testing.expectEqual(@as(u8, 2), config.tab_width);
     try std.testing.expectEqual(AiApplyMode.review, config.ai_apply_mode);
     try std.testing.expect(config.ai_ollama_url == null);
+    try std.testing.expect(config.ai_openrouter_url == null);
 }
 
 test "workspace config rejects unknown settings" {
@@ -200,4 +221,9 @@ test "workspace config rejects unknown settings" {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+// Pull in verification tests.
+comptime {
+    _ = @import("transaction_test.zig");
 }

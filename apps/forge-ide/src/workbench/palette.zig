@@ -144,6 +144,10 @@ pub const Palette = struct {
             .{ .id = "ext.installed", .title = "Extensions: Show Installed", .category = "Extensions", .command = .{ .set_extensions_panel_mode = .installed } },
             .{ .id = "task.test", .title = "Run: zig build test", .category = "Tasks", .command = .{ .run_task = "test" } },
             .{ .id = "task.check", .title = "Run: ./scripts/check.sh", .category = "Tasks", .command = .{ .run_task = "check" } },
+            // Ghost completion
+            .{ .id = "ghost.accept", .title = "Ghost Completion: Accept", .category = "AI", .command = .ghost_completion_accept },
+            .{ .id = "ghost.dismiss", .title = "Ghost Completion: Dismiss", .category = "AI", .command = .ghost_completion_dismiss },
+            .{ .id = "ghost.toggle", .title = "Ghost Completion: Toggle On/Off", .category = "AI", .command = .ghost_completion_toggle },
         };
 
         for (builtins) |entry| {

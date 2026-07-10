@@ -621,5 +621,22 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             wb.chat_follow_stream = true;
             try wb.setStatus("Agent focused");
         },
+        .ghost_completion_accept => {
+            if (wb.ghost.accept()) |text| {
+                defer wb.allocator.free(text);
+                if (wb.tabs.activeDoc()) |doc| {
+                    try doc.buffer.insertString(text);
+                }
+            }
+        },
+        .ghost_completion_dismiss => {
+            wb.ghost.dismiss();
+        },
+        .ghost_completion_toggle => {
+            wb.ghost.config.enabled = !wb.ghost.config.enabled;
+            if (!wb.ghost.config.enabled) wb.ghost.dismiss();
+            const msg = if (wb.ghost.config.enabled) "Ghost completion enabled" else "Ghost completion disabled";
+            try wb.setStatus(msg);
+        },
     }
 }

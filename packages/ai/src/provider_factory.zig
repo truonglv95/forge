@@ -3,6 +3,7 @@ const provider_mod = @import("provider.zig");
 const fake_provider = @import("fake_provider.zig");
 const gemini_provider = @import("gemini_provider.zig");
 const ollama_provider = @import("ollama_provider.zig");
+const openrouter_provider = @import("openrouter_provider.zig");
 const credentials = @import("credentials.zig");
 
 pub const Kind = enum {
@@ -10,12 +11,14 @@ pub const Kind = enum {
     fake,
     gemini,
     ollama,
+    openrouter,
 
     pub fn parse(name: ?[]const u8) Kind {
         const value = name orelse return .auto;
         if (std.mem.eql(u8, value, "fake")) return .fake;
         if (std.mem.eql(u8, value, "gemini")) return .gemini;
         if (std.mem.eql(u8, value, "ollama")) return .ollama;
+        if (std.mem.eql(u8, value, "openrouter")) return .openrouter;
         if (std.mem.eql(u8, value, "auto")) return .auto;
         return .auto;
     }
@@ -27,6 +30,9 @@ pub const Options = struct {
     /// Set when `model` was allocated by `providerOptionsFromFlags` (workspace config path).
     owned_model: ?[]u8 = null,
     ollama_url: ?[]const u8 = null,
+    owned_ollama_url: ?[]u8 = null,
+    openrouter_url: ?[]const u8 = null,
+    owned_openrouter_url: ?[]u8 = null,
     fake_response: []const u8,
     fake_plan_response: ?[]const u8 = null,
     fake_tool_loop: bool = false,
@@ -42,6 +48,16 @@ pub const Options = struct {
             self.owned_model = null;
             self.model = null;
         }
+        if (self.owned_ollama_url) |url| {
+            allocator.free(url);
+            self.owned_ollama_url = null;
+            self.ollama_url = null;
+        }
+        if (self.owned_openrouter_url) |url| {
+            allocator.free(url);
+            self.owned_openrouter_url = null;
+            self.openrouter_url = null;
+        }
     }
 };
 
@@ -50,15 +66,18 @@ pub const Handle = struct {
     fake: ?fake_provider.FakeProvider = null,
     gemini: ?gemini_provider.GeminiProvider = null,
     ollama: ?ollama_provider.OllamaProvider = null,
+    openrouter: ?openrouter_provider.OpenRouterProvider = null,
 
     pub fn deinit(self: *Handle) void {
         if (self.gemini) |*owned| owned.deinit();
         if (self.ollama) |*owned| owned.deinit();
+        if (self.openrouter) |*owned| owned.deinit();
     }
 
     pub fn interface(self: *Handle) provider_mod.Provider {
         if (self.gemini) |*gemini| return gemini.providerInterface();
         if (self.ollama) |*ollama| return ollama.providerInterface();
+        if (self.openrouter) |*openrouter| return openrouter.providerInterface();
         if (self.fake) |*fake| return fake.providerInterface();
         unreachable;
     }
@@ -70,7 +89,7 @@ pub fn create(
     environ_map: ?*const std.process.Environ.Map,
     options: Options,
 ) !Handle {
-    const resolved = try resolveKind(allocator, io, environ_map, options.kind, options.ollama_url);
+    const resolved = try resolveKind(allocator, io, environ_map, options.kind, options.ollama_url, options.openrouter_url);
 
     return switch (resolved) {
         .fake => .{
@@ -113,6 +132,22 @@ pub fn create(
                 ),
             };
         },
+        .openrouter => blk: {
+            const base_url = try openrouter_provider.resolveBaseUrl(allocator, environ_map, options.openrouter_url);
+            defer allocator.free(base_url);
+            break :blk .{
+                .allocator = allocator,
+                .openrouter = try openrouter_provider.OpenRouterProvider.init(
+                    allocator,
+                    io,
+                    try credentials.Credentials.loadOpenRouter(allocator, io, environ_map),
+                    base_url,
+                    options.model orelse openrouter_provider.default_model,
+                    options.stream_callback,
+                    options.stream_context,
+                ),
+            };
+        },
     };
 }
 
@@ -120,6 +155,7 @@ const ResolvedKind = enum {
     fake,
     gemini,
     ollama,
+    openrouter,
 };
 
 fn resolveKind(
@@ -128,6 +164,7 @@ fn resolveKind(
     environ_map: ?*const std.process.Environ.Map,
     kind: Kind,
     ollama_url: ?[]const u8,
+    openrouter_url: ?[]const u8,
 ) !ResolvedKind {
     return switch (kind) {
         .fake => .fake,
@@ -140,10 +177,25 @@ fn resolveKind(
             return .gemini;
         },
         .ollama => .ollama,
+        .openrouter => {
+            _ = openrouter_url;
+            var loaded = credentials.Credentials.loadOpenRouter(allocator, io, environ_map) catch |err| switch (err) {
+                error.NotFound => return error.MissingCredentials,
+                else => return err,
+            };
+            loaded.deinit();
+            return .openrouter;
+        },
         .auto => {
             const host = try ollama_provider.resolveHost(allocator, environ_map, ollama_url);
             defer allocator.free(host);
             if (ollama_provider.isReachable(allocator, io, host)) return .ollama;
+
+            var openrouter_loaded = credentials.Credentials.loadOpenRouter(allocator, io, environ_map) catch null;
+            if (openrouter_loaded) |*owned| {
+                owned.deinit();
+                return .openrouter;
+            }
 
             var loaded = credentials.Credentials.loadGemini(allocator, io, environ_map) catch {
                 return .fake;

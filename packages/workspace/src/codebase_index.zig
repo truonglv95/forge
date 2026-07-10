@@ -13,7 +13,6 @@ const global_store = @import("global_store.zig");
 
 /// codebase_index manages the chunking and vector embedding generation for semantic search.
 /// It rebuilds the codebase index by scanning files, extracting chunks, and embedding vectors.
-
 pub fn getChunksFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
     const dir = try global_store.getIndexDir(allocator, io, root);
     defer allocator.free(dir);
@@ -82,10 +81,17 @@ pub const Manifest = struct {
     ignore_version: u32 = ignore_version,
     parser_set_id: []const u8 = "",
     toolchain_fingerprint: u64 = 0,
+    embedding_provider: []const u8 = "local",
+    embedding_model: []const u8 = "hashed-token-vector",
     dim: u32,
     chunk_count: u32,
     file_count: u32,
     built_ms: i64,
+};
+
+pub const EmbeddingMetadata = struct {
+    provider: []const u8 = "local",
+    model: []const u8 = "hashed-token-vector",
 };
 
 pub const BuildResult = struct {
@@ -198,6 +204,17 @@ pub fn build(
     vector_dim: u32,
     embedFn: *const fn (std.mem.Allocator, []const u8, []f32) anyerror!void,
 ) !BuildResult {
+    return buildWithMetadata(allocator, io, root, vector_dim, embedFn, .{});
+}
+
+pub fn buildWithMetadata(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+    vector_dim: u32,
+    embedFn: *const fn (std.mem.Allocator, []const u8, []f32) anyerror!void,
+    metadata: EmbeddingMetadata,
+) !BuildResult {
     parser_profile.activateOwned(allocator, try parser_resolver.ensure(allocator, io, root));
     defer parser_profile.deactivate(allocator);
 
@@ -306,6 +323,8 @@ pub fn build(
         .built_ms = built_ms,
         .parser_set_id = profile.parser_set_id,
         .toolchain_fingerprint = profile.toolchain_fingerprint,
+        .embedding_provider = metadata.provider,
+        .embedding_model = metadata.model,
     });
     defer allocator.free(manifest_text);
     {
@@ -482,17 +501,28 @@ pub fn refresh(
     vector_dim: u32,
     embedFn: *const fn (std.mem.Allocator, []const u8, []f32) anyerror!void,
 ) !BuildResult {
+    return refreshWithMetadata(allocator, io, root, vector_dim, embedFn, .{});
+}
+
+pub fn refreshWithMetadata(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+    vector_dim: u32,
+    embedFn: *const fn (std.mem.Allocator, []const u8, []f32) anyerror!void,
+    metadata: EmbeddingMetadata,
+) !BuildResult {
     // Schema/backend changes require a full rebuild. Incremental refresh cannot
     // safely preserve chunks emitted by an older language backend.
     if (!(try indexVersionCurrent(allocator, io, root))) {
-        return try build(allocator, io, root, vector_dim, embedFn);
+        return try buildWithMetadata(allocator, io, root, vector_dim, embedFn, metadata);
     }
     if (!(try needsRebuild(allocator, io, root))) {
         const manifest_bytes = ((blk: {
-            const p = getManifestFile(allocator, io, root) catch return try build(allocator, io, root, vector_dim, embedFn);
+            const p = getManifestFile(allocator, io, root) catch return try buildWithMetadata(allocator, io, root, vector_dim, embedFn, metadata);
             defer allocator.free(p);
             break :blk global_store.readAbsoluteFile(allocator, io, p);
-        }) catch return try build(allocator, io, root, vector_dim, embedFn));
+        }) catch return try buildWithMetadata(allocator, io, root, vector_dim, embedFn, metadata));
         defer allocator.free(manifest_bytes);
         const ManifestJson = struct { chunk_count: u32, file_count: u32 };
         var parsed = try std.json.parseFromSlice(ManifestJson, allocator, manifest_bytes, .{ .ignore_unknown_fields = true });
@@ -504,20 +534,20 @@ pub fn refresh(
     }
 
     const stale_paths = collectStalePaths(allocator, io, root) catch {
-        return try build(allocator, io, root, vector_dim, embedFn);
+        return try buildWithMetadata(allocator, io, root, vector_dim, embedFn, metadata);
     };
     defer freeStalePaths(allocator, stale_paths);
 
     if (stale_paths.len == 0) {
-        return try build(allocator, io, root, vector_dim, embedFn);
+        return try buildWithMetadata(allocator, io, root, vector_dim, embedFn, metadata);
     }
 
     if (stale_paths.len > 64) {
-        return try build(allocator, io, root, vector_dim, embedFn);
+        return try buildWithMetadata(allocator, io, root, vector_dim, embedFn, metadata);
     }
 
-    return updateIncremental(allocator, io, root, vector_dim, embedFn, stale_paths) catch {
-        return try build(allocator, io, root, vector_dim, embedFn);
+    return updateIncremental(allocator, io, root, vector_dim, embedFn, stale_paths, metadata) catch {
+        return try buildWithMetadata(allocator, io, root, vector_dim, embedFn, metadata);
     };
 }
 
@@ -577,6 +607,7 @@ fn updateIncremental(
     vector_dim: u32,
     embedFn: *const fn (std.mem.Allocator, []const u8, []f32) anyerror!void,
     stale_paths: []const []const u8,
+    metadata: EmbeddingMetadata,
 ) !BuildResult {
     parser_profile.activateOwned(allocator, try parser_resolver.ensure(allocator, io, root));
     defer parser_profile.deactivate(allocator);
@@ -679,7 +710,7 @@ fn updateIncremental(
         try hash_lines.appendSlice(allocator, hash_line);
     }
 
-    try writeIndex(allocator, io, root, vector_dim, kept.items, hash_lines.items);
+    try writeIndex(allocator, io, root, vector_dim, kept.items, hash_lines.items, metadata);
 
     const count: u32 = @intCast(kept.items.len);
     for (kept.items) |item| {
@@ -797,6 +828,7 @@ fn writeIndex(
     vector_dim: u32,
     items: []const LoadedChunk,
     hash_lines: []const u8,
+    metadata: EmbeddingMetadata,
 ) !void {
     var chunks_buf: std.ArrayList(u8) = .empty;
     defer chunks_buf.deinit(allocator);
@@ -840,6 +872,8 @@ fn writeIndex(
         .built_ms = built_ms,
         .parser_set_id = profile.parser_set_id,
         .toolchain_fingerprint = profile.toolchain_fingerprint,
+        .embedding_provider = metadata.provider,
+        .embedding_model = metadata.model,
     });
     defer allocator.free(manifest_text);
     {
@@ -856,6 +890,8 @@ const ManifestFields = struct {
     built_ms: i64,
     parser_set_id: []const u8,
     toolchain_fingerprint: u64,
+    embedding_provider: []const u8 = "local",
+    embedding_model: []const u8 = "hashed-token-vector",
 };
 
 fn formatManifest(allocator: std.mem.Allocator, fields: ManifestFields) ![]const u8 {
@@ -866,6 +902,8 @@ fn formatManifest(allocator: std.mem.Allocator, fields: ManifestFields) ![]const
         ignore_version: u32 = ignore_version,
         parser_set_id: []const u8,
         toolchain_fingerprint: u64,
+        embedding_provider: []const u8,
+        embedding_model: []const u8,
         dim: u32,
         chunk_count: u32,
         file_count: u32,
@@ -874,6 +912,8 @@ fn formatManifest(allocator: std.mem.Allocator, fields: ManifestFields) ![]const
     const json = try std.json.Stringify.valueAlloc(allocator, Json{
         .parser_set_id = fields.parser_set_id,
         .toolchain_fingerprint = fields.toolchain_fingerprint,
+        .embedding_provider = fields.embedding_provider,
+        .embedding_model = fields.embedding_model,
         .dim = fields.dim,
         .chunk_count = fields.chunk_count,
         .file_count = fields.file_count,
