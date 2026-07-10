@@ -13,6 +13,7 @@ pub const Store = struct {
     list: lsp.diagnostics.List = .{ .items = &.{} },
     pending: std.atomic.Value(bool) = .init(false),
     cooldown: f32 = 0,
+    mutex: @import("forge-util").sync.Mutex = .{},
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -33,16 +34,26 @@ pub const Store = struct {
     }
 
     pub fn deinit(self: *Store) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.active_path) |path| self.allocator.free(path);
-        self.clearList();
+        self.clearListUnlocked();
     }
 
     pub fn clearList(self: *Store) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.clearListUnlocked();
+    }
+
+    fn clearListUnlocked(self: *Store) void {
         self.list.deinit(self.allocator);
         self.list = .{ .items = &.{} };
     }
 
     pub fn setActivePath(self: *Store, path: ?[]const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.active_path) |existing| {
             if (path != null and std.mem.eql(u8, existing, path.?)) return;
             self.allocator.free(existing);
@@ -62,38 +73,50 @@ pub const Store = struct {
 
     fn requestAsync(self: *Store, doc: *@import("forge-editor").Document) void {
         self.pending.store(true, .release);
-        defer self.pending.store(false, .release);
-        self.fetchForDocument(doc);
+        const path = self.allocator.dupe(u8, doc.path) catch {
+            self.pending.store(false, .release);
+            return;
+        };
+        const thread = std.Thread.spawn(.{}, fetchWorker, .{ self, path }) catch {
+            self.allocator.free(path);
+            self.pending.store(false, .release);
+            return;
+        };
+        thread.detach();
     }
 
-    fn fetchForDocument(self: *Store, doc: *@import("forge-editor").Document) void {
-        const owned = self.registry.copyMatchForPath(self.allocator, doc.path) catch return;
+    fn fetchWorker(self: *Store, path: []const u8) void {
+        defer self.pending.store(false, .release);
+        defer self.allocator.free(path);
+
+        const owned = self.registry.copyMatchForPath(self.allocator, path) catch return;
         const config = owned orelse return;
         defer lsp.Registry.freeConfig(self.allocator, config);
 
-        const content = doc.buffer.content() catch return;
-        defer self.allocator.free(content);
-
-        const uri = lsp.diagnostics.fileUri(self.allocator, self.workspace_path, doc.path) catch return;
+        const uri = lsp.diagnostics.fileUri(self.allocator, self.workspace_path, path) catch return;
         defer self.allocator.free(uri);
 
         const diag_req = lsp.diagnostics.buildDiagnosticRequest(self.allocator, 42, uri) catch return;
         defer self.allocator.free(diag_req);
 
-        var response_buf: [65536]u8 = undefined;
-        const len = self.proxy.request(config.language_id, diag_req, &response_buf, response_buf.len) catch return;
+        const response_buf = self.allocator.alloc(u8, 1024 * 1024) catch return;
+        defer self.allocator.free(response_buf);
+
+        const len = self.proxy.request(config.language_id, diag_req, response_buf, response_buf.len) catch return;
 
         const list = lsp.diagnostics.parseDiagnosticResponse(self.allocator, response_buf[0..len]) catch lsp.diagnostics.List{ .items = &.{} };
-        self.applyResult(doc.path, list);
+        self.applyResult(path, list);
     }
 
     fn applyResult(self: *Store, path: []const u8, list: lsp.diagnostics.List) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.active_path == null or !std.mem.eql(u8, self.active_path.?, path)) {
             var discard = list;
             discard.deinit(self.allocator);
             return;
         }
-        self.clearList();
+        self.clearListUnlocked();
         self.list = list;
     }
 };
