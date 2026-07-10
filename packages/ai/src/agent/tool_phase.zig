@@ -50,6 +50,7 @@ pub const Input = struct {
     approval_callback: ?agent_loop.ApprovalCallback = null,
     approval_context: ?*anyopaque = null,
     approve_every_time_tools: bool = false,
+    max_context_recovery_attempts: u8 = 2,
 };
 
 pub fn runTransport(
@@ -125,6 +126,7 @@ pub fn runNative(
             .approve_every_time_tools = input.approve_every_time_tools,
             .task_intent = input.task_intent,
             .preloaded_retrieval = preloaded_retrieval,
+            .max_context_recovery_attempts = input.max_context_recovery_attempts,
         },
     );
     return state;
