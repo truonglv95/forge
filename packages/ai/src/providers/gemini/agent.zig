@@ -1,11 +1,11 @@
 const std = @import("std");
 const kernel = @import("forge-kernel");
-const context = @import("context.zig");
-const tool_executor = @import("tool_executor.zig");
-const gemini_provider = @import("gemini_provider.zig");
-const mcp_registry = @import("mcp_registry.zig");
-const agent_loop = @import("agent/loop.zig");
-const gemini_transport = @import("providers/gemini/tool_transport.zig");
+const context = @import("../../context.zig");
+const tool_executor = @import("../../tool_executor.zig");
+const gemini_provider = @import("provider.zig");
+const mcp_registry = @import("../../mcp_registry.zig");
+const agent_loop = @import("../../agent/loop.zig");
+const gemini_transport = @import("tool_transport.zig");
 
 pub const StepCallback = agent_loop.StepCallback;
 pub const ExploreConfig = agent_loop.Config;

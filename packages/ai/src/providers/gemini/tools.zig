@@ -1,7 +1,7 @@
 //! Backward-compatible re-exports. New code should use `tools/registry`, `tools/args`, and `tools/dispatch`.
 
-const registry = @import("tools/registry.zig");
-const args = @import("tools/args.zig");
+const registry = @import("../../tools/registry.zig");
+const args = @import("../../tools/args.zig");
 
 pub const function_declarations_json = registry.native_declarations_json;
 

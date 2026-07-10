@@ -1,11 +1,11 @@
 const std = @import("std");
-const ollama_provider = @import("../../ollama_provider.zig");
+const ollama_provider = @import("provider.zig");
 const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
 const kernel = @import("forge-kernel");
-const ollama_ndjson = @import("../../ollama_ndjson.zig");
+const ollama_ndjson = @import("ndjson.zig");
 
 pub const OllamaTransport = struct {
     ollama: *ollama_provider.OllamaProvider,

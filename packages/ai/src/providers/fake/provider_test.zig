@@ -7,10 +7,10 @@
 //!   - Proposal parser rejects malformed JSON
 
 const std = @import("std");
-const fake_provider = @import("fake_provider.zig");
+const fake_provider = @import("provider.zig");
 const provider = @import("provider.zig");
-const secret_scanner = @import("secret_scanner.zig");
-const proposal_normalize = @import("proposal_normalize.zig");
+const secret_scanner = @import("../../secret_scanner.zig");
+const proposal_normalize = @import("../../proposal_normalize.zig");
 const kernel = @import("forge-kernel");
 
 // ---------------------------------------------------------------------------

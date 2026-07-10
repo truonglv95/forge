@@ -2,9 +2,9 @@ const std = @import("std");
 const workspace = @import("forge-workspace");
 const local_vector = @import("local_vector.zig");
 const credentials = @import("credentials.zig");
-const gemini_embedder = @import("gemini_embedder.zig");
-const ollama_embedder = @import("ollama_embedder.zig");
-const ollama_provider = @import("ollama_provider.zig");
+const gemini_embedder = @import("providers/gemini/embedder.zig");
+const ollama_embedder = @import("providers/ollama/embedder.zig");
+const ollama_provider = @import("providers/ollama/provider.zig");
 const builtin = @import("builtin");
 
 pub const EmbeddingProvider = enum {

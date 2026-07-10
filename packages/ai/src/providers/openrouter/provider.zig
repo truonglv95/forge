@@ -1,12 +1,12 @@
 const std = @import("std");
-const provider = @import("provider.zig");
-const credentials = @import("credentials.zig");
+const provider = @import("../../provider.zig");
+const credentials = @import("../../credentials.zig");
 const kernel = @import("forge-kernel");
-const proposal_normalize = @import("proposal_normalize.zig");
-const openai_sse = @import("openai_sse.zig");
-const agent_turn = @import("agent/turn.zig");
-const mcp_registry = @import("mcp_registry.zig");
-const openrouter_transport = @import("providers/openrouter/tool_transport.zig");
+const proposal_normalize = @import("../../proposal_normalize.zig");
+const openai_sse = @import("../openai/sse.zig");
+const agent_turn = @import("../../agent/turn.zig");
+const mcp_registry = @import("../../mcp_registry.zig");
+const openrouter_transport = @import("tool_transport.zig");
 
 pub const default_base_url = "https://openrouter.ai/api/v1";
 pub const default_model = "openai/gpt-4o-mini";

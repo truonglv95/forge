@@ -1,11 +1,11 @@
 const std = @import("std");
-const gemini_provider = @import("../../gemini_provider.zig");
+const gemini_provider = @import("provider.zig");
 const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
 const kernel = @import("forge-kernel");
-const gemini_sse = @import("../../gemini_sse.zig");
+const gemini_sse = @import("sse.zig");
 
 const stream_endpoint_base = "https://generativelanguage.googleapis.com/v1beta/models/";
 

@@ -1,12 +1,12 @@
 const std = @import("std");
-const provider = @import("provider.zig");
-const credentials = @import("credentials.zig");
+const provider = @import("../../provider.zig");
+const credentials = @import("../../credentials.zig");
 const kernel = @import("forge-kernel");
-const retry = @import("retry.zig");
-const gemini_sse = @import("gemini_sse.zig");
-const agent_turn = @import("agent/turn.zig");
-const mcp_registry = @import("mcp_registry.zig");
-const gemini_transport = @import("providers/gemini/tool_transport.zig");
+const retry = @import("../../retry.zig");
+const gemini_sse = @import("sse.zig");
+const agent_turn = @import("../../agent/turn.zig");
+const mcp_registry = @import("../../mcp_registry.zig");
+const gemini_transport = @import("tool_transport.zig");
 
 pub const default_model = "gemini-2.5-flash";
 pub const test_mode_prompt = "test_mode";

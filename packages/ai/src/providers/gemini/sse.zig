@@ -1,5 +1,5 @@
 const std = @import("std");
-const provider_mod = @import("provider.zig");
+const provider_mod = @import("../../provider.zig");
 
 pub const ChunkKind = enum {
     thought,

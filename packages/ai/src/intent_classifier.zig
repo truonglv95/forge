@@ -164,7 +164,7 @@ test "parseClassifierJson accepts classifier payload" {
 
 test "resolveIntent skips llm for clear vietnamese edit" {
     const allocator = std.testing.allocator;
-    var fake = @import("fake_provider.zig").FakeProvider.init("{\"intent\":\"explore_codebase\",\"confidence\":0.99}", null, null);
+    var fake = @import("providers/fake/provider.zig").FakeProvider.init("{\"intent\":\"explore_codebase\",\"confidence\":0.99}", null, null);
     const llm = fake.providerInterface();
 
     const result = resolveIntent(
@@ -180,7 +180,7 @@ test "resolveIntent skips llm for clear vietnamese edit" {
 
 test "resolveIntent skips llm for clear question" {
     const allocator = std.testing.allocator;
-    var fake = @import("fake_provider.zig").FakeProvider.init("{\"intent\":\"edit_code\",\"confidence\":0.99}", null, null);
+    var fake = @import("providers/fake/provider.zig").FakeProvider.init("{\"intent\":\"edit_code\",\"confidence\":0.99}", null, null);
     const llm = fake.providerInterface();
 
     const result = resolveIntent(
@@ -196,7 +196,7 @@ test "resolveIntent skips llm for clear question" {
 
 test "resolveIntent uses llm for ambiguous agent default" {
     const allocator = std.testing.allocator;
-    var fake = @import("fake_provider.zig").FakeProvider.init(
+    var fake = @import("providers/fake/provider.zig").FakeProvider.init(
         "{\"intent\":\"explore_codebase\",\"confidence\":0.91}",
         null,
         null,
@@ -216,7 +216,7 @@ test "resolveIntent uses llm for ambiguous agent default" {
 
 test "resolveIntent falls back when llm confidence is low" {
     const allocator = std.testing.allocator;
-    var fake = @import("fake_provider.zig").FakeProvider.init(
+    var fake = @import("providers/fake/provider.zig").FakeProvider.init(
         "{\"intent\":\"edit_code\",\"confidence\":0.2}",
         null,
         null,

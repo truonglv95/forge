@@ -621,7 +621,7 @@ test "generateAndPersist wraps unparseable model text into empty proposal" {
 test "generateAndPersist with ollama when server is running" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const ollama_provider = @import("ollama_provider.zig");
+    const ollama_provider = @import("providers/ollama/provider.zig");
     if (!liveTestsEnabled()) return error.SkipZigTest;
     if (!ollama_provider.isReachable(allocator, io, ollama_provider.default_host)) return error.SkipZigTest;
 
@@ -656,7 +656,7 @@ test "generateAndPersist with ollama when server is running" {
 test "generateAndPersist ollama via WorkspaceRoot.open path" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const ollama_provider = @import("ollama_provider.zig");
+    const ollama_provider = @import("providers/ollama/provider.zig");
     if (!liveTestsEnabled()) return error.SkipZigTest;
     if (!ollama_provider.isReachable(allocator, io, ollama_provider.default_host)) return error.SkipZigTest;
 
