@@ -44,7 +44,15 @@ pub fn clampEditorScroll(wb: anytype, editor_w: f32, editor_h: f32) void {
             );
             wb.editor_scroll_x = 0;
         } else {
-            const max_line_len = scroll.longestLineLen(&doc.buffer);
+            const max_line_len = blk: {
+                const hash = std.hash.CityHash64.hash(doc.path);
+                if (wb.max_line_len_cache.get(hash)) |entry| {
+                    if (entry.revision == doc.buffer.revision) break :blk entry.len;
+                }
+                const len = scroll.longestLineLen(&doc.buffer);
+                wb.max_line_len_cache.put(hash, .{ .revision = doc.buffer.revision, .len = len }) catch {};
+                break :blk len;
+            };
             const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&wb.theme);
             wb.editor_scroll_y = scroll.clampScrollY(wb.editor_scroll_y, doc.buffer.lineCount(), editor_h, &wb.theme);
             wb.editor_scroll_x = scroll.clampScrollX(wb.editor_scroll_x, content_w, pane_w, &wb.theme);
@@ -63,7 +71,15 @@ pub fn clampEditorScroll(wb: anytype, editor_w: f32, editor_h: f32) void {
                 );
                 wb.split_scroll_x = 0;
             } else {
-                const max_line_len = scroll.longestLineLen(&doc.buffer);
+                const max_line_len = blk: {
+                    const hash = std.hash.CityHash64.hash(doc.path);
+                    if (wb.max_line_len_cache.get(hash)) |entry| {
+                        if (entry.revision == doc.buffer.revision) break :blk entry.len;
+                    }
+                    const len = scroll.longestLineLen(&doc.buffer);
+                    wb.max_line_len_cache.put(hash, .{ .revision = doc.buffer.revision, .len = len }) catch {};
+                    break :blk len;
+                };
                 const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&wb.theme);
                 wb.split_scroll_y = scroll.clampScrollY(wb.split_scroll_y, doc.buffer.lineCount(), editor_h, &wb.theme);
                 wb.split_scroll_x = scroll.clampScrollX(wb.split_scroll_x, content_w, pane_w, &wb.theme);

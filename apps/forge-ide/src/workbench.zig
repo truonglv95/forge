@@ -192,6 +192,9 @@ pub const Workbench = struct {
     code_scroll_x: std.AutoHashMap(u64, CodeScrollState),
     rendered_code_blocks: std.ArrayList(RenderedCodeBlock),
     wrap_cache: std.AutoHashMap(u64, *WrapCache),
+    max_line_len_cache: std.AutoHashMap(u64, MaxLineLenCache),
+
+    pub const MaxLineLenCache = struct { revision: u64, len: usize };
 
     pub const CodeScrollState = struct {
         scroll_x: f32 = 0,
@@ -282,6 +285,7 @@ pub const Workbench = struct {
             .code_scroll_x = std.AutoHashMap(u64, CodeScrollState).init(allocator),
             .rendered_code_blocks = .empty,
             .wrap_cache = std.AutoHashMap(u64, *WrapCache).init(allocator),
+            .max_line_len_cache = std.AutoHashMap(u64, MaxLineLenCache).init(allocator),
             // Ghost completion: will be fully initialized after settings load below.
             .ghost = ghost_completion_mod.Store.init(allocator, io, .{}),
         };
@@ -399,6 +403,7 @@ pub const Workbench = struct {
             entry.value_ptr.*.deinit();
         }
         self.wrap_cache.deinit();
+        self.max_line_len_cache.deinit();
 
         self.hover.deinit();
         self.references.deinit();

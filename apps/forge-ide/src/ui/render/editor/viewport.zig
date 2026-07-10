@@ -73,7 +73,17 @@ pub fn drawEditorViewport(
         wrap_cache_opt.?.cachedMaxScrollY(editor_buf, editor_h, viewport_w, font_size, theme)
     else
         editor_scroll.maxScrollY(line_count, editor_h, theme);
-    const max_line_len = editor_scroll.longestLineLen(editor_buf);
+    const max_line_len = if (wrap_enabled) 0 else blk: {
+        const hash = std.hash.CityHash64.hash(file_path);
+        if (wb.max_line_len_cache.get(hash)) |entry| {
+            if (entry.revision == editor_buf.revision) {
+                break :blk entry.len;
+            }
+        }
+        const len = editor_scroll.longestLineLen(editor_buf);
+        wb.max_line_len_cache.put(hash, .{ .revision = editor_buf.revision, .len = len }) catch {};
+        break :blk len;
+    };
     const content_w = @as(f32, @floatFromInt(max_line_len)) * editor_scroll.charWidth(theme);
     const max_scroll_x = if (wrap_enabled) @as(f32, 0) else editor_scroll.maxScrollX(content_w, editor_w, theme);
 
