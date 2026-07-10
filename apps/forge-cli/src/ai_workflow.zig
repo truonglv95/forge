@@ -44,16 +44,21 @@ pub fn providerOptionsFromFlags(
         owned_model = allocator.dupe(u8, model) catch null;
         break :blk owned_model;
     } else null else null;
-    const base_url: ?[]const u8 = if (workspace_cfg) |cfg| if (std.mem.eql(u8, provider_name orelse "auto", "openrouter")) cfg.openrouter_url else cfg.ollama_url else null;
+    const base_url: ?[]const u8 = if (workspace_cfg) |cfg|
+        ai.config.baseUrlForProvider(provider_name, cfg.ollama_url, cfg.openrouter_url)
+    else
+        null;
 
+    const provider_config = ai.config.ProviderConfig{
+        .name = provider_name orelse "auto",
+        .model = model_name,
+        .base_url = base_url,
+    };
+    var options = provider_config.options();
+    options.fake_response = fake_response;
+    options.fake_plan_response = fake_plan;
     return .{
-        .options = .{
-            .provider_name = provider_name orelse "auto",
-            .model = model_name,
-            .base_url = base_url,
-            .fake_response = fake_response,
-            .fake_plan_response = fake_plan,
-        },
+        .options = options,
         .owned_model = owned_model,
     };
 }
@@ -96,14 +101,15 @@ pub fn embeddingOptionsFromFlags(
         if (cfg.embedding_model) |model| {
             owned.owned_model = allocator.dupe(u8, model) catch null;
         }
-        if (cfg.embedding_url orelse cfg.ollama_url) |url| {
+        if (ai.config.embeddingUrl(cfg.embedding_url, cfg.ollama_url)) |url| {
             owned.owned_url = allocator.dupe(u8, url) catch null;
         }
-        owned.options = .{
-            .provider = ai.codebase_search.EmbeddingProvider.parse(cfg.embedding_provider),
+        const embedding_config = ai.config.EmbeddingConfig{
+            .provider = cfg.embedding_provider,
             .model = owned.owned_model,
             .url = owned.owned_url,
         };
+        owned.options = embedding_config.options();
         return owned;
     }
     return .{};

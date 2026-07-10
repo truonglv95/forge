@@ -1,9 +1,11 @@
 const std = @import("std");
+const trace = @import("trace.zig");
 
 /// Versioned event contract shared by headless CLI, TUI, and IDE renderers.
 /// Events are transport-neutral; the current CLI implementation emits them as
 /// newline-delimited JSON via `forge agent run --events ndjson`.
 pub const schema_version: u32 = 1;
+pub const trace_schema_version = trace.schema_version;
 
 pub const Type = enum {
     session_started,

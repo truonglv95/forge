@@ -23,6 +23,15 @@ pub const ModelMetadata = struct {
     context_window: usize,
 };
 
+pub const ProviderCapabilities = struct {
+    streaming: bool = true,
+    tool_calls: bool = false,
+    json_mode: bool = true,
+    thinking: bool = false,
+    embeddings: bool = false,
+    images: bool = false,
+};
+
 pub const ImagePart = struct {
     mime_type: []const u8,
     data_base64: []const u8,
@@ -258,6 +267,16 @@ pub const Provider = struct {
 
     pub fn supportsToolLoop(self: Provider) bool {
         return self.vtable.supports_tool_loop(self.ptr);
+    }
+
+    pub fn capabilities(self: Provider) ProviderCapabilities {
+        const meta = self.metadata();
+        return .{
+            .tool_calls = self.supportsToolLoop(),
+            .thinking = std.mem.eql(u8, meta.provider_name, "gemini"),
+            .embeddings = std.mem.eql(u8, meta.provider_name, "gemini") or
+                std.mem.eql(u8, meta.provider_name, "ollama"),
+        };
     }
 
     pub fn completeTurn(

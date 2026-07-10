@@ -1296,7 +1296,7 @@ fn buildContext(
     }
 
     const intent_text = intent orelse "";
-    const route = ai.routing.plan(.{
+    const route = ai.route_resolver.resolveHeuristic(.{
         .mode = mode,
         .intent = intent_text,
         .has_active_file = active_file != null,
@@ -1314,7 +1314,7 @@ fn buildContext(
         .include_semantic_search = !preview_only,
         .environ_map = host.environ_map,
         .embedding = host.embeddingOptions(),
-    });
+    }).route;
     var context_opts = route.context;
     if (preview_only) {
         context_opts.allow_rebuild = false;

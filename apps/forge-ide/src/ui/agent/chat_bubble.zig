@@ -2,18 +2,19 @@ const std = @import("std");
 const renderer = @import("forge-renderer");
 const chat_markdown = @import("chat_markdown.zig");
 const chat_message_lines = @import("chat_message_lines.zig");
+const tokens = @import("../tokens.zig");
 
 pub const font_size: f32 = chat_markdown.body_font_size;
 pub const line_h: f32 = chat_markdown.body_line_h;
-pub const bubble_pad_x: f32 = 12.0;
-pub const bubble_pad_y: f32 = 10.0;
+pub const bubble_pad_x: f32 = tokens.space.lg;
+pub const bubble_pad_y: f32 = tokens.space.md + 2.0;
 pub const title_h: f32 = 16.0;
-pub const bubble_gap: f32 = 16.0;
+pub const bubble_gap: f32 = tokens.space.xl;
 
 pub const BubbleStyle = struct {
     bg: renderer.Color,
     fg: renderer.Color,
-    title_fg: renderer.Color = .{ .r = 0.72, .g = 0.78, .b = 0.88, .a = 0.9 },
+    title_fg: renderer.Color = tokens.color.text_secondary,
 };
 
 pub fn textMaxWidth(content_w: f32) f32 {
@@ -97,7 +98,7 @@ pub fn drawBubbleWithCache(
     _ = agent_x;
     const bubble_x = inner_x + content_w - bubble_w;
     const text_x = bubble_x + bubble_pad_x;
-    renderer.Renderer.drawRoundedRect(bubble_x, y, bubble_w, height, 10.0, style.bg);
+    renderer.Renderer.drawRoundedRect(bubble_x, y, bubble_w, height, tokens.radius.lg, style.bg);
     renderer.Renderer.pushClipRect(bubble_x, y, bubble_w, height);
     defer renderer.Renderer.popClipRect();
 

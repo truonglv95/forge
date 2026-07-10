@@ -7,22 +7,23 @@ const word_wrap = @import("../editor/word_wrap.zig");
 const editor_scroll = @import("../editor/editor_scroll.zig");
 const scrollbar = @import("../core/scrollbar.zig");
 const state = @import("../core/state.zig");
+const tokens = @import("../tokens.zig");
 
 pub const prompt_font_size: f32 = 13.5;
-pub const prompt_line_h: f32 = 18.0;
+pub const prompt_line_h: f32 = tokens.font.body_line;
 pub const scroll_bar_w: f32 = scrollbar.track_w;
 
-pub const composer_pad: f32 = 12;
+pub const composer_pad: f32 = tokens.space.lg;
 pub const input_min_h: f32 = 56;
 pub const input_max_h: f32 = 220;
-pub const composer_chrome_h: f32 = 12;
+pub const composer_chrome_h: f32 = tokens.space.lg;
 pub const composer_base_h: f32 = composer_chrome_h + input_min_h;
 pub const composer_max_h: f32 = composer_chrome_h + input_max_h;
 pub const attachment_row_h: f32 = 26;
 pub const chip_h: f32 = 18;
 pub const chip_remove_w: f32 = 16;
 pub const toolbar_h: f32 = 24;
-pub const input_pad: f32 = 12;
+pub const input_pad: f32 = tokens.space.lg;
 
 pub const ModelOption = struct {
     id: []const u8,
