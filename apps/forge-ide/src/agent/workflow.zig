@@ -37,6 +37,7 @@ pub const Host = struct {
     snapshot_context_supplement: *const fn (?*anyopaque, std.mem.Allocator) ai.context_supplement.Supplement,
     free_context_supplement: *const fn (?*anyopaque, std.mem.Allocator, ai.context_supplement.Supplement) void,
     snapshot_editor_selection: *const fn (?*anyopaque, std.mem.Allocator) ?[]const u8,
+    lsp_request: *const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8,
 
     pub fn embeddingOptions(self: *const Host) ai.codebase_search.EmbeddingOptions {
         return .{
@@ -277,13 +278,27 @@ pub fn cancel(host: *const Host) void {
 }
 
 pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
-    const proposal_rel = host.agent.proposal_rel orelse return error.NoProposal;
     host.agent.setPhase(.applying, "Applying proposal...") catch {};
 
-    var proposal = workspace.OwnedProposal.readPath(host.allocator, host.io, host.workspace_root, proposal_rel) catch return error.ProviderFailed;
-    defer proposal.deinit();
+    var proposal_owned = false;
+    var proposal_ptr: *const workspace.OwnedProposal = undefined;
+    var loaded_proposal: workspace.OwnedProposal = undefined;
+    const proposal_rel = host.agent.proposal_rel orelse "";
 
-    var filtered = host.agent.review.buildAcceptedEdit(host.allocator, &proposal) catch |err| switch (err) {
+    if (host.agent.ephemeral_proposal) |*ephemeral| {
+        proposal_ptr = ephemeral;
+    } else {
+        if (host.agent.proposal_rel) |rel| {
+            loaded_proposal = workspace.OwnedProposal.readPath(host.allocator, host.io, host.workspace_root, rel) catch return error.ProviderFailed;
+            proposal_owned = true;
+            proposal_ptr = &loaded_proposal;
+        } else {
+            return error.NoProposal;
+        }
+    }
+    defer if (proposal_owned) loaded_proposal.deinit();
+
+    var filtered = host.agent.review.buildAcceptedEdit(host.allocator, proposal_ptr) catch |err| switch (err) {
         error.NoAcceptedHunks => return error.NoAcceptedHunks,
         else => return error.ProviderFailed,
     };
@@ -307,7 +322,7 @@ pub fn applyCurrentProposal(host: *const Host) AgentError!u64 {
     workspace.checkpoint.linkTransaction(host.io, host.workspace_root, checkpoint_id, tx_id) catch {};
 
     host.agent.setPhase(.verifying, "Verifying applied changes...") catch {};
-    const validation = ai.validation_runner.runTasks(host.allocator, host.io, host.workspace_path, proposal.metadata.validation_tasks) catch return error.ProviderFailed;
+    const validation = ai.validation_runner.runTasks(host.allocator, host.io, host.workspace_path, proposal_ptr.metadata.validation_tasks) catch return error.ProviderFailed;
     defer ai.validation_runner.freeResults(host.allocator, validation);
     var validation_failed = false;
     for (validation) |item| {
@@ -628,6 +643,8 @@ fn resumeWorker(ctx: *ResumeContext) void {
             .approval_context = host,
             .edit_callback = editBridge,
             .edit_context = host,
+            .lsp_request_callback = lspBridge,
+            .lsp_context = host,
             .use_inline_edits = ctx.capability_profile != .read_only,
             .workspace_cwd = host.workspace_path,
             .mcp_enabled = host.ai_mcp_enabled,
@@ -861,6 +878,8 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .approval_context = host,
             .edit_callback = editBridge,
             .edit_context = host,
+            .lsp_request_callback = lspBridge,
+            .lsp_context = host,
             .use_inline_edits = capability_profile != .read_only,
             .workspace_cwd = host.workspace_path,
             .mcp_enabled = host.ai_mcp_enabled,
@@ -1203,16 +1222,17 @@ fn approvalBridge(context: ?*anyopaque, tool_name: []const u8, args_json: []cons
     return host.agent.requestToolApproval(tool_name, args_json, @tagName(policy.risk), policy.approval);
 }
 
-fn editBridge(context: ?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void {
+fn editBridge(context: ?*anyopaque, edit: workspace.edit.WorkspaceEdit) void {
     const host: *Host = @ptrCast(@alignCast(context.?));
+    const cloned_edit = edit.clone(host.allocator) catch return;
     host.enqueue_ui(host.context, .{
-        .propose_edit = .{
-            .path = host.allocator.dupe(u8, path) catch return,
-            .start_line = start_line,
-            .end_line = end_line,
-            .replacement = host.allocator.dupe(u8, replacement) catch return,
-        },
+        .propose_edit = cloned_edit,
     });
+}
+
+fn lspBridge(context: ?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 {
+    const host: *Host = @ptrCast(@alignCast(context.?));
+    return host.lsp_request(host.context, allocator, method, params_json);
 }
 
 fn streamBridge(context: ?*anyopaque, chunk: []const u8) void {

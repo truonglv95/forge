@@ -48,8 +48,9 @@ pub const Planner = struct {
             \\Respond ONLY with valid JSON. Do not use markdown blocks or prose before/after the object.
             \\The response must start with '{' and end with '}'.
             \\Schema (proposal v1):
-            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["auto:test","property: fuzz changed parsers if applicable"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"start":0,"end":0,"replacement":"content"}]}]}}
+            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["auto:test","property: fuzz changed parsers if applicable"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"search":"exact code block to replace","replacement":"new code block"}]}]}}
             \\For modify/delete include expected_hash from the current file snapshot.
+            \\For modify, you MUST provide the "search" field containing the EXACT original code block you want to replace (including all whitespace and indentation) and the "replacement" field. Do not use start/end.
             \\If no file edits are required yet, return workspace_edit.files as an empty array.
             \\
             \\CODE QUALITY & STYLE RULES:

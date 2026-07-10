@@ -39,10 +39,31 @@ pub fn execute(
         }
         return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
     }
+    if (std.mem.eql(u8, call.name, "lsp_workspace_symbol")) {
+        const symbol_args = args.parseLspWorkspaceSymbolArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer allocator.free(symbol_args.query);
+        const out = tool_executor.lspWorkspaceSymbol(tool_ctx, symbol_args.query) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
+    }
+    if (std.mem.eql(u8, call.name, "lsp_find_references")) {
+        const ref_args = args.parseLspFindReferencesArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer allocator.free(ref_args.path);
+        const out = tool_executor.lspFindReferences(tool_ctx, ref_args.path, ref_args.line, ref_args.character) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
+    }
     if (std.mem.eql(u8, call.name, "list_tree")) {
         const tree_args = args.parseListTreeArgs(allocator, call.args_json) catch return error.ParseFailed;
         defer allocator.free(tree_args.path);
         const out = tool_executor.listTree(tool_ctx, tree_args.path, tree_args.depth) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
+    }
+    if (std.mem.eql(u8, call.name, "find_files")) {
+        const ff_args = args.parseFindFilesArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer args.freeFindFilesArgs(allocator, ff_args);
+        const out = tool_executor.findFiles(tool_ctx, ff_args.pattern, ff_args.path, ff_args.head_limit) catch |err| return mapTool(err);
         defer allocator.free(out.summary);
         return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
     }
@@ -82,9 +103,13 @@ pub fn execute(
         const edit_args = args.parseReplaceFileContentArgs(allocator, call.args_json) catch return error.ParseFailed;
         defer {
             allocator.free(edit_args.path);
-            allocator.free(edit_args.replacement);
+            for (edit_args.edits) |edit| {
+                allocator.free(edit.search);
+                allocator.free(edit.replace);
+            }
+            allocator.free(edit_args.edits);
         }
-        const out = tool_executor.replaceFileContent(tool_ctx, edit_args.path, edit_args.start_line, edit_args.end_line, edit_args.replacement) catch |err| return mapTool(err);
+        const out = tool_executor.replaceFileContent(tool_ctx, edit_args) catch |err| return mapTool(err);
         defer allocator.free(out.summary);
         return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
     }

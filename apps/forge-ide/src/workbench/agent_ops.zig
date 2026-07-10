@@ -412,7 +412,39 @@ pub fn agentHost(wb: anytype) agent_workflow.Host {
         .snapshot_context_supplement = bridgeSnapshotContextSupplement,
         .free_context_supplement = bridgeFreeContextSupplement,
         .snapshot_editor_selection = bridgeSnapshotEditorSelection,
+        .lsp_request = bridgeLspRequest,
     };
+}
+
+fn bridgeLspRequest(context: ?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 {
+    const wb = @as(*Workbench, @ptrCast(@alignCast(context.?)));
+
+    var language_id: ?[]const u8 = null;
+    wb.lsp_registry.mutex.lock();
+    if (wb.lsp_registry.servers.items.len > 0) {
+        language_id = wb.allocator.dupe(u8, wb.lsp_registry.servers.items[0].language_id) catch null;
+    }
+    wb.lsp_registry.mutex.unlock();
+
+    const lang = language_id orelse return null;
+    defer wb.allocator.free(lang);
+
+    const id = blk: {
+        const S = struct {
+            var counter: u32 = 0;
+        };
+        S.counter += 1;
+        break :blk S.counter;
+    };
+    const req_json = std.fmt.allocPrint(allocator,
+        \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{s}}}
+    , .{ id, method, params_json }) catch return null;
+    defer allocator.free(req_json);
+
+    var response_buf: [2 * 1024 * 1024]u8 = undefined;
+    const len = wb.lsp_proxy.request(lang, req_json, &response_buf, response_buf.len) catch return null;
+
+    return allocator.dupe(u8, response_buf[0..len]) catch null;
 }
 
 pub fn snapshotContextSupplement(wb: anytype, allocator: std.mem.Allocator) !ai.context_supplement.Supplement {
@@ -839,8 +871,24 @@ pub fn flushAgentUi(wb: anytype) !void {
                 try wb.appendChat(.agent, payload.message);
                 try wb.setStatus(payload.message);
             },
-            .propose_edit => |payload| {
-                try applyDirectAgentEdit(wb, payload.path, payload.start_line, payload.end_line, payload.replacement);
+            .propose_edit => |*payload| {
+                wb.agent.lock();
+                if (wb.agent.ephemeral_proposal) |*p| p.deinit();
+                wb.agent.ephemeral_proposal = @import("forge-workspace").OwnedProposal{
+                    .allocator = wb.allocator,
+                    .files = @constCast(payload.files),
+                    .metadata = .{},
+                };
+                wb.agent.unlock();
+
+                wb.agent.review.buildFromProposal(
+                    wb.allocator,
+                    wb.io,
+                    wb.workspace_root,
+                    &wb.agent.ephemeral_proposal.?,
+                ) catch {};
+
+                openProposalReview(wb);
             },
         }
     }

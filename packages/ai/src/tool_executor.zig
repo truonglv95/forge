@@ -25,9 +25,11 @@ pub const Context = struct {
     profile: tools.CapabilityProfile,
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
     environ_map: ?*const std.process.Environ.Map = null,
-    edit_callback: ?*const fn (?*anyopaque, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) void = null,
+    edit_callback: ?*const fn (?*anyopaque, edit: workspace.edit.WorkspaceEdit) void = null,
     edit_context: ?*anyopaque = null,
-    cache: ?*ToolCache = null,
+    lsp_request_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 = null,
+    lsp_context: ?*anyopaque = null,
+    cache: ?*tool_cache_mod.Cache = null,
 };
 
 pub const Outcome = struct {
@@ -62,6 +64,7 @@ pub fn search(ctx: Context, args: @import("tools/args.zig").SearchArgs) AgentToo
         .glob = if (args.glob) |glob| ctx.allocator.dupe(u8, glob) catch return error.WorkspaceFailed else null,
         .case_sensitive = args.case_sensitive,
         .head_limit = args.head_limit,
+        .context_lines = args.context_lines,
     };
     defer @import("tools/args.zig").freeSearchArgs(ctx.allocator, owned);
     try checkCancel(ctx);
@@ -91,6 +94,7 @@ pub fn search(ctx: Context, args: @import("tools/args.zig").SearchArgs) AgentToo
         .glob = owned.glob,
         .case_sensitive = owned.case_sensitive,
         .head_limit = owned.head_limit,
+        .context_lines = owned.context_lines,
     }) catch return error.WorkspaceFailed;
     defer result.deinit();
 
@@ -103,8 +107,32 @@ pub fn search(ctx: Context, args: @import("tools/args.zig").SearchArgs) AgentToo
     appendPrint(ctx.allocator, &observation, "Grep `{s}` in `{s}`: {d} hit(s)", .{ owned.pattern, owned.path, result.matches.len }) catch return error.WorkspaceFailed;
     if (owned.glob) |glob| appendPrint(ctx.allocator, &observation, " glob=`{s}`", .{glob}) catch return error.WorkspaceFailed;
     appendPrint(ctx.allocator, &observation, "\n", .{}) catch return error.WorkspaceFailed;
-    for (result.matches[0..shown]) |match| {
-        appendPrint(ctx.allocator, &observation, "\n{s}:{d}\n{s}\n", .{ match.path, match.line, match.line_text }) catch return error.WorkspaceFailed;
+    const has_context = owned.context_lines > 0;
+    for (result.matches[0..shown], 0..) |match, idx| {
+        if (has_context) {
+            // grep -C style: emit before-context lines, match line, after-context lines,
+            // then a -- separator between groups.
+            if (idx > 0) appendPrint(ctx.allocator, &observation, "--\n", .{}) catch return error.WorkspaceFailed;
+            if (match.before_context.len > 0) {
+                var before_iter = std.mem.splitScalar(u8, match.before_context, '\n');
+                var ctx_line_no: u32 = match.line - @as(u32, @intCast(@min(owned.context_lines, match.line - 1)));
+                while (before_iter.next()) |bline| {
+                    appendPrint(ctx.allocator, &observation, "{s}:{d}: {s}\n", .{ match.path, ctx_line_no, bline }) catch return error.WorkspaceFailed;
+                    ctx_line_no += 1;
+                }
+            }
+            appendPrint(ctx.allocator, &observation, "{s}:{d}: {s}\n", .{ match.path, match.line, match.line_text }) catch return error.WorkspaceFailed;
+            if (match.after_context.len > 0) {
+                var after_iter = std.mem.splitScalar(u8, match.after_context, '\n');
+                var ctx_line_no: u32 = match.line + 1;
+                while (after_iter.next()) |aline| {
+                    appendPrint(ctx.allocator, &observation, "{s}:{d}: {s}\n", .{ match.path, ctx_line_no, aline }) catch return error.WorkspaceFailed;
+                    ctx_line_no += 1;
+                }
+            }
+        } else {
+            appendPrint(ctx.allocator, &observation, "\n{s}:{d}\n{s}\n", .{ match.path, match.line, match.line_text }) catch return error.WorkspaceFailed;
+        }
     }
 
     const first_match_path = if (result.matches.len > 0)
@@ -121,6 +149,55 @@ pub fn search(ctx: Context, args: @import("tools/args.zig").SearchArgs) AgentToo
     }
 
     return .{ .summary = summary, .first_match_path = first_match_path, .observation = observation_owned };
+}
+
+pub fn lspWorkspaceSymbol(ctx: Context, query: []const u8) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .lsp_workspace_symbol);
+
+    const cb = ctx.lsp_request_callback orelse {
+        const summary = ctx.allocator.dupe(u8, "LSP not connected.") catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+
+    const params_json = std.fmt.allocPrint(ctx.allocator, "{{\"query\":\"{s}\"}}", .{query}) catch return error.WorkspaceFailed;
+    defer ctx.allocator.free(params_json);
+
+    if (cb(ctx.lsp_context, ctx.allocator, "workspace/symbol", params_json)) |res| {
+        return .{ .summary = res };
+    }
+
+    const summary = std.fmt.allocPrint(ctx.allocator, "No symbols found for '{s}'.", .{query}) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
+pub fn lspFindReferences(ctx: Context, path: []const u8, line: usize, character: usize) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .lsp_find_references);
+
+    const cb = ctx.lsp_request_callback orelse {
+        const summary = ctx.allocator.dupe(u8, "LSP not connected.") catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+
+    const abs_path = std.fs.path.join(ctx.allocator, &.{ ctx.root.path, path }) catch return error.WorkspaceFailed;
+    defer ctx.allocator.free(abs_path);
+    const uri = std.fmt.allocPrint(ctx.allocator, "file://{s}", .{abs_path}) catch return error.WorkspaceFailed;
+    defer ctx.allocator.free(uri);
+
+    // textDocument/references params:
+    // { "textDocument": { "uri": "..." }, "position": { "line": ..., "character": ... }, "context": { "includeDeclaration": true } }
+    const params_json = std.fmt.allocPrint(ctx.allocator,
+        \\{{"textDocument":{{"uri":"{s}"}},"position":{{"line":{d},"character":{d}}},"context":{{"includeDeclaration":true}}}}
+    , .{ uri, line, character }) catch return error.WorkspaceFailed;
+    defer ctx.allocator.free(params_json);
+
+    if (cb(ctx.lsp_context, ctx.allocator, "textDocument/references", params_json)) |res| {
+        return .{ .summary = res };
+    }
+
+    const summary = std.fmt.allocPrint(ctx.allocator, "No references found for '{s}' at {d}:{d}.", .{ path, line, character }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
 }
 
 pub fn codebaseSearch(ctx: Context, query: []const u8) AgentToolError!CodebaseSearchOutcome {
@@ -248,6 +325,134 @@ pub fn fetchUrl(ctx: Context, url: []const u8) AgentToolError!FetchUrlOutcome {
         .summary = summary,
         .content = content,
     };
+}
+
+pub fn findFiles(ctx: Context, pattern: []const u8, search_path: []const u8, head_limit: usize) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .find_files);
+
+    const limit = @min(head_limit, 200);
+
+    // --- Try fd first ---
+    const is_glob = std.mem.indexOfAny(u8, pattern, "*?") != null;
+    const fd_out: ?[]const u8 = blk: {
+        if (is_glob) {
+            const glob_argv = [_][]const u8{ "fd", "--type", "f", "--glob", pattern, search_path };
+            const captured = kernel.process.runCapture(ctx.allocator, .{
+                .argv = &glob_argv,
+                .cwd = ctx.cwd,
+                .max_bytes = 256 * 1024,
+            }) catch break :blk null;
+            if (captured.exit_code != 0) {
+                ctx.allocator.free(captured.output);
+                break :blk null;
+            }
+            break :blk captured.output;
+        } else {
+            const plain_argv = [_][]const u8{ "fd", "--type", "f", pattern, search_path };
+            const captured = kernel.process.runCapture(ctx.allocator, .{
+                .argv = &plain_argv,
+                .cwd = ctx.cwd,
+                .max_bytes = 256 * 1024,
+            }) catch break :blk null;
+            if (captured.exit_code != 0) {
+                ctx.allocator.free(captured.output);
+                break :blk null;
+            }
+            break :blk captured.output;
+        }
+    };
+
+    if (fd_out) |raw| {
+        defer ctx.allocator.free(raw);
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(ctx.allocator);
+
+        var count: usize = 0;
+        var lines = std.mem.splitScalar(u8, std.mem.trim(u8, raw, "\n"), '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+            if (trimmed.len == 0) continue;
+            if (count >= limit) break;
+            appendPrint(ctx.allocator, &output, "{s}\n", .{trimmed}) catch return error.WorkspaceFailed;
+            count += 1;
+        }
+
+        const header = std.fmt.allocPrint(ctx.allocator, "find_files '{s}' in '{s}': {d} file(s)\n\n", .{ pattern, search_path, count }) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(header);
+        output.insertSlice(ctx.allocator, 0, header) catch return error.WorkspaceFailed;
+
+        const summary = output.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    }
+
+    // --- Pure Zig fallback ---
+    var tree_scan = workspace.tree.scan(ctx.allocator, ctx.io, ctx.root, ".") catch return error.WorkspaceFailed;
+    defer tree_scan.deinit();
+
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(ctx.allocator);
+
+    var count: usize = 0;
+    for (tree_scan.entries) |entry| {
+        if (entry.kind != .file) continue;
+        if (!pathUnderBase(entry.path, search_path)) continue;
+        if (count >= limit) break;
+
+        const matched = if (is_glob)
+            globMatchesPath(entry.path, pattern)
+        else
+            caseInsensitiveContains(entry.path, pattern);
+
+        if (!matched) continue;
+        appendPrint(ctx.allocator, &output, "{s}\n", .{entry.path}) catch return error.WorkspaceFailed;
+        count += 1;
+    }
+
+    const header = std.fmt.allocPrint(ctx.allocator, "find_files '{s}' in '{s}': {d} file(s)\n\n", .{ pattern, search_path, count }) catch return error.WorkspaceFailed;
+    defer ctx.allocator.free(header);
+    output.insertSlice(ctx.allocator, 0, header) catch return error.WorkspaceFailed;
+
+    const summary = output.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
+/// Glob match against the full path (if pattern contains '/') or the basename.
+fn globMatchesPath(path: []const u8, glob: []const u8) bool {
+    const target = if (std.mem.indexOfScalar(u8, glob, '/')) |_| path else std.fs.path.basename(path);
+    return simpleGlob(target, glob);
+}
+
+fn simpleGlob(text: []const u8, pattern: []const u8) bool {
+    return globRec(text, pattern, 0, 0);
+}
+
+fn globRec(text: []const u8, pattern: []const u8, ti: usize, pi: usize) bool {
+    if (pi == pattern.len) return ti == text.len;
+    if (pattern[pi] == '*') {
+        var skip: usize = pi + 1;
+        while (skip < pattern.len and pattern[skip] == '*') skip += 1;
+        if (skip == pattern.len) return true;
+        var start: usize = ti;
+        while (start <= text.len) : (start += 1) {
+            if (globRec(text, pattern, start, skip)) return true;
+        }
+        return false;
+    }
+    if (ti == text.len) return false;
+    const pc = pattern[pi];
+    const tc = text[ti];
+    if (pc == '?' or pc == tc) return globRec(text, pattern, ti + 1, pi + 1);
+    return false;
+}
+
+fn caseInsensitiveContains(path: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    const base = std.fs.path.basename(path);
+    // Check basename first (most common use case), then full path
+    if (std.ascii.indexOfIgnoreCase(base, needle) != null) return true;
+    if (std.ascii.indexOfIgnoreCase(path, needle) != null) return true;
+    return false;
 }
 
 pub fn listTree(ctx: Context, base_path: []const u8, max_depth: usize) AgentToolError!Outcome {
@@ -449,19 +654,43 @@ fn parseGrepNCommand(command: []const u8) ?GrepNCommand {
     return .{ .pattern = pattern, .path = path };
 }
 
-pub fn replaceFileContent(ctx: Context, path: []const u8, start_line: usize, end_line: usize, replacement: []const u8) AgentToolError!Outcome {
+pub fn replaceFileContent(ctx: Context, args: @import("tools/args.zig").ReplaceFileContentArgs) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .propose_edit);
 
-    if (try unsafeEditShrinkReason(ctx, path, start_line, end_line, replacement)) |reason| {
-        return .{ .summary = reason };
-    }
-
     if (ctx.edit_callback) |cb| {
-        cb(ctx.edit_context, path, start_line, end_line, replacement);
+        const wp = workspace.WorkspacePath.parse(args.path) catch return error.WorkspaceFailed;
+        var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return error.WorkspaceFailed;
+        defer snap.deinit();
+
+        const expected_hash = workspace.edit.contentHash(snap.content);
+
+        var text_edits: std.ArrayList(workspace.edit.TextEdit) = .empty;
+        defer text_edits.deinit(ctx.allocator);
+        for (args.edits) |e| {
+            text_edits.append(ctx.allocator, .{
+                .start = 0,
+                .end = 0,
+                .search = e.search,
+                .replacement = e.replace,
+            }) catch return error.WorkspaceFailed;
+        }
+
+        const file_edit = workspace.edit.FileEdit{
+            .path = args.path,
+            .operation = .modify,
+            .expected_hash = expected_hash,
+            .edits = text_edits.items,
+        };
+
+        const ws_edit = workspace.edit.WorkspaceEdit{
+            .files = &.{file_edit},
+        };
+
+        cb(ctx.edit_context, ws_edit);
     }
 
-    const summary = std.fmt.allocPrint(ctx.allocator, "Edited {s} (lines {d}-{d})", .{ path, start_line, end_line }) catch return error.WorkspaceFailed;
+    const summary = std.fmt.allocPrint(ctx.allocator, "Edited {s} ({d} blocks)", .{ args.path, args.edits.len }) catch return error.WorkspaceFailed;
     return .{ .summary = summary };
 }
 

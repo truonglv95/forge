@@ -20,6 +20,9 @@ pub const ToolId = enum {
     read_file,
     search,
     codebase_search,
+    lsp_workspace_symbol,
+    lsp_find_references,
+    find_files,
     remember,
     fetch_url,
     list_tree,
@@ -34,11 +37,11 @@ pub const ToolId = enum {
 pub fn isAllowed(profile: CapabilityProfile, tool: ToolId) bool {
     return switch (profile) {
         .read_only => switch (tool) {
-            .read_file, .search, .codebase_search, .fetch_url, .list_tree, .show_context => true,
+            .read_file, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .find_files, .fetch_url, .list_tree, .show_context => true,
             else => false,
         },
         .propose => switch (tool) {
-            .read_file, .search, .codebase_search, .fetch_url, .list_tree, .show_context, .propose_edit, .remember, .run_command => true,
+            .read_file, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .find_files, .fetch_url, .list_tree, .show_context, .propose_edit, .remember, .run_command => true,
             else => false,
         },
         .propose_and_task => switch (tool) {
@@ -53,6 +56,9 @@ pub fn name(tool: ToolId) []const u8 {
         .read_file => "read_file",
         .search => "search",
         .codebase_search => "codebase_search",
+        .lsp_workspace_symbol => "lsp_workspace_symbol",
+        .lsp_find_references => "lsp_find_references",
+        .find_files => "find_files",
         .remember => "remember",
         .fetch_url => "fetch_url",
         .list_tree => "list_tree",

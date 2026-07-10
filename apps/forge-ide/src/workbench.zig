@@ -1636,6 +1636,7 @@ pub const Workbench = struct {
 
         self.diagnostics.tick(dt, self.tabs.activeDoc(), self.agent.worker_running);
         self.hover.tick(dt);
+        @import("workbench/editor_ops.zig").tickGhostCompletion(self, dt);
 
         if (self.explorer_boot_pending) {
             self.explorer_boot_pending = false;

@@ -2,6 +2,7 @@ const std = @import("std");
 const forge_util = @import("forge-util");
 const agent_session = @import("../agent/session.zig");
 const agent_workflow = @import("../agent/workflow.zig");
+const workspace = @import("forge-workspace");
 
 pub const Op = union(enum) {
     append_chat: struct { role: agent_workflow.ChatRole, text: []const u8 },
@@ -23,12 +24,7 @@ pub const Op = union(enum) {
         message: []const u8,
     },
     refresh_context_preview,
-    propose_edit: struct {
-        path: []const u8,
-        start_line: usize,
-        end_line: usize,
-        replacement: []const u8,
-    },
+    propose_edit: workspace.edit.WorkspaceEdit,
 
     pub fn deinit(self: *Op, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -50,14 +46,11 @@ pub const Op = union(enum) {
                 allocator.free(payload.proposal_rel);
                 allocator.free(payload.chat_text);
                 allocator.free(payload.manifest_text);
-                if (payload.plan_text) |text| allocator.free(text);
+                if (payload.plan_text) |plan| allocator.free(plan);
             },
             .run_failed => |*payload| allocator.free(payload.message),
+            .propose_edit => |*edit| edit.deinit(allocator),
             .refresh_context_preview => {},
-            .propose_edit => |*payload| {
-                allocator.free(payload.path);
-                allocator.free(payload.replacement);
-            },
         }
     }
 };
