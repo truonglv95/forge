@@ -2,9 +2,9 @@ const std = @import("std");
 const workspace = @import("forge-workspace");
 
 pub const Options = struct {
-    max_terms: usize = 3,
+    max_terms: usize = 5,
     max_chunks: usize = 12,
-    context_lines: u32 = 2,
+    context_lines: u32 = 5,
 };
 
 const ScoredChunk = struct {
@@ -174,13 +174,18 @@ pub fn freeIntentTerms(allocator: std.mem.Allocator, terms: []const []const u8) 
     allocator.free(terms);
 }
 
+// Stop words for keyword term extraction.
+// IMPORTANT: action verbs like fix/add/update/change/create are intentionally
+// NOT in this list — they carry semantic meaning in coding agent prompts
+// (e.g. "fix the auth bug" must keep "fix" to signal debug intent).
+// Only truly meaningless filler words are suppressed.
 const stop_words = [_][]const u8{
-    "the",    "a",    "an",     "is",       "are",   "was",    "were",      "be",     "been",   "being",
-    "fix",    "add",  "update", "make",     "how",   "what",   "where",     "when",   "why",    "who",
-    "for",    "to",   "in",     "on",       "at",    "of",     "and",       "or",     "not",    "this",
-    "that",   "with", "from",   "me",       "my",    "i",      "please",    "can",    "could",  "would",
-    "should", "do",   "does",   "did",      "it",    "its",    "we",        "you",    "your",   "them",
-    "they",   "file", "code",   "function", "class", "method", "implement", "create", "change",
+    "the",    "a",    "an",    "is",    "are",   "was",  "were",   "be",    "been",   "being",
+    "how",    "what", "where", "when",  "why",   "who",  "for",    "to",    "in",     "on",
+    "at",     "of",   "and",   "or",    "not",   "this", "that",   "with",  "from",   "me",
+    "my",     "i",    "please","can",   "could", "would","should", "do",    "does",   "did",
+    "it",     "its",  "we",    "you",   "your",  "them",  "they",  "just",  "also",   "then",
+    "than",   "into", "onto",  "about", "above", "below",
 };
 
 fn shouldSkipPath(path: []const u8, skip_paths: []const []const u8) bool {

@@ -91,7 +91,10 @@ fn run(
             return check_cmd.run(allocator, io, parsed, writer) catch 2;
         },
         .index => {
-            return index_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+            return index_cmd.run(allocator, io, environ_map, parsed, writer) catch |err| {
+                try writer.print("error in index command: {}\n", .{err});
+                return 2;
+            };
         },
         .context => {
             return context_cmd.run(allocator, io, parsed, writer) catch 2;
