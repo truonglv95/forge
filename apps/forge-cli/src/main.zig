@@ -173,9 +173,9 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --dry-run            Dry-run flag (used with apply)
         \\  --yes                Approve apply without interactive prompt
         \\  --file <path>        Include file in AI context (repeatable)
-        \\  --provider <name>    AI provider: auto|fake|gemini|ollama (default: from forge.toml or auto)
+        \\  --provider <name>    AI provider: auto|fake|gemini|ollama|openrouter (default: from forge.toml or auto)
         \\  --model <name>       Model id (default: from forge.toml or provider default)
-        \\  --budget-bytes <n>   Context byte budget for forge context (default: 1MiB)
+        \\  --budget-bytes <n>   Context byte budget for forge context (default: 8MiB)
         \\  --capability <name>  Agent capability: read_only|propose|propose_and_task
         \\  --mode <name>        Routing mode for forge context: ask|plan|agent
         \\  --once               Single watch poll (for tests)

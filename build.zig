@@ -258,4 +258,19 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ide_tests.step);
     const test_ide_step = b.step("test-ide", "Run Forge IDE tests");
     test_ide_step.dependOn(&run_ide_tests.step);
+
+    // --- Contract tests (black-box CLI) ---
+    // contract_test.zig spawns the real forge binary, so it needs the binary built first.
+    const contract_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/forge-cli/src/contract_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    contract_tests.root_module.linkSystemLibrary("c", .{});
+    const run_contract_tests = b.addRunArtifact(contract_tests);
+    run_contract_tests.step.dependOn(b.getInstallStep()); // binary must be built first
+    const test_contracts_step = b.step("test-contracts", "Run Forge CLI black-box contract tests");
+    test_contracts_step.dependOn(&run_contract_tests.step);
 }

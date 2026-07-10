@@ -20,7 +20,7 @@ pub const AttachmentInput = struct {
 };
 
 pub const LoadOptions = struct {
-    max_bytes: usize = 1024 * 1024,
+    max_bytes: usize = 8 * 1024 * 1024,
     intent: ?[]const u8 = null,
     explicit_files: []const []const u8 = &.{},
     active_file: ?[]const u8 = null,
@@ -41,11 +41,12 @@ pub const LoadOptions = struct {
     import_preview_bytes: usize = 2048,
     supplement: context_supplement.Supplement = .{},
     prefer_gemini_embeddings: bool = true,
+    embedding: codebase_search.EmbeddingOptions = .{},
     environ_map: ?*const std.process.Environ.Map = null,
     allow_rebuild: bool = true,
-    retrieval_max_chunks: usize = 12,
-    recent_file_limit: usize = 5,
-    recent_file_preview_bytes: usize = 4096,
+    retrieval_max_chunks: usize = 24,
+    recent_file_limit: usize = 16,
+    recent_file_preview_bytes: usize = 8192,
     include_agent_memory: bool = true,
     memory_max_entries: usize = 8,
     memory_max_entry_chars: usize = 512,
@@ -645,6 +646,7 @@ fn loadFusedBlock(
         const semantic = codebase_search.search(allocator, io, root, intent, skip, .{
             .top_k = pool_k,
             .prefer_gemini = options.prefer_gemini_embeddings,
+            .embedding = options.embedding,
             .environ_map = options.environ_map,
             .allow_rebuild = options.allow_rebuild,
         }) catch @as([]codebase_search.ScoredChunk, &.{});
@@ -743,6 +745,7 @@ fn loadSemanticBlock(
     const results = codebase_search.search(allocator, io, root, intent, skip, .{
         .top_k = options.retrieval_max_chunks,
         .prefer_gemini = options.prefer_gemini_embeddings,
+        .embedding = options.embedding,
         .environ_map = options.environ_map,
         .allow_rebuild = options.allow_rebuild,
     }) catch return;

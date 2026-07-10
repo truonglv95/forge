@@ -4,6 +4,9 @@ const process_spawn = @import("forge-util").process_spawn;
 pub const gemini_env_vars = &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" };
 pub const keychain_service = "forge-gemini";
 pub const keychain_account = "default";
+pub const openrouter_env_vars = &[_][]const u8{"OPENROUTER_API_KEY"};
+pub const openrouter_keychain_service = "forge-openrouter";
+pub const openrouter_keychain_account = "default";
 
 pub const Credentials = struct {
     allocator: std.mem.Allocator,
@@ -47,6 +50,27 @@ pub const Credentials = struct {
         }
 
         return loadFromKeychain(allocator, keychain_service, keychain_account);
+    }
+
+    /// Tries OPENROUTER_API_KEY, then macOS Keychain (`forge-openrouter` / `default`).
+    pub fn loadOpenRouter(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        environ_map: ?*const std.process.Environ.Map,
+    ) !Credentials {
+        _ = io;
+        if (environ_map) |map| {
+            for (openrouter_env_vars) |env_var| {
+                if (loadFromEnvMap(allocator, map, env_var)) |creds| {
+                    return creds;
+                } else |err| switch (err) {
+                    error.NotFound => {},
+                    else => return err,
+                }
+            }
+        }
+
+        return loadFromKeychain(allocator, openrouter_keychain_service, openrouter_keychain_account);
     }
 
     pub fn loadFromKeychain(

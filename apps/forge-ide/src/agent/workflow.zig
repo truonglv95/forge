@@ -15,6 +15,10 @@ pub const Host = struct {
     ai_provider: []const u8,
     ai_model: ?[]const u8,
     ai_ollama_url: ?[]const u8,
+    ai_openrouter_url: ?[]const u8,
+    ai_embedding_provider: ?[]const u8,
+    ai_embedding_model: ?[]const u8,
+    ai_embedding_url: ?[]const u8,
     ai_mcp_enabled: bool,
     workspace_root: workspace.WorkspaceRoot,
     workspace_path: []const u8,
@@ -33,6 +37,14 @@ pub const Host = struct {
     snapshot_context_supplement: *const fn (?*anyopaque, std.mem.Allocator) ai.context_supplement.Supplement,
     free_context_supplement: *const fn (?*anyopaque, std.mem.Allocator, ai.context_supplement.Supplement) void,
     snapshot_editor_selection: *const fn (?*anyopaque, std.mem.Allocator) ?[]const u8,
+
+    pub fn embeddingOptions(self: *const Host) ai.codebase_search.EmbeddingOptions {
+        return .{
+            .provider = ai.codebase_search.EmbeddingProvider.parse(self.ai_embedding_provider),
+            .model = self.ai_embedding_model,
+            .url = self.ai_embedding_url orelse self.ai_ollama_url,
+        };
+    }
 };
 
 pub const default_ask_response = ai.proposal_workflow.default_ask_response;
@@ -529,6 +541,7 @@ fn providerOptions(host: *const Host, fake_response: []const u8, fake_plan: ?[]c
         .kind = ai.provider_factory.Kind.parse(host.ai_provider),
         .model = host.ai_model,
         .ollama_url = host.ai_ollama_url,
+        .openrouter_url = host.ai_openrouter_url,
         .fake_response = fake_response,
         .fake_plan_response = fake_plan,
         .fake_tool_loop = for_agent,
@@ -618,6 +631,7 @@ fn resumeWorker(ctx: *ResumeContext) void {
             .workspace_cwd = host.workspace_path,
             .mcp_enabled = host.ai_mcp_enabled,
             .recent_files = recent_files,
+            .embedding = host.embeddingOptions(),
             .max_repair_attempts = if (ctx.capability_profile == .read_only or provider_options.kind == .fake) 0 else 2,
         },
     ) catch |err| {
@@ -729,6 +743,7 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .conversation = ctx.conversation,
             .workspace_cwd = host.workspace_path,
             .recent_files = recent_files,
+            .embedding = host.embeddingOptions(),
             .enable_repair_loop = plan_phase != .plan_only and provider_options.kind != .fake,
             .max_repair_attempts = if (provider_options.kind == .fake) 0 else 2,
         },
@@ -849,6 +864,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .workspace_cwd = host.workspace_path,
             .mcp_enabled = host.ai_mcp_enabled,
             .recent_files = recent_files,
+            .embedding = host.embeddingOptions(),
             .max_repair_attempts = if (capability_profile == .read_only or provider_options.kind == .fake) 0 else 2,
         },
     ) catch |err| switch (err) {
@@ -964,6 +980,12 @@ fn resolveProviderLabel(host: *const Host) ![]const u8 {
                 break :blk try std.fmt.allocPrint(host.allocator, "gemini/{s}", .{model});
             }
             break :blk try host.allocator.dupe(u8, "gemini");
+        },
+        .openrouter => blk: {
+            if (host.ai_model) |model| {
+                break :blk try std.fmt.allocPrint(host.allocator, "openrouter/{s}", .{model});
+            }
+            break :blk try host.allocator.dupe(u8, "openrouter");
         },
         .fake => try host.allocator.dupe(u8, "fake"),
         .auto => try host.allocator.dupe(u8, "auto"),
@@ -1292,6 +1314,7 @@ fn buildContext(
         .prefer_gemini_embeddings = !preview_only,
         .include_semantic_search = !preview_only,
         .environ_map = host.environ_map,
+        .embedding = host.embeddingOptions(),
     });
     var context_opts = route.context;
     if (preview_only) {

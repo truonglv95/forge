@@ -3,6 +3,7 @@ const workspace = @import("forge-workspace");
 const kernel = @import("forge-kernel");
 const provider_factory = @import("provider_factory.zig");
 const context_loader = @import("context_loader.zig");
+const codebase_search = @import("codebase_search.zig");
 const routing = @import("routing.zig");
 const tools = @import("tools.zig");
 const planner = @import("planner.zig");
@@ -49,6 +50,7 @@ pub const GenerateOptions = struct {
     conversation: []const @import("conversation.zig").Turn = &.{},
     workspace_cwd: ?[]const u8 = null,
     recent_files: []const []const u8 = &.{},
+    embedding: codebase_search.EmbeddingOptions = .{},
     /// Repair trials run inside a disposable workspace snapshot. This protects
     /// the authoritative tree from edits, but is not an OS security boundary.
     enable_repair_loop: bool = false,
@@ -119,6 +121,7 @@ pub fn generateAndPersist(
         .attachments = options.attachments,
         .workspace_cwd = options.workspace_cwd,
         .recent_files = options.recent_files,
+        .embedding = options.embedding,
     });
     var ctx_builder = context_loader.build(allocator, io, root, route.context) catch return error.ProviderFailed;
     defer ctx_builder.deinit();

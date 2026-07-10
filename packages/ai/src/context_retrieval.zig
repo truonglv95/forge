@@ -180,12 +180,12 @@ pub fn freeIntentTerms(allocator: std.mem.Allocator, terms: []const []const u8) 
 // (e.g. "fix the auth bug" must keep "fix" to signal debug intent).
 // Only truly meaningless filler words are suppressed.
 const stop_words = [_][]const u8{
-    "the",    "a",    "an",    "is",    "are",   "was",  "were",   "be",    "been",   "being",
-    "how",    "what", "where", "when",  "why",   "who",  "for",    "to",    "in",     "on",
-    "at",     "of",   "and",   "or",    "not",   "this", "that",   "with",  "from",   "me",
-    "my",     "i",    "please","can",   "could", "would","should", "do",    "does",   "did",
-    "it",     "its",  "we",    "you",   "your",  "them",  "they",  "just",  "also",   "then",
-    "than",   "into", "onto",  "about", "above", "below",
+    "the",  "a",    "an",     "is",    "are",   "was",   "were",   "be",   "been", "being",
+    "how",  "what", "where",  "when",  "why",   "who",   "for",    "to",   "in",   "on",
+    "at",   "of",   "and",    "or",    "not",   "this",  "that",   "with", "from", "me",
+    "my",   "i",    "please", "can",   "could", "would", "should", "do",   "does", "did",
+    "it",   "its",  "we",     "you",   "your",  "them",  "they",   "just", "also", "then",
+    "than", "into", "onto",   "about", "above", "below",
 };
 
 fn shouldSkipPath(path: []const u8, skip_paths: []const []const u8) bool {

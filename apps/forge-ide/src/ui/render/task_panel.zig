@@ -123,8 +123,8 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             terminal.lock();
             defer terminal.unlock();
 
-            const content_top = panel_y + 34.0;
-            const content_h = panel_h - 34.0;
+            const content_top = terminal_panel.contentTop(panel_y);
+            const content_h = panel_h - (content_top - panel_y);
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             const git_ptr: ?*const @import("../../git/status.zig").Status = if (wb.git_status) |*status| status else null;
             const show_cursor = @mod(state.time, 1.0) < 0.5;
@@ -135,16 +135,16 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             }
             var line_y = content_top - wb.task_scroll_y;
             for (terminal.lines.items) |line| {
-                if (line_y + 14.0 >= content_top and line_y < content_top + content_h) {
-                    terminal_panel.drawStyledLine(editor_x, line_y, line, wb.workspace_path, git_ptr);
+                if (line_y + terminal_panel.line_h >= content_top and line_y < content_top + content_h) {
+                    terminal_panel.drawStyledLine(editor_x, editor_w, line_y, line, wb.workspace_path, git_ptr);
                 }
-                line_y += 14.0;
+                line_y += terminal_panel.line_h;
             }
             if (terminal.local_input != null or terminal.isActive()) {
-                if (line_y + 14.0 >= content_top and line_y < content_top + content_h) {
+                if (line_y + terminal_panel.line_h >= content_top and line_y < content_top + content_h) {
                     var active_buf: [512]u8 = undefined;
                     const active = terminal.activeLine(&active_buf);
-                    terminal_panel.drawStyledLine(editor_x, line_y, active, wb.workspace_path, git_ptr);
+                    terminal_panel.drawStyledLine(editor_x, editor_w, line_y, active, wb.workspace_path, git_ptr);
                     const col = active.len;
                     terminal_panel.drawInputCursor(editor_x, line_y, active, col, show_terminal_cursor);
                 }
@@ -231,10 +231,17 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
         },
     }
     renderer.Renderer.clearClipRect();
-    const bottom_content_top = panel_y + 34.0;
-    const bottom_content_h = panel_h - 34.0;
+    const bottom_content_top = if (wb.bottom_panel_mode == .terminal)
+        @import("../panel/terminal_panel.zig").contentTop(panel_y)
+    else
+        panel_y + 34.0;
+    const bottom_content_h = panel_h - (bottom_content_top - panel_y);
     const bottom_line_count = wb.bottomPanelLineCount();
-    const bottom_content = @as(f32, @floatFromInt(@max(1, bottom_line_count))) * panel_scroll.bottom_line_h;
+    const bottom_line_h = if (wb.bottom_panel_mode == .terminal)
+        @import("../panel/terminal_panel.zig").line_h
+    else
+        panel_scroll.bottom_line_h;
+    const bottom_content = @as(f32, @floatFromInt(@max(1, bottom_line_count))) * bottom_line_h;
     const bottom_max = @max(0, bottom_content - bottom_content_h);
     const show_bottom_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, editor_x, bottom_content_top, editor_w, bottom_content_h);
     scrollbar.drawVertical(

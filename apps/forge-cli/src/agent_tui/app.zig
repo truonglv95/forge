@@ -41,6 +41,12 @@ const LineKind = enum {
     failure,
 };
 
+const default_context_budget_bytes: usize = 8 * 1024 * 1024;
+
+fn contextBudgetBytes(flags: args_mod.GlobalFlags) usize {
+    return if (flags.budget_bytes > 0) flags.budget_bytes else default_context_budget_bytes;
+}
+
 const ChatLine = struct {
     kind: LineKind,
     text: []u8,
@@ -113,7 +119,7 @@ pub const App = struct {
     last_tool_review_kind: ?[]u8 = null,
     command_index: usize = 0,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/events", "/resume", "/sessions", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/events", "/resume", "/sessions", "/mock", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -130,7 +136,7 @@ pub const App = struct {
             provider_opts.model orelse defaultModel(provider_opts.kind),
         });
 
-        const folder = try std.fmt.allocPrint(allocator, "{s}", .{opened.path});
+        const folder = try workspaceDisplayNameAlloc(allocator, environ_map, opened.path);
 
         var app = App{
             .allocator = allocator,
@@ -147,11 +153,12 @@ pub const App = struct {
             .branch_label = try allocator.dupe(u8, "no branch"),
             .frame = term.FrameBuffer.init(allocator),
         };
-        try app.refreshStatus();
-        app.terminal_size = terminal.size();
         if (parsed.flags.mode) |mode_name| {
             if (commands.parseModeName(mode_name)) |mode| app.agent_mode = mode;
         }
+        try app.refreshStatus();
+        try app.pushStartupIntro();
+        app.terminal_size = terminal.size();
         return app;
     }
 
@@ -287,13 +294,6 @@ pub const App = struct {
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
                     self.applyCommandSuggestion();
                     self.markDirty();
-                } else {
-                    if (self.focus_action) {
-                        self.tool_policy = self.tool_policy.next();
-                    } else {
-                        self.focus_action = true;
-                    }
-                    self.markDirty();
                 }
                 self.mutex.unlock();
             },
@@ -342,7 +342,7 @@ pub const App = struct {
             },
             .left => {
                 self.mutex.lock();
-                if (self.cursor > 0) self.cursor -= 1 else self.focus_action = false;
+                if (self.cursor > 0) self.cursor -= 1;
                 self.markDirty();
                 self.mutex.unlock();
             },
@@ -350,8 +350,6 @@ pub const App = struct {
                 self.mutex.lock();
                 if (self.cursor < self.input.items.len) {
                     self.cursor += 1;
-                } else {
-                    self.focus_action = true;
                 }
                 self.markDirty();
                 self.mutex.unlock();
@@ -626,6 +624,7 @@ pub const App = struct {
             .mode_cycle => try self.setAgentMode(commands.nextMode(self.agent_mode)),
             .context => try self.showContextManifest(),
             .diff => try self.showProposalDiff(),
+            .mock => try self.loadMockTranscript(),
             .help => try self.pushSystem(commands.helpText()),
             .exit_app => self.quit = true,
             .sessions => try self.listSessions(),
@@ -644,6 +643,42 @@ pub const App = struct {
         try self.pushSystem(msg);
     }
 
+    fn loadMockTranscript(self: *App) !void {
+        self.mutex.lock();
+        self.freeLines();
+        self.scroll = 0;
+        self.markDirty();
+        self.mutex.unlock();
+
+        try self.pushStartupIntro();
+        try self.pushLine(.user, try self.allocator.dupe(u8, "fix the memory leak in the websocket connection"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "Thinking..."));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "> Reading src/services/socket.ts"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "> Analyzing useEffect cleanup dependencies"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "! Found missing disconnect call in cleanup function"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "I found the issue. The WebSocket connection isn't being closed when the component unmounts. Here's the fix:"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, ""));
+        try self.pushLine(.tool, try self.allocator.dupe(u8, "› Reading src/services/socket.ts lines 1-80 · step 1"));
+        try self.pushLine(.tool, try self.allocator.dupe(u8, "✓ Read · src/services/socket.ts lines 1-80"));
+        try self.pushLine(.tool, try self.allocator.dupe(u8, "› Searching \"socket.on|disconnect\" in src/**/*.ts · step 2"));
+        try self.pushLine(.tool, try self.allocator.dupe(u8, "✓ Search · 3 hits in src/services/socket.ts"));
+        try self.pushLine(.tool, try self.allocator.dupe(u8, "› Editing src/services/socket.ts · close WebSocket on cleanup · step 3"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "src/services/socket.ts"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, ""));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "useEffect(() => {"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "  const socket = connect(url);"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "  socket.on('message', handleMessage);"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "  return () => {"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "-   socket.off('message', handleMessage);"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "+   socket.off('message', handleMessage);"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "+   socket.disconnect();"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "  };"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "}, [url]);"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, ""));
+        try self.pushLine(.tool, try self.allocator.dupe(u8, "✓ Edit · 2 additions, 1 deletion · close WebSocket on cleanup"));
+        try self.pushLine(.agent, try self.allocator.dupe(u8, "✓ Applied fix to src/services/socket.ts"));
+    }
+
     fn showContextManifest(self: *App) !void {
         const explicit = self.explicitFilesSnapshot();
         defer {
@@ -659,7 +694,7 @@ pub const App = struct {
         }, .{
             .intent = null,
             .explicit_files = explicit,
-            .max_bytes = if (self.parsed.flags.budget_bytes > 0) self.parsed.flags.budget_bytes else 1024 * 1024,
+            .max_bytes = contextBudgetBytes(self.parsed.flags),
             .workspace_cwd = self.opened.path,
         });
 
@@ -1227,12 +1262,35 @@ pub const App = struct {
         self.mutex.unlock();
     }
 
-    fn refreshContextLabel(self: *App, intent: []const u8) void {
+    const PromptContextSummary = struct {
+        blocks: usize,
+        files: usize,
+        used_bytes: usize,
+    };
+
+    fn pushStartupIntro(self: *App) !void {
+        try self.pushSystem("FORGE Coding Assistant initialized.");
+
+        var line_buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(
+            &line_buf,
+            "Workspace ready: {s} · {s} · prompt context builds after you ask",
+            .{
+                commands.modeLabel(self.agent_mode),
+                self.model_label,
+            },
+        ) catch "Workspace ready";
+        try self.pushSystem(line);
+    }
+
+    fn refreshContextLabel(self: *App, intent: []const u8) ?PromptContextSummary {
         const explicit = self.explicitFilesSnapshot();
         defer {
             for (explicit) |f| self.allocator.free(f);
             if (explicit.len > 0) self.allocator.free(explicit);
         }
+        var embedding = ai_workflow.embeddingOptionsFromFlags(self.allocator, self.parsed.flags, self.io, self.opened.root);
+        defer embedding.deinit(self.allocator);
 
         const route = ai.routing.plan(.{
             .mode = self.agent_mode,
@@ -1241,26 +1299,44 @@ pub const App = struct {
         }, .{
             .intent = intent,
             .explicit_files = explicit,
-            .max_bytes = if (self.parsed.flags.budget_bytes > 0) self.parsed.flags.budget_bytes else 1024 * 1024,
+            .max_bytes = contextBudgetBytes(self.parsed.flags),
             .workspace_cwd = self.opened.path,
+            .embedding = embedding.options,
         });
 
-        var ctx_builder = ai.context_loader.build(self.allocator, self.io, self.opened.root, route.context) catch return;
+        var ctx_builder = ai.context_loader.build(self.allocator, self.io, self.opened.root, route.context) catch return null;
         defer ctx_builder.deinit();
 
+        var files: usize = 0;
+        for (ctx_builder.blocks.items) |block| {
+            if (block.block_type == .file or block.block_type == .recent) files += 1;
+        }
+
         var label_buf: [128]u8 = undefined;
-        const kb = ctx_builder.used_bytes / 1024;
         const label = std.fmt.bufPrint(
             &label_buf,
-            "{d} blocks {d}kB",
-            .{ ctx_builder.blocks.items.len, kb },
-        ) catch return;
-
+            "{d} files {d} blocks {d}kB",
+            .{ files, ctx_builder.blocks.items.len, ctx_builder.used_bytes / 1024 },
+        ) catch return null;
+        const owned = self.allocator.dupe(u8, label) catch return null;
         self.mutex.lock();
-        defer self.mutex.unlock();
-        const owned = self.allocator.dupe(u8, label) catch return;
         self.allocator.free(self.context_label);
         self.context_label = owned;
+        self.mutex.unlock();
+
+        return .{
+            .blocks = ctx_builder.blocks.items.len,
+            .files = files,
+            .used_bytes = ctx_builder.used_bytes,
+        };
+    }
+
+    fn promptPrefix(self: *const App, buf: []u8) ![]const u8 {
+        const folder = self.folder_label;
+        if (std.mem.eql(u8, self.branch_label, "no branch")) {
+            return std.fmt.bufPrint(buf, "➜ {s} ", .{folder});
+        }
+        return std.fmt.bufPrint(buf, "➜ {s} git:({s}) ", .{ folder, self.branch_label });
     }
 
     fn shouldAutoApprove(self: *App, policy: ai.tool_registry.Policy) bool {
@@ -1317,13 +1393,8 @@ pub const App = struct {
         self.markDirty();
         self.mutex.unlock();
 
-        var buf: [256]u8 = undefined;
-        var args_buf: [160]u8 = undefined;
-        const args_preview = compactArgs(&args_buf, args_json);
-        const line = if (args_preview.len > 0)
-            std.fmt.bufPrint(&buf, "$ {s} {s}  step {d}", .{ tool_name, args_preview, index }) catch return
-        else
-            std.fmt.bufPrint(&buf, "$ {s}  step {d}", .{ tool_name, index }) catch return;
+        var buf: [512]u8 = undefined;
+        const line = self.formatToolBegin(&buf, tool_name, args_json, index);
         self.pushLine(.tool, self.allocator.dupe(u8, line) catch return) catch {};
     }
 
@@ -1343,12 +1414,103 @@ pub const App = struct {
         const first = firstNonEmptyLine(summary);
         const line_count = countNonEmptyLines(summary);
         const clipped = if (first.len > 420) first[0..420] else first;
+        const label = toolDoneLabel(kind);
         const line = if (line_count > 4)
-            std.fmt.bufPrint(&buf, "ok {s} · {d} output lines hidden · ctrl+r to review · {s}", .{ kind, line_count, clipped }) catch return
+            std.fmt.bufPrint(&buf, "✓ {s} · {d} output lines hidden · ctrl+r to review · {s}", .{ label, line_count, clipped }) catch return
+        else if (clipped.len > 0)
+            std.fmt.bufPrint(&buf, "✓ {s} · {s}", .{ label, clipped }) catch return
         else
-            std.fmt.bufPrint(&buf, "ok {s} · {s}", .{ kind, clipped }) catch return;
+            std.fmt.bufPrint(&buf, "✓ {s}", .{label}) catch return;
         self.pushLine(.tool, self.allocator.dupe(u8, line) catch return) catch {};
         self.refreshStatus() catch {};
+    }
+
+    fn formatToolBegin(self: *App, buf: []u8, tool_name: []const u8, args_json: []const u8, index: u32) []const u8 {
+        if (std.mem.eql(u8, tool_name, "read_file")) {
+            if (ai.tool_args.parseReadFileArgs(self.allocator, args_json)) |args| {
+                defer self.allocator.free(args.path);
+                if (args.start_line != null and args.end_line != null) {
+                    return std.fmt.bufPrint(buf, "› Reading {s} lines {d}-{d} · step {d}", .{ args.path, args.start_line.?, args.end_line.?, index }) catch "› Reading file";
+                }
+                return std.fmt.bufPrint(buf, "› Reading {s} · step {d}", .{ args.path, index }) catch "› Reading file";
+            } else |_| {}
+        }
+
+        if (std.mem.eql(u8, tool_name, "search")) {
+            if (ai.tool_args.parseSearchArgs(self.allocator, args_json)) |args| {
+                defer {
+                    self.allocator.free(args.pattern);
+                    self.allocator.free(args.path);
+                    if (args.glob) |glob| self.allocator.free(glob);
+                }
+                const scope = args.glob orelse args.path;
+                return std.fmt.bufPrint(buf, "› Searching \"{s}\" in {s} · step {d}", .{ args.pattern, scope, index }) catch "› Searching files";
+            } else |_| {}
+        }
+
+        if (std.mem.eql(u8, tool_name, "codebase_search")) {
+            if (ai.tool_args.parseCodebaseQuery(self.allocator, args_json)) |query| {
+                defer self.allocator.free(query);
+                return std.fmt.bufPrint(buf, "› Semantic search \"{s}\" · step {d}", .{ query, index }) catch "› Semantic search";
+            } else |_| {}
+        }
+
+        if (std.mem.eql(u8, tool_name, "list_tree")) {
+            if (ai.tool_args.parseListTreeArgs(self.allocator, args_json)) |args| {
+                defer self.allocator.free(args.path);
+                return std.fmt.bufPrint(buf, "› Listing {s} depth {d} · step {d}", .{ args.path, args.depth, index }) catch "› Listing directory";
+            } else |_| {}
+        }
+
+        if (std.mem.eql(u8, tool_name, "run_command")) {
+            if (ai.tool_args.parseRunCommand(self.allocator, args_json)) |command| {
+                defer self.allocator.free(command);
+                return std.fmt.bufPrint(buf, "› Running `{s}` · step {d}", .{ command, index }) catch "› Running command";
+            } else |_| {}
+        }
+
+        if (std.mem.eql(u8, tool_name, "replace_file_content") or std.mem.eql(u8, tool_name, "propose_edit")) {
+            if (formatEditToolBegin(buf, args_json, index)) |line| return line;
+        }
+
+        var args_buf: [160]u8 = undefined;
+        const args_preview = compactArgs(&args_buf, args_json);
+        const action = getToolAction(tool_name);
+        if (args_preview.len > 0) {
+            return std.fmt.bufPrint(buf, "› {s} {s} · step {d}", .{ action, args_preview, index }) catch action;
+        }
+        return std.fmt.bufPrint(buf, "› {s} · step {d}", .{ action, index }) catch action;
+    }
+
+    fn formatEditToolBegin(buf: []u8, args_json: []const u8, index: u32) ?[]const u8 {
+        const Args = struct {
+            path: ?[]const u8 = null,
+            summary: ?[]const u8 = null,
+            start_line: ?usize = null,
+            end_line: ?usize = null,
+        };
+        var parsed = std.json.parseFromSlice(Args, std.heap.page_allocator, args_json, .{ .ignore_unknown_fields = true }) catch return null;
+        defer parsed.deinit();
+        const path = parsed.value.path orelse return null;
+        if (parsed.value.summary) |summary| {
+            return std.fmt.bufPrint(buf, "› Editing {s} · {s} · step {d}", .{ path, summary, index }) catch null;
+        }
+        if (parsed.value.start_line != null and parsed.value.end_line != null) {
+            return std.fmt.bufPrint(buf, "› Editing {s} lines {d}-{d} · step {d}", .{ path, parsed.value.start_line.?, parsed.value.end_line.?, index }) catch null;
+        }
+        return std.fmt.bufPrint(buf, "› Editing {s} · step {d}", .{ path, index }) catch null;
+    }
+
+    fn toolDoneLabel(kind: []const u8) []const u8 {
+        if (std.mem.eql(u8, kind, "read_file")) return "Read";
+        if (std.mem.eql(u8, kind, "search")) return "Search";
+        if (std.mem.eql(u8, kind, "codebase_search")) return "Semantic search";
+        if (std.mem.eql(u8, kind, "list_tree")) return "Tree";
+        if (std.mem.eql(u8, kind, "run_command")) return "Run";
+        if (std.mem.eql(u8, kind, "replace_file_content")) return "Write";
+        if (std.mem.eql(u8, kind, "propose_edit")) return "Edit";
+        if (std.mem.eql(u8, kind, "apply_proposal")) return "Apply";
+        return kind;
     }
 
     fn firstNonEmptyLine(text: []const u8) []const u8 {
@@ -1393,15 +1555,18 @@ pub const App = struct {
     fn colorForLine(kind: LineKind, text: []const u8) []const u8 {
         if (text.len > 0 and text[0] == '+') return term.Style.bright_green;
         if (text.len > 0 and text[0] == '-') return term.Style.bright_red;
+        if (std.mem.startsWith(u8, text, "FORGE Coding Assistant initialized.")) return term.Style.gray;
+        if (std.mem.startsWith(u8, text, "Context: ")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "Edited ")) return term.Style.bright_yellow;
+        if (std.mem.startsWith(u8, text, "› ")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "$ ")) return term.Style.bright_yellow;
         if (std.mem.startsWith(u8, text, "ok ") or std.mem.startsWith(u8, text, "✓ ")) return term.Style.bright_green;
         if (std.mem.startsWith(u8, text, "↻ ")) return term.Style.magenta;
         return switch (kind) {
-            .user => term.Style.bright_yellow,
+            .user => term.Style.white,
             .agent => term.Style.green,
             .tool => term.Style.yellow,
-            .system => term.Style.dim,
+            .system => term.Style.gray,
             .failure => term.Style.red,
         };
     }
@@ -1412,12 +1577,18 @@ pub const App = struct {
         return null;
     }
 
-    fn decorateLine(allocator: std.mem.Allocator, kind: LineKind, text: []const u8) ![]u8 {
+    fn decorateLine(self: *const App, kind: LineKind, text: []const u8) ![]u8 {
         return switch (kind) {
-            .user => std.fmt.allocPrint(allocator, "-> project git:(main) {s}", .{text}),
-            .failure => std.fmt.allocPrint(allocator, "× {s}", .{text}),
-            else => allocator.dupe(u8, text),
+            .user => self.formatPromptLine(text),
+            .failure => std.fmt.allocPrint(self.allocator, "× {s}", .{text}),
+            else => self.allocator.dupe(u8, text),
         };
+    }
+
+    fn formatPromptLine(self: *const App, text: []const u8) ![]u8 {
+        var prefix_buf: [256]u8 = undefined;
+        const prefix = try self.promptPrefix(&prefix_buf);
+        return std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, text });
     }
 
     fn getToolAction(tool_name: []const u8) []const u8 {
@@ -1449,30 +1620,26 @@ pub const App = struct {
             }
         }
 
-        const footer_rows: u16 = 5 + filtered_len;
-        if (size.rows <= footer_rows + 3) return;
-        const chat_rows = size.rows - footer_rows - 1;
+        self.approval.mutex.lock();
+        const pending = self.approval.pending;
+        var approve_buf: [512]u8 = undefined;
+        const approve_line = if (pending) blk: {
+            const tool = self.approval.tool_name[0..self.approval.tool_name_len];
+            const preview = self.approval.args_preview[0..@min(self.approval.args_preview_len, 120)];
+            break :blk std.fmt.bufPrint(
+                &approve_buf,
+                "Allow {s}? [y/N] {s}",
+                .{ tool, preview },
+            ) catch "Allow tool? [y/N]";
+        } else "";
+        self.approval.mutex.unlock();
+
+        const approval_rows: u16 = if (pending) 1 else 0;
+        const footer_rows: u16 = filtered_len + approval_rows;
+        if (size.rows <= footer_rows + 1) return;
+        const chat_rows = size.rows - footer_rows;
 
         self.frame.begin();
-
-        // Render header
-        self.frame.moveTo(1, 1);
-        if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
-        self.frame.appendSlice(" 🔴 🟡 🟢   ") catch {};
-        if (self.term.use_color) self.frame.appendSlice(term.Style.bg_input) catch {};
-        self.frame.appendSlice(" >_ Terminal ") catch {};
-        if (self.term.use_color) {
-            self.frame.appendSlice(term.Style.bg_block) catch {};
-            self.frame.appendSlice(term.Style.gray) catch {};
-        }
-        self.frame.appendSlice(" 🗗 IDE ") catch {};
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-        self.frame.data.appendNTimes(self.allocator, ' ', size.cols - 30) catch {};
-        if (self.term.use_color) {
-            self.frame.appendSlice(term.Style.bg_block) catch {};
-            self.frame.appendSlice("\x1b[K") catch {};
-            self.frame.appendSlice(term.Style.reset) catch {};
-        }
 
         var wrapped_cache: std.ArrayList([]const u8) = .empty;
         defer {
@@ -1495,7 +1662,7 @@ pub const App = struct {
 
         for (source_lines) |line| {
             if (line.kind == .agent) {
-                if (std.mem.startsWith(u8, line.text, "Thinking...")) {
+                if (line.text.len > 0 and (line.text[0] == '>' or line.text[0] == '!')) {
                     current_block = 1;
                 } else if (current_block == 1 and line.text.len > 0 and line.text[0] != '>' and line.text[0] != '!' and !std.mem.startsWith(u8, line.text, "Thinking")) {
                     current_block = 0;
@@ -1504,7 +1671,7 @@ pub const App = struct {
                 }
             }
 
-            const decorated = decorateLine(self.allocator, line.kind, line.text) catch continue;
+            const decorated = self.decorateLine(line.kind, line.text) catch continue;
             defer self.allocator.free(decorated);
             const wrapped = term.wrapLines(self.allocator, decorated, width) catch continue;
             defer term.freeLines(self.allocator, wrapped);
@@ -1515,24 +1682,23 @@ pub const App = struct {
                     continue;
                 };
                 display_lines.append(self.allocator, .{ .kind = line.kind, .text = owned }) catch {};
-                block_states.append(self.allocator, current_block) catch {};
+                const block_state: u8 = if (line.kind == .tool) 1 else current_block;
+                block_states.append(self.allocator, block_state) catch {};
             }
         }
 
         if (self.agent_busy) {
-            var busy_buf: [128]u8 = undefined;
-            const status_line = blk: {
-                if (self.active_tool_running and self.active_tool_len > 0) {
-                    break :blk std.fmt.bufPrint(&busy_buf, "⣻ {s}...", .{getToolAction(self.active_tool[0..self.active_tool_len])}) catch "⣻ Working...";
-                }
-                if (self.active_progress_len > 0) {
-                    break :blk std.fmt.bufPrint(&busy_buf, "⣻ {s}", .{self.active_progress[0..self.active_progress_len]}) catch "⣻ Working...";
-                }
-                break :blk std.fmt.bufPrint(&busy_buf, "⣻ Working...", .{}) catch "⣻ Working...";
-            };
+            var thinking_buf: [128]u8 = undefined;
+            const status_line = self.liveThinkingLabel(&thinking_buf);
             if (self.allocator.dupe(u8, status_line)) |owned_status| {
                 wrapped_cache.append(self.allocator, owned_status) catch self.allocator.free(owned_status);
-                display_lines.append(self.allocator, .{ .kind = .system, .text = owned_status }) catch {};
+                display_lines.append(self.allocator, .{ .kind = .agent, .text = owned_status }) catch {};
+                block_states.append(self.allocator, 0) catch {};
+            } else |_| {}
+        } else if (!self.show_events) {
+            if (self.formatPromptLine(self.input.items)) |owned_prompt| {
+                wrapped_cache.append(self.allocator, owned_prompt) catch self.allocator.free(owned_prompt);
+                display_lines.append(self.allocator, .{ .kind = .user, .text = owned_prompt }) catch {};
                 block_states.append(self.allocator, 0) catch {};
             } else |_| {}
         }
@@ -1543,8 +1709,9 @@ pub const App = struct {
         const start = if (total > chat_rows) total - chat_rows - source_scroll_ptr.* else 0;
         const end = @min(total, start + chat_rows);
 
-        var row: u16 = 2;
+        var row: u16 = 1;
         var scratch: [512]u8 = undefined;
+        var live_prompt_row: ?u16 = null;
         for (display_lines.items[start..end], start..) |line, i| {
             const block = block_states.items[i];
             const color = colorForLine(line.kind, line.text);
@@ -1561,15 +1728,19 @@ pub const App = struct {
                 self.frame.data.appendNTimes(self.allocator, ' ', padding) catch {};
             }
 
-            if (line.kind == .user and std.mem.startsWith(u8, clipped, "-> project git:(main) ")) {
+            if (line.kind == .user) {
+                if (!self.agent_busy and !self.show_events and i + 1 == total) live_prompt_row = row;
+                var prefix_buf: [256]u8 = undefined;
+                const prefix = self.promptPrefix(&prefix_buf) catch "";
+                const prefix_part = if (std.mem.startsWith(u8, clipped, prefix)) prefix else "";
                 if (self.term.use_color) self.frame.appendSlice(term.Style.green) catch {};
-                self.frame.appendSlice("-> project git:(main) ") catch {};
+                self.frame.appendSlice(prefix_part) catch {};
                 if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
                 if (padding > 0 and self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
-                self.frame.appendSlice(clipped["-> project git:(main) ".len..]) catch {};
-            } else if (std.mem.eql(u8, clipped, "Thinking...")) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.white) catch {};
+                self.frame.appendSlice(clipped[prefix_part.len..]) catch {};
+            } else if (std.mem.startsWith(u8, clipped, "Thinking")) {
                 if (self.term.use_color) self.frame.appendSlice(term.Style.blue) catch {};
-                if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
                 self.frame.appendSlice(clipped) catch {};
             } else {
                 if (self.term.use_color) self.frame.appendSlice(color) catch {};
@@ -1608,16 +1779,15 @@ pub const App = struct {
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             row += 1;
         }
-        while (row <= chat_rows + 1) : (row += 1) {
+        while (row <= chat_rows) : (row += 1) {
             self.frame.writeRow(row, size.cols, "");
         }
 
-        const input_top_row = chat_rows + 2;
-        const input_row = chat_rows + 3;
+        var footer_row = chat_rows + 1;
 
         if (show_commands) {
             for (filtered[0..filtered_len], 0..) |cmd, i| {
-                const cmd_row = input_row + 1 + @as(u16, @intCast(i));
+                const cmd_row = footer_row + @as(u16, @intCast(i));
                 self.frame.moveTo(cmd_row, 1);
 
                 if (i == self.command_index) {
@@ -1634,108 +1804,47 @@ pub const App = struct {
                 }
                 self.frame.appendSlice("\x1b[K") catch {};
             }
+            footer_row += filtered_len;
         }
 
-        const status_row = input_row + filtered_len + 1;
-        const action_row = status_row + 1;
-        self.frame.writeRow(size.rows, size.cols, "");
-
-        var status_buf: [1024]u8 = undefined;
-        var folder_scratch: [256]u8 = undefined;
-        const folder = term.truncateEnd(&folder_scratch, self.folder_label, 24);
-        const tool_indicator = blk: {
-            if (self.active_tool_running and self.active_tool_len > 0) {
-                break :blk self.active_tool[0..self.active_tool_len];
-            }
-            break :blk "-";
-        };
-
-        var input_line: [576]u8 = undefined;
-        var composer_title: [256]u8 = undefined;
-        const title = std.fmt.bufPrint(&composer_title, "╭─ Message Forge  ·  @file / @codebase / slash commands", .{}) catch "╭─ Message Forge";
-        if (self.term.use_color) self.frame.appendSlice(term.Style.bg_input) catch {};
-        if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-        self.frame.writeRow(input_top_row, size.cols, term.truncateEnd(&scratch, title, @intCast(size.cols - 1)));
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-
-        const prompt = if (self.agent_busy) " … " else " → ";
-        const prompt_w: usize = 3;
-        const avail = size.cols - @min(size.cols, prompt_w + 1);
-        const input_view = term.truncateEnd(&scratch, self.input.items, @intCast(avail));
-        const placeholder = if (self.input.items.len == 0 and !self.agent_busy) "Add a follow-up" else input_view;
-        const input_text = std.fmt.bufPrint(&input_line, "{s}{s}", .{ prompt, placeholder }) catch prompt;
-        if (self.term.use_color) self.frame.appendSlice(term.Style.bg_input) catch {};
-        if (self.term.use_color and self.input.items.len == 0 and !self.agent_busy) self.frame.appendSlice(term.Style.dim) catch {};
-        self.frame.writeRow(input_row, size.cols, input_text);
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-
-        const status = std.fmt.bufPrint(
-            &status_buf,
-            "mode:{s} · tool:{s} · model:{s} · ctx:{s}",
-            .{
-                commands.modeLabel(self.agent_mode),
-                tool_indicator,
-                self.model_label,
-                self.context_label,
-            },
-        ) catch "";
-        if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-        self.frame.writeRow(status_row, size.cols, term.truncateEnd(&folder_scratch, status, @intCast(size.cols - 1)));
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-
-        const action_label = self.tool_policy.label();
-        const bottom = std.fmt.bufPrint(
-            &status_buf,
-            "1 task  Auto · {s} · {s} · {s}",
-            .{ self.edited_label, folder, self.branch_label },
-        ) catch "";
-        if (self.term.use_color) self.frame.appendSlice(term.Style.blue) catch {};
-        self.frame.writeRow(action_row, size.cols, term.truncateEnd(&folder_scratch, bottom, @intCast(size.cols - 1)));
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-        const action_text = if (self.focus_action)
-            std.fmt.bufPrint(&status_buf, "[{s} ▶]", .{action_label}) catch action_label
-        else
-            std.fmt.bufPrint(&status_buf, " {s} ", .{action_label}) catch action_label;
-        const action_col: u16 = if (@as(usize, size.cols) > action_text.len + 1)
-            @intCast(size.cols - action_text.len)
-        else
-            1;
-        self.frame.moveTo(action_row, action_col);
-        if (self.term.use_color) self.frame.appendSlice(term.Style.magenta) catch {};
-        if (self.focus_action and self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
-        self.frame.appendSlice(action_text) catch {};
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-
-        self.approval.mutex.lock();
-        const pending = self.approval.pending;
         if (pending) {
-            var approve_buf: [512]u8 = undefined;
-            const tool = self.approval.tool_name[0..self.approval.tool_name_len];
-            const preview = self.approval.args_preview[0..@min(self.approval.args_preview_len, 120)];
-            const approve_line = std.fmt.bufPrint(
-                &approve_buf,
-                "Allow {s}? [y/N] {s}",
-                .{ tool, preview },
-            ) catch "Allow tool? [y/N]";
+            var folder_scratch: [256]u8 = undefined;
             if (self.term.use_color) self.frame.appendSlice(term.Style.magenta) catch {};
-            self.frame.writeRow(input_row -| 1, size.cols, term.truncateEnd(&folder_scratch, approve_line, @intCast(size.cols - 1)));
+            self.frame.writeRow(footer_row, size.cols, term.truncateEnd(&folder_scratch, approve_line, @intCast(size.cols - 1)));
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            footer_row += 1;
         }
-        self.approval.mutex.unlock();
 
         // Place the real terminal cursor at the input caret, then reveal it.
-        if (!self.agent_busy and !pending) {
+        if (!self.agent_busy and !pending and live_prompt_row != null) {
+            var prompt_buf: [512]u8 = undefined;
+            const prompt_prefix = self.promptPrefix(&prompt_buf) catch "➜ project ";
+            const prefix_cols = term.displayWidth(prompt_prefix);
+            const avail = if (@as(usize, size.cols) > prefix_cols + 1) @as(usize, size.cols) - prefix_cols - 1 else 0;
+            const cursor_cols = @min(
+                avail,
+                term.displayWidth(self.input.items[0..@min(self.cursor, self.input.items.len)]),
+            );
             const caret_col: u16 = @intCast(@min(
                 @as(usize, size.cols),
-                prompt_w + @min(self.cursor, avail) + 1,
+                prefix_cols + cursor_cols + 1,
             ));
-            self.frame.moveTo(input_row, caret_col);
+            self.frame.moveTo(live_prompt_row.?, caret_col);
             self.frame.appendSlice("\x1b[?25h") catch {};
         } else {
             self.frame.appendSlice("\x1b[?25l") catch {};
         }
 
         self.frame.flush();
+    }
+
+    fn liveThinkingLabel(self: *const App, buf: []u8) []const u8 {
+        const progress = self.active_progress[0..self.active_progress_len];
+        if (progress.len > 0 and !std.mem.startsWith(u8, progress, "Thinking")) return progress;
+
+        const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        const dots: usize = @intCast(@mod(@divTrunc(now_ms, 320), 3) + 1);
+        return std.fmt.bufPrint(buf, "Thinking{s}", .{"..."[0..dots]}) catch "Thinking...";
     }
 };
 
@@ -1771,7 +1880,15 @@ fn workerMain(ctx: *WorkerCtx) void {
     if (resume_id == null) {
         app.appendConversation(.user, intent) catch {};
     }
-    app.refreshContextLabel(intent);
+    if (app.refreshContextLabel(intent)) |summary| {
+        var context_buf: [160]u8 = undefined;
+        const line = std.fmt.bufPrint(
+            &context_buf,
+            "Context built: {d} files · {d} blocks · {d}kB",
+            .{ summary.files, summary.blocks, summary.used_bytes / 1024 },
+        ) catch "Context built";
+        app.pushLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
+    }
 
     const parsed = app.parsed;
     var provider_opts = ai_workflow.agentProviderOptionsFromFlags(app.allocator, parsed.flags, intent, app.io, app.opened.root);
@@ -1802,9 +1919,13 @@ fn workerMain(ctx: *WorkerCtx) void {
         for (explicit_files) |f| app.allocator.free(f);
         if (explicit_files.len > 0) app.allocator.free(explicit_files);
     }
+    var embedding = ai_workflow.embeddingOptionsFromFlags(app.allocator, parsed.flags, app.io, app.opened.root);
+    defer embedding.deinit(app.allocator);
 
     const agent_config = ai.agent.Config{
         .max_steps = max_steps,
+        .context_max_bytes = contextBudgetBytes(parsed.flags),
+        .embedding = embedding.options,
         .provider_options = provider_opts,
         .mode = app.agent_mode,
         .capability_profile = capabilityForMode(app.agent_mode, parsed.flags),
@@ -1926,7 +2047,13 @@ fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
     };
 
     switch (phase) {
-        .context_built, .plan_ready, .proposal_ready => {
+        .context_built => {
+            app.mutex.lock();
+            app.active_progress_len = 0;
+            app.markDirty();
+            app.mutex.unlock();
+        },
+        .plan_ready, .proposal_ready => {
             var buf: [64]u8 = undefined;
             const line = std.fmt.bufPrint(&buf, "● {s}", .{label}) catch return;
             app.pushLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
@@ -1946,9 +2073,31 @@ fn defaultModel(kind: ai.provider_factory.Kind) []const u8 {
     return switch (kind) {
         .ollama => "qwen2.5-coder:7b",
         .gemini => "gemini-2.5-flash",
+        .openrouter => "openai/gpt-4o-mini",
         .fake => "fake",
         .auto => "auto",
     };
+}
+
+fn workspaceDisplayNameAlloc(
+    allocator: std.mem.Allocator,
+    environ_map: ?*const std.process.Environ.Map,
+    workspace_path: []const u8,
+) ![]u8 {
+    if (std.mem.eql(u8, workspace_path, ".") or workspace_path.len == 0) {
+        if (environ_map) |env| {
+            if (env.get("PWD")) |pwd| {
+                const base = std.fs.path.basename(pwd);
+                if (base.len > 0 and !std.mem.eql(u8, base, ".")) {
+                    return allocator.dupe(u8, base);
+                }
+            }
+        }
+    }
+
+    const base = std.fs.path.basename(workspace_path);
+    if (base.len > 0 and !std.mem.eql(u8, base, ".")) return allocator.dupe(u8, base);
+    return allocator.dupe(u8, "workspace");
 }
 
 fn parseMode(value: ?[]const u8) ai.tools.Mode {

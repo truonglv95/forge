@@ -9,6 +9,7 @@ pub const Command = union(enum) {
     context,
     diff,
     events: ?[]const u8,
+    mock,
     help,
     exit_app,
     resume_session: ?[]const u8,
@@ -29,6 +30,7 @@ pub fn parseSlashCommand(input: []const u8) Command {
     if (matchesSlash(input, "policy")) return .policy;
     if (matchesSlash(input, "context")) return .context;
     if (matchesSlash(input, "diff")) return .diff;
+    if (matchesSlash(input, "mock")) return .mock;
     if (matchesSlash(input, "help") or matchesSlash(input, "?")) return .help;
     if (matchesSlash(input, "quit") or matchesSlash(input, "exit")) return .exit_app;
     if (matchesSlash(input, "sessions") or matchesSlash(input, "list")) return .sessions;
@@ -90,7 +92,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear|/cls /policy /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /resume [id] /sessions /help /quit|/exit
+    \\Commands: /clear|/cls /policy /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /resume [id] /sessions /mock /help /quit|/exit
     \\Keys: Tab policy | Ctrl+M mode | Ctrl+R review tool output | Esc close events | PgUp/PgDn scroll | a/n proposal apply/dismiss | Ctrl+C cancel/quit
     ;
 }
@@ -107,6 +109,7 @@ test "parse slash commands" {
     try std.testing.expect(parseSlashCommand("/cls") == .wipe_history);
     try std.testing.expect(parseSlashCommand("/clear") == .wipe_history);
     try std.testing.expect(parseSlashCommand("/policy") == .policy);
+    try std.testing.expect(parseSlashCommand("/mock") == .mock);
     try std.testing.expect(parseSlashCommand("/help") == .help);
     try std.testing.expect(parseSlashCommand("/quit") == .exit_app);
     try std.testing.expect(parseSlashCommand("/exit") == .exit_app);

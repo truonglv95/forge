@@ -101,6 +101,67 @@ pub fn closeEditorOverlay(wb: anytype) void {
     wb.completions.dismiss();
 }
 
+/// Notify the ghost completion store that the buffer changed.
+/// Called after every character insertion in the editor. The store
+/// debounces internally; this function is cheap to call on every keystroke.
+pub fn notifyGhostBufferChanged(wb: anytype, row: usize, col: usize) void {
+    wb.ghost.onBufferChanged(row, col);
+}
+
+/// Tick the ghost completion debounce timer and fire a request when ready.
+/// `delta_s` is the frame elapsed time in seconds.
+/// Should be called every frame from the render/update loop.
+pub fn tickGhostCompletion(wb: anytype, delta_s: f32) void {
+    if (!wb.ghost.config.enabled) return;
+    const doc = wb.tabs.activeDoc() orelse return;
+
+    // Sync cursor position — dismiss if moved.
+    wb.ghost.onCursorMoved(doc.buffer.cursor.row, doc.buffer.cursor.col);
+
+    if (!wb.ghost.tick(delta_s)) return;
+
+    // Build prefix: content from the start of file up to cursor.
+    const row = doc.buffer.cursor.row;
+    const col = doc.buffer.cursor.col;
+
+    var prefix_buf = std.ArrayList(u8).init(wb.allocator);
+    defer prefix_buf.deinit(wb.allocator);
+    for (doc.buffer.lines.items, 0..) |line, r| {
+        if (r < row) {
+            prefix_buf.appendSlice(wb.allocator, line.items) catch return;
+            prefix_buf.append(wb.allocator, '\n') catch return;
+        } else if (r == row) {
+            const end_col = @min(col, line.items.len);
+            prefix_buf.appendSlice(wb.allocator, line.items[0..end_col]) catch return;
+            break;
+        }
+    }
+
+    // Build suffix: content from cursor to end (truncated).
+    var suffix_buf = std.ArrayList(u8).init(wb.allocator);
+    defer suffix_buf.deinit(wb.allocator);
+    for (doc.buffer.lines.items, 0..) |line, r| {
+        if (r == row) {
+            const start_col = @min(col, line.items.len);
+            suffix_buf.appendSlice(wb.allocator, line.items[start_col..]) catch return;
+            suffix_buf.append(wb.allocator, '\n') catch return;
+        } else if (r > row) {
+            suffix_buf.appendSlice(wb.allocator, line.items) catch return;
+            suffix_buf.append(wb.allocator, '\n') catch return;
+            if (suffix_buf.items.len >= @import("ghost_completion.zig").max_suffix_bytes) break;
+        }
+    }
+
+    const line_content = doc.buffer.lineAt(row);
+    wb.ghost.requestCompletion(
+        line_content,
+        prefix_buf.items,
+        suffix_buf.items,
+        row,
+        col,
+    );
+}
+
 pub fn openRenameSymbol(wb: anytype) !void {
     const buf = wb.activeBuffer() orelse return;
     const word = wordAtCursor(buf);

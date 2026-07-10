@@ -6,6 +6,7 @@ const provider_factory = @import("provider_factory.zig");
 const planner = @import("planner.zig");
 const context = @import("context.zig");
 const context_loader = @import("context_loader.zig");
+const codebase_search = @import("codebase_search.zig");
 const run_record = @import("run_record.zig");
 const tools = @import("tools.zig");
 const tool_registry = @import("tools/registry.zig");
@@ -28,6 +29,8 @@ const agent_event = @import("agent_event.zig");
 
 pub const Config = struct {
     max_steps: u32 = 128,
+    context_max_bytes: usize = 8 * 1024 * 1024,
+    embedding: codebase_search.EmbeddingOptions = .{},
     provider_options: provider_factory.Options,
     mode: tools.Mode = .agent,
     capability_profile: tools.CapabilityProfile = .propose,
@@ -174,6 +177,8 @@ pub fn run(
         .include_project_rules = true,
         .workspace_cwd = effective_config.workspace_cwd,
         .recent_files = effective_config.recent_files,
+        .max_bytes = effective_config.context_max_bytes,
+        .embedding = effective_config.embedding,
     };
 
     const resolved: intent_classifier.ResolveResult = if (effective_config.auto_capability and config.resume_session_id == null)

@@ -23,7 +23,7 @@ pub const Segment = struct {
     kind: SegmentKind,
 };
 
-/// Builds an IDE terminal prompt like: `forge on main [!+?⇡] ❯ `
+/// Builds an IDE terminal prompt like: `➜ forge git:(main) `
 pub fn format(
     workspace_path: []const u8,
     git: ?*const git_status.Status,
@@ -39,14 +39,17 @@ pub fn buildPromptText(
 ) struct { text: []const u8, prompt_end: usize } {
     var len: usize = 0;
 
+    len = appendSlice(buf, len, "➜ ");
+
     const folder = std.fs.path.basename(workspace_path);
     len = appendSlice(buf, len, folder);
 
     if (git) |status| {
         if (status.is_repo) {
             if (status.branch) |branch| {
-                len = appendSlice(buf, len, " on ");
+                len = appendSlice(buf, len, " git:(");
                 len = appendSlice(buf, len, branch);
+                len = appendSlice(buf, len, ")");
             }
             var markers: [24]u8 = undefined;
             const marker_slice = dirtyMarkers(status, &markers);
@@ -58,7 +61,7 @@ pub fn buildPromptText(
         }
     }
 
-    len = appendSlice(buf, len, " ❯ ");
+    len = appendSlice(buf, len, " ");
     return .{ .text = buf[0..len], .prompt_end = len };
 }
 
@@ -98,6 +101,14 @@ pub fn buildPromptSegments(
     var count: usize = 0;
     var offset: usize = 0;
 
+    if (prompt_text.len >= 4 and count < segments.len) {
+        const chevron = "➜ ";
+        const n = @min(chevron.len, prompt_text.len - offset);
+        segments[count] = .{ .offset = offset, .length = n, .kind = .chevron };
+        count += 1;
+        offset += n;
+    }
+
     const folder = std.fs.path.basename(workspace_path);
     if (folder.len > 0 and count < segments.len) {
         const n = @min(folder.len, prompt_text.len - offset);
@@ -109,8 +120,8 @@ pub fn buildPromptSegments(
     if (git) |status| {
         if (status.is_repo and status.branch != null) {
             if (offset < prompt_text.len and count < segments.len) {
-                const on_text = " on ";
-                const n = @min(on_text.len, prompt_text.len - offset);
+                const git_open = " git:(";
+                const n = @min(git_open.len, prompt_text.len - offset);
                 segments[count] = .{ .offset = offset, .length = n, .kind = .muted };
                 count += 1;
                 offset += n;
@@ -122,6 +133,13 @@ pub fn buildPromptSegments(
                     count += 1;
                     offset += n;
                 }
+            }
+            if (offset < prompt_text.len and count < segments.len) {
+                const git_close = ")";
+                const n = @min(git_close.len, prompt_text.len - offset);
+                segments[count] = .{ .offset = offset, .length = n, .kind = .muted };
+                count += 1;
+                offset += n;
             }
         }
 
@@ -160,8 +178,8 @@ pub fn buildPromptSegments(
     }
 
     if (offset < prompt_text.len and count < segments.len) {
-        const chevron = prompt_text[offset..];
-        segments[count] = .{ .offset = offset, .length = chevron.len, .kind = .chevron };
+        const trailing = prompt_text[offset..];
+        segments[count] = .{ .offset = offset, .length = trailing.len, .kind = .muted };
         count += 1;
     }
 

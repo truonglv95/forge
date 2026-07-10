@@ -98,6 +98,31 @@ pub const Registry = struct {
         self.bindings = try list.toOwnedSlice(self.allocator);
     }
 
+    /// dispatch checks ghost acceptance before falling through to keybindings.
+    /// `ghost_active` should be true when the workbench has an active ghost text.
+    pub fn dispatchWithGhost(
+        self: *const Registry,
+        palette: *palette_mod.Palette,
+        event: renderer.KeyEvent,
+        ghost_active: bool,
+        dispatchFn: *const fn (commands_mod.Command) anyerror!void,
+    ) bool {
+        if (!event.is_down) return false;
+        // macOS Tab keycode = 48, Escape keycode = 53
+        const tab_keycode: i32 = 48;
+        const escape_keycode: i32 = 53;
+
+        if (ghost_active and event.keycode == tab_keycode and event.modifiers == 0) {
+            dispatchFn(.ghost_completion_accept) catch {};
+            return true;
+        }
+        if (ghost_active and event.keycode == escape_keycode and event.modifiers == 0) {
+            dispatchFn(.ghost_completion_dismiss) catch {};
+            return true;
+        }
+        return self.dispatch(palette, event, dispatchFn);
+    }
+
     pub fn dispatch(self: *const Registry, palette: *palette_mod.Palette, event: renderer.KeyEvent, dispatchFn: *const fn (commands_mod.Command) anyerror!void) bool {
         if (!event.is_down) return false;
         for (self.bindings) |binding| {

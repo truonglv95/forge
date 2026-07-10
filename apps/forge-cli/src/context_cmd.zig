@@ -1,7 +1,10 @@
 const std = @import("std");
 const ai = @import("forge-ai");
+
+const default_context_budget_bytes: usize = 8 * 1024 * 1024;
 const args_mod = @import("args.zig");
 const workspace_cmd = @import("workspace_cmd.zig");
+const ai_workflow = @import("ai_workflow.zig");
 
 fn parseMode(value: ?[]const u8) ai.tools.Mode {
     if (value) |mode| {
@@ -20,6 +23,8 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
     const intent = if (parsed.positional.len > 0) parsed.positional[0] else null;
     const intent_text = intent orelse "";
     const mode = parseMode(parsed.flags.mode);
+    var embedding = ai_workflow.embeddingOptionsFromFlags(allocator, parsed.flags, io, opened.root);
+    defer embedding.deinit(allocator);
 
     const route = ai.routing.plan(.{
         .mode = mode,
@@ -28,8 +33,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, w
     }, .{
         .intent = intent,
         .explicit_files = parsed.flags.files,
-        .max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else 1024 * 1024,
+        .max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else default_context_budget_bytes,
         .workspace_cwd = opened.path,
+        .embedding = embedding.options,
     });
 
     var tools_buf: [256]u8 = undefined;
