@@ -185,6 +185,120 @@ pub fn scrollToCursor(
     return std.math.clamp(y, 0, maxScrollY(buf, editor_h, viewport_w, font_size, theme));
 }
 
+pub const WrapCache = struct {
+    allocator: std.mem.Allocator,
+    revision: u64 = 0,
+    viewport_w: f32 = 0,
+    font_size: f32 = 0,
+    visual_lines_per_row: std.ArrayList(usize),
+    total_visual_lines: usize = 0,
+
+    pub fn init(allocator: std.mem.Allocator) *WrapCache {
+        const self = allocator.create(WrapCache) catch unreachable;
+        self.* = .{
+            .allocator = allocator,
+            .visual_lines_per_row = .empty,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *WrapCache) void {
+        self.visual_lines_per_row.deinit(self.allocator);
+        self.allocator.destroy(self);
+    }
+
+    pub fn update(self: *WrapCache, buf: *const editor.Buffer, viewport_w: f32, font_size: f32) void {
+        if (self.revision == buf.revision and self.viewport_w == viewport_w and self.font_size == font_size) {
+            return;
+        }
+
+        self.revision = buf.revision;
+        self.viewport_w = viewport_w;
+        self.font_size = font_size;
+        self.visual_lines_per_row.clearRetainingCapacity();
+
+        var total: usize = 0;
+        const max_w = maxWidth(viewport_w);
+        for (0..buf.lineCount()) |idx| {
+            const count = segmentCount(buf.lineAt(idx), max_w, font_size);
+            self.visual_lines_per_row.append(self.allocator, count) catch unreachable;
+            total += count;
+        }
+        self.total_visual_lines = @max(1, total);
+    }
+
+    pub fn cachedTotalVisualLines(self: *WrapCache, buf: *const editor.Buffer, viewport_w: f32, font_size: f32) usize {
+        self.update(buf, viewport_w, font_size);
+        return self.total_visual_lines;
+    }
+
+    pub fn cachedSegmentAt(self: *WrapCache, buf: *const editor.Buffer, visual_index: usize, viewport_w: f32, font_size: f32) Segment {
+        self.update(buf, viewport_w, font_size);
+
+        var current_visual: usize = 0;
+        var target_row: usize = 0;
+        for (self.visual_lines_per_row.items, 0..) |count, row| {
+            if (current_visual + count > visual_index) {
+                target_row = row;
+                break;
+            }
+            current_visual += count;
+        }
+
+        const offset_within_row = visual_index - current_visual;
+        const max_w = maxWidth(viewport_w);
+        const line = buf.lineAt(target_row);
+        var start: usize = 0;
+        var local_idx: usize = 0;
+        while (start <= line.len) {
+            const end = if (start < line.len) breakAt(line, start, max_w, font_size) else start;
+            if (local_idx == offset_within_row) {
+                return .{ .buf_line = target_row, .start_col = start, .end_col = end };
+            }
+            local_idx += 1;
+            if (end >= line.len) break;
+            start = end;
+            while (start < line.len and line[start] == ' ') start += 1;
+        }
+        return .{ .buf_line = 0, .start_col = 0, .end_col = 0 };
+    }
+
+    pub fn cachedVisualIndexForCursor(self: *WrapCache, buf: *const editor.Buffer, row: usize, col: usize, viewport_w: f32, font_size: f32) usize {
+        self.update(buf, viewport_w, font_size);
+
+        var visual: usize = 0;
+        const rows_to_sum = @min(row, self.visual_lines_per_row.items.len);
+        for (0..rows_to_sum) |r| {
+            visual += self.visual_lines_per_row.items[r];
+        }
+
+        const max_w = maxWidth(viewport_w);
+        const line = buf.lineAt(row);
+        var start: usize = 0;
+        while (start <= line.len) {
+            const end = if (start < line.len) breakAt(line, start, max_w, font_size) else start;
+            if (col >= start and (col <= end or end >= line.len)) {
+                return visual;
+            }
+            visual += 1;
+            if (end >= line.len) break;
+            start = end;
+            while (start < line.len and line[start] == ' ') start += 1;
+        }
+        return visual;
+    }
+
+    pub fn cachedContentHeight(self: *WrapCache, buf: *const editor.Buffer, viewport_w: f32, font_size: f32, theme: *const @import("forge-workspace").Theme) f32 {
+        const lines = self.cachedTotalVisualLines(buf, viewport_w, font_size);
+        return @as(f32, @floatFromInt(lines)) * editor_scroll.lineHeight(theme);
+    }
+
+    pub fn cachedMaxScrollY(self: *WrapCache, buf: *const editor.Buffer, editor_h: f32, viewport_w: f32, font_size: f32, theme: *const @import("forge-workspace").Theme) f32 {
+        const h = self.cachedContentHeight(buf, viewport_w, font_size, theme);
+        return @max(0, h - editor_scroll.viewportHeight(editor_h));
+    }
+};
+
 test "wrap long line into segments" {
     const line = "hello world this is a long line";
     try std.testing.expect(segmentCount(line, 80.0, 14.0) >= 1);

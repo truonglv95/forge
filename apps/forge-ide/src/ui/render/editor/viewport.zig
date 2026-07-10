@@ -47,13 +47,25 @@ pub fn drawEditorViewport(
     else
         null;
 
+    var wrap_cache_opt: ?*word_wrap.WrapCache = null;
+    if (wrap_enabled) {
+        const hash = std.hash.CityHash64.hash(file_path);
+        if (wb.wrap_cache.get(hash)) |c| {
+            wrap_cache_opt = c;
+        } else {
+            const c = word_wrap.WrapCache.init(wb.allocator);
+            wb.wrap_cache.put(hash, c) catch unreachable;
+            wrap_cache_opt = c;
+        }
+    }
+
     const line_count = editor_buf.lineCount();
     const content_h = if (wrap_enabled)
-        word_wrap.contentHeight(editor_buf, viewport_w, font_size, theme)
+        wrap_cache_opt.?.cachedContentHeight(editor_buf, viewport_w, font_size, theme)
     else
         editor_scroll.contentHeight(line_count, theme);
     const max_scroll_y = if (wrap_enabled)
-        word_wrap.maxScrollY(editor_buf, editor_h, viewport_w, font_size, theme)
+        wrap_cache_opt.?.cachedMaxScrollY(editor_buf, editor_h, viewport_w, font_size, theme)
     else
         editor_scroll.maxScrollY(line_count, editor_h, theme);
     const max_line_len = editor_scroll.longestLineLen(editor_buf);
@@ -71,10 +83,10 @@ pub fn drawEditorViewport(
     var line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
 
     if (wrap_enabled) {
-        const visual_count = word_wrap.totalVisualLines(editor_buf, viewport_w, font_size);
+        const visual_count = wrap_cache_opt.?.cachedTotalVisualLines(editor_buf, viewport_w, font_size);
         for (0..visual_count) |visual_idx| {
             if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
-                const seg = word_wrap.segmentAt(editor_buf, visual_idx, viewport_w, font_size);
+                const seg = wrap_cache_opt.?.cachedSegmentAt(editor_buf, visual_idx, viewport_w, font_size);
                 if (seg.start_col == 0) {
                     if (wb.breakpoints.hasAt(file_path, seg.buf_line)) {
                         renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, syntax.color(theme.colors.warning));
@@ -159,11 +171,11 @@ pub fn drawEditorViewport(
     line_num_y = editor_scroll.firstLineY(theme) - scroll_y;
 
     if (wrap_enabled) {
-        const visual_count = word_wrap.totalVisualLines(editor_buf, viewport_w, font_size);
-        const cursor_visual = word_wrap.visualIndexForCursor(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col, viewport_w, font_size);
+        const visual_count = wrap_cache_opt.?.cachedTotalVisualLines(editor_buf, viewport_w, font_size);
+        const cursor_visual = wrap_cache_opt.?.cachedVisualIndexForCursor(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col, viewport_w, font_size);
         for (0..visual_count) |visual_idx| {
             if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
-                const seg = word_wrap.segmentAt(editor_buf, visual_idx, viewport_w, font_size);
+                const seg = wrap_cache_opt.?.cachedSegmentAt(editor_buf, visual_idx, viewport_w, font_size);
                 const slice = editor_buf.lineAt(seg.buf_line)[seg.start_col..seg.end_col];
                 const seg_text_x = text_x + editor_scroll.cursorX(editor_buf.lineAt(seg.buf_line), seg.start_col, font_size);
 

@@ -38,6 +38,7 @@ pub const Buffer = struct {
     undo_stack: std.ArrayList(UndoOp),
     redo_stack: std.ArrayList(UndoOp),
     decorations: std.ArrayList(Decoration),
+    revision: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !Buffer {
         var lines: std.ArrayList(std.ArrayList(u8)) = .empty;
@@ -49,6 +50,7 @@ pub const Buffer = struct {
             .undo_stack = .empty,
             .redo_stack = .empty,
             .decorations = .empty,
+            .revision = 0,
         };
     }
 
@@ -67,6 +69,7 @@ pub const Buffer = struct {
         self.selection_anchor = null;
         self.decorations.clearRetainingCapacity();
         self.clearHistory();
+        self.revision += 1;
     }
 
     fn clearHistory(self: *Buffer) void {
@@ -110,6 +113,7 @@ pub const Buffer = struct {
         }
 
         self.cursor = .{};
+        self.revision += 1;
     }
 
     pub fn content(self: *const Buffer) ![]u8 {
@@ -275,6 +279,7 @@ pub const Buffer = struct {
         errdefer self.allocator.free(owned);
         try self.undo_stack.append(self.allocator, .{ .insert_text = .{ .row = row, .col = col, .text = owned } });
         self.clearRedo();
+        self.revision += 1;
     }
 
     fn pushUndoDelete(self: *Buffer, row: usize, col: usize, deleted: []const u8) !void {
@@ -282,6 +287,7 @@ pub const Buffer = struct {
         errdefer self.allocator.free(owned);
         try self.undo_stack.append(self.allocator, .{ .delete_range = .{ .row = row, .col = col, .deleted = owned } });
         self.clearRedo();
+        self.revision += 1;
     }
 
     pub fn undo(self: *Buffer) !void {
@@ -381,6 +387,7 @@ pub const Buffer = struct {
         try self.lines.insert(self.allocator, row + 1, new_line);
         try self.undo_stack.append(self.allocator, .{ .split_line = .{ .row = row, .col = col, .tail = tail_copy } });
         self.clearRedo();
+        self.revision += 1;
         self.cursor = .{ .row = row + 1, .col = 0 };
     }
 
