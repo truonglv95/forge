@@ -24,6 +24,11 @@ pub fn drawEditorViewport(
     file_path: []const u8,
     pane_focused: bool,
 ) void {
+    wb.diagnostics.mutex.lock();
+    defer wb.diagnostics.mutex.unlock();
+    wb.lsp_sync.mutex.lock();
+    defer wb.lsp_sync.mutex.unlock();
+
     const theme = &wb.theme;
     const editor_view_h = editor_scroll.viewportHeight(editor_h);
     const gutter = editor_scroll.gutterWidth(theme);
