@@ -63,6 +63,7 @@ fn tokenColor(token_type: u32, theme: *const @import("forge-workspace").Theme) r
 pub fn drawHighlightedLine(
     line: []const u8,
     line_idx: usize,
+    col_offset: usize,
     x: f32,
     y: f32,
     theme: *const @import("forge-workspace").Theme,
@@ -89,18 +90,29 @@ pub fn drawHighlightedLine(
         var last_end: usize = 0;
         while (i < tokens.len and tokens[i].line == line_idx and span_count < spans.len) : (i += 1) {
             const tok = tokens[i];
-            if (tok.start > last_end) {
+
+            // Skip if token is completely before the slice
+            if (tok.start + tok.length <= col_offset) continue;
+            // Break if token starts after the slice
+            if (tok.start >= col_offset + line.len) break;
+
+            const adj_start = if (tok.start > col_offset) tok.start - col_offset else 0;
+            const tok_end = tok.start + tok.length;
+            const adj_end = @min(line.len, tok_end - col_offset);
+            const adj_len = adj_end - adj_start;
+
+            if (adj_start > last_end) {
                 // Gap
-                const gap_len = tok.start - last_end;
+                const gap_len = adj_start - last_end;
                 const c = color(theme.colors.editor_fg);
                 spans[span_count] = .{ .offset = last_end, .length = gap_len, .r = c.r, .g = c.g, .b = c.b, .a = c.a };
                 span_count += 1;
             }
             if (span_count >= spans.len) break;
             const c = tokenColor(tok.token_type, theme);
-            spans[span_count] = .{ .offset = tok.start, .length = tok.length, .r = c.r, .g = c.g, .b = c.b, .a = c.a };
+            spans[span_count] = .{ .offset = adj_start, .length = adj_len, .r = c.r, .g = c.g, .b = c.b, .a = c.a };
             span_count += 1;
-            last_end = tok.start + tok.length;
+            last_end = adj_start + adj_len;
         }
         if (last_end < line.len and span_count < spans.len) {
             const c = color(theme.colors.editor_fg);

@@ -117,11 +117,21 @@ pub const Buffer = struct {
     }
 
     pub fn content(self: *const Buffer) ![]u8 {
+        var total_len: usize = 0;
+        for (self.lines.items) |line| {
+            total_len += line.items.len;
+        }
+        if (self.lines.items.len > 0) {
+            total_len += self.lines.items.len - 1;
+        }
+
         var out: std.ArrayList(u8) = .empty;
+        try out.ensureTotalCapacity(self.allocator, total_len);
         errdefer out.deinit(self.allocator);
+
         for (self.lines.items, 0..) |line, index| {
-            try out.appendSlice(self.allocator, line.items);
-            if (index + 1 < self.lines.items.len) try out.append(self.allocator, '\n');
+            out.appendSliceAssumeCapacity(line.items);
+            if (index + 1 < self.lines.items.len) out.appendAssumeCapacity('\n');
         }
         return try out.toOwnedSlice(self.allocator);
     }

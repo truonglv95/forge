@@ -206,7 +206,7 @@ pub fn drawEditorViewport(
                     }
                     break :blk null;
                 };
-                syntax.drawHighlightedLine(slice, seg.buf_line, seg_text_x, line_num_y, theme, semantic_tokens);
+                syntax.drawHighlightedLine(slice, seg.buf_line, seg.start_col, seg_text_x, line_num_y, theme, semantic_tokens);
 
                 if (bracket_pair) |pair| {
                     bracket.drawBracketHighlight(editor_buf, pair, seg.buf_line, seg.start_col, seg.end_col, seg_text_x, line_num_y, line_h, font_size, theme);
@@ -293,7 +293,7 @@ pub fn drawEditorViewport(
                     }
                     break :blk null;
                 };
-                syntax.drawHighlightedLine(editor_buf.lineAt(idx), idx, text_x, line_num_y, theme, semantic_tokens);
+                syntax.drawHighlightedLine(editor_buf.lineAt(idx), idx, 0, text_x, line_num_y, theme, semantic_tokens);
 
                 if (bracket_pair) |pair| {
                     bracket.drawBracketHighlight(editor_buf, pair, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, theme);
