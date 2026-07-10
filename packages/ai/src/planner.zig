@@ -145,7 +145,7 @@ pub const Planner = struct {
 
 test "Planner execution with FakeProvider" {
     const allocator = std.testing.allocator;
-    const fake_provider = @import("fake_provider.zig");
+    const fake_provider = @import("providers/fake/provider.zig");
 
     var ctx = context.ContextBuilder.init(allocator, 1024);
     defer ctx.deinit();

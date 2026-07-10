@@ -1,5 +1,5 @@
 const std = @import("std");
-const provider_mod = @import("provider.zig");
+const provider_mod = @import("../../provider.zig");
 
 pub const Callbacks = struct {
     on_chunk: ?*const fn (?*anyopaque, []const u8) void = null,

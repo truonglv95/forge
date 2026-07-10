@@ -1,10 +1,10 @@
 const std = @import("std");
-const provider = @import("provider.zig");
+const provider = @import("../../provider.zig");
 const kernel = @import("forge-kernel");
-const streaming = @import("streaming.zig");
-const agent_turn = @import("agent/turn.zig");
-const mcp_registry = @import("mcp_registry.zig");
-const fake_transport = @import("providers/fake/tool_transport.zig");
+const streaming = @import("../../streaming.zig");
+const agent_turn = @import("../../agent/turn.zig");
+const mcp_registry = @import("../../mcp_registry.zig");
+const fake_transport = @import("tool_transport.zig");
 
 pub const FakeProvider = struct {
     response: []const u8,

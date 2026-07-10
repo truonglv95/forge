@@ -1,5 +1,5 @@
 const std = @import("std");
-const credentials = @import("credentials.zig");
+const credentials = @import("../../credentials.zig");
 
 pub const default_model = "text-embedding-004";
 pub const dim: usize = 768;

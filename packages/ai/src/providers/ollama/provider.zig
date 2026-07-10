@@ -1,12 +1,12 @@
 const std = @import("std");
-const provider = @import("provider.zig");
+const provider = @import("../../provider.zig");
 const kernel = @import("forge-kernel");
-const gemini_provider = @import("gemini_provider.zig");
-const proposal_normalize = @import("proposal_normalize.zig");
-const ollama_ndjson = @import("ollama_ndjson.zig");
-const agent_turn = @import("agent/turn.zig");
-const mcp_registry = @import("mcp_registry.zig");
-const ollama_transport = @import("providers/ollama/tool_transport.zig");
+const gemini_provider = @import("../gemini/provider.zig");
+const proposal_normalize = @import("../../proposal_normalize.zig");
+const ollama_ndjson = @import("ndjson.zig");
+const agent_turn = @import("../../agent/turn.zig");
+const mcp_registry = @import("../../mcp_registry.zig");
+const ollama_transport = @import("tool_transport.zig");
 
 pub const default_host = "http://127.0.0.1:11434";
 pub const default_model = "qwen2.5-coder:7b";
@@ -481,8 +481,8 @@ test "OllamaProvider planner-sized json prompt" {
     if (!liveTestsEnabled()) return error.SkipZigTest;
     if (!isReachable(allocator, std.testing.io, default_host)) return error.SkipZigTest;
 
-    const planner = @import("planner.zig");
-    const context = @import("context.zig");
+    const planner = @import("../../planner.zig");
+    const context = @import("../../context.zig");
 
     var ollama = try OllamaProvider.init(allocator, std.testing.io, default_host, default_model, default_num_ctx, null, null);
     defer ollama.deinit();

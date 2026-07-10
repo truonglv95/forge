@@ -1,5 +1,5 @@
 const std = @import("std");
-const gemini_provider = @import("gemini_provider.zig");
+const gemini_provider = @import("providers/gemini/provider.zig");
 const workspace = @import("forge-workspace");
 
 /// Strips fences/prose wrappers and returns the best-effort proposal JSON text.

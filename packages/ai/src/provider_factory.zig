@@ -1,9 +1,9 @@
 const std = @import("std");
 const provider_mod = @import("provider.zig");
-const fake_provider = @import("fake_provider.zig");
-const gemini_provider = @import("gemini_provider.zig");
-const ollama_provider = @import("ollama_provider.zig");
-const openrouter_provider = @import("openrouter_provider.zig");
+const fake_provider = @import("providers/fake/provider.zig");
+const gemini_provider = @import("providers/gemini/provider.zig");
+const ollama_provider = @import("providers/ollama/provider.zig");
+const openrouter_provider = @import("providers/openrouter/provider.zig");
 const credentials = @import("credentials.zig");
 
 pub const Kind = enum {
