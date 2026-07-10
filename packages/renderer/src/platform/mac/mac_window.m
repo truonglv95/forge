@@ -1243,6 +1243,21 @@ void forge_mac_draw_text_len(const char* text, size_t len, float x, float y, flo
     }
 }
 
+static uint64_t hash_styled_text(const char* text, size_t len, const ForgeTextSpan* spans, size_t span_count) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= (uint64_t)text[i];
+        hash *= 1099511628211ULL;
+    }
+    const uint8_t* span_bytes = (const uint8_t*)spans;
+    size_t span_bytes_len = span_count * sizeof(ForgeTextSpan);
+    for (size_t i = 0; i < span_bytes_len; i++) {
+        hash ^= (uint64_t)span_bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 void forge_mac_draw_styled_text(const char* text, size_t len, float x, float y, float fontSize,
     const ForgeTextSpan* spans, size_t span_count) {
     if (g_renderer && g_renderer.currentTexture != g_renderer.atlas.texture) {
@@ -1256,31 +1271,59 @@ void forge_mac_draw_styled_text(const char* text, size_t len, float x, float y, 
         CTFontRef font = ForgeGetFont(fontSize * scale);
         if (!font) return;
 
-        NSMutableAttributedString *attrString = [[NSMutableAttributedString alloc] init];
+        uint64_t hash = hash_styled_text(text, len, spans, span_count);
+        NSString *key = [NSString stringWithFormat:@"styled_%llu_%p", hash, font];
 
-        for (size_t i = 0; i < span_count; i++) {
-            ForgeTextSpan span = spans[i];
-            if (span.length == 0 || span.offset >= len) continue;
-            if (span.offset + span.length > len) continue;
-
-            NSString *piece = [[NSString alloc] initWithBytes:(text + span.offset)
-                                                       length:span.length
-                                                     encoding:NSUTF8StringEncoding];
-            if (!piece || piece.length == 0) continue;
-
-            CGColorRef cgColor = CGColorCreateGenericRGB(span.r, span.g, span.b, span.a);
-            NSDictionary *pieceAttrs = @{
-                (id)kCTFontAttributeName: (__bridge id)font,
-                (id)kCTForegroundColorAttributeName: (__bridge id)cgColor,
-            };
-            NSAttributedString *attrPiece = [[NSAttributedString alloc] initWithString:piece attributes:pieceAttrs];
-            [attrString appendAttributedString:attrPiece];
-            CGColorRelease(cgColor);
+        if (!g_lineCache) {
+            g_lineCache = [NSMutableDictionary new];
+            g_lineCacheKeys = [NSMutableArray new];
         }
 
-        if (attrString.length == 0) return;
+        CTLineRef line = NULL;
+        ForgeLineCacheEntry *entry = g_lineCache[key];
+        if (entry) {
+            [g_lineCacheKeys removeObject:key];
+            [g_lineCacheKeys addObject:key];
+            line = entry.line;
+            CFRetain(line);
+        } else {
+            NSMutableAttributedString *attrString = [[NSMutableAttributedString alloc] init];
+            for (size_t i = 0; i < span_count; i++) {
+                ForgeTextSpan span = spans[i];
+                if (span.length == 0 || span.offset >= len) continue;
+                if (span.offset + span.length > len) continue;
 
-        CTLineRef line = CTLineCreateWithAttributedString((CFAttributedStringRef)attrString);
+                NSString *piece = [[NSString alloc] initWithBytes:(text + span.offset)
+                                                           length:span.length
+                                                         encoding:NSUTF8StringEncoding];
+                if (!piece || piece.length == 0) continue;
+
+                CGColorRef cgColor = CGColorCreateGenericRGB(span.r, span.g, span.b, span.a);
+                NSDictionary *pieceAttrs = @{
+                    (id)kCTFontAttributeName: (__bridge id)font,
+                    (id)kCTForegroundColorAttributeName: (__bridge id)cgColor,
+                };
+                NSAttributedString *attrPiece = [[NSAttributedString alloc] initWithString:piece attributes:pieceAttrs];
+                [attrString appendAttributedString:attrPiece];
+                CGColorRelease(cgColor);
+            }
+
+            if (attrString.length == 0) return;
+            line = CTLineCreateWithAttributedString((CFAttributedStringRef)attrString);
+
+            ForgeLineCacheEntry *newEntry = [ForgeLineCacheEntry new];
+            newEntry.line = line;
+            CFRetain(line); // Keep one ref for the cache
+            g_lineCache[key] = newEntry;
+            [g_lineCacheKeys addObject:key];
+
+            if (g_lineCacheKeys.count > kMaxLineCacheSize) {
+                NSString *oldest = g_lineCacheKeys[0];
+                [g_lineCache removeObjectForKey:oldest];
+                [g_lineCacheKeys removeObjectAtIndex:0];
+            }
+        }
+
         vector_float4 fallback = {1, 1, 1, 1};
         ForgeDrawGlyphsFromCTLine(line, font, x, y, scale, fallback);
         CFRelease(line);
