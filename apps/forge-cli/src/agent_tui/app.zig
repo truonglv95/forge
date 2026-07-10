@@ -132,8 +132,8 @@ pub const App = struct {
     ) !App {
         const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, "interactive", io, opened.root);
         const model = try std.fmt.allocPrint(allocator, "{s}/{s}", .{
-            @tagName(provider_opts.kind),
-            provider_opts.model orelse defaultModel(provider_opts.kind),
+            provider_opts.options.provider_name,
+            provider_opts.options.model orelse defaultModel(provider_opts.options.provider_name),
         });
 
         const folder = try workspaceDisplayNameAlloc(allocator, environ_map, opened.path);
@@ -1892,8 +1892,8 @@ fn workerMain(ctx: *WorkerCtx) void {
 
     const parsed = app.parsed;
     var provider_opts = ai_workflow.agentProviderOptionsFromFlags(app.allocator, parsed.flags, intent, app.io, app.opened.root);
-    provider_opts.stream_callback = streamBridge;
-    provider_opts.stream_context = app;
+    provider_opts.options.stream_callback = streamBridge;
+    provider_opts.options.stream_context = app;
     const max_steps = if (parsed.flags.max_steps > 0) parsed.flags.max_steps else 8;
     var cancel_token = app.cancel_scope.token();
 
@@ -1926,7 +1926,7 @@ fn workerMain(ctx: *WorkerCtx) void {
         .max_steps = max_steps,
         .context_max_bytes = contextBudgetBytes(parsed.flags),
         .embedding = embedding.options,
-        .provider_options = provider_opts,
+        .provider_options = provider_opts.options,
         .mode = app.agent_mode,
         .capability_profile = capabilityForMode(app.agent_mode, parsed.flags),
         .auto_capability = parsed.flags.capability == null and app.agent_mode == .agent,
@@ -1935,7 +1935,7 @@ fn workerMain(ctx: *WorkerCtx) void {
         .conversation = conversation_snapshot,
         .surface = .cli,
         .cancel_token = &cancel_token,
-        .max_repair_attempts = if (provider_opts.kind == .fake) 0 else 2,
+        .max_repair_attempts = if (std.mem.eql(u8, provider_opts.options.provider_name, "fake")) 0 else 2,
         .approve_every_time_tools = false,
         .approval_callback = approvalBridge,
         .approval_context = app,
@@ -2069,14 +2069,12 @@ fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
     }
 }
 
-fn defaultModel(kind: ai.provider_factory.Kind) []const u8 {
-    return switch (kind) {
-        .ollama => "qwen2.5-coder:7b",
-        .gemini => "gemini-2.5-flash",
-        .openrouter => "openai/gpt-4o-mini",
-        .fake => "fake",
-        .auto => "auto",
-    };
+fn defaultModel(name: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "ollama")) return "qwen2.5-coder:7b";
+    if (std.mem.eql(u8, name, "gemini")) return "gemini-2.5-flash";
+    if (std.mem.eql(u8, name, "openrouter")) return "openai/gpt-4o-mini";
+    if (std.mem.eql(u8, name, "fake")) return "fake";
+    return "auto";
 }
 
 fn workspaceDisplayNameAlloc(

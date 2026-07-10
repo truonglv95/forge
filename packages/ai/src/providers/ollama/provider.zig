@@ -43,20 +43,25 @@ pub const OllamaProvider = struct {
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
 
-    pub fn init(
+    pub fn create(
         allocator: std.mem.Allocator,
         io: std.Io,
-        base_url: []const u8,
-        model_name: []const u8,
-        num_ctx: usize,
-        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
-        stream_context: ?*anyopaque,
-    ) !OllamaProvider {
+        environ_map: ?*const std.process.Environ.Map,
+        options: anytype,
+    ) !provider.Provider {
+        const host = try resolveHost(allocator, environ_map, options.base_url);
+        defer allocator.free(host);
+
+        const model_name: []const u8 = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse default_model else options.model) else default_model;
+        const num_ctx = resolveNumCtx(environ_map);
+
         const owned_model = try allocator.dupe(u8, model_name);
         errdefer allocator.free(owned_model);
-        const owned_base = try allocator.dupe(u8, base_url);
+        const owned_base = try allocator.dupe(u8, host);
         errdefer allocator.free(owned_base);
-        return .{
+
+        const ptr = try allocator.create(OllamaProvider);
+        ptr.* = .{
             .allocator = allocator,
             .io = io,
             .base_url = owned_base,
@@ -68,14 +73,17 @@ pub const OllamaProvider = struct {
                 .context_window = num_ctx,
             },
             .latest_usage = .{},
-            .stream_callback = stream_callback,
-            .stream_context = stream_context,
+            .stream_callback = if (@hasField(@TypeOf(options), "stream_callback")) options.stream_callback else null,
+            .stream_context = if (@hasField(@TypeOf(options), "stream_context")) options.stream_context else null,
         };
+        return ptr.providerInterface();
     }
 
-    pub fn deinit(self: *OllamaProvider) void {
+    pub fn deinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
         self.allocator.free(self.base_url);
         self.allocator.free(self.model_name);
+        allocator.destroy(self);
     }
 
     pub fn providerInterface(self: *OllamaProvider) provider.Provider {
@@ -91,6 +99,7 @@ pub const OllamaProvider = struct {
                 .append_tool_user_text = appendToolUserTextImpl,
                 .append_tool_call = appendToolCallImpl,
                 .append_tool_result = appendToolResultImpl,
+                .deinit = deinit,
             },
         };
     }
@@ -410,9 +419,11 @@ fn buildRequestPayload(allocator: std.mem.Allocator, model_name: []const u8, num
 test "OllamaProvider test mode" {
     const allocator = std.testing.allocator;
 
-    var ollama = try OllamaProvider.init(allocator, std.testing.io, default_host, default_model, default_num_ctx, null, null);
-    defer ollama.deinit();
-    const p = ollama.providerInterface();
+    var p = try OllamaProvider.create(allocator, std.testing.io, null, .{
+        .base_url = default_host,
+        .model = default_model,
+    });
+    defer p.deinit(allocator);
 
     var w_alloc = std.Io.Writer.Allocating.init(allocator);
     defer w_alloc.deinit();
@@ -459,9 +470,11 @@ test "OllamaProvider live chat when server is running" {
     if (!liveTestsEnabled()) return error.SkipZigTest;
     if (!isReachable(allocator, std.testing.io, default_host)) return error.SkipZigTest;
 
-    var ollama = try OllamaProvider.init(allocator, std.testing.io, default_host, default_model, default_num_ctx, null, null);
-    defer ollama.deinit();
-    const p = ollama.providerInterface();
+    var p = try OllamaProvider.create(allocator, std.testing.io, null, .{
+        .base_url = default_host,
+        .model = default_model,
+    });
+    defer p.deinit(allocator);
 
     var w_alloc = std.Io.Writer.Allocating.init(allocator);
     defer w_alloc.deinit();
@@ -484,14 +497,17 @@ test "OllamaProvider planner-sized json prompt" {
     const planner = @import("../../planner.zig");
     const context = @import("../../context.zig");
 
-    var ollama = try OllamaProvider.init(allocator, std.testing.io, default_host, default_model, default_num_ctx, null, null);
-    defer ollama.deinit();
+    var p = try OllamaProvider.create(allocator, std.testing.io, null, .{
+        .base_url = default_host,
+        .model = default_model,
+    });
+    defer p.deinit(allocator);
 
     var ctx = context.ContextBuilder.init(allocator, 4096);
     defer ctx.deinit();
     try ctx.addBlock(.intent, "user intent", "Add a hello comment to sample.txt");
 
-    var plan_inst = planner.Planner.init(allocator, ollama.providerInterface(), &ctx, &.{}, &.{});
+    var plan_inst = planner.Planner.init(allocator, p, &ctx, &.{}, &.{});
     var w_alloc = std.Io.Writer.Allocating.init(allocator);
     defer w_alloc.deinit();
 

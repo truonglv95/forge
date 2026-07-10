@@ -121,7 +121,7 @@ pub fn run(
     var provider_handle = provider_factory.create(allocator, io, environ_map, config.provider_options) catch {
         return error.ProviderFailed;
     };
-    defer provider_handle.deinit();
+    defer provider_handle.deinit(allocator);
 
     var steps: std.ArrayList(Step) = .empty;
     errdefer {
@@ -185,7 +185,7 @@ pub fn run(
         intent_classifier.resolveIntent(
             allocator,
             route_input,
-            provider_handle.interface(),
+            provider_handle,
             effective_config.cancel_token,
             .{},
         )
@@ -245,7 +245,7 @@ pub fn run(
     var explore_text: ?[]u8 = null;
     defer if (explore_text) |text| allocator.free(text);
     const used_native_loop = blk: {
-        const llm = provider_handle.interface();
+        const llm = provider_handle;
         if (llm.supportsToolLoop()) {
             const NativeCtx = struct {
                 allocator: std.mem.Allocator,
@@ -383,19 +383,19 @@ pub fn run(
             next_index,
             "",
             "",
-            provider_handle.interface().metadata().provider_name,
+            provider_handle.metadata().provider_name,
             "completed",
         ) catch return error.WorkspaceFailed;
         defer allocator.free(completed_json);
         workspace.sessions.persistSession(io, effective_config.workspace_cwd, session_id, completed_json) catch return error.WorkspaceFailed;
         event_logger.finalAnswer(owned_response) catch {};
-        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = owned_response, .repair_attempts = 0, .usage = provider_handle.interface().usage() }) catch {};
+        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = owned_response, .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
             .final_run_id = null,
             .proposal_rel = null,
-            .usage = provider_handle.interface().usage(),
+            .usage = provider_handle.usage(),
             .response_text = owned_response,
         };
     }
@@ -406,13 +406,13 @@ pub fn run(
         const owned_response = allocator.dupe(u8, explore_text orelse "Edited files directly.") catch return error.WorkspaceFailed;
 
         event_logger.finalAnswer(owned_response) catch {};
-        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = owned_response, .repair_attempts = 0, .usage = provider_handle.interface().usage() }) catch {};
+        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = owned_response, .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
             .final_run_id = null,
             .proposal_rel = null,
-            .usage = provider_handle.interface().usage(),
+            .usage = provider_handle.usage(),
             .response_text = owned_response,
         };
     }
@@ -420,7 +420,7 @@ pub fn run(
     if (effective_config.max_steps < next_index) return error.StepLimitReached;
     if (!tools.isAllowed(effective_config.capability_profile, .propose_edit)) return error.StepLimitReached;
 
-    const llm = provider_handle.interface();
+    const llm = provider_handle;
     const images = multimodal.loadImages(allocator, io, root, config.attachments) catch &[_]provider_mod.ImagePart{};
     defer if (images.len > 0) multimodal.freeImages(allocator, images);
 
@@ -900,8 +900,8 @@ pub fn resumeSession(
     }
 
     var resumed = config;
-    if (doc.provider_kind.len > 0 and config.provider_options.kind != .auto and
-        !std.mem.eql(u8, doc.provider_kind, @tagName(config.provider_options.kind)))
+    if (doc.provider_kind.len > 0 and !std.mem.eql(u8, config.provider_options.provider_name, "auto") and
+        !std.mem.eql(u8, doc.provider_kind, config.provider_options.provider_name))
     {
         return error.ProviderFailed;
     }
@@ -1505,7 +1505,7 @@ test "agent run uses fake tool loop when enabled" {
 
     var result = try run(allocator, io, null, root, "search sample", .{
         .max_steps = 4,
-        .provider_options = .{ .kind = .fake, .fake_response = fake_response, .fake_tool_loop = true },
+        .provider_options = .{ .provider_name = "fake", .fake_response = fake_response, .fake_tool_loop = true },
     });
     defer deinitResult(allocator, &result);
 
@@ -1529,7 +1529,7 @@ test "ask read-only mode explores and returns text without proposal" {
         .max_steps = 4,
         .capability_profile = .read_only,
         .provider_options = .{
-            .kind = .fake,
+            .provider_name = "fake",
             .fake_response = proposal_workflow.default_ask_response,
             .fake_tool_loop = true,
             .fake_tool_loop_short = true,
@@ -1565,7 +1565,7 @@ test "agent run produces search and propose steps" {
 
     var result = try run(allocator, io, null, root, "search sample", .{
         .max_steps = 2,
-        .provider_options = .{ .kind = .fake, .fake_response = fake_response },
+        .provider_options = .{ .provider_name = "fake", .fake_response = fake_response },
     });
     defer deinitResult(allocator, &result);
 
@@ -1590,7 +1590,7 @@ test "agent resumes exact transport conversation after step limit" {
     ;
     try std.testing.expectError(error.StepLimitReached, run(allocator, io, null, root, "search sample", .{
         .max_steps = 1,
-        .provider_options = .{ .kind = .fake, .fake_response = fake_response, .fake_tool_loop = true },
+        .provider_options = .{ .provider_name = "fake", .fake_response = fake_response, .fake_tool_loop = true },
     }));
 
     var sessions = try workspace.sessions.listEntries(allocator, io, ".");
@@ -1606,7 +1606,7 @@ test "agent resumes exact transport conversation after step limit" {
 
     var result = try resumeSession(allocator, io, null, root, session_id, .{
         .max_steps = 4,
-        .provider_options = .{ .kind = .fake, .fake_response = fake_response, .fake_tool_loop = true },
+        .provider_options = .{ .provider_name = "fake", .fake_response = fake_response, .fake_tool_loop = true },
     });
     defer deinitResult(allocator, &result);
     try std.testing.expectEqualStrings(session_id, result.session_id);
@@ -1654,7 +1654,7 @@ test "agent recovers crash checkpoint between tool call and tool result" {
     var result = try resumeSession(allocator, io, null, root, "sess_crash_pending", .{
         .max_steps = 4,
         .provider_options = .{
-            .kind = .fake,
+            .provider_name = "fake",
             .fake_response = fake_response,
             .fake_tool_loop = true,
             .fake_tool_loop_short = true,

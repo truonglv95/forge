@@ -537,11 +537,12 @@ const ResumeContext = struct {
 };
 
 fn providerOptions(host: *const Host, fake_response: []const u8, fake_plan: ?[]const u8, for_agent: bool) ai.provider_factory.Options {
+    const name = if (host.ai_provider.len > 0) host.ai_provider else "auto";
+    const base_url = if (std.mem.eql(u8, name, "openrouter")) host.ai_openrouter_url else host.ai_ollama_url;
     return .{
-        .kind = ai.provider_factory.Kind.parse(host.ai_provider),
+        .provider_name = name,
         .model = host.ai_model,
-        .ollama_url = host.ai_ollama_url,
-        .openrouter_url = host.ai_openrouter_url,
+        .base_url = base_url,
         .fake_response = fake_response,
         .fake_plan_response = fake_plan,
         .fake_tool_loop = for_agent,
@@ -632,7 +633,7 @@ fn resumeWorker(ctx: *ResumeContext) void {
             .mcp_enabled = host.ai_mcp_enabled,
             .recent_files = recent_files,
             .embedding = host.embeddingOptions(),
-            .max_repair_attempts = if (ctx.capability_profile == .read_only or provider_options.kind == .fake) 0 else 2,
+            .max_repair_attempts = if (ctx.capability_profile == .read_only or std.mem.eql(u8, provider_options.provider_name, "fake")) 0 else 2,
         },
     ) catch |err| {
         enqueueRunFailed(host, err);
@@ -744,8 +745,8 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .workspace_cwd = host.workspace_path,
             .recent_files = recent_files,
             .embedding = host.embeddingOptions(),
-            .enable_repair_loop = plan_phase != .plan_only and provider_options.kind != .fake,
-            .max_repair_attempts = if (provider_options.kind == .fake) 0 else 2,
+            .enable_repair_loop = plan_phase != .plan_only and !std.mem.eql(u8, provider_options.provider_name, "fake"),
+            .max_repair_attempts = if (std.mem.eql(u8, provider_options.provider_name, "fake")) 0 else 2,
         },
     ) catch |err| switch (err) {
         ai.proposal_workflow.WorkflowError.Cancelled => return error.Cancelled,
@@ -865,7 +866,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .mcp_enabled = host.ai_mcp_enabled,
             .recent_files = recent_files,
             .embedding = host.embeddingOptions(),
-            .max_repair_attempts = if (capability_profile == .read_only or provider_options.kind == .fake) 0 else 2,
+            .max_repair_attempts = if (capability_profile == .read_only or std.mem.eql(u8, provider_options.provider_name, "fake")) 0 else 2,
         },
     ) catch |err| switch (err) {
         error.Cancelled => return error.Cancelled,
@@ -967,29 +968,27 @@ fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
 }
 
 fn resolveProviderLabel(host: *const Host) ![]const u8 {
-    const kind = ai.provider_factory.Kind.parse(host.ai_provider);
-    return switch (kind) {
-        .ollama => blk: {
-            if (host.ai_model) |model| {
-                break :blk try std.fmt.allocPrint(host.allocator, "ollama/{s}", .{model});
-            }
-            break :blk try host.allocator.dupe(u8, "ollama");
-        },
-        .gemini => blk: {
-            if (host.ai_model) |model| {
-                break :blk try std.fmt.allocPrint(host.allocator, "gemini/{s}", .{model});
-            }
-            break :blk try host.allocator.dupe(u8, "gemini");
-        },
-        .openrouter => blk: {
-            if (host.ai_model) |model| {
-                break :blk try std.fmt.allocPrint(host.allocator, "openrouter/{s}", .{model});
-            }
-            break :blk try host.allocator.dupe(u8, "openrouter");
-        },
-        .fake => try host.allocator.dupe(u8, "fake"),
-        .auto => try host.allocator.dupe(u8, "auto"),
-    };
+    const name = if (host.ai_provider.len > 0) host.ai_provider else "auto";
+    if (std.mem.eql(u8, name, "ollama")) {
+        if (host.ai_model) |model| {
+            return try std.fmt.allocPrint(host.allocator, "ollama/{s}", .{model});
+        }
+        return try host.allocator.dupe(u8, "ollama");
+    }
+    if (std.mem.eql(u8, name, "gemini")) {
+        if (host.ai_model) |model| {
+            return try std.fmt.allocPrint(host.allocator, "gemini/{s}", .{model});
+        }
+        return try host.allocator.dupe(u8, "gemini");
+    }
+    if (std.mem.eql(u8, name, "openrouter")) {
+        if (host.ai_model) |model| {
+            return try std.fmt.allocPrint(host.allocator, "openrouter/{s}", .{model});
+        }
+        return try host.allocator.dupe(u8, "openrouter");
+    }
+    if (std.mem.eql(u8, name, "fake")) return try host.allocator.dupe(u8, "fake");
+    return try host.allocator.dupe(u8, "auto");
 }
 
 fn ensureStreamingPhase(host: *Host) void {

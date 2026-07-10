@@ -25,7 +25,7 @@ pub fn providerOptionsFromFlags(
     flags: args_mod.GlobalFlags,
     io: std.Io,
     root: ?workspace.WorkspaceRoot,
-) ai.provider_factory.Options {
+) OwnedProviderOptions {
     const fake_response = switch (mode) {
         .ask => ai.proposal_workflow.default_ask_response,
         .plan => ai.proposal_workflow.default_plan_response,
@@ -44,29 +44,28 @@ pub fn providerOptionsFromFlags(
         owned_model = allocator.dupe(u8, model) catch null;
         break :blk owned_model;
     } else null else null;
-    var owned_ollama_url: ?[]u8 = null;
-    const ollama_url: ?[]const u8 = if (workspace_cfg) |cfg| if (cfg.ollama_url) |url| blk: {
-        owned_ollama_url = allocator.dupe(u8, url) catch null;
-        break :blk owned_ollama_url;
-    } else null else null;
-    var owned_openrouter_url: ?[]u8 = null;
-    const openrouter_url: ?[]const u8 = if (workspace_cfg) |cfg| if (cfg.openrouter_url) |url| blk: {
-        owned_openrouter_url = allocator.dupe(u8, url) catch null;
-        break :blk owned_openrouter_url;
-    } else null else null;
+    const base_url: ?[]const u8 = if (workspace_cfg) |cfg| if (std.mem.eql(u8, provider_name orelse "auto", "openrouter")) cfg.openrouter_url else cfg.ollama_url else null;
 
     return .{
-        .kind = ai.provider_factory.Kind.parse(provider_name),
-        .model = model_name,
+        .options = .{
+            .provider_name = provider_name orelse "auto",
+            .model = model_name,
+            .base_url = base_url,
+            .fake_response = fake_response,
+            .fake_plan_response = fake_plan,
+        },
         .owned_model = owned_model,
-        .ollama_url = ollama_url,
-        .owned_ollama_url = owned_ollama_url,
-        .openrouter_url = openrouter_url,
-        .owned_openrouter_url = owned_openrouter_url,
-        .fake_response = fake_response,
-        .fake_plan_response = fake_plan,
     };
 }
+
+pub const OwnedProviderOptions = struct {
+    options: ai.provider_factory.Options,
+    owned_model: ?[]u8 = null,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        if (self.owned_model) |m| allocator.free(m);
+    }
+};
 
 pub const OwnedEmbeddingOptions = struct {
     options: ai.codebase_search.EmbeddingOptions = .{},
@@ -116,13 +115,13 @@ pub fn agentProviderOptionsFromFlags(
     intent: []const u8,
     io: std.Io,
     root: ?workspace.WorkspaceRoot,
-) ai.provider_factory.Options {
-    var options = providerOptionsFromFlags(allocator, .ask, flags, io, root);
-    options.fake_response = ai.proposal_workflow.fakeAgentResponseForIntent(intent);
-    options.fake_tool_loop = true;
+) OwnedProviderOptions {
+    var owned = providerOptionsFromFlags(allocator, .ask, flags, io, root);
+    owned.options.fake_response = ai.proposal_workflow.fakeAgentResponseForIntent(intent);
+    owned.options.fake_tool_loop = true;
     const max_steps = if (flags.max_steps > 0) flags.max_steps else 8;
-    options.fake_tool_loop_short = max_steps <= 2;
-    return options;
+    owned.options.fake_tool_loop_short = max_steps <= 2;
+    return owned;
 }
 
 fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
@@ -169,7 +168,7 @@ pub fn generateAndPersist(
             .progress_context = &bridge,
             .workspace_cwd = opened.path,
             .embedding = embedding.options,
-            .enable_repair_loop = provider_options.kind != .fake,
+            .enable_repair_loop = !std.mem.eql(u8, provider_options.provider_name, "fake"),
             .max_repair_attempts = 2,
         },
     ) catch |err| switch (err) {

@@ -69,7 +69,7 @@ test "agent events are appended to session log" {
     var result = try @import("agent.zig").run(allocator, io, null, root, "search sample", .{
         .max_steps = 4,
         .provider_options = @import("provider_factory.zig").Options{
-            .kind = .fake,
+            .provider_name = "fake",
             .fake_response = @import("proposal_workflow.zig").default_ask_response,
         },
         .workspace_cwd = ".",
@@ -105,7 +105,7 @@ test "validation_result event includes task counts when repair loop runs" {
     var result = try @import("agent.zig").run(allocator, io, null, root, "search sample", .{
         .max_steps = 4,
         .provider_options = @import("provider_factory.zig").Options{
-            .kind = .fake,
+            .provider_name = "fake",
             .fake_response = @import("proposal_workflow.zig").default_ask_response,
         },
         .workspace_cwd = ".",
@@ -143,7 +143,7 @@ test "multi-agent planner/reviewer subagents emit events when enabled" {
     var result = try @import("agent.zig").run(allocator, io, &env, root, "search sample", .{
         .max_steps = 4,
         .provider_options = @import("provider_factory.zig").Options{
-            .kind = .fake,
+            .provider_name = "fake",
             .fake_response = @import("proposal_workflow.zig").default_ask_response,
         },
         .workspace_cwd = ".",

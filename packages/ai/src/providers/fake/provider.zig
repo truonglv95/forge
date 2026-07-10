@@ -16,32 +16,7 @@ pub const FakeProvider = struct {
     tool_loop_enabled: bool = false,
     tool_loop_short: bool = false,
 
-    pub fn init(
-        response: []const u8,
-        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
-        stream_context: ?*anyopaque,
-    ) FakeProvider {
-        return initWithPlan(response, null, stream_callback, stream_context, false);
-    }
-
-    pub fn initWithPlan(
-        response: []const u8,
-        plan_response: ?[]const u8,
-        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
-        stream_context: ?*anyopaque,
-        tool_loop_enabled: bool,
-    ) FakeProvider {
-        return initWithToolLoop(response, plan_response, stream_callback, stream_context, tool_loop_enabled, false);
-    }
-
-    pub fn initWithToolLoop(
-        response: []const u8,
-        plan_response: ?[]const u8,
-        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
-        stream_context: ?*anyopaque,
-        tool_loop_enabled: bool,
-        tool_loop_short: bool,
-    ) FakeProvider {
+    pub fn init(response: []const u8, plan_response: ?[]const u8, tool_loop_enabled: ?bool) FakeProvider {
         return .{
             .response = response,
             .plan_response = plan_response,
@@ -51,11 +26,40 @@ pub const FakeProvider = struct {
                 .model_name = "fake-model-1",
                 .context_window = 4096,
             },
-            .stream_callback = stream_callback,
-            .stream_context = stream_context,
-            .tool_loop_enabled = tool_loop_enabled,
-            .tool_loop_short = tool_loop_short,
+            .tool_loop_enabled = tool_loop_enabled orelse false,
         };
+    }
+
+    pub fn create(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        environ_map: ?*const std.process.Environ.Map,
+        options: anytype,
+    ) !provider.Provider {
+        _ = io;
+        _ = environ_map;
+
+        const ptr = try allocator.create(FakeProvider);
+        ptr.* = .{
+            .response = if (@hasField(@TypeOf(options), "fake_response")) (if (@typeInfo(@TypeOf(options.fake_response)) == .optional) options.fake_response orelse "{}" else options.fake_response) else "{}",
+            .plan_response = if (@hasField(@TypeOf(options), "fake_plan_response")) options.fake_plan_response else null,
+            .simulated_usage = .{ .prompt_tokens = 10, .completion_tokens = 20, .total_tokens = 30 },
+            .meta = .{
+                .provider_name = "fake",
+                .model_name = "fake-model-1",
+                .context_window = 4096,
+            },
+            .stream_callback = if (@hasField(@TypeOf(options), "stream_callback")) options.stream_callback else null,
+            .stream_context = if (@hasField(@TypeOf(options), "stream_context")) options.stream_context else null,
+            .tool_loop_enabled = if (@hasField(@TypeOf(options), "fake_tool_loop")) options.fake_tool_loop else false,
+            .tool_loop_short = if (@hasField(@TypeOf(options), "fake_tool_loop_short")) options.fake_tool_loop_short else false,
+        };
+        return ptr.providerInterface();
+    }
+
+    pub fn deinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *FakeProvider = @ptrCast(@alignCast(ptr));
+        allocator.destroy(self);
     }
 
     pub fn providerInterface(self: *FakeProvider) provider.Provider {
@@ -71,6 +75,7 @@ pub const FakeProvider = struct {
                 .append_tool_user_text = appendToolUserTextImpl,
                 .append_tool_call = appendToolCallImpl,
                 .append_tool_result = appendToolResultImpl,
+                .deinit = deinit,
             } else &.{
                 .ask = askImpl,
                 .metadata = metadataImpl,
@@ -81,6 +86,7 @@ pub const FakeProvider = struct {
                 .append_tool_user_text = provider.tool_loop_stubs.appendToolUserText,
                 .append_tool_call = provider.tool_loop_stubs.appendToolCall,
                 .append_tool_result = provider.tool_loop_stubs.appendToolResult,
+                .deinit = deinit,
             },
         };
     }
@@ -196,12 +202,14 @@ pub const FakeProvider = struct {
 };
 
 test "FakeProvider honours cancellation while streaming" {
-    var fake = FakeProvider.init("0123456789012345678901234567890", null, null);
-    const p = fake.providerInterface();
-
-    var buffer: [64]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    var fba_buffer: [1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&fba_buffer);
     const allocator = fba.allocator();
+
+    var p = try FakeProvider.create(allocator, std.testing.io, null, .{
+        .fake_response = "0123456789012345678901234567890",
+    });
+    defer p.deinit(allocator);
 
     var w_alloc = std.Io.Writer.Allocating.init(allocator);
     defer w_alloc.deinit();
@@ -214,12 +222,14 @@ test "FakeProvider honours cancellation while streaming" {
 }
 
 test "FakeProvider implements Provider interface correctly" {
-    var fake = FakeProvider.init("Hello, world!", null, null);
-    const p = fake.providerInterface();
-
-    var buffer: [1024]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    var fba_buffer: [1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&fba_buffer);
     const allocator = fba.allocator();
+
+    var p = try FakeProvider.create(allocator, std.testing.io, null, .{
+        .fake_response = "Hello, world!",
+    });
+    defer p.deinit(allocator);
 
     var w_alloc = std.Io.Writer.Allocating.init(allocator);
     defer w_alloc.deinit();
@@ -239,11 +249,14 @@ test "FakeProvider implements Provider interface correctly" {
 }
 
 test "FakeProvider tool loop returns search then text" {
-    var fake = FakeProvider.initWithPlan("{}", null, null, null, true);
-    const p = fake.providerInterface();
+    const allocator = std.testing.allocator;
+    var p = try FakeProvider.create(allocator, std.testing.io, null, .{
+        .fake_response = "{}",
+        .fake_tool_loop = true,
+    });
+    defer p.deinit(allocator);
     try std.testing.expect(p.supportsToolLoop());
 
-    const allocator = std.testing.allocator;
     var binding = p.toolLoopBinding(std.testing.io, null, null);
 
     const declarations = try p.toolDeclarationsJson(allocator, null);
@@ -293,10 +306,13 @@ test "FakeProvider tool loop returns search then text" {
 }
 
 test "FakeProvider tool loop honours cancellation" {
-    var fake = FakeProvider.initWithPlan("{}", null, null, null, true);
-    const p = fake.providerInterface();
-
     const allocator = std.testing.allocator;
+    var p = try FakeProvider.create(allocator, std.testing.io, null, .{
+        .fake_response = "{}",
+        .fake_tool_loop = true,
+    });
+    defer p.deinit(allocator);
+
     var binding = p.toolLoopBinding(std.testing.io, null, null);
 
     const declarations = try p.toolDeclarationsJson(allocator, null);

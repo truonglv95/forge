@@ -6,81 +6,65 @@ const ollama_provider = @import("providers/ollama/provider.zig");
 const openrouter_provider = @import("providers/openrouter/provider.zig");
 const credentials = @import("credentials.zig");
 
-pub const Kind = enum {
-    auto,
-    fake,
-    gemini,
-    ollama,
-    openrouter,
-
-    pub fn parse(name: ?[]const u8) Kind {
-        const value = name orelse return .auto;
-        if (std.mem.eql(u8, value, "fake")) return .fake;
-        if (std.mem.eql(u8, value, "gemini")) return .gemini;
-        if (std.mem.eql(u8, value, "ollama")) return .ollama;
-        if (std.mem.eql(u8, value, "openrouter")) return .openrouter;
-        if (std.mem.eql(u8, value, "auto")) return .auto;
-        return .auto;
-    }
-};
+pub const FactoryError = error{
+    MissingCredentials,
+    ProviderInternalError,
+    NetworkError,
+    AuthenticationFailed,
+    RateLimitExceeded,
+    ContextLengthExceeded,
+    MalformedResponse,
+    Cancelled,
+} || std.mem.Allocator.Error || std.fmt.ParseIntError;
 
 pub const Options = struct {
-    kind: Kind = .auto,
+    provider_name: []const u8 = "auto",
     model: ?[]const u8 = null,
-    /// Set when `model` was allocated by `providerOptionsFromFlags` (workspace config path).
-    owned_model: ?[]u8 = null,
-    ollama_url: ?[]const u8 = null,
-    owned_ollama_url: ?[]u8 = null,
-    openrouter_url: ?[]const u8 = null,
-    owned_openrouter_url: ?[]u8 = null,
-    fake_response: []const u8,
+    base_url: ?[]const u8 = null,
+
+    // Fake config
+    fake_response: ?[]const u8 = null,
     fake_plan_response: ?[]const u8 = null,
     fake_tool_loop: bool = false,
     fake_tool_loop_short: bool = false,
+
+    // Callbacks
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
     thinking_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     thinking_context: ?*anyopaque = null,
-
-    pub fn deinit(self: *Options, allocator: std.mem.Allocator) void {
-        if (self.owned_model) |model| {
-            allocator.free(model);
-            self.owned_model = null;
-            self.model = null;
-        }
-        if (self.owned_ollama_url) |url| {
-            allocator.free(url);
-            self.owned_ollama_url = null;
-            self.ollama_url = null;
-        }
-        if (self.owned_openrouter_url) |url| {
-            allocator.free(url);
-            self.owned_openrouter_url = null;
-            self.openrouter_url = null;
-        }
-    }
 };
 
-pub const Handle = struct {
+const CreateFn = *const fn (
     allocator: std.mem.Allocator,
-    fake: ?fake_provider.FakeProvider = null,
-    gemini: ?gemini_provider.GeminiProvider = null,
-    ollama: ?ollama_provider.OllamaProvider = null,
-    openrouter: ?openrouter_provider.OpenRouterProvider = null,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    options: Options,
+) anyerror!provider_mod.Provider;
 
-    pub fn deinit(self: *Handle) void {
-        if (self.gemini) |*owned| owned.deinit();
-        if (self.ollama) |*owned| owned.deinit();
-        if (self.openrouter) |*owned| owned.deinit();
-    }
+const ProviderDef = struct {
+    name: []const u8,
+    create: CreateFn,
+};
 
-    pub fn interface(self: *Handle) provider_mod.Provider {
-        if (self.gemini) |*gemini| return gemini.providerInterface();
-        if (self.ollama) |*ollama| return ollama.providerInterface();
-        if (self.openrouter) |*openrouter| return openrouter.providerInterface();
-        if (self.fake) |*fake| return fake.providerInterface();
-        unreachable;
-    }
+fn wrapCreateFake(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return fake_provider.FakeProvider.create(allocator, io, environ_map, options);
+}
+fn wrapCreateOllama(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return ollama_provider.OllamaProvider.create(allocator, io, environ_map, options);
+}
+fn wrapCreateGemini(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return gemini_provider.GeminiProvider.create(allocator, io, environ_map, options);
+}
+fn wrapCreateOpenRouter(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return openrouter_provider.OpenRouterProvider.create(allocator, io, environ_map, options);
+}
+
+const registry = [_]ProviderDef{
+    .{ .name = "fake", .create = wrapCreateFake },
+    .{ .name = "gemini", .create = wrapCreateGemini },
+    .{ .name = "ollama", .create = wrapCreateOllama },
+    .{ .name = "openrouter", .create = wrapCreateOpenRouter },
 };
 
 pub fn create(
@@ -88,136 +72,52 @@ pub fn create(
     io: std.Io,
     environ_map: ?*const std.process.Environ.Map,
     options: Options,
-) !Handle {
-    const resolved = try resolveKind(allocator, io, environ_map, options.kind, options.ollama_url, options.openrouter_url);
+) !provider_mod.Provider {
+    var resolved_name = options.provider_name;
 
-    return switch (resolved) {
-        .fake => .{
-            .allocator = allocator,
-            .fake = fake_provider.FakeProvider.initWithToolLoop(
-                options.fake_response,
-                options.fake_plan_response,
-                options.stream_callback,
-                options.stream_context,
-                options.fake_tool_loop,
-                options.fake_tool_loop_short,
-            ),
-        },
-        .gemini => .{
-            .allocator = allocator,
-            .gemini = gemini_provider.GeminiProvider.init(
-                allocator,
-                io,
-                try credentials.Credentials.loadGemini(allocator, io, environ_map),
-                options.model orelse gemini_provider.default_model,
-                options.stream_callback,
-                options.stream_context,
-                options.thinking_callback,
-                options.thinking_context,
-            ),
-        },
-        .ollama => blk: {
-            const host = try ollama_provider.resolveHost(allocator, environ_map, options.ollama_url);
-            defer allocator.free(host);
-            break :blk .{
-                .allocator = allocator,
-                .ollama = try ollama_provider.OllamaProvider.init(
-                    allocator,
-                    io,
-                    host,
-                    options.model orelse ollama_provider.default_model,
-                    ollama_provider.resolveNumCtx(environ_map),
-                    options.stream_callback,
-                    options.stream_context,
-                ),
-            };
-        },
-        .openrouter => blk: {
-            const base_url = try openrouter_provider.resolveBaseUrl(allocator, environ_map, options.openrouter_url);
-            defer allocator.free(base_url);
-            break :blk .{
-                .allocator = allocator,
-                .openrouter = try openrouter_provider.OpenRouterProvider.init(
-                    allocator,
-                    io,
-                    try credentials.Credentials.loadOpenRouter(allocator, io, environ_map),
-                    base_url,
-                    options.model orelse openrouter_provider.default_model,
-                    options.stream_callback,
-                    options.stream_context,
-                ),
-            };
-        },
-    };
-}
+    if (std.mem.eql(u8, resolved_name, "auto")) {
+        resolved_name = "fake"; // Fallback
 
-const ResolvedKind = enum {
-    fake,
-    gemini,
-    ollama,
-    openrouter,
-};
-
-fn resolveKind(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: ?*const std.process.Environ.Map,
-    kind: Kind,
-    ollama_url: ?[]const u8,
-    openrouter_url: ?[]const u8,
-) !ResolvedKind {
-    return switch (kind) {
-        .fake => .fake,
-        .gemini => {
-            var loaded = credentials.Credentials.loadGemini(allocator, io, environ_map) catch |err| switch (err) {
-                error.NotFound => return error.MissingCredentials,
-                else => return err,
-            };
-            loaded.deinit();
-            return .gemini;
-        },
-        .ollama => .ollama,
-        .openrouter => {
-            _ = openrouter_url;
-            var loaded = credentials.Credentials.loadOpenRouter(allocator, io, environ_map) catch |err| switch (err) {
-                error.NotFound => return error.MissingCredentials,
-                else => return err,
-            };
-            loaded.deinit();
-            return .openrouter;
-        },
-        .auto => {
-            const host = try ollama_provider.resolveHost(allocator, environ_map, ollama_url);
-            defer allocator.free(host);
-            if (ollama_provider.isReachable(allocator, io, host)) return .ollama;
-
-            var openrouter_loaded = credentials.Credentials.loadOpenRouter(allocator, io, environ_map) catch null;
-            if (openrouter_loaded) |*owned| {
-                owned.deinit();
-                return .openrouter;
+        if (ollama_provider.isReachable(allocator, io, ollama_provider.default_host)) {
+            resolved_name = "ollama";
+        } else {
+            // Check if openrouter key exists
+            if (credentials.Credentials.load(allocator, io, environ_map, &[_][]const u8{"OPENROUTER_API_KEY"}, "forge-openrouter", "default")) |creds_val| {
+                var creds = creds_val;
+                creds.deinit();
+                resolved_name = "openrouter";
+            } else |_| {
+                // Check if gemini key exists
+                if (credentials.Credentials.load(allocator, io, environ_map, &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" }, "forge-gemini", "default")) |creds_val2| {
+                    var creds2 = creds_val2;
+                    creds2.deinit();
+                    resolved_name = "gemini";
+                } else |_| {}
             }
+        }
+    }
 
-            var loaded = credentials.Credentials.loadGemini(allocator, io, environ_map) catch {
-                return .fake;
+    for (registry) |def| {
+        if (std.mem.eql(u8, def.name, resolved_name)) {
+            return def.create(allocator, io, environ_map, options) catch |err| switch (err) {
+                error.MissingCredentials => return error.MissingCredentials,
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.ProviderInternalError,
             };
-            loaded.deinit();
-            return .gemini;
-        },
-    };
-}
+        }
+    }
 
-pub const FactoryError = error{
-    MissingCredentials,
-};
+    // Fallback to fake if unknown
+    return fake_provider.FakeProvider.create(allocator, io, environ_map, options) catch return error.ProviderInternalError;
+}
 
 test "auto resolves to fake without credentials or ollama" {
-    var handle = try create(std.testing.allocator, std.testing.io, null, .{
-        .kind = .auto,
+    var p = try create(std.testing.allocator, std.testing.io, null, .{
+        .provider_name = "auto",
         .fake_response = "{}",
     });
-    defer handle.deinit();
+    defer p.deinit(std.testing.allocator);
 
-    const meta = handle.interface().metadata();
-    // Without a running Ollama server, auto falls back to fake when no Gemini key.
+    const meta = p.metadata();
     try std.testing.expect(meta.provider_name.len > 0);
 }
