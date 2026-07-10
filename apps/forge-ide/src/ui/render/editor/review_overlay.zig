@@ -48,7 +48,11 @@ pub fn resolveHunks(wb: *Workbench, editor_buf: *Buffer, file_path: []const u8) 
     if (!wb.agent.show_review) return resolved_hunks;
     wb.agent.lock();
     defer wb.agent.unlock();
-    for (wb.agent.review.hunks) |hunk| {
+
+    var valid_hunks: std.ArrayList(*const @TypeOf(wb.agent.review.hunks[0])) = .empty;
+    defer valid_hunks.deinit(wb.allocator);
+
+    for (wb.agent.review.hunks) |*hunk| {
         if (!hunk.accepted or !std.mem.eql(u8, hunk.path, file_path)) continue;
         if (hunk.edit_start == null or hunk.edit_end == null) {
             resolved_hunks.append(.{
@@ -60,16 +64,64 @@ pub fn resolveHunks(wb: *Workbench, editor_buf: *Buffer, file_path: []const u8) 
             }) catch {};
             continue;
         }
-        const del_start = lineColAtBufferOffset(editor_buf, @intCast(hunk.edit_start.?));
-        const del_end = lineColAtBufferOffset(editor_buf, @intCast(hunk.edit_end.?));
+        valid_hunks.append(wb.allocator, hunk) catch {};
+    }
+
+    std.sort.pdq(*const @TypeOf(wb.agent.review.hunks[0]), valid_hunks.items, {}, struct {
+        pub fn less(_: void, a: *const @TypeOf(wb.agent.review.hunks[0]), b: *const @TypeOf(wb.agent.review.hunks[0])) bool {
+            return a.edit_start.? < b.edit_start.?;
+        }
+    }.less);
+
+    var pos: usize = 0;
+    var line: usize = 0;
+    const line_count = editor_buf.lineCount();
+
+    for (valid_hunks.items) |hunk| {
+        var start_l: usize = 0;
+        var start_c: usize = 0;
+        var end_l: usize = 0;
+        var end_c: usize = 0;
+
+        while (line < line_count) {
+            const line_len = editor_buf.lineAt(line).len;
+            if (hunk.edit_start.? <= pos + line_len) {
+                start_l = line;
+                start_c = hunk.edit_start.? - pos;
+                break;
+            }
+            pos += line_len + 1;
+            line += 1;
+        }
+        if (line >= line_count) {
+            start_l = if (line_count > 0) line_count - 1 else 0;
+            start_c = if (line_count > 0) editor_buf.lineAt(start_l).len else 0;
+        }
+
+        while (line < line_count) {
+            const line_len = editor_buf.lineAt(line).len;
+            if (hunk.edit_end.? <= pos + line_len) {
+                end_l = line;
+                end_c = hunk.edit_end.? - pos;
+                break;
+            }
+            pos += line_len + 1;
+            line += 1;
+        }
+        if (line >= line_count) {
+            end_l = if (line_count > 0) line_count - 1 else 0;
+            end_c = if (line_count > 0) editor_buf.lineAt(end_l).len else 0;
+        }
+
         resolved_hunks.append(.{
-            .start_line = del_start.line,
-            .end_line = del_end.line,
-            .start_col = del_start.col,
-            .end_col = del_end.col,
+            .start_line = start_l,
+            .end_line = end_l,
+            .start_col = start_c,
+            .end_col = end_c,
             .replacement = hunk.replacement,
         }) catch {};
     }
+
     return resolved_hunks;
 }
 

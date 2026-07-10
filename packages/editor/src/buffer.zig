@@ -196,6 +196,12 @@ pub const Buffer = struct {
             try self.lines.insert(self.allocator, insert_row, new_line);
             try self.decorations.append(self.allocator, .{ .kind = .addition, .row = insert_row });
         }
+
+        std.sort.pdq(Decoration, self.decorations.items, {}, struct {
+            pub fn less(_: void, a: Decoration, b: Decoration) bool {
+                return a.row < b.row;
+            }
+        }.less);
     }
 
     pub fn acceptInlineEdit(self: *Buffer) !void {

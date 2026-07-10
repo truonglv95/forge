@@ -9,8 +9,20 @@ pub fn drawDecorations(
     line_h: f32,
     viewport_w: f32,
 ) void {
-    for (editor_buf.decorations.items) |dec| {
-        if (dec.row == buf_line) {
+    var l: usize = 0;
+    var r: usize = editor_buf.decorations.items.len;
+    while (l < r) {
+        const m = l + (r - l) / 2;
+        if (editor_buf.decorations.items[m].row < buf_line) {
+            l = m + 1;
+        } else {
+            r = m;
+        }
+    }
+
+    if (l < editor_buf.decorations.items.len) {
+        for (editor_buf.decorations.items[l..]) |dec| {
+            if (dec.row != buf_line) break;
             const color = if (dec.kind == .addition)
                 renderer.Color{ .r = 0.2, .g = 0.7, .b = 0.3, .a = 0.25 }
             else
