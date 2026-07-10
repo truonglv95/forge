@@ -11,6 +11,9 @@ const parser_profile = @import("parser_profile.zig");
 
 const global_store = @import("global_store.zig");
 
+/// codebase_index manages the chunking and vector embedding generation for semantic search.
+/// It rebuilds the codebase index by scanning files, extracting chunks, and embedding vectors.
+
 pub fn getChunksFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
     const dir = try global_store.getIndexDir(allocator, io, root);
     defer allocator.free(dir);

@@ -13,6 +13,9 @@ pub const SearchOptions = struct {
     prefer_gemini: bool = true,
     environ_map: ?*const std.process.Environ.Map = null,
     allow_rebuild: bool = true,
+    /// Minimum cosine similarity to include a chunk.
+    /// When 0 (default), an adaptive threshold of max(0.01, top_score * 0.20) is used.
+    score_floor: f32 = 0,
 };
 
 pub const ScoredChunk = struct {
@@ -99,13 +102,21 @@ fn localEmbedAdapter(allocator: std.mem.Allocator, text: []const u8, out: []f32)
 const GeminiEmbedContext = struct {
     io: std.Io,
     creds: *credentials.Credentials,
+    task_type: gemini_embedder.TaskType = .retrieval_document,
 };
 
 threadlocal var gemini_embed_ctx: ?GeminiEmbedContext = null;
 
+/// Adapter used when BUILDING the index — embeds chunks as RETRIEVAL_DOCUMENT.
 fn geminiEmbedAdapter(allocator: std.mem.Allocator, text: []const u8, out: []f32) !void {
     const ctx = gemini_embed_ctx orelse return error.ProviderFailed;
-    return gemini_embedder.embedInto(allocator, ctx.io, ctx.creds.*, text, out);
+    return gemini_embedder.embedIntoWithTaskType(allocator, ctx.io, ctx.creds.*, text, out, .retrieval_document);
+}
+
+/// Adapter used at QUERY time — embeds the search query as RETRIEVAL_QUERY.
+fn geminiQueryEmbedAdapter(allocator: std.mem.Allocator, text: []const u8, out: []f32) !void {
+    const ctx = gemini_embed_ctx orelse return error.ProviderFailed;
+    return gemini_embedder.embedIntoWithTaskType(allocator, ctx.io, ctx.creds.*, text, out, .retrieval_query);
 }
 
 pub fn ensureIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, options: SearchOptions) !void {
@@ -197,7 +208,7 @@ pub fn search(
         if (offset + dim > index.vectors.len) continue;
         const vec = index.vectors[offset .. offset + dim];
         const score = cosineSlices(query_vec, vec);
-        if (score <= 0.01) continue;
+        if (score <= 0.001) continue; // pre-filter obvious misses only
         try scores.append(allocator, .{ .index = chunk_index, .score = score });
     }
 
@@ -206,6 +217,25 @@ pub fn search(
             return a.score > b.score;
         }
     }.less);
+
+    // Adaptive threshold: keep chunks within 20% of top score.
+    // Falls back to a fixed floor when caller sets score_floor explicitly.
+    const effective_floor = if (options.score_floor > 0)
+        options.score_floor
+    else if (scores.items.len > 0)
+        @max(@as(f32, 0.01), scores.items[0].score * 0.20)
+    else
+        @as(f32, 0.01);
+
+    // Remove items below the adaptive threshold.
+    var write: usize = 0;
+    for (scores.items) |item| {
+        if (item.score >= effective_floor) {
+            scores.items[write] = item;
+            write += 1;
+        }
+    }
+    scores.shrinkRetainingCapacity(write);
 
     const take = @min(options.top_k, scores.items.len);
     var out: std.ArrayList(ScoredChunk) = .empty;
@@ -456,10 +486,12 @@ fn embedQueryCached(
         }
     }
 
+    // Use RETRIEVAL_QUERY task type for query embeddings so Gemini
+    // optimises them for retrieval against RETRIEVAL_DOCUMENT chunks.
     if (backend.creds) |*owned| {
         gemini_embed_ctx = .{ .io = io, .creds = owned };
         defer gemini_embed_ctx = null;
-        try geminiEmbedAdapter(allocator, query, out);
+        try geminiQueryEmbedAdapter(allocator, query, out);
     } else {
         try localEmbedAdapter(allocator, query, out);
     }

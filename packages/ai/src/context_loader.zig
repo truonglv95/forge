@@ -1031,6 +1031,15 @@ pub fn renderManifestJson(builder: *const context.ContextBuilder, writer: *std.I
         );
     }
 
+    for (builder.manifest_extras.items) |extra| {
+        if (!first) try writer.writeAll(",");
+        first = false;
+        try writer.print(
+            "{{\"kind\":\"{s}\",\"name\":\"{s}\",\"included\":true,\"truncated\":false,\"bytes\":{d}}}",
+            .{ @tagName(extra.kind), extra.name, extra.bytes },
+        );
+    }
+
     try writer.print("],\"budget_bytes\":{d},\"used_bytes\":{d}}}\n", .{ builder.max_bytes, builder.used_bytes });
 }
 
