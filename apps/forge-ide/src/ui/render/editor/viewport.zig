@@ -24,9 +24,6 @@ pub fn drawEditorViewport(
     file_path: []const u8,
     pane_focused: bool,
 ) void {
-    wb.ghost.mutex.lock();
-    defer wb.ghost.mutex.unlock();
-
     const theme = &wb.theme;
     const editor_view_h = editor_scroll.viewportHeight(editor_h);
     const gutter = editor_scroll.gutterWidth(theme);
@@ -219,6 +216,7 @@ pub fn drawEditorViewport(
                     if (show_editor_cursor) {
                         renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
                     }
+                    wb.ghost.mutex.lock();
                     if (wb.ghost.ghost_text) |gt| {
                         if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
                             var ghost_y = line_num_y;
@@ -235,9 +233,11 @@ pub fn drawEditorViewport(
                             }
                         }
                     }
+                    wb.ghost.mutex.unlock();
                 }
             }
             if (visual_idx == cursor_visual) {
+                wb.ghost.mutex.lock();
                 if (wb.ghost.ghost_text) |gt| {
                     if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
                         var newlines: f32 = 0;
@@ -247,6 +247,7 @@ pub fn drawEditorViewport(
                         line_num_y += newlines * line_h;
                     }
                 }
+                wb.ghost.mutex.unlock();
             }
             line_num_y += line_h;
         }
@@ -302,6 +303,7 @@ pub fn drawEditorViewport(
                     if (show_editor_cursor) {
                         renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
                     }
+                    wb.ghost.mutex.lock();
                     if (wb.ghost.ghost_text) |gt| {
                         if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
                             var ghost_y = line_num_y;
@@ -318,9 +320,11 @@ pub fn drawEditorViewport(
                             }
                         }
                     }
+                    wb.ghost.mutex.unlock();
                 }
             }
             if (idx == editor_buf.cursor.row) {
+                wb.ghost.mutex.lock();
                 if (wb.ghost.ghost_text) |gt| {
                     if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
                         var newlines: f32 = 0;
@@ -330,6 +334,7 @@ pub fn drawEditorViewport(
                         line_num_y += newlines * line_h;
                     }
                 }
+                wb.ghost.mutex.unlock();
             }
             line_num_y += line_h;
         }
