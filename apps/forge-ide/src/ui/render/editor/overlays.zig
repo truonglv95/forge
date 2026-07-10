@@ -93,8 +93,19 @@ pub fn drawFindHighlights(
 ) void {
     if (!wb.find_bar.open or wb.find_bar.matches.len == 0) return;
     const line = buf.lineAt(row);
-    for (wb.find_bar.matches, 0..) |match, index| {
-        if (match.row != row) continue;
+    var left: usize = 0;
+    var right: usize = wb.find_bar.matches.len;
+    while (left < right) {
+        const mid = left + (right - left) / 2;
+        if (wb.find_bar.matches[mid].row < row) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+
+    for (wb.find_bar.matches[left..], left..) |match, index| {
+        if (match.row != row) break;
         const start_x = text_x + editor_scroll.cursorX(line, match.col, font_size);
         const end_x = text_x + editor_scroll.cursorX(line, @min(match.col + match.len, line.len), font_size);
         const is_active = index == wb.find_bar.match_index;
