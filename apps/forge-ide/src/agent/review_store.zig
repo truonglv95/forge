@@ -33,11 +33,13 @@ pub const Hunk = struct {
 
 pub const Store = struct {
     hunks: []Hunk = &.{},
+    revision: u64 = 0,
 
     pub fn clear(self: *Store, allocator: std.mem.Allocator) void {
         for (self.hunks) |*hunk| hunk.deinit(allocator);
         allocator.free(self.hunks);
         self.hunks = &.{};
+        self.revision += 1;
     }
 
     pub fn deinit(self: *Store, allocator: std.mem.Allocator) void {
@@ -47,14 +49,17 @@ pub const Store = struct {
     pub fn toggle(self: *Store, index: usize) void {
         if (index >= self.hunks.len) return;
         self.hunks[index].accepted = !self.hunks[index].accepted;
+        self.revision += 1;
     }
 
     pub fn acceptAll(self: *Store) void {
         for (self.hunks) |*hunk| hunk.accepted = true;
+        self.revision += 1;
     }
 
     pub fn rejectAll(self: *Store) void {
         for (self.hunks) |*hunk| hunk.accepted = false;
+        self.revision += 1;
     }
 
     pub fn acceptedCount(self: Store) usize {
@@ -98,6 +103,7 @@ pub const Store = struct {
         }
 
         self.hunks = try list.toOwnedSlice(allocator);
+        self.revision += 1;
     }
 
     pub fn hitTestHunk(

@@ -111,7 +111,23 @@ pub fn drawEditorViewport(
 
     const diag_store = @import("../../../workbench/diagnostics_store.zig");
 
-    const resolved_hunks = review_overlay.resolveHunks(wb, editor_buf, file_path);
+    const resolved_hunks = blk: {
+        const hash = std.hash.CityHash64.hash(file_path);
+        if (wb.review_hunks_cache.file_path_hash == hash and
+            wb.review_hunks_cache.buf_revision == editor_buf.revision and
+            wb.review_hunks_cache.review_revision == wb.agent.review.revision)
+        {
+            break :blk wb.review_hunks_cache.hunks;
+        }
+        const hunks = review_overlay.resolveHunks(wb, editor_buf, file_path);
+        wb.review_hunks_cache = .{
+            .file_path_hash = hash,
+            .buf_revision = editor_buf.revision,
+            .review_revision = wb.agent.review.revision,
+            .hunks = hunks,
+        };
+        break :blk wb.review_hunks_cache.hunks;
+    };
 
     var ghost_newlines: f32 = 0;
     var ghost_row: ?usize = null;
