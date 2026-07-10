@@ -47,10 +47,25 @@ pub fn drawEditorViewport(
     renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
     const show_cursor = @mod(state.time, 1.0) < 0.5;
     const show_editor_cursor = show_cursor and wb.focused_panel == .editor and pane_focused;
-    const bracket_pair = if (show_editor_cursor and !wb.agent.worker_running)
-        bracket_match.findMatch(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col)
-    else
-        null;
+    const bracket_pair = if (show_editor_cursor and !wb.agent.worker_running) blk: {
+        const hash = std.hash.CityHash64.hash(file_path);
+        if (wb.bracket_match_cache.file_path_hash == hash and
+            wb.bracket_match_cache.revision == editor_buf.revision and
+            wb.bracket_match_cache.row == editor_buf.cursor.row and
+            wb.bracket_match_cache.col == editor_buf.cursor.col)
+        {
+            break :blk wb.bracket_match_cache.match;
+        }
+        const match = bracket_match.findMatch(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col);
+        wb.bracket_match_cache = .{
+            .file_path_hash = hash,
+            .revision = editor_buf.revision,
+            .row = editor_buf.cursor.row,
+            .col = editor_buf.cursor.col,
+            .match = match,
+        };
+        break :blk match;
+    } else null;
 
     var wrap_cache_opt: ?*word_wrap.WrapCache = null;
     if (wrap_enabled) {
