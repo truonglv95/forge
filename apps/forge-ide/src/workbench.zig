@@ -191,6 +191,7 @@ pub const Workbench = struct {
 
     code_scroll_x: std.AutoHashMap(u64, CodeScrollState),
     rendered_code_blocks: std.ArrayList(RenderedCodeBlock),
+    wrap_cache: std.AutoHashMap(u64, *WrapCache),
 
     pub const CodeScrollState = struct {
         scroll_x: f32 = 0,
@@ -204,6 +205,8 @@ pub const Workbench = struct {
         w: f32,
         h: f32,
     };
+
+    pub const WrapCache = @import("ui/editor/word_wrap.zig").WrapCache;
 
     pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8, ide_launcher: []const u8, environ_map: ?*const std.process.Environ.Map) !void {
         var root = try workspace.WorkspaceRoot.open(io, workspace_path);
@@ -278,6 +281,7 @@ pub const Workbench = struct {
             .rename_preview = rename_preview_mod.Store.init(allocator),
             .code_scroll_x = std.AutoHashMap(u64, CodeScrollState).init(allocator),
             .rendered_code_blocks = .empty,
+            .wrap_cache = std.AutoHashMap(u64, *WrapCache).init(allocator),
             // Ghost completion: will be fully initialized after settings load below.
             .ghost = ghost_completion_mod.Store.init(allocator, io, .{}),
         };
@@ -389,6 +393,13 @@ pub const Workbench = struct {
         self.ghost.deinit();
         self.code_scroll_x.deinit();
         self.rendered_code_blocks.deinit(self.allocator);
+
+        var wrap_cache_iter = self.wrap_cache.iterator();
+        while (wrap_cache_iter.next()) |entry| {
+            entry.value_ptr.*.deinit();
+        }
+        self.wrap_cache.deinit();
+
         self.hover.deinit();
         self.references.deinit();
         self.rename_preview.deinit();
