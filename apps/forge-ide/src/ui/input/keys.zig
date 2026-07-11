@@ -208,6 +208,18 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     }
 
     if (event.keycode == 8 and event.modifiers & shared.cmd_mask != 0) { // Command+C
+        if (state.chat_selection) |sel| {
+            if (sel.msg_hash < wb.chat_history.items.len) {
+                const msg = wb.chat_history.items[sel.msg_hash];
+                const start = @min(sel.start, sel.end);
+                const end = @max(sel.start, sel.end);
+                if (start < end and end <= msg.content.len) {
+                    const text = msg.content[start..end];
+                    renderer.Renderer.setClipboardText(text);
+                    return;
+                }
+            }
+        }
         if (active_buffer.selectedText(wb.allocator)) |text| {
             if (text.len > 0) {
                 renderer.Renderer.setClipboardText(text);

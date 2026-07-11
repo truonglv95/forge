@@ -326,7 +326,7 @@ pub const Workbench = struct {
         try self.extension_host.activateAll();
         try self.syncContributions();
         try self.palette.addExtensionCommands(&self.extension_host);
-        try recent_workspaces_mod.record(allocator, io, workspace_path);
+        try recent_workspaces_mod.record(allocator, io, final_path);
         try self.refreshRecentWorkspaces();
 
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);

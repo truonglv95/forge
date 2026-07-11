@@ -112,6 +112,7 @@ pub fn toolActionLabel(tool_name: []const u8) []const u8 {
         return "Searching codebase...";
     if (std.mem.eql(u8, tool_name, "list_tree")) return "Listing workspace tree...";
     if (std.mem.eql(u8, tool_name, "read_file")) return "Reading file...";
+    if (std.mem.eql(u8, tool_name, "git_diff")) return "Inspecting git diff...";
     if (std.mem.eql(u8, tool_name, "grep")) return "Searching files...";
     if (std.mem.eql(u8, tool_name, "run_command") or std.mem.eql(u8, tool_name, "run_task"))
         return "Running command...";

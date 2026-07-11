@@ -59,6 +59,7 @@ pub fn onRenderFrame() void {
         header_toolbar.draw(w, wb.headerToolbarState(), state.header_hover_action, c(wb.theme.colors.header_bg));
 
         const subtle_border = c(wb.theme.colors.border);
+        renderer.Renderer.drawRect(0, layout.header_height, w, 1.5, subtle_border);
 
         if (geo.shell_mode == .ide) {
             if (wb.sidebar_visible and geo.explorer_w > 0) {

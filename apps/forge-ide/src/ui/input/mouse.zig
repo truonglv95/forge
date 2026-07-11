@@ -210,6 +210,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 },
             }
             if (agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, event.x, event.y)) {
+                state.chat_selection = null;
                 return;
             }
             wb.agent.lock();
@@ -282,14 +283,12 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.agent.lock();
             wb.agent.unlock();
 
-            if (chat_layout.hitTestMessageOpen(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |index| {
-                wb.dispatch(.{ .agent_open_message = index }) catch {};
+            if (chat_layout.hitTestChatSelection(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |sel| {
+                state.is_dragging_chat_selection = true;
+                state.chat_selection = .{ .msg_hash = sel.msg_hash, .start = sel.char_idx, .end = sel.char_idx };
                 return;
-            }
-
-            if (chat_layout.hitTestMessageCopy(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |index| {
-                wb.dispatch(.{ .agent_copy_message = index }) catch {};
-                return;
+            } else {
+                state.chat_selection = null;
             }
 
             // Actually, we can add a toggleAgentStep method to workbench that iterates chat history and steps.
@@ -384,6 +383,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 const scroll_y = if (pane == .secondary) wb.split_scroll_y else wb.editor_scroll_y;
                 const scroll_x = if (pane == .secondary) wb.split_scroll_x else wb.editor_scroll_x;
                 if (editor_hit.editorPosAt(wb, &doc.buffer, pane_x, pane_w, scroll_y, scroll_x, event.x, event.y)) |pos| {
+                    state.chat_selection = null;
                     doc.buffer.beginSelection(pos.row, pos.col);
                     state.is_dragging_editor_selection = true;
                     wb.scrollEditorToCursor();
@@ -494,6 +494,9 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 if (sel.isEmpty()) wb.terminal_selection = null;
             }
         }
+        if (state.is_dragging_chat_selection) {
+            state.is_dragging_chat_selection = false;
+        }
         if (state.is_dragging_editor_selection) {
             state.is_dragging_editor_selection = false;
             if (wb.docForPane(wb.editor_pane_focus)) |doc| {
@@ -527,6 +530,14 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     doc.buffer.cursor.row = pos.row;
                     doc.buffer.cursor.col = pos.col;
                     wb.scrollEditorToCursor();
+                }
+            }
+        } else if (state.is_dragging_chat_selection) {
+            if (chat_layout.hitTestChatSelection(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |sel| {
+                if (state.chat_selection) |*s| {
+                    if (s.msg_hash == sel.msg_hash) {
+                        s.end = sel.char_idx;
+                    }
                 }
             }
         } else if (state.is_dragging_terminal_selection and wb.bottom_panel_mode == .terminal) {

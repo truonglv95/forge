@@ -176,26 +176,34 @@ fn fetchStreamChatInto(
     return switch (result.status) {
         .ok => {},
         .unauthorized, .forbidden => {
-            std.debug.print("OpenRouter auth failed: {}\n", .{result.status});
+            debugLog("OpenRouter auth failed: {}\n", .{result.status});
             return error.AuthenticationFailed;
         },
         .too_many_requests => {
-            std.debug.print("OpenRouter rate limit: {}\n", .{result.status});
+            debugLog("OpenRouter rate limit: {}\n", .{result.status});
             return error.RateLimitExceeded;
         },
         .payload_too_large, .uri_too_long, .bad_request => {
-            std.debug.print("OpenRouter context/bad request: {}\n", .{result.status});
+            debugLog("OpenRouter context/bad request: {}\n", .{result.status});
             return error.ContextLengthExceeded;
         },
         .request_timeout, .service_unavailable, .bad_gateway, .gateway_timeout => {
-            std.debug.print("OpenRouter network error: {}\n", .{result.status});
+            debugLog("OpenRouter network error: {}\n", .{result.status});
             return error.NetworkError;
         },
         else => {
-            std.debug.print("OpenRouter provider failed with status: {}\n", .{result.status});
+            debugLog("OpenRouter provider failed with status: {}\n", .{result.status});
             return error.ProviderFailed;
         },
     };
+}
+
+fn debugLog(comptime fmt: []const u8, args: anytype) void {
+    const value = std.c.getenv("FORGE_AI_DEBUG") orelse return;
+    const text = std.mem.span(value);
+    if (std.mem.eql(u8, text, "1") or std.ascii.eqlIgnoreCase(text, "true")) {
+        std.debug.print(fmt, args);
+    }
 }
 
 fn validJson(allocator: std.mem.Allocator, text: []const u8) bool {

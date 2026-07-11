@@ -555,6 +555,12 @@ pub fn readFile(ctx: Context, rel_path: []const u8, start_line: ?usize, end_line
     return .{ .summary = summary };
 }
 
+pub fn gitDiff(ctx: Context, stat: bool) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .git_diff);
+    return runCommandUnchecked(ctx, if (stat) "git diff --stat" else "git diff");
+}
+
 fn appendPrint(allocator: std.mem.Allocator, out: *std.ArrayList(u8), comptime format: []const u8, args: anytype) !void {
     const text = try std.fmt.allocPrint(allocator, format, args);
     defer allocator.free(text);
@@ -576,6 +582,10 @@ fn isDeniedReadPath(rel_path: []const u8) bool {
 pub fn runCommand(ctx: Context, command: []const u8) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .run_command);
+    return runCommandUnchecked(ctx, command);
+}
+
+fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome {
     const checkout_path = parseGitCheckoutPath(command);
     var checkout_argv: [4][]const u8 = undefined;
     const grep_args = parseGrepNCommand(command);

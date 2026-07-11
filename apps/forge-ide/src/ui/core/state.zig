@@ -25,6 +25,12 @@ pub var is_dragging_bottom_panel_splitter: bool = false;
 pub var header_hover_action: ?@import("../chrome/header_toolbar.zig").Action = null;
 pub var is_dragging_terminal_selection: bool = false;
 pub var is_dragging_editor_selection: bool = false;
+pub var is_dragging_chat_selection: bool = false;
+pub var chat_selection: ?struct {
+    msg_hash: u64,
+    start: usize,
+    end: usize,
+} = null;
 pub var last_mouse_x: f32 = 0;
 pub var last_mouse_y: f32 = 0;
 pub var explorer_hover_row: ?usize = null;

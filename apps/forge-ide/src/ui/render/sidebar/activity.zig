@@ -9,19 +9,12 @@ const activity_bar = @import("../../sidebar/activity_bar.zig");
 const sidebar_view = @import("../../sidebar/sidebar_view.zig");
 pub fn drawActivityBar(wb: *Workbench, w: f32) void {
     const theme = &wb.theme;
-    const accent = shared.color(theme.colors.accent);
 
     // Draw bottom border for activity bar
     renderer.Renderer.drawRect(0, layout.header_height + layout.activity_bar_height - 1, w, 1, shared.color(theme.colors.border));
 
     for (sidebar_view.all) |view| {
-        const x = activity_bar.iconX(view);
-        const y = layout.header_height;
         const selected = wb.sidebar_view == view;
-        if (selected) {
-            // Draw top highlight for selected horizontal tab
-            renderer.Renderer.drawRect(x + 6, y, activity_bar.icon_w - 12, 2, accent);
-        }
         const color = if (selected)
             renderer.Color{ .r = 1, .g = 1, .b = 1, .a = 1 }
         else

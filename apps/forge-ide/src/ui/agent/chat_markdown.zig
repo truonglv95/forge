@@ -26,6 +26,32 @@ pub const Style = struct {
     top_square: bool = false,
 };
 
+pub const RenderContext = struct {
+    allocator: std.mem.Allocator,
+    global_text: []const u8,
+    selection: ?struct { start: usize, end: usize } = null,
+    base_hash: u64 = 0,
+    wb: ?*@import("../../workbench.zig").Workbench = null,
+    hit_test: ?struct { x: f32, y: f32 } = null,
+    hit_result: ?usize = null,
+
+    pub fn isSelected(self: RenderContext, ptr: [*]const u8, len: usize) ?struct { start: usize, end: usize } {
+        if (self.selection == null) return null;
+        const s = self.selection.?;
+        const t_start = @intFromPtr(self.global_text.ptr);
+        const p_start = @intFromPtr(ptr);
+        if (p_start < t_start or p_start >= t_start + self.global_text.len) return null;
+        const seg_start = p_start - t_start;
+        const seg_end = seg_start + len;
+        if (s.end <= seg_start or s.start >= seg_end) return null;
+        const inter_start = @max(s.start, seg_start) - seg_start;
+        const inter_end = @min(s.end, seg_end) - seg_start;
+        return .{ .start = inter_start, .end = inter_end };
+    }
+};
+
+pub var current_render_context: ?*RenderContext = null;
+
 const Segment = union(enum) {
     text: []const u8,
     bold: []const u8,
@@ -216,36 +242,25 @@ pub fn contentHeight(text: []const u8, content_w: f32) f32 {
 }
 
 fn freeSegments(allocator: std.mem.Allocator, segments: []Segment) void {
-    for (segments) |seg| switch (seg) {
-        .text, .bold, .code => |s| allocator.free(s),
-    };
     allocator.free(segments);
 }
 
 fn parseInlineLine(allocator: std.mem.Allocator, line: []const u8) ![]Segment {
     var segments: std.ArrayList(Segment) = .empty;
-    errdefer {
-        for (segments.items) |seg| switch (seg) {
-            .text, .bold, .code => |s| allocator.free(s),
-        };
-        segments.deinit(allocator);
-    }
+    errdefer segments.deinit(allocator);
 
     var i: usize = 0;
     while (i < line.len) {
         if (line[i] == '`') {
             const rest = line[i + 1 ..];
             const close_rel = std.mem.indexOfScalar(u8, rest, '`') orelse {
-                const tail = try allocator.dupe(u8, line[i..]);
-                try segments.append(allocator, .{ .text = tail });
+                try segments.append(allocator, .{ .text = line[i..] });
                 return try segments.toOwnedSlice(allocator);
             };
             if (i > 0) {
-                const plain = try allocator.dupe(u8, line[0..i]);
-                try segments.append(allocator, .{ .text = plain });
+                try segments.append(allocator, .{ .text = line[0..i] });
             }
-            const code = try allocator.dupe(u8, rest[0..close_rel]);
-            try segments.append(allocator, .{ .code = code });
+            try segments.append(allocator, .{ .code = rest[0..close_rel] });
             const tail_segments = try parseInlineLine(allocator, rest[close_rel + 1 ..]);
             defer allocator.free(tail_segments);
             try segments.appendSlice(allocator, tail_segments);
@@ -254,16 +269,13 @@ fn parseInlineLine(allocator: std.mem.Allocator, line: []const u8) ![]Segment {
         if (i + 1 < line.len and line[i] == '*' and line[i + 1] == '*') {
             const rest = line[i + 2 ..];
             const close_rel = std.mem.indexOfPos(u8, rest, 0, "**") orelse {
-                const tail = try allocator.dupe(u8, line[i..]);
-                try segments.append(allocator, .{ .text = tail });
+                try segments.append(allocator, .{ .text = line[i..] });
                 return try segments.toOwnedSlice(allocator);
             };
             if (i > 0) {
-                const plain = try allocator.dupe(u8, line[0..i]);
-                try segments.append(allocator, .{ .text = plain });
+                try segments.append(allocator, .{ .text = line[0..i] });
             }
-            const bold = try allocator.dupe(u8, rest[0..close_rel]);
-            try segments.append(allocator, .{ .bold = bold });
+            try segments.append(allocator, .{ .bold = rest[0..close_rel] });
             const tail_segments = try parseInlineLine(allocator, rest[close_rel + 2 ..]);
             defer allocator.free(tail_segments);
             try segments.appendSlice(allocator, tail_segments);
@@ -273,8 +285,7 @@ fn parseInlineLine(allocator: std.mem.Allocator, line: []const u8) ![]Segment {
     }
 
     if (line.len > 0) {
-        const plain = try allocator.dupe(u8, line);
-        try segments.append(allocator, .{ .text = plain });
+        try segments.append(allocator, .{ .text = line });
     }
     return try segments.toOwnedSlice(allocator);
 }
@@ -301,7 +312,7 @@ fn drawPlainWrappedLineWith(
         const end = word_wrap.breakAt(line, start, max_w, font_size);
         const part = line[start..end];
         if (part.len > 0) {
-            renderer.Renderer.drawText(part, x, line_y, font_size, fg);
+            handleTextHitAndDraw(part, x, line_y, line_h, font_size, fg);
         }
         if (end >= line.len) break;
         line_y += line_h;
@@ -340,7 +351,7 @@ fn drawInlineLine(
                     const end = word_wrap.breakAt(slice, start, max_w - (cursor_x - x), body_font_size);
                     const part = slice[start..end];
                     if (part.len > 0) {
-                        renderer.Renderer.drawText(part, cursor_x, line_y, body_font_size, style.fg);
+                        handleTextHitAndDraw(part, cursor_x, line_y, body_line_h, body_font_size, style.fg);
                         cursor_x += renderer.Renderer.measureText(part, body_font_size);
                     }
                     if (end >= slice.len) break;
@@ -356,7 +367,7 @@ fn drawInlineLine(
                     const end = word_wrap.breakAt(slice, start, max_w - (cursor_x - x), body_font_size);
                     const part = slice[start..end];
                     if (part.len > 0) {
-                        renderer.Renderer.drawText(part, cursor_x, line_y, body_font_size, style.bold_fg);
+                        handleTextHitAndDraw(part, cursor_x, line_y, body_line_h, body_font_size, style.bold_fg);
                         cursor_x += renderer.Renderer.measureText(part, body_font_size);
                     }
                     if (end >= slice.len) break;
@@ -368,8 +379,10 @@ fn drawInlineLine(
             },
             .code => |slice| {
                 const w = renderer.Renderer.measureText(slice, code_font_size) + 6;
-                renderer.Renderer.drawRoundedRect(cursor_x, line_y + 1, w, code_line_h - 2, 3, style.inline_code_bg);
-                renderer.Renderer.drawText(slice, cursor_x + 3, line_y + 1, code_font_size, style.inline_code_fg);
+                if (current_render_context == null or current_render_context.?.hit_test == null) {
+                    renderer.Renderer.drawRoundedRect(cursor_x, line_y + 1, w, code_line_h - 2, 3, style.inline_code_bg);
+                }
+                handleTextHitAndDraw(slice, cursor_x + 3, line_y + 1, body_line_h, code_font_size, style.inline_code_fg);
                 cursor_x += w + 2;
             },
         }
@@ -429,6 +442,13 @@ fn drawMarkdownLine(
     return try drawParagraph(allocator, line, x, y, content_w, style);
 }
 
+fn getSelectionColor(wb: ?*@import("../../workbench.zig").Workbench) renderer.Color {
+    if (wb) |w| {
+        return @import("../render/theme.zig").color(w.theme.colors.selection);
+    }
+    return renderer.Color{ .r = 0.149, .g = 0.309, .b = 0.470, .a = 1.0 };
+}
+
 fn isPunctuation(ch: u8) bool {
     return ch == '(' or ch == ')' or ch == '{' or ch == '}' or ch == ';' or ch == ',' or ch == '[' or ch == ']' or ch == '.' or ch == ':' or ch == '=';
 }
@@ -465,7 +485,7 @@ fn drawCodeBlockLine(
     const draw_x = x + code_pad - scroll_x;
     if (part.len > 0) {
         if (is_diff) {
-            renderer.Renderer.drawText(part, draw_x, y, code_font_size, fg);
+            handleTextHitAndDraw(part, draw_x, y, code_line_h, code_font_size, fg);
         } else {
             var spans: [256]renderer.TextSpan = undefined;
             var span_count: usize = 0;
@@ -503,10 +523,40 @@ fn drawCodeBlockLine(
                 spans[span_count] = .{ .offset = @intCast(word_start), .length = @intCast(i - word_start), .r = c.r, .g = c.g, .b = c.b, .a = c.a };
                 span_count += 1;
             }
-            if (span_count > 0) {
-                renderer.Renderer.drawStyledText(part, draw_x, y, code_font_size, spans[0..span_count]);
-            } else {
-                renderer.Renderer.drawText(part, draw_x, y, code_font_size, fg);
+            if (current_render_context) |ctx| {
+                if (ctx.isSelected(part.ptr, part.len)) |sel| {
+                    const pre_w = renderer.Renderer.measureText(part[0..sel.start], code_font_size);
+                    const sel_w = renderer.Renderer.measureText(part[sel.start..sel.end], code_font_size);
+                    renderer.Renderer.drawRect(draw_x + pre_w, y, sel_w, code_line_h, getSelectionColor(ctx.wb));
+                }
+                if (ctx.hit_test) |hit| {
+                    if (hit.y >= y and hit.y < y + code_line_h) {
+                        if (hit.x <= draw_x) {
+                            ctx.hit_result = @intFromPtr(part.ptr) - @intFromPtr(ctx.global_text.ptr);
+                        } else {
+                            var w: f32 = 0;
+                            var found = false;
+                            for (part, 0..) |_, j| {
+                                w = renderer.Renderer.measureText(part[0..j], code_font_size);
+                                if (draw_x + w >= hit.x) {
+                                    ctx.hit_result = @intFromPtr(part.ptr) - @intFromPtr(ctx.global_text.ptr) + j;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                ctx.hit_result = @intFromPtr(part.ptr) - @intFromPtr(ctx.global_text.ptr) + part.len;
+                            }
+                        }
+                    }
+                }
+            }
+            if (current_render_context == null or current_render_context.?.hit_test == null) {
+                if (span_count > 0) {
+                    renderer.Renderer.drawStyledText(part, draw_x, y, code_font_size, spans[0..span_count]);
+                } else {
+                    renderer.Renderer.drawText(part, draw_x, y, code_font_size, fg);
+                }
             }
         }
     }
@@ -560,6 +610,25 @@ pub fn drawContent(
     wb: ?*@import("../../workbench.zig").Workbench,
     base_hash: u64,
 ) !f32 {
+    const state = @import("../core/state.zig");
+    const active_sel = if (state.chat_selection) |sel| (if (sel.msg_hash == base_hash) sel else null) else null;
+    const old_ctx = current_render_context;
+    var new_ctx = RenderContext{
+        .allocator = allocator,
+        .global_text = text,
+        .selection = if (active_sel) |s| .{ .start = s.start, .end = s.end } else null,
+        .base_hash = base_hash,
+        .wb = wb,
+        .hit_test = if (old_ctx) |c| c.hit_test else null,
+    };
+    current_render_context = &new_ctx;
+    defer {
+        if (old_ctx) |c| {
+            if (new_ctx.hit_result) |hr| c.hit_result = hr;
+        }
+        current_render_context = old_ctx;
+    }
+
     if (text.len == 0) return body_line_h;
     var cursor_y = y;
     var cursor: usize = 0;
@@ -587,8 +656,8 @@ pub fn drawContent(
             var code_hash: u64 = 0;
             if (wb) |w| {
                 code_hash = std.hash.Wyhash.hash(base_hash + cursor, code);
-                if (w.code_scroll_x.get(code_hash)) |state| {
-                    scroll_x = state.scroll_x;
+                if (w.code_scroll_x.get(code_hash)) |scroll_state| {
+                    scroll_x = scroll_state.scroll_x;
                 }
             }
 
@@ -596,10 +665,10 @@ pub fn drawContent(
             const block_h = drawCodeBlock(code, x, cursor_y, content_w, style, lang, scroll_x, &max_w);
 
             if (wb) |w| {
-                var state = w.code_scroll_x.get(code_hash) orelse @import("../../workbench.zig").Workbench.CodeScrollState{};
+                var scroll_state = w.code_scroll_x.get(code_hash) orelse @import("../../workbench.zig").Workbench.CodeScrollState{};
                 const max_scroll = @max(0, max_w - content_w);
-                state.max_scroll_x = max_scroll;
-                w.code_scroll_x.put(code_hash, state) catch {};
+                scroll_state.max_scroll_x = max_scroll;
+                w.code_scroll_x.put(code_hash, scroll_state) catch {};
 
                 w.rendered_code_blocks.append(allocator, .{
                     .hash = code_hash,
@@ -662,4 +731,74 @@ test "inline markdown parser keeps appended segment ownership" {
     const segments = try parseInlineLine(allocator, "hello **bold** and `code` tail");
     defer freeSegments(allocator, segments);
     try std.testing.expect(segments.len >= 5);
+}
+
+pub fn hitTestContent(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    x: f32,
+    y: f32,
+    content_w: f32,
+    hit_x: f32,
+    hit_y: f32,
+) ?usize {
+    const old_ctx = current_render_context;
+    defer current_render_context = old_ctx;
+
+    var new_ctx = RenderContext{
+        .allocator = allocator,
+        .global_text = text,
+        .selection = null,
+        .base_hash = 0,
+        .wb = null,
+        .hit_test = .{ .x = hit_x, .y = hit_y },
+        .hit_result = null,
+    };
+    current_render_context = &new_ctx;
+
+    const dummy_style = Style{ .fg = .{ .r = 0, .g = 0, .b = 0, .a = 0 } };
+    _ = drawContent(allocator, text, x, y, content_w, dummy_style, null, 0) catch 0.0;
+
+    return new_ctx.hit_result;
+}
+
+fn handleTextHitAndDraw(
+    part: []const u8,
+    draw_x: f32,
+    line_y: f32,
+    line_h: f32,
+    font_size: f32,
+    fg: renderer.Color,
+) void {
+    if (current_render_context) |ctx| {
+        if (ctx.isSelected(part.ptr, part.len)) |sel| {
+            const pre_w = renderer.Renderer.measureText(part[0..sel.start], font_size);
+            const sel_w = renderer.Renderer.measureText(part[sel.start..sel.end], font_size);
+            renderer.Renderer.drawRect(draw_x + pre_w, line_y, sel_w, line_h, getSelectionColor(ctx.wb));
+        }
+        if (ctx.hit_test) |hit| {
+            if (hit.y >= line_y and hit.y < line_y + line_h) {
+                if (hit.x <= draw_x) {
+                    ctx.hit_result = @intFromPtr(part.ptr) - @intFromPtr(ctx.global_text.ptr);
+                } else {
+                    var w: f32 = 0;
+                    var found = false;
+                    for (part, 0..) |_, i| {
+                        w = renderer.Renderer.measureText(part[0..i], font_size);
+                        if (draw_x + w >= hit.x) {
+                            ctx.hit_result = @intFromPtr(part.ptr) - @intFromPtr(ctx.global_text.ptr) + i;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        ctx.hit_result = @intFromPtr(part.ptr) - @intFromPtr(ctx.global_text.ptr) + part.len;
+                    }
+                }
+            }
+        }
+    }
+    if (current_render_context == null or current_render_context.?.hit_test == null) {
+        renderer.Renderer.drawText(part, draw_x, line_y, font_size, fg);
+    }
 }

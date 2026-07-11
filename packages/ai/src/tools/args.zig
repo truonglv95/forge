@@ -44,6 +44,10 @@ pub const ReadFileArgs = struct {
     end_line: ?usize,
 };
 
+pub const GitDiffArgs = struct {
+    stat: bool = false,
+};
+
 pub const ListTreeArgs = struct {
     path: []const u8,
     depth: usize,
@@ -182,6 +186,13 @@ pub fn parseReadFileArgs(allocator: std.mem.Allocator, args_json: []const u8) !R
         .start_line = parsed.value.start_line,
         .end_line = parsed.value.end_line,
     };
+}
+
+pub fn parseGitDiffArgs(allocator: std.mem.Allocator, args_json: []const u8) !GitDiffArgs {
+    const Args = struct { stat: ?bool = null };
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return .{ .stat = parsed.value.stat orelse false };
 }
 
 pub fn parseListTreeArgs(allocator: std.mem.Allocator, args_json: []const u8) !ListTreeArgs {
