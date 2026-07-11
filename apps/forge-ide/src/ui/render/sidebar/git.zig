@@ -6,6 +6,70 @@ const Workbench = @import("../../../workbench.zig").Workbench;
 const shared = @import("shared.zig");
 
 const git_panel = @import("../../sidebar/git_panel.zig");
+
+fn gitStatusGlyph(entry: *const @import("../../../git/status.zig").Entry) []const u8 {
+    if (entry.status[0] == '?' or entry.status[1] == '?') return "U";
+    if (entry.status[0] == 'A' or entry.status[1] == 'A') return "A";
+    if (entry.status[0] == 'D' or entry.status[1] == 'D') return "D";
+    if (entry.status[0] == 'R' or entry.status[1] == 'R') return "R";
+    if (entry.status[0] == 'U' or entry.status[1] == 'U') return "!";
+    return "M";
+}
+
+fn gitStatusColor(entry: *const @import("../../../git/status.zig").Entry) renderer.Color {
+    if (entry.status[0] == 'A' or entry.status[1] == 'A' or entry.status[0] == '?' or entry.status[1] == '?') {
+        return .{ .r = 0.47, .g = 0.72, .b = 0.52, .a = 1.0 };
+    }
+    if (entry.status[0] == 'D' or entry.status[1] == 'D') {
+        return .{ .r = 0.9, .g = 0.36, .b = 0.34, .a = 1.0 };
+    }
+    if (entry.status[0] == 'U' or entry.status[1] == 'U') {
+        return .{ .r = 0.95, .g = 0.55, .b = 0.35, .a = 1.0 };
+    }
+    return .{ .r = 0.78, .g = 0.68, .b = 0.52, .a = 1.0 };
+}
+
+fn drawGitEntryLabel(entry: *const @import("../../../git/status.zig").Entry, px: f32, py: f32, pw: f32) void {
+    const basename = std.fs.path.basename(entry.path);
+    var dir_path: []const u8 = "";
+    if (entry.path.len > basename.len) {
+        dir_path = entry.path[0 .. entry.path.len - basename.len];
+        if (dir_path.len > 0 and (dir_path[dir_path.len - 1] == '/' or dir_path[dir_path.len - 1] == '\\')) {
+            dir_path = dir_path[0 .. dir_path.len - 1];
+        }
+    }
+
+    const icon_color = if (std.mem.endsWith(u8, basename, ".zig"))
+        renderer.Color{ .r = 0.98, .g = 0.45, .b = 0.16, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.66, .g = 0.68, .b = 0.72, .a = 1.0 };
+    const name_color = renderer.Color{ .r = 0.9, .g = 0.91, .b = 0.93, .a = 1.0 };
+    const path_color = renderer.Color{ .r = 0.58, .g = 0.59, .b = 0.64, .a = 1.0 };
+    const status_color = gitStatusColor(entry);
+
+    renderer.Renderer.drawText("▰", px + 16, py + 2, 11.0, icon_color);
+
+    const name_x = px + 30;
+    const status_x = px + pw - 18;
+    const name_max_w = @max(0, status_x - name_x - 18);
+    renderer.Renderer.pushClipRect(name_x, py, name_max_w, 22);
+    renderer.Renderer.drawText(basename, name_x, py + 2, 11.5, name_color);
+    renderer.Renderer.drawText(basename, name_x + 0.35, py + 2, 11.5, name_color);
+    renderer.Renderer.popClipRect();
+
+    const name_w = renderer.Renderer.measureText(basename, 11.5);
+    const path_x = name_x + name_w + 7;
+    const path_max_w = status_x - path_x - 8;
+    if (dir_path.len > 0 and path_max_w > 12) {
+        renderer.Renderer.pushClipRect(path_x, py, path_max_w, 22);
+        renderer.Renderer.drawText(dir_path, path_x, py + 3, 10.5, path_color);
+        renderer.Renderer.popClipRect();
+    }
+
+    const glyph = gitStatusGlyph(entry);
+    renderer.Renderer.drawText(glyph, status_x, py + 2, 11.0, status_color);
+}
+
 pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const panel_y = layout.header_height + layout.activity_bar_height;
     renderer.Renderer.setClipRect(panel_x, panel_y, panel_w, h - panel_y - layout.status_height);
@@ -141,57 +205,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                                     }
                                 }
 
-                                const basename = std.fs.path.basename(entry.path);
-                                var dir_path: []const u8 = "";
-                                if (entry.path.len > basename.len) {
-                                    dir_path = entry.path[0 .. entry.path.len - basename.len];
-                                    if (dir_path.len > 0 and (dir_path[dir_path.len - 1] == '/' or dir_path[dir_path.len - 1] == '\\')) {
-                                        dir_path = dir_path[0 .. dir_path.len - 1];
-                                    }
-                                }
-
-                                var display_path_buf: [256:0]u8 = undefined;
-                                var display_len: usize = basename.len;
-                                @memcpy(display_path_buf[0..@min(display_len, 255)], basename[0..@min(display_len, 255)]);
-                                if (dir_path.len > 0) {
-                                    const combined = std.fmt.bufPrint(&display_path_buf, "{s} {s}", .{ basename, dir_path }) catch display_path_buf[0..display_len];
-                                    display_len = combined.len;
-                                }
-                                display_path_buf[display_len] = 0;
-
-                                const max_w = pw - 60;
-                                while (display_len > 0 and renderer.Renderer.measureText(display_path_buf[0..display_len], 11.0) > max_w) {
-                                    display_len -= 1;
-                                    display_path_buf[display_len] = 0;
-                                    if (display_len > 3) {
-                                        display_path_buf[display_len - 1] = '.';
-                                        display_path_buf[display_len - 2] = '.';
-                                        display_path_buf[display_len - 3] = '.';
-                                    }
-                                }
-
-                                renderer.Renderer.drawText("≡", px + 16, py.* + 2, 12.0, .{ .r = 0.4, .g = 0.4, .b = 0.4, .a = 1.0 });
-
-                                const text_color = if (entry.status[0] == 'M' or entry.status[1] == 'M')
-                                    renderer.Color{ .r = 0.8, .g = 0.65, .b = 0.45, .a = 1.0 }
-                                else if (entry.status[0] == 'A')
-                                    renderer.Color{ .r = 0.5, .g = 0.8, .b = 0.5, .a = 1.0 }
-                                else if (entry.status[0] == '?')
-                                    renderer.Color{ .r = 0.5, .g = 0.8, .b = 0.5, .a = 1.0 }
-                                else
-                                    renderer.Color{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 };
-
-                                renderer.Renderer.drawText(@ptrCast(&display_path_buf), px + 30, py.* + 2, 11.0, text_color);
-
-                                if (entry.status[0] == 'M' or entry.status[1] == 'M') {
-                                    renderer.Renderer.drawText("M", px + pw - 16, py.* + 2, 11.0, text_color);
-                                } else if (entry.status[0] == 'A') {
-                                    renderer.Renderer.drawText("A", px + pw - 16, py.* + 2, 11.0, text_color);
-                                } else if (entry.status[0] == '?') {
-                                    renderer.Renderer.drawText("U", px + pw - 16, py.* + 2, 11.0, text_color);
-                                } else {
-                                    renderer.Renderer.drawText("M", px + pw - 16, py.* + 2, 11.0, text_color);
-                                }
+                                drawGitEntryLabel(entry, px, py.*, pw);
                             }
                             // If it's not visible at all, we don't draw anything (fast skip)
                             py.* += row_h;

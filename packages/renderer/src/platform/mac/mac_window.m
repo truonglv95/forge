@@ -73,21 +73,23 @@ typedef struct {
 }
 @end
 
-static NSMutableDictionary<NSString *, ForgeLineCacheEntry *> *g_lineCache = nil;
-static NSMutableArray<NSString *> *g_lineCacheKeys = nil;
-static const NSUInteger kMaxLineCacheSize = 2000;
+static NSMutableDictionary<NSValue *, NSCache<NSString *, ForgeLineCacheEntry *> *> *g_fontToCache = nil;
 
 static CTLineRef ForgeGetCachedCTLine(NSString *text, CTFontRef font) {
-    if (!g_lineCache) {
-        g_lineCache = [NSMutableDictionary new];
-        g_lineCacheKeys = [NSMutableArray new];
+    if (!g_fontToCache) {
+        g_fontToCache = [NSMutableDictionary new];
     }
     
-    NSString *key = [NSString stringWithFormat:@"%@_%p", text, font];
-    ForgeLineCacheEntry *entry = g_lineCache[key];
+    NSValue *fontKey = [NSValue valueWithPointer:font];
+    NSCache<NSString *, ForgeLineCacheEntry *> *cache = g_fontToCache[fontKey];
+    if (!cache) {
+        cache = [NSCache new];
+        cache.countLimit = 2000;
+        g_fontToCache[fontKey] = cache;
+    }
+    
+    ForgeLineCacheEntry *entry = [cache objectForKey:text];
     if (entry) {
-        [g_lineCacheKeys removeObject:key];
-        [g_lineCacheKeys addObject:key];
         return entry.line;
     }
     
@@ -98,16 +100,9 @@ static CTLineRef ForgeGetCachedCTLine(NSString *text, CTFontRef font) {
     NSAttributedString *attrString = [[NSAttributedString alloc] initWithString:text attributes:attributes];
     CTLineRef line = CTLineCreateWithAttributedString((CFAttributedStringRef)attrString);
     
-    if (g_lineCacheKeys.count >= kMaxLineCacheSize) {
-        NSString *oldest = g_lineCacheKeys.firstObject;
-        [g_lineCache removeObjectForKey:oldest];
-        [g_lineCacheKeys removeObjectAtIndex:0];
-    }
-    
     entry = [ForgeLineCacheEntry new];
     entry.line = line;
-    g_lineCache[key] = entry;
-    [g_lineCacheKeys addObject:key];
+    [cache setObject:entry forKey:text];
     
     return line;
 }
@@ -898,12 +893,26 @@ static CGFloat ForgeBackingScale(void) {
 }
 @end
 
+static ForgeAppDelegate *g_delegate;
+
+static void ForgeBringWindowToFront(NSWindow *window) {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp unhide:nil];
+    [window deminiaturize:nil];
+    [window makeKeyAndOrderFront:nil];
+    [window orderFrontRegardless];
+    [NSApp activateIgnoringOtherApps:YES];
+    [[NSRunningApplication currentApplication] activateWithOptions:
+        NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows];
+}
+
 void forge_mac_init(void) {
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
-        ForgeAppDelegate *delegate = [[ForgeAppDelegate alloc] init];
-        [app setDelegate:delegate];
+        g_delegate = [[ForgeAppDelegate alloc] init];
+        [app setDelegate:g_delegate];
+        [app finishLaunching];
     }
 }
 
@@ -922,6 +931,10 @@ void forge_mac_create_window(const char* title, int width, int height) {
         window.titleVisibility = NSWindowTitleHidden;
         [window center];
         [window setTitle:[NSString stringWithUTF8String:title]];
+        [window setRestorable:NO];
+        [window setReleasedWhenClosed:NO];
+        [window setCollectionBehavior:NSWindowCollectionBehaviorManaged |
+                                      NSWindowCollectionBehaviorMoveToActiveSpace];
         
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         ForgeMTKView *mtkView = [[ForgeMTKView alloc] initWithFrame:frame device:device];
@@ -942,9 +955,14 @@ void forge_mac_create_window(const char* title, int width, int height) {
         delegate.mtkView = mtkView;
         delegate.renderer = renderer;
         
-        [window makeKeyAndOrderFront:nil];
         [window makeFirstResponder:mtkView];
-        [NSApp activateIgnoringOtherApps:YES];
+        ForgeBringWindowToFront(window);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ForgeBringWindowToFront(window);
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            ForgeBringWindowToFront(window);
+        });
     }
 }
 
@@ -1274,16 +1292,15 @@ void forge_mac_draw_styled_text(const char* text, size_t len, float x, float y, 
         uint64_t hash = hash_styled_text(text, len, spans, span_count);
         NSString *key = [NSString stringWithFormat:@"styled_%llu_%p", hash, font];
 
-        if (!g_lineCache) {
-            g_lineCache = [NSMutableDictionary new];
-            g_lineCacheKeys = [NSMutableArray new];
+        static NSCache<NSString *, ForgeLineCacheEntry *> *g_styledLineCache = nil;
+        if (!g_styledLineCache) {
+            g_styledLineCache = [NSCache new];
+            g_styledLineCache.countLimit = 2000;
         }
 
         CTLineRef line = NULL;
-        ForgeLineCacheEntry *entry = g_lineCache[key];
+        ForgeLineCacheEntry *entry = [g_styledLineCache objectForKey:key];
         if (entry) {
-            [g_lineCacheKeys removeObject:key];
-            [g_lineCacheKeys addObject:key];
             line = entry.line;
             CFRetain(line);
         } else {
@@ -1314,14 +1331,7 @@ void forge_mac_draw_styled_text(const char* text, size_t len, float x, float y, 
             ForgeLineCacheEntry *newEntry = [ForgeLineCacheEntry new];
             newEntry.line = line;
             CFRetain(line); // Keep one ref for the cache
-            g_lineCache[key] = newEntry;
-            [g_lineCacheKeys addObject:key];
-
-            if (g_lineCacheKeys.count > kMaxLineCacheSize) {
-                NSString *oldest = g_lineCacheKeys[0];
-                [g_lineCache removeObjectForKey:oldest];
-                [g_lineCacheKeys removeObjectAtIndex:0];
-            }
+            [g_styledLineCache setObject:newEntry forKey:key];
         }
 
         vector_float4 fallback = {1, 1, 1, 1};

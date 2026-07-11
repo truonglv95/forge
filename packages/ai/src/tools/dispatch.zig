@@ -14,7 +14,6 @@ pub fn execute(
     mcp: ?*mcp_registry.Registry,
     call: args.ToolCall,
 ) DispatchError![]u8 {
-    std.debug.print("DEBUG TOOL ARGS [{s}]: {s}\n", .{ call.name, call.args_json });
     if (mcp) |reg| {
         if (reg.hasTool(call.name)) {
             return reg.callTool(call.name, call.args_json) catch return error.WorkspaceFailed;
@@ -71,7 +70,18 @@ pub fn execute(
     if (std.mem.eql(u8, call.name, "read_file")) {
         const read_args = args.parseReadFileArgs(allocator, call.args_json) catch return error.ParseFailed;
         defer allocator.free(read_args.path);
+        if (isGitDiffPseudoPath(read_args.path)) {
+            const out = tool_executor.gitDiff(tool_ctx, false) catch |err| return mapTool(err);
+            defer allocator.free(out.summary);
+            return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
+        }
         const out = tool_executor.readFile(tool_ctx, read_args.path, read_args.start_line, read_args.end_line) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
+    }
+    if (std.mem.eql(u8, call.name, "git_diff")) {
+        const diff_args = args.parseGitDiffArgs(allocator, call.args_json) catch return error.ParseFailed;
+        const out = tool_executor.gitDiff(tool_ctx, diff_args.stat) catch |err| return mapTool(err);
         defer allocator.free(out.summary);
         return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
     }
@@ -115,6 +125,14 @@ pub fn execute(
         return allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed;
     }
     return error.UnknownTool;
+}
+
+fn isGitDiffPseudoPath(path: []const u8) bool {
+    const trimmed = std.mem.trim(u8, path, &std.ascii.whitespace);
+    return std.mem.eql(u8, trimmed, "git_diff") or
+        std.mem.eql(u8, trimmed, ".git_diff") or
+        std.mem.eql(u8, trimmed, "git diff") or
+        std.mem.eql(u8, trimmed, "git:working-tree");
 }
 
 fn mapTool(err: tool_executor.AgentToolError) DispatchError {

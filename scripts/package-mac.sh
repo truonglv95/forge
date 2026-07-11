@@ -47,6 +47,7 @@ MACOS_DIR="$CONTENTS/MacOS"
 RESOURCES_DIR="$CONTENTS/Resources"
 DMG_NAME="Forge-${VERSION}-${ARCH}.dmg"
 DMG_PATH="$ROOT/zig-out/${DMG_NAME}"
+ICON_FILE="ForgeIcon.icns"
 
 # ---------------------------------------------------------------------------
 echo "==> Building Forge IDE (ReleaseFast)..."
@@ -65,6 +66,9 @@ if [ -f "$BIN_DIR/forge" ]; then
     cp "$BIN_DIR/forge" "$MACOS_DIR/forge"
     chmod +x "$MACOS_DIR/forge"
 fi
+
+echo "==> Generating app icon..."
+bash "$ROOT/scripts/generate-mac-icon.sh" "$RESOURCES_DIR/$ICON_FILE" "$ROOT/zig-out/icon-build" >/dev/null
 
 # ---------------------------------------------------------------------------
 # Info.plist
@@ -85,6 +89,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <string>Forge IDE</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>${ICON_FILE}</string>
   <key>CFBundleShortVersionString</key>
   <string>${VERSION}</string>
   <key>CFBundleVersion</key>
@@ -95,6 +101,10 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key>
   <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSQuitAlwaysKeepsWindows</key>
+  <false/>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>SUFeedURL</key>
@@ -109,19 +119,31 @@ PLIST
 # Code signing
 if [ -n "$SIGN_IDENTITY" ]; then
     echo "==> Signing with identity: $SIGN_IDENTITY"
-    # Sign the binary first, then the bundle.
+    # Sign nested executables first, then the bundle. Entitlements belong on
+    # the GUI executable and final app bundle.
     codesign --force --options runtime --sign "$SIGN_IDENTITY" \
-        --entitlements "$ROOT/scripts/forge-ide.entitlements" 2>/dev/null || \
-    codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+        --entitlements "$ROOT/scripts/forge-ide.entitlements" \
         "$MACOS_DIR/forge-ide"
     if [ -f "$MACOS_DIR/forge" ]; then
         codesign --force --options runtime --sign "$SIGN_IDENTITY" "$MACOS_DIR/forge"
     fi
-    codesign --force --deep --options runtime --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+    codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+        --entitlements "$ROOT/scripts/forge-ide.entitlements" \
+        "$APP_BUNDLE"
     echo "    => Signed OK"
     codesign --verify --deep --strict --verbose=1 "$APP_BUNDLE"
 else
-    echo "    [skip] No signing identity — bundle is unsigned (local use only)"
+    echo "==> Ad-hoc signing app bundle for local launch..."
+    # Finder/LaunchServices can reject a copied bundle whose inner Mach-O has a
+    # linker signature but the bundle resources are not sealed. Re-sign the
+    # staged product ad-hoc so local double-click launches are reliable.
+    codesign --force --sign - "$MACOS_DIR/forge-ide"
+    if [ -f "$MACOS_DIR/forge" ]; then
+        codesign --force --sign - "$MACOS_DIR/forge"
+    fi
+    codesign --force --sign - "$APP_BUNDLE"
+    codesign --verify --deep --strict --verbose=1 "$APP_BUNDLE"
+    echo "    => Ad-hoc signed OK (local use only; distribute with Developer ID + notarization)"
 fi
 
 # ---------------------------------------------------------------------------

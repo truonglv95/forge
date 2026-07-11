@@ -167,7 +167,9 @@ pub fn create(
     options: Options,
 ) !provider_mod.Provider {
     const resolved_name = resolveProviderName(allocator, io, environ_map, options);
-    std.debug.print("🚀 CALLING API PROVIDER: {s} | MODEL: {s}\n", .{ resolved_name, options.model orelse "unknown" });
+    if (aiDebugEnabled()) {
+        std.debug.print("CALLING API PROVIDER: {s} | MODEL: {s}\n", .{ resolved_name, options.model orelse "unknown" });
+    }
 
     if (findProvider(resolved_name)) |def| {
         return def.create(allocator, io, environ_map, options) catch |err| switch (err) {
@@ -179,6 +181,12 @@ pub fn create(
 
     // Fallback to fake if unknown
     return fake_provider.FakeProvider.create(allocator, io, environ_map, options) catch return error.ProviderInternalError;
+}
+
+fn aiDebugEnabled() bool {
+    const value = std.c.getenv("FORGE_AI_DEBUG") orelse return false;
+    const text = std.mem.span(value);
+    return std.mem.eql(u8, text, "1") or std.ascii.eqlIgnoreCase(text, "true");
 }
 
 test "auto resolves to fake without credentials or ollama" {

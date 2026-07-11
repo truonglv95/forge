@@ -25,8 +25,9 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
     }
     const theme = &wb.theme;
     const ui_size = theme.ui_font_size;
+    const border = syntax.color(theme.colors.border);
     renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top, editor_w, tabs_ui.tab_bar_height, syntax.color(theme.colors.tab_bar_bg));
-    renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top + tabs_ui.tab_bar_height - 1, editor_w, 1, syntax.color(theme.colors.border));
+    renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top + tabs_ui.tab_bar_height - 1, editor_w, 1, border);
     const visible_tab_w = @max(10, editor_w - 60);
     renderer.Renderer.setClipRect(editor_x, tabs_ui.tab_bar_top, visible_tab_w, tabs_ui.tab_bar_height);
 
@@ -44,12 +45,8 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
         if (is_active) {
             // Draw the active tab background
             renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, tabs_ui.tab_height + 1, syntax.color(theme.colors.editor_bg));
-
-            // Clean modern top border highlight
-            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, 1.5, syntax.color(theme.colors.accent));
         } else {
             // Draw a subtle left separator for inactive tabs (unless it's the first tab)
-            const border = syntax.color(theme.colors.border);
             if (tab_index > 0 and tab_index - 1 != wb.tabs.active) {
                 renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y + 8, 1, tabs_ui.tab_height - 16, .{ .r = border.r, .g = border.g, .b = border.b, .a = border.a * 0.5 });
             }
