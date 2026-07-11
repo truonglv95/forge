@@ -4,8 +4,6 @@ const commands_mod = @import("commands.zig");
 const sidebar_view_mod = @import("../ui/sidebar/sidebar_view.zig");
 const breakpoints_mod = @import("breakpoints.zig");
 
-const state_path = ".forge/last_session.toml";
-
 pub const Layout = struct {
     active: usize = 0,
     editor_split: bool = false,

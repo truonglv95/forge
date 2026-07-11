@@ -13,6 +13,11 @@ const Command = commands_mod.Command;
 pub fn dispatch(wb: anytype, command: Command) !void {
     switch (command) {
         .open_file => |path| try wb.openFile(path),
+        .open_settings => {
+            const home_settings = try workspace.global_store.joinHome(wb.allocator, "settings.toml");
+            defer wb.allocator.free(home_settings);
+            try wb.openFile(home_settings);
+        },
         .activate_tab => |index| try wb.activateTab(index),
         .close_tab => |index| try wb.closeTabAt(index),
         .close_active_tab => try wb.closeTabAt(wb.tabs.active),
@@ -31,7 +36,11 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             try recovery_mod.snapshotDirtyDocs(wb.allocator, wb.io, wb.workspace_root, &wb.tabs);
             workspace.hooks.runOnSave(wb.allocator, wb.io, wb.workspace_root, doc.path, wb.workspace_path) catch {};
             try wb.events.publish(.{ .file_saved = doc.path });
-            if (std.mem.eql(u8, doc.path, ".forge/settings.toml")) {
+            // Check if user edited the global settings file (absolute path ending in settings.toml)
+            const home_settings_path = workspace.global_store.joinHome(wb.allocator, "settings.toml") catch null;
+            defer if (home_settings_path) |p| wb.allocator.free(p);
+            const is_settings = if (home_settings_path) |p| std.mem.eql(u8, doc.path, p) else std.mem.eql(u8, doc.path, ".forge/settings.toml");
+            if (is_settings) {
                 try wb.reloadUserSettings();
             }
             try wb.setStatus("Saved");
@@ -437,9 +446,16 @@ pub fn dispatch(wb: anytype, command: Command) !void {
                 if (wb.agent.run_id) |old| wb.allocator.free(old);
                 wb.agent.run_id = wb.allocator.dupe(u8, entry.run_id) catch null;
                 if (wb.agent.proposal_rel) |old| wb.allocator.free(old);
-                var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-                const proposal_rel = std.fmt.bufPrint(&path_buf, ".forge/proposals/{s}.json", .{entry.run_id}) catch "";
-                wb.agent.proposal_rel = wb.allocator.dupe(u8, proposal_rel) catch null;
+                // Build proposal abs path in session dir
+                const sess_dir = workspace.global_store.getSessionDir(wb.allocator, wb.io, wb.workspace_root) catch null;
+                if (sess_dir) |sd| {
+                    defer wb.allocator.free(sd);
+                    const proposal_abs = std.fmt.allocPrint(wb.allocator, "{s}/proposals/{s}.json", .{ sd, entry.run_id }) catch null;
+                    wb.agent.proposal_rel = proposal_abs;
+                } else {
+                    // Fallback: legacy relative path
+                    wb.agent.proposal_rel = std.fmt.allocPrint(wb.allocator, ".forge/proposals/{s}.json", .{entry.run_id}) catch null;
+                }
             }
             wb.agent.unlock();
             if (wb.agent.proposal_rel) |rel| {

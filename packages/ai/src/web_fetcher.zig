@@ -3,7 +3,10 @@ const workspace = @import("forge-workspace");
 
 pub const max_urls: usize = 4;
 pub const max_page_bytes: usize = 32 * 1024;
-pub const cache_dir = ".forge/cache/web/v1";
+/// Sub-path of the session directory used for web cache.
+pub const cache_subdir = "cache/web/v1";
+/// Kept for backward compatibility.
+pub const cache_dir = cache_subdir;
 
 pub const FetchOptions = struct {
     max_bytes: usize = max_page_bytes,
@@ -272,9 +275,11 @@ fn cacheRelPathBuf(url: []const u8, out: *[64]u8) []const u8 {
 }
 
 fn writeCache(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, url: []const u8, text: []const u8) !void {
-    try root.dir.createDirPath(io, ".forge");
-    try root.dir.createDirPath(io, ".forge/cache");
-    try root.dir.createDirPath(io, cache_dir);
+    const session_dir = workspace.global_store.getSessionDir(allocator, io, root) catch return;
+    defer allocator.free(session_dir);
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cache_abs = std.fmt.bufPrint(&dir_buf, "{s}/{s}", .{ session_dir, cache_subdir }) catch return;
+    workspace.global_store.mkdirAllAbsolute(cache_abs) catch {};
 
     var body: std.ArrayList(u8) = .empty;
     defer body.deinit(allocator);
@@ -283,28 +288,34 @@ fn writeCache(allocator: std.mem.Allocator, io: std.Io, root: workspace.Workspac
     try body.append(allocator, '\n');
     try body.appendSlice(allocator, text);
 
-    var path_buf: [64]u8 = undefined;
-    const rel = cacheRelPathBuf(url, &path_buf);
-    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse(rel), body.items);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs = std.fmt.bufPrint(&path_buf, "{s}/{x}.txt", .{ cache_abs, cacheKey(url) }) catch return;
+    workspace.global_store.replaceAbsoluteFile(io, abs, body.items) catch {};
 }
 
 fn readCache(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, url: []const u8) ?[]u8 {
-    var path_buf: [64]u8 = undefined;
-    const rel = cacheRelPathBuf(url, &path_buf);
-    const wp = workspace.WorkspacePath.parse(rel) catch return null;
-    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return null;
-    defer snap.deinit();
-    if (snap.content.len == 0) return null;
+    const session_dir = workspace.global_store.getSessionDir(allocator, io, root) catch return null;
+    defer allocator.free(session_dir);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs = std.fmt.bufPrint(&path_buf, "{s}/{s}/{x}.txt", .{ session_dir, cache_subdir, cacheKey(url) }) catch return null;
+    const content = workspace.global_store.readAbsoluteFile(allocator, io, abs) catch return null;
+    if (content.len == 0) {
+        allocator.free(content);
+        return null;
+    }
 
     const marker = "# URL: ";
-    if (std.mem.startsWith(u8, snap.content, marker)) {
-        if (std.mem.indexOfScalar(u8, snap.content, '\n')) |nl| {
-            const body = std.mem.trim(u8, snap.content[nl + 1 ..], " \t\r\n");
-            if (body.len == 0) return null;
-            return allocator.dupe(u8, body) catch null;
-        }
+    if (std.mem.startsWith(u8, content, marker)) {
+        const newline = std.mem.indexOfScalar(u8, content, '\n') orelse content.len;
+        const text = if (newline + 1 < content.len) content[newline + 1 ..] else "";
+        const result = allocator.dupe(u8, text) catch {
+            allocator.free(content);
+            return null;
+        };
+        allocator.free(content);
+        return result;
     }
-    return allocator.dupe(u8, snap.content) catch null;
+    return content;
 }
 
 test "htmlToText strips tags" {

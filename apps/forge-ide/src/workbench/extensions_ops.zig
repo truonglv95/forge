@@ -102,6 +102,7 @@ pub fn persistExtensionTheme(wb: anytype, qualified: []const u8) !void {
         , .{qualified});
     defer wb.allocator.free(content);
 
-    const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
-    try workspace.atomic.replaceFile(wb.io, wb.workspace_root, wp, content);
+    const settings_abs = try workspace.global_store.joinHome(wb.allocator, "settings.toml");
+    defer wb.allocator.free(settings_abs);
+    try workspace.global_store.replaceAbsoluteFile(wb.io, settings_abs, content);
 }

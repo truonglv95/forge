@@ -2,9 +2,13 @@ const std = @import("std");
 const path_mod = @import("path.zig");
 const snapshot = @import("snapshot.zig");
 const atomic = @import("atomic.zig");
+const global_store = @import("global_store.zig");
 const util = @import("forge-util");
 
-pub const toolchain_file = ".forge/toolchain.json";
+/// Sub-path within the session directory.
+pub const toolchain_filename = "toolchain.json";
+/// Legacy alias.
+pub const toolchain_file = toolchain_filename;
 
 pub const DetectedLanguage = struct {
     id: []const u8,

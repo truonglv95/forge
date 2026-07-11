@@ -1,10 +1,14 @@
 const std = @import("std");
 const path_mod = @import("path.zig");
 const atomic = @import("atomic.zig");
+const global_store = @import("global_store.zig");
 const parser_catalog = @import("parser_catalog.zig");
 const parser_resolver = @import("parser_resolver.zig");
 
-pub const sync_file = ".forge/parsers/sync.json";
+/// Sub-path within the session directory.
+pub const sync_filename = "parsers/sync.json";
+/// Legacy alias.
+pub const sync_file = sync_filename;
 
 pub const SyncOptions = struct {
     allow_fetch: bool = false,
@@ -147,10 +151,16 @@ fn persist(
     root: path_mod.WorkspaceRoot,
     report: SyncReport,
 ) !void {
-    try root.dir.createDirPath(io, ".forge/parsers");
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const parsers_dir_abs = std.fmt.bufPrint(&dir_buf, "{s}/parsers", .{session_dir}) catch return error.OutOfMemory;
+    global_store.mkdirAllAbsolute(parsers_dir_abs) catch {};
     const json = try std.json.Stringify.valueAlloc(allocator, report, .{});
     defer allocator.free(json);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(sync_file), json);
+    var sync_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const sync_abs = std.fmt.bufPrint(&sync_path_buf, "{s}/{s}", .{ session_dir, sync_filename }) catch return error.OutOfMemory;
+    try global_store.replaceAbsoluteFile(io, sync_abs, json);
 }
 
 fn readRelative(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, rel: []const u8) ![]u8 {

@@ -1320,16 +1320,19 @@ test "@web scope loads cached web documentation" {
     const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
 
     const url = "https://example.com/docs";
-    try root.dir.createDirPath(io, ".forge");
-    try root.dir.createDirPath(io, ".forge/cache");
-    try root.dir.createDirPath(io, web_fetcher.cache_dir);
-    var cache_path_buf: [64]u8 = undefined;
-    const cache_rel = std.fmt.bufPrint(&cache_path_buf, "{s}/{x}.txt", .{
-        web_fetcher.cache_dir,
+    const session_dir = workspace.global_store.getSessionDir(allocator, io, root) catch return error.OutOfMemory;
+    defer allocator.free(session_dir);
+    var cache_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cache_abs_dir = std.fmt.bufPrint(&cache_dir_buf, "{s}/{s}", .{ session_dir, web_fetcher.cache_dir }) catch return error.OutOfMemory;
+    workspace.global_store.mkdirAllAbsolute(cache_abs_dir) catch {};
+
+    var cache_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cache_abs = std.fmt.bufPrint(&cache_path_buf, "{s}/{x}.txt", .{
+        cache_abs_dir,
         std.hash.Wyhash.hash(0, url),
     }) catch return error.OutOfMemory;
     const cache_body = "# URL: https://example.com/docs\nExample external documentation body\n";
-    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse(cache_rel), cache_body);
+    workspace.global_store.replaceAbsoluteFile(io, cache_abs, cache_body) catch {};
 
     var builder = try build(allocator, io, root, .{
         .intent = "read example docs",

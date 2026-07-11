@@ -196,14 +196,20 @@ pub fn persistApplied(
 ) !void {
     try ensureLayout(allocator, io, root);
 
-    var proposal_src = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse(proposal_path));
-    defer proposal_src.deinit();
+    const proposal_content = if (std.fs.path.isAbsolute(proposal_path)) blk: {
+        break :blk try global_store.readAbsoluteFile(allocator, io, proposal_path);
+    } else blk: {
+        var snap = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse(proposal_path));
+        defer snap.deinit();
+        break :blk try allocator.dupe(u8, snap.content);
+    };
+    defer allocator.free(proposal_content);
 
     const session_dir = try global_store.getSessionDir(allocator, io, root);
     defer allocator.free(session_dir);
     const proposal_abs = try std.fmt.allocPrint(allocator, "{s}/proposals/{d}.json", .{ session_dir, record.id });
     defer allocator.free(proposal_abs);
-    try global_store.replaceAbsoluteFile(io, proposal_abs, proposal_src.content);
+    try global_store.replaceAbsoluteFile(io, proposal_abs, proposal_content);
 
     try persistBackups(allocator, io, root, record);
 

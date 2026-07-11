@@ -59,7 +59,7 @@ pub const Palette = struct {
 
         const builtins = [_]Entry{
             .{ .id = "palette.open", .title = "Show Command Palette", .category = "View", .command = .palette_open },
-            .{ .id = "settings.open", .title = "Preferences: Open User Settings", .category = "View", .command = .{ .open_file = ".forge/settings.toml" } },
+            .{ .id = "settings.open", .title = "Preferences: Open User Settings", .category = "View", .command = .open_settings },
             .{ .id = "settings.reload", .title = "Preferences: Reload Settings", .category = "View", .command = .settings_reload },
             .{ .id = "settings.word_wrap", .title = "Preferences: Toggle Word Wrap", .category = "View", .command = .settings_toggle_word_wrap },
             .{ .id = "theme.reload", .title = "Theme: Reload from forge.toml", .category = "View", .command = .reload_theme },
@@ -117,6 +117,7 @@ pub const Palette = struct {
             .{ .id = "nav.forward", .title = "Navigate: Forward", .category = "Navigate", .command = .nav_forward },
             .{ .id = "ai.open_forge_toml", .title = "AI: Open forge.toml", .category = "AI", .command = .ai_open_forge_toml },
             .{ .id = "ai.open_mcp", .title = "AI: Open MCP Config (.mcp.json)", .category = "AI", .command = .ai_open_mcp_config },
+            .{ .id = "settings.open", .title = "Preferences: Open Settings", .category = "Preferences", .command = .open_settings },
             .{ .id = "ai.toggle_mcp", .title = "AI: Toggle MCP Tools", .category = "AI", .command = .ai_toggle_mcp },
             .{ .id = "ai.refresh_mcp", .title = "AI: Refresh MCP Status", .category = "AI", .command = .ai_refresh_mcp },
             .{ .id = "search.run", .title = "Search: Find in Workspace", .category = "Search", .command = .search_run },

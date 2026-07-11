@@ -398,7 +398,7 @@ pub fn rejectCurrentProposal(host: *const Host) void {
 
 pub fn approveSpecAndGenerate(host: *const Host) AgentError!void {
     const run_id = host.agent.spec_run_id orelse return error.NoProposal;
-    ai.spec_writer.approve(host.io, host.workspace_root, run_id) catch return error.ProviderFailed;
+    ai.spec_writer.approve(host.allocator, host.io, host.workspace_root, run_id) catch return error.ProviderFailed;
     const intent = host.agent.intent orelse return error.NoProposal;
 
     host.agent.lock();

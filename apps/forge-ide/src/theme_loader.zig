@@ -86,10 +86,20 @@ fn readExtensionThemeId(source: []const u8) ?[]const u8 {
 }
 
 pub fn readUserSettings(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?[]const u8 {
-    const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return null;
-    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return null;
-    defer snap.deinit();
-    return try allocator.dupe(u8, snap.content);
+    // Read from global ~/.forge/settings.toml
+    const settings_abs = workspace.global_store.joinHome(allocator, "settings.toml") catch return null;
+    defer allocator.free(settings_abs);
+    const content = workspace.global_store.readAbsoluteFile(allocator, io, settings_abs) catch |err| switch (err) {
+        error.FileNotFound => {
+            // Fallback: try project-local .forge/settings.toml
+            const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return null;
+            var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return null;
+            defer snap.deinit();
+            return try allocator.dupe(u8, snap.content);
+        },
+        else => return null,
+    };
+    return content;
 }
 
 pub fn toColor(rgba: workspace.Rgba) renderer.Color {

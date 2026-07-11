@@ -4,6 +4,7 @@ pub const BottomPanelMode = enum { output, problems, terminal, debug_console, de
 
 pub const Command = union(enum) {
     open_file: []const u8,
+    open_settings: void,
     activate_tab: usize,
     close_tab: usize,
     close_active_tab: void,
