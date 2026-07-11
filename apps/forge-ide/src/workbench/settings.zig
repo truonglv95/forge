@@ -61,11 +61,6 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceR
                 const unquoted = parseQuoted(value) orelse value;
                 settings.terminal_shell = try allocator.dupe(u8, unquoted);
             }
-        } else if (std.mem.eql(u8, section, "theme")) {
-            if (std.mem.eql(u8, key, "font_size")) {
-                const parsed = std.fmt.parseFloat(f32, value) catch continue;
-                if (parsed >= 8 and parsed <= 48) settings.font_size = parsed;
-            }
         } else if (std.mem.eql(u8, section, "ghost_completion")) {
             if (std.mem.eql(u8, key, "provider")) {
                 const unquoted = parseQuoted(value) orelse value;

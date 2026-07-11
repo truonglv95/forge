@@ -159,6 +159,14 @@ pub const Buffer = struct {
         return anchor.row != self.cursor.row or anchor.col != self.cursor.col;
     }
 
+    pub fn selectAll(self: *Buffer) void {
+        if (self.lines.items.len == 0) return;
+        self.selection_anchor = .{ .row = 0, .col = 0 };
+        const last_row = self.lines.items.len - 1;
+        const last_col = self.lineAt(last_row).len;
+        self.cursor = .{ .row = last_row, .col = last_col };
+    }
+
     pub fn clearInlineEdit(self: *Buffer) void {
         var keep: std.ArrayList(Decoration) = .empty;
         for (self.decorations.items) |dec| {

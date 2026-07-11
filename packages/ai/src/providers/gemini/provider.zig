@@ -8,7 +8,7 @@ const agent_turn = @import("../../agent/turn.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const gemini_transport = @import("tool_transport.zig");
 
-pub const default_model = "gemini-2.5-flash";
+// default_model removed
 pub const test_mode_prompt = "test_mode";
 
 const endpoint_base = "https://generativelanguage.googleapis.com/v1beta/models/";
@@ -69,10 +69,10 @@ pub const GeminiProvider = struct {
             .allocator = allocator,
             .io = io,
             .creds = creds,
-            .model_name = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse default_model else options.model) else default_model,
+            .model_name = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse return error.ModelRequired else options.model) else return error.ModelRequired,
             .meta = .{
                 .provider_name = "gemini",
-                .model_name = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse default_model else options.model) else default_model,
+                .model_name = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse return error.ModelRequired else options.model) else return error.ModelRequired,
                 .context_window = 1_048_576,
             },
             .latest_usage = .{},
@@ -496,10 +496,10 @@ test "GeminiProvider test mode" {
         .allocator = allocator,
         .io = std.testing.io,
         .creds = creds,
-        .model_name = default_model,
+        .model_name = "test-model",
         .meta = .{
             .provider_name = "gemini",
-            .model_name = default_model,
+            .model_name = "test-model",
             .context_window = 1_048_576,
         },
         .latest_usage = .{},

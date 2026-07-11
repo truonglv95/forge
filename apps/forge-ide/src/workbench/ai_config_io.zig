@@ -9,21 +9,24 @@ pub fn writeTomlKey(
     key: []const u8,
     value: []const u8,
 ) !void {
-    const wp = try workspace.WorkspacePath.parse("forge.toml");
-    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch {
-        const content = try std.fmt.allocPrint(allocator, "[{s}]\n{s} = {s}\n", .{ section_name, key, value });
-        defer allocator.free(content);
-        try workspace.atomic.replaceFile(io, root, wp, content);
+    _ = root;
+    const settings_abs = try workspace.global_store.joinHome(allocator, "settings.toml");
+    defer allocator.free(settings_abs);
+
+    const content = workspace.global_store.readAbsoluteFile(allocator, io, settings_abs) catch {
+        const default_content = try std.fmt.allocPrint(allocator, "[{s}]\n{s} = {s}\n", .{ section_name, key, value });
+        defer allocator.free(default_content);
+        try workspace.global_store.replaceAbsoluteFile(io, settings_abs, default_content);
         return;
     };
-    defer snap.deinit();
+    defer allocator.free(content);
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     var in_section = false;
     var wrote = false;
-    var lines = std.mem.splitScalar(u8, snap.content, '\n');
+    var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw_line| {
         const trimmed = std.mem.trim(u8, raw_line, &std.ascii.whitespace);
         if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
@@ -65,7 +68,7 @@ pub fn writeTomlKey(
         }
     }
 
-    try workspace.atomic.replaceFile(io, root, wp, out.items);
+    try workspace.global_store.replaceAbsoluteFile(io, settings_abs, out.items);
 }
 
 pub fn writeTomlQuotedString(

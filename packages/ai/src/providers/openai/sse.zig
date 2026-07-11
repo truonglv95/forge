@@ -30,7 +30,7 @@ const StreamEvent = struct {
     const ToolCallDelta = struct {
         function: ?struct {
             name: ?[]const u8 = null,
-            arguments: ?[]const u8 = null,
+            arguments: ?std.json.Value = null,
         } = null,
     };
 
@@ -201,7 +201,17 @@ pub const Parser = struct {
                 self.tool_call_name = self.allocator.dupe(u8, name) catch return error.MalformedResponse;
             }
         }
-        if (function.arguments) |args_chunk| {
+        if (function.arguments) |args_val| {
+            var args_chunk: []const u8 = "";
+            var dynamic_chunk = false;
+            switch (args_val) {
+                .string => |s| args_chunk = s,
+                else => {
+                    args_chunk = std.json.Stringify.valueAlloc(self.allocator, args_val, .{}) catch return error.MalformedResponse;
+                    dynamic_chunk = true;
+                },
+            }
+
             if (self.tool_call_args_json == null) {
                 self.tool_call_args_json = self.allocator.dupe(u8, "") catch return error.MalformedResponse;
             }
@@ -209,6 +219,8 @@ pub const Parser = struct {
             const next = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ old, args_chunk }) catch return error.MalformedResponse;
             self.allocator.free(old);
             self.tool_call_args_json = next;
+
+            if (dynamic_chunk) self.allocator.free(args_chunk);
         }
     }
 

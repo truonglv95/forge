@@ -14,6 +14,7 @@ pub fn execute(
     mcp: ?*mcp_registry.Registry,
     call: args.ToolCall,
 ) DispatchError![]u8 {
+    std.debug.print("DEBUG TOOL ARGS [{s}]: {s}\n", .{ call.name, call.args_json });
     if (mcp) |reg| {
         if (reg.hasTool(call.name)) {
             return reg.callTool(call.name, call.args_json) catch return error.WorkspaceFailed;

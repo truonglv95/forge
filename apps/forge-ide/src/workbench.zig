@@ -183,7 +183,7 @@ pub const Workbench = struct {
     ai_embedding_model: ?[]const u8 = null,
     ai_embedding_url: ?[]const u8 = null,
     ai_mcp_enabled: bool = true,
-    ai_models: []const @import("ui/agent/agent_composer.zig").ModelOption = &@import("ui/agent/agent_composer.zig").default_models,
+    ai_models: []const @import("ui/agent/agent_composer.zig").ModelOption = &.{},
 
     git_commit_msg: editor.Buffer,
     git_staged_collapsed: bool = false,
@@ -359,13 +359,32 @@ pub const Workbench = struct {
             if (self.ai_embedding_url) |url| self.allocator.free(url);
             self.ai_embedding_url = cfg.embedding_url;
             self.ai_mcp_enabled = cfg.mcp_enabled;
+            var models_parsed = false;
             if (cfg.custom_models) |custom_models_str| {
                 defer self.allocator.free(custom_models_str);
                 if (@import("ui/agent/agent_composer.zig").parseCustomModels(self.allocator, custom_models_str)) |models_list| {
                     self.ai_models = models_list;
-                } else |_| {}
+                    models_parsed = true;
+                } else |err| {
+                    std.debug.print("parseCustomModels error: {}\n", .{err});
+                }
             }
-        } else |_| {}
+            if (!models_parsed) {
+                if (@import("ui/agent/agent_composer.zig").parseCustomModels(self.allocator, @import("ui/agent/agent_composer.zig").default_models_str)) |models_list| {
+                    self.ai_models = models_list;
+                } else |err| {
+                    std.debug.print("parseCustomModels default error: {}\n", .{err});
+                }
+            }
+        } else |err| {
+            std.debug.print("global_store.loadConfig error: {}\n", .{err});
+            if (@import("ui/agent/agent_composer.zig").parseCustomModels(self.allocator, @import("ui/agent/agent_composer.zig").default_models_str)) |models_list| {
+                self.ai_models = models_list;
+            } else |err2| {
+                std.debug.print("parseCustomModels default error 2: {}\n", .{err2});
+            }
+        }
+        std.debug.print("wb.ai_models.len = {}\n", .{self.ai_models.len});
 
         self.explorer_boot_pending = true;
         try self.restoreSessionTabs();
@@ -448,9 +467,8 @@ pub const Workbench = struct {
         if (self.ai_embedding_provider) |provider| self.allocator.free(provider);
         if (self.ai_embedding_model) |model| self.allocator.free(model);
         if (self.ai_embedding_url) |url| self.allocator.free(url);
-        if (self.ai_models.ptr != @import("ui/agent/agent_composer.zig").default_models[0..].ptr) {
-            const def_len = @import("ui/agent/agent_composer.zig").default_models.len;
-            for (self.ai_models[def_len..]) |opt| {
+        if (self.ai_models.len > 0) {
+            for (self.ai_models) |opt| {
                 self.allocator.free(opt.id);
                 self.allocator.free(opt.label);
                 self.allocator.free(opt.provider);
@@ -575,8 +593,8 @@ pub const Workbench = struct {
         return @import("workbench/agent_ops.zig").toggleAiMcp(self);
     }
 
-    pub fn openForgeToml(self: *Workbench) !void {
-        return @import("workbench/agent_ops.zig").openForgeToml(self);
+    pub fn openSettingsToml(self: *Workbench) !void {
+        return @import("workbench/agent_ops.zig").openSettingsToml(self);
     }
 
     pub fn openMcpConfig(self: *Workbench) !void {
@@ -1558,10 +1576,12 @@ pub const Workbench = struct {
         mcp_enabled: bool,
         custom_models: ?[]const u8,
     } {
-        const wp = try workspace.WorkspacePath.parse("forge.toml");
-        var snap = try workspace.FileSnapshot.read(allocator, io, root, wp);
-        defer snap.deinit();
-        const config = try workspace.Config.parse(snap.content);
+        _ = root;
+        const settings_abs = try workspace.global_store.joinHome(allocator, "settings.toml");
+        defer allocator.free(settings_abs);
+        const content = try workspace.global_store.readAbsoluteFile(allocator, io, settings_abs);
+        defer allocator.free(content);
+        const config = workspace.Config.parse(content) catch workspace.Config{};
         const provider = try allocator.dupe(u8, config.ai_provider);
         errdefer allocator.free(provider);
         const model = if (config.ai_model) |value| try allocator.dupe(u8, value) else null;

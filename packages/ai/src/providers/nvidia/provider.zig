@@ -7,15 +7,15 @@ const openai_compat = @import("../openai/compat.zig");
 const openai_sse = @import("../openai/sse.zig");
 const agent_turn = @import("../../agent/turn.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
-const openrouter_transport = @import("tool_transport.zig");
+const nvidia_transport = @import("tool_transport.zig");
 
-pub const default_base_url = "https://openrouter.ai/api/v1";
+pub const default_base_url = "https://integrate.api.nvidia.com/v1";
 // default_model removed
-pub const base_url_env_var = "OPENROUTER_BASE_URL";
+pub const base_url_env_var = "NVIDIA_BASE_URL";
 pub const default_context_window: usize = 128_000;
 pub const test_mode_prompt = "test_mode";
 
-pub const OpenRouterProvider = struct {
+pub const NvidiaProvider = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     creds: credentials.Credentials,
@@ -36,8 +36,8 @@ pub const OpenRouterProvider = struct {
             allocator,
             io,
             environ_map,
-            &[_][]const u8{"OPENROUTER_API_KEY"},
-            "forge-openrouter",
+            &[_][]const u8{"NVIDIA_API_KEY"},
+            "forge-nvidia",
             "default",
         ) catch |err| switch (err) {
             error.NotFound => return error.MissingCredentials,
@@ -53,7 +53,7 @@ pub const OpenRouterProvider = struct {
         const owned_model = try allocator.dupe(u8, model_name);
         errdefer allocator.free(owned_model);
 
-        const ptr = try allocator.create(OpenRouterProvider);
+        const ptr = try allocator.create(NvidiaProvider);
         ptr.* = .{
             .allocator = allocator,
             .io = io,
@@ -61,7 +61,7 @@ pub const OpenRouterProvider = struct {
             .base_url = owned_base,
             .model_name = owned_model,
             .meta = .{
-                .provider_name = "openrouter",
+                .provider_name = "nvidia",
                 .model_name = owned_model,
                 .context_window = default_context_window,
             },
@@ -73,14 +73,14 @@ pub const OpenRouterProvider = struct {
     }
 
     pub fn deinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        const self: *OpenRouterProvider = @ptrCast(@alignCast(ptr));
+        const self: *NvidiaProvider = @ptrCast(@alignCast(ptr));
         self.creds.deinit();
         self.allocator.free(self.base_url);
         self.allocator.free(self.model_name);
         allocator.destroy(self);
     }
 
-    pub fn providerInterface(self: *OpenRouterProvider) provider.Provider {
+    pub fn providerInterface(self: *NvidiaProvider) provider.Provider {
         return .{
             .ptr = self,
             .vtable = &.{
@@ -106,7 +106,7 @@ pub const OpenRouterProvider = struct {
         writer: *std.Io.Writer,
         cancel_token: *const kernel.cancellation.CancellationToken,
     ) provider.ProviderError!void {
-        const self: *OpenRouterProvider = @ptrCast(@alignCast(ptr));
+        const self: *NvidiaProvider = @ptrCast(@alignCast(ptr));
         _ = images;
 
         if (cancel_token.isCancelled()) return provider.ProviderError.Cancelled;
@@ -148,7 +148,7 @@ pub const OpenRouterProvider = struct {
     }
 
     const StreamBridge = struct {
-        provider: *OpenRouterProvider,
+        provider: *NvidiaProvider,
 
         fn onChunk(context: ?*anyopaque, chunk: []const u8) void {
             const bridge: *StreamBridge = @ptrCast(@alignCast(context.?));
@@ -157,17 +157,17 @@ pub const OpenRouterProvider = struct {
     };
 
     fn metadataImpl(ptr: *const anyopaque) provider.ModelMetadata {
-        const self: *const OpenRouterProvider = @ptrCast(@alignCast(ptr));
+        const self: *const NvidiaProvider = @ptrCast(@alignCast(ptr));
         return self.meta;
     }
 
     fn usageImpl(ptr: *const anyopaque) provider.TokenUsage {
-        const self: *const OpenRouterProvider = @ptrCast(@alignCast(ptr));
+        const self: *const NvidiaProvider = @ptrCast(@alignCast(ptr));
         return self.latest_usage;
     }
 
-    fn toolTransportState(self: *OpenRouterProvider, io: std.Io, mcp: ?*mcp_registry.Registry) openrouter_transport.OpenRouterTransport {
-        return .{ .openrouter = self, .io = io, .mcp = mcp };
+    fn toolTransportState(self: *NvidiaProvider, io: std.Io, mcp: ?*mcp_registry.Registry) nvidia_transport.NvidiaTransport {
+        return .{ .nvidia = self, .io = io, .mcp = mcp };
     }
 
     fn supportsToolLoopImpl(_: *const anyopaque) bool {
@@ -183,7 +183,7 @@ pub const OpenRouterProvider = struct {
         tool_declarations_json: []const u8,
         cancel_token: ?*const kernel.cancellation.CancellationToken,
     ) provider.ProviderError!agent_turn.Completion {
-        const self: *OpenRouterProvider = @ptrCast(@alignCast(ptr));
+        const self: *NvidiaProvider = @ptrCast(@alignCast(ptr));
         var transport_state = self.toolTransportState(io, mcp);
         return transport_state.transport().complete(allocator, conversation_json, tool_declarations_json, cancel_token) catch |err| return provider.mapTransportError(err);
     }
@@ -193,7 +193,7 @@ pub const OpenRouterProvider = struct {
         allocator: std.mem.Allocator,
         mcp: ?*mcp_registry.Registry,
     ) provider.ProviderError![]const u8 {
-        const self: *OpenRouterProvider = @ptrCast(@alignCast(ptr));
+        const self: *NvidiaProvider = @ptrCast(@alignCast(ptr));
         const transport_state = self.toolTransportState(undefined, mcp);
         return transport_state.declarationsJson(allocator) catch return error.ProviderInternalError;
     }
@@ -204,7 +204,7 @@ pub const OpenRouterProvider = struct {
         conversation: *std.ArrayList(u8),
         text: []const u8,
     ) provider.ProviderError!void {
-        const self: *OpenRouterProvider = @ptrCast(@alignCast(ptr));
+        const self: *NvidiaProvider = @ptrCast(@alignCast(ptr));
         var transport_state = self.toolTransportState(undefined, null);
         return transport_state.transport().appendUserText(allocator, conversation, text) catch |err| return provider.mapTransportError(err);
     }
@@ -215,7 +215,7 @@ pub const OpenRouterProvider = struct {
         conversation: *std.ArrayList(u8),
         call: agent_turn.ToolCall,
     ) provider.ProviderError!void {
-        const self: *OpenRouterProvider = @ptrCast(@alignCast(ptr));
+        const self: *NvidiaProvider = @ptrCast(@alignCast(ptr));
         var transport_state = self.toolTransportState(undefined, null);
         return transport_state.transport().appendToolCall(allocator, conversation, call) catch |err| return provider.mapTransportError(err);
     }
@@ -227,7 +227,7 @@ pub const OpenRouterProvider = struct {
         tool_name: []const u8,
         result: []const u8,
     ) provider.ProviderError!void {
-        const self: *OpenRouterProvider = @ptrCast(@alignCast(ptr));
+        const self: *NvidiaProvider = @ptrCast(@alignCast(ptr));
         var transport_state = self.toolTransportState(undefined, null);
         return transport_state.transport().appendToolResult(allocator, conversation, tool_name, result) catch |err| return provider.mapTransportError(err);
     }
@@ -245,7 +245,7 @@ pub fn resolveBaseUrl(
 }
 
 fn fetchChatInto(
-    self: *OpenRouterProvider,
+    self: *NvidiaProvider,
     allocator: std.mem.Allocator,
     endpoint: []const u8,
     payload: []const u8,
@@ -296,9 +296,9 @@ fn buildRequestPayload(allocator: std.mem.Allocator, model_name: []const u8, pro
 }
 
 test "buildChatEndpoint appends OpenAI-compatible route" {
-    const endpoint = try buildChatEndpoint(std.testing.allocator, "https://openrouter.ai/api/v1/");
+    const endpoint = try buildChatEndpoint(std.testing.allocator, "https://nvidia.ai/api/v1/");
     defer std.testing.allocator.free(endpoint);
-    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", endpoint);
+    try std.testing.expectEqualStrings("https://nvidia.ai/api/v1/chat/completions", endpoint);
 }
 
 test "buildRequestPayload requests json for proposals" {

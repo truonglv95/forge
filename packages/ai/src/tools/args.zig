@@ -1,5 +1,22 @@
 const std = @import("std");
 
+fn cleanJson(input: []const u8) []const u8 {
+    var s = std.mem.trim(u8, input, " \n\r\t");
+    if (std.mem.startsWith(u8, s, "```json")) {
+        s = s[7..];
+        s = std.mem.trim(u8, s, " \n\r\t");
+    } else if (std.mem.startsWith(u8, s, "```")) {
+        s = s[3..];
+        s = std.mem.trim(u8, s, " \n\r\t");
+    }
+    if (std.mem.endsWith(u8, s, "```")) {
+        s = s[0 .. s.len - 3];
+        s = std.mem.trim(u8, s, " \n\r\t");
+    }
+    if (s.len == 0) return "{}";
+    return s;
+}
+
 pub const ToolCall = struct {
     name: []const u8,
     args_json: []const u8,
@@ -44,7 +61,7 @@ pub const LspWorkspaceSymbolArgs = struct {
 
 pub fn parseLspWorkspaceSymbolArgs(allocator: std.mem.Allocator, args_json: []const u8) !LspWorkspaceSymbolArgs {
     const Json = struct { query: ?[]const u8 = null };
-    var parsed = try std.json.parseFromSlice(Json, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Json, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const query = parsed.value.query orelse return error.MissingArgument;
     return LspWorkspaceSymbolArgs{ .query = try allocator.dupe(u8, query) };
@@ -58,7 +75,7 @@ pub const LspFindReferencesArgs = struct {
 
 pub fn parseLspFindReferencesArgs(allocator: std.mem.Allocator, args_json: []const u8) !LspFindReferencesArgs {
     const Json = struct { path: ?[]const u8 = null, line: ?usize = null, character: ?usize = null };
-    var parsed = try std.json.parseFromSlice(Json, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Json, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const path = parsed.value.path orelse return error.MissingArgument;
     const line = parsed.value.line orelse return error.MissingArgument;
@@ -89,7 +106,7 @@ pub fn parseSearchArgs(allocator: std.mem.Allocator, args_json: []const u8) !Sea
         head_limit: ?usize = null,
         context_lines: ?usize = null,
     };
-    var parsed = try std.json.parseFromSlice(Json, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Json, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const raw_pattern = parsed.value.pattern orelse parsed.value.term orelse return error.MissingArg;
     const glob = if (parsed.value.glob) |g| try allocator.dupe(u8, g) else null;
@@ -121,7 +138,7 @@ pub fn parseFindFilesArgs(allocator: std.mem.Allocator, args_json: []const u8) !
         path: ?[]const u8 = null,
         head_limit: ?usize = null,
     };
-    var parsed = try std.json.parseFromSlice(Json, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Json, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const raw_pattern = parsed.value.pattern orelse return error.MissingArg;
     return .{
@@ -144,7 +161,7 @@ pub fn parseSearchTerm(allocator: std.mem.Allocator, args_json: []const u8) ![]c
 
 pub fn parseCodebaseQuery(allocator: std.mem.Allocator, args_json: []const u8) ![]const u8 {
     const Args = struct { query: ?[]const u8 = null };
-    var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const query = parsed.value.query orelse return error.MissingArg;
     return try allocator.dupe(u8, query);
@@ -156,7 +173,7 @@ pub fn parseReadFileArgs(allocator: std.mem.Allocator, args_json: []const u8) !R
         start_line: ?usize = null,
         end_line: ?usize = null,
     };
-    var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const path = parsed.value.path orelse return error.MissingArg;
     if (parsed.value.start_line != null and parsed.value.end_line != null and parsed.value.start_line.? > parsed.value.end_line.?) return error.InvalidRange;
@@ -169,7 +186,7 @@ pub fn parseReadFileArgs(allocator: std.mem.Allocator, args_json: []const u8) !R
 
 pub fn parseListTreeArgs(allocator: std.mem.Allocator, args_json: []const u8) !ListTreeArgs {
     const Args = struct { path: ?[]const u8 = null, depth: ?usize = null };
-    var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     return .{
         .path = try allocator.dupe(u8, parsed.value.path orelse "."),
@@ -179,7 +196,7 @@ pub fn parseListTreeArgs(allocator: std.mem.Allocator, args_json: []const u8) !L
 
 pub fn parseFetchUrl(allocator: std.mem.Allocator, args_json: []const u8) ![]const u8 {
     const Args = struct { url: ?[]const u8 = null };
-    var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const url = parsed.value.url orelse return error.MissingArg;
     return try allocator.dupe(u8, url);
@@ -187,7 +204,7 @@ pub fn parseFetchUrl(allocator: std.mem.Allocator, args_json: []const u8) ![]con
 
 pub fn parseRunCommand(allocator: std.mem.Allocator, args_json: []const u8) ![]const u8 {
     const Args = struct { command: ?[]const u8 = null };
-    var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const command = parsed.value.command orelse return error.MissingArg;
     return try allocator.dupe(u8, command);
@@ -202,7 +219,7 @@ pub fn parseReplaceFileContentArgs(allocator: std.mem.Allocator, args_json: []co
         path: ?[]const u8 = null,
         edits: ?[]JsonEdit = null,
     };
-    var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
     const path = parsed.value.path orelse return error.MissingArg;
@@ -230,7 +247,7 @@ pub fn parseRememberArgs(allocator: std.mem.Allocator, args_json: []const u8) !R
         kind: ?[]const u8 = null,
         tags: ?[]const []const u8 = null,
     };
-    var parsed = try std.json.parseFromSlice(Args, allocator, args_json, .{ .ignore_unknown_fields = true });
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     const content = parsed.value.content orelse return error.MissingArg;
     const kind = parsed.value.kind orelse "note";

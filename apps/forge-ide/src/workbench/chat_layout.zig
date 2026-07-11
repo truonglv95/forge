@@ -209,6 +209,98 @@ pub fn historyYOffset(cache: *const Cache, index: usize) f32 {
     return cache.message_prefix.items[index];
 }
 
+pub fn hitTestMessageOpen(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32, event_y: f32) ?usize {
+    const pad: f32 = 20;
+    const inner_x = agent_x + pad;
+    const content_w = agent_w - pad * 2;
+
+    if (event_x < inner_x or event_x > inner_x + content_w) return null;
+
+    const cache = &wb.chat_layout;
+    const chat_top = agent_panel_mod.chat_content_top + 8.0;
+
+    wb.agent.lock();
+    const post_apply_visible = wb.agent.post_apply_visible;
+    const validation_failed = wb.agent.phase == .failed;
+    const validation_count = wb.agent.validation_results.items.len;
+    const resume_offer_visible = wb.agent.resume_offer_visible;
+    var resume_intent: []const u8 = "previous run";
+    var resume_state: []const u8 = "interrupted";
+    if (wb.agent.resume_intent) |i| resume_intent = i;
+    if (wb.agent.resume_state) |s| resume_state = s;
+    wb.agent.unlock();
+
+    var history_prefix: f32 = 0;
+    if (post_apply_visible) {
+        history_prefix += agent_panel_mod.applyBannerHeight(validation_failed, validation_count) + 4;
+    }
+    if (resume_offer_visible) {
+        history_prefix += agent_panel_mod.resumeBannerHeight(agent_w, resume_intent, resume_state) + 4;
+    }
+
+    const scroll_y = wb.chat_scroll_y;
+    const base_y = chat_top - scroll_y + history_prefix;
+
+    for (wb.chat_history.items, 0..) |msg, i| {
+        if (msg.role != .agent) continue;
+        if (i >= cache.message_heights.items.len) break;
+        const msg_h = cache.message_heights.items[i];
+        if (msg_h <= 0) continue;
+        const msg_y = base_y + historyYOffset(cache, i);
+
+        if (chat_bubble_mod.hitTestAgentOpen(inner_x, content_w, msg_y, event_x, event_y)) {
+            return i;
+        }
+    }
+    return null;
+}
+
+pub fn hitTestMessageCopy(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32, event_y: f32) ?usize {
+    const pad: f32 = 20;
+    const inner_x = agent_x + pad;
+    const content_w = agent_w - pad * 2;
+
+    if (event_x < inner_x or event_x > inner_x + content_w) return null;
+
+    const cache = &wb.chat_layout;
+    const chat_top = agent_panel_mod.chat_content_top + 8.0;
+
+    wb.agent.lock();
+    const post_apply_visible = wb.agent.post_apply_visible;
+    const validation_failed = wb.agent.phase == .failed;
+    const validation_count = wb.agent.validation_results.items.len;
+    const resume_offer_visible = wb.agent.resume_offer_visible;
+    var resume_intent: []const u8 = "previous run";
+    var resume_state: []const u8 = "interrupted";
+    if (wb.agent.resume_intent) |i| resume_intent = i;
+    if (wb.agent.resume_state) |s| resume_state = s;
+    wb.agent.unlock();
+
+    var history_prefix: f32 = 0;
+    if (post_apply_visible) {
+        history_prefix += agent_panel_mod.applyBannerHeight(validation_failed, validation_count) + 4;
+    }
+    if (resume_offer_visible) {
+        history_prefix += agent_panel_mod.resumeBannerHeight(agent_w, resume_intent, resume_state) + 4;
+    }
+
+    const scroll_y = wb.chat_scroll_y;
+    const base_y = chat_top - scroll_y + history_prefix;
+
+    for (wb.chat_history.items, 0..) |msg, i| {
+        if (msg.role != .agent) continue;
+        if (i >= cache.message_heights.items.len) break;
+        const msg_h = cache.message_heights.items[i];
+        if (msg_h <= 0) continue;
+        const msg_y = base_y + historyYOffset(cache, i);
+
+        if (chat_bubble_mod.hitTestAgentCopy(inner_x, content_w, msg_y, event_x, event_y)) {
+            return i;
+        }
+    }
+    return null;
+}
+
 fn layoutChrome(wb: anytype, agent_h: f32) struct {
     bottom: f32,
     viewport: f32,

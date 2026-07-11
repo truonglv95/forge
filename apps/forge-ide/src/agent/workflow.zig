@@ -694,7 +694,7 @@ fn enqueueRunFailed(host: *const Host, err: anyerror) void {
 pub fn agentFailureMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.Cancelled => "Cancelled",
-        error.MissingProviderCredentials => "Missing Gemini API key — export GEMINI_API_KEY, use Ollama (provider=ollama), or set provider=fake",
+        error.ProviderFailed => "Provider initialization failed. Please check your API key (e.g. export OPENROUTER_API_KEY or GEMINI_API_KEY) and model configuration.",
         error.AuthenticationFailed => ai.provider.Provider.errorMessage(error.AuthenticationFailed),
         error.RateLimitExceeded => ai.provider.Provider.errorMessage(error.RateLimitExceeded),
         error.ContextLengthExceeded => ai.provider.Provider.errorMessage(error.ContextLengthExceeded),
@@ -706,7 +706,10 @@ pub fn agentFailureMessage(err: anyerror) []const u8 {
         error.WorkspaceFailed => "Agent tool failed to access the workspace",
         error.DuplicateLoop => "Agent stopped because the model repeated the same tool call",
         error.NoProgress => "Agent stopped because it kept gathering broad context without making progress",
-        else => "Agent failed",
+        else => {
+            std.debug.print("UNHANDLED AGENT ERROR: {any}\n", .{err});
+            return "Agent failed";
+        },
     };
 }
 

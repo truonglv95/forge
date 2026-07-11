@@ -489,6 +489,41 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             wb.refreshAgentContextPreview();
             try wb.setStatus("Attachment removed");
         },
+        .agent_copy_message => |index| {
+            if (index < wb.chat_history.items.len) {
+                const text = wb.chat_history.items[index].content;
+                @import("forge-renderer").Renderer.setClipboardText(text);
+                try wb.setStatus("Message copied to clipboard");
+            }
+        },
+        .agent_open_message => |index| {
+            std.debug.print("agent_open_message triggered for index {d}\n", .{index});
+            if (index < wb.chat_history.items.len) {
+                const text = wb.chat_history.items[index].content;
+
+                const filename = std.fmt.allocPrint(wb.allocator, "/tmp/forge_msg_{d}.md", .{index}) catch |err| {
+                    std.debug.print("allocPrint failed: {}\n", .{err});
+                    return;
+                };
+                defer wb.allocator.free(filename);
+
+                std.debug.print("Trying to create file: {s}\n", .{filename});
+                var file = std.Io.Dir.createFileAbsolute(wb.io, filename, .{ .truncate = true }) catch |err| {
+                    std.debug.print("createFileAbsolute failed: {}\n", .{err});
+                    return;
+                };
+                defer file.close(wb.io);
+                file.writeStreamingAll(wb.io, text) catch |err| {
+                    std.debug.print("writeStreamingAll failed: {}\n", .{err});
+                    return;
+                };
+
+                std.debug.print("File created, opening it...\n", .{});
+                wb.openFile(filename) catch |err| {
+                    std.debug.print("openFile failed: {}\n", .{err});
+                };
+            }
+        },
         .set_shell_mode => |mode| {
             wb.shell_mode = mode;
             if (mode == .agent_window) wb.focused_panel = .agent;
@@ -617,7 +652,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .problem_quick_fix => try wb.quickFixAtCursor(),
         .debug_stack_goto => |index| try wb.gotoDebugStackFrame(index),
         .debug_copy_variable => |index| try wb.copyDebugVariable(index),
-        .ai_open_forge_toml => try wb.openForgeToml(),
+        .ai_open_settings_toml => try wb.openSettingsToml(),
         .ai_open_mcp_config => try wb.openMcpConfig(),
         .ai_toggle_mcp => try wb.toggleAiMcp(),
         .ai_refresh_mcp => try wb.refreshAiMcpStatus(),

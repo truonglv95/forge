@@ -196,7 +196,7 @@ pub fn draw(
     y += row_h + 24;
 
     const actions = [_]struct { label: []const u8 }{
-        .{ .label = "Open forge.toml" },
+        .{ .label = "Open ~/.forge/settings.toml" },
         .{ .label = "Open MCP config (.mcp.json)" },
         .{ .label = "Refresh MCP status" },
     };

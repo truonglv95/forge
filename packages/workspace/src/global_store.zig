@@ -56,7 +56,32 @@ pub fn ensureLayout(io: std.Io) !void {
     var sessions_buf: [std.fs.max_path_bytes]u8 = undefined;
     const sessions_path = try std.fmt.bufPrint(&sessions_buf, "{s}/{s}", .{ home, sessions_subdir });
     mkdirAll(sessions_path) catch {};
-    _ = io;
+
+    var settings_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const settings_path = try std.fmt.bufPrint(&settings_buf, "{s}/settings.toml", .{home});
+    var file = std.Io.Dir.openFileAbsolute(io, settings_path, .{}) catch {
+        const default_settings =
+            \\[ai]
+            \\provider = "auto"
+            \\custom_models = "qwen3.5:35b|Qwen 3.5 35B (Ollama)|ollama,qwen2.5-coder:7b|Qwen 2.5 Coder 7B (Ollama)|ollama,gemini-2.5-flash|Gemini 2.5 Flash|gemini,gemini-2.5-pro|Gemini 2.5 Pro|gemini,gemini-2.0-flash|Gemini 2.0 Flash|gemini,openai/gpt-4o-mini|GPT-4o Mini (OpenRouter)|openrouter,anthropic/claude-sonnet-4|Claude Sonnet 4 (OpenRouter)|openrouter,z-ai/glm-5.2|GLM-5.2 (NVIDIA)|nvidia,meta/llama-3.1-70b-instruct|Llama 3.1 70B (NVIDIA)|nvidia"
+            \\
+            \\[ghost_completion]
+            \\provider = "ollama"
+            \\model = "qwen2.5-coder:7b"
+            \\
+        ;
+        try replaceAbsoluteFile(io, settings_path, default_settings);
+        return;
+    };
+    file.close(io);
+
+    var theme_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const theme_path = try std.fmt.bufPrint(&theme_buf, "{s}/theme.toml", .{home});
+    var theme_file = std.Io.Dir.openFileAbsolute(io, theme_path, .{}) catch {
+        try replaceAbsoluteFile(io, theme_path, "");
+        return;
+    };
+    theme_file.close(io);
 }
 
 fn trimTrailingSeparators(path: []const u8) []const u8 {

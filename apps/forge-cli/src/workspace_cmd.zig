@@ -25,6 +25,7 @@ pub const AiConfig = struct {
     }
 
     pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?AiConfig {
+        _ = root;
         var provider: []const u8 = "auto";
         var model: ?[]const u8 = null;
         var ollama_url: ?[]const u8 = null;
@@ -82,10 +83,11 @@ pub const AiConfig = struct {
             } else |_| {}
         } else |_| {}
 
-        const wp = workspace.WorkspacePath.parse("forge.toml") catch return try finalizeAiConfig(allocator, provider, model, ollama_url, openrouter_url, embedding_provider, embedding_model, embedding_url);
-        var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return try finalizeAiConfig(allocator, provider, model, ollama_url, openrouter_url, embedding_provider, embedding_model, embedding_url);
-        defer snap.deinit();
-        const parsed = workspace.Config.parse(snap.content) catch return try finalizeAiConfig(allocator, provider, model, ollama_url, openrouter_url, embedding_provider, embedding_model, embedding_url);
+        const settings_abs = workspace.global_store.joinHome(allocator, "settings.toml") catch return try finalizeAiConfig(allocator, provider, model, ollama_url, openrouter_url, embedding_provider, embedding_model, embedding_url);
+        defer allocator.free(settings_abs);
+        const content = workspace.global_store.readAbsoluteFile(allocator, io, settings_abs) catch return try finalizeAiConfig(allocator, provider, model, ollama_url, openrouter_url, embedding_provider, embedding_model, embedding_url);
+        defer allocator.free(content);
+        const parsed = workspace.Config.parse(content) catch return try finalizeAiConfig(allocator, provider, model, ollama_url, openrouter_url, embedding_provider, embedding_model, embedding_url);
         return try finalizeAiConfig(
             allocator,
             parsed.ai_provider,
