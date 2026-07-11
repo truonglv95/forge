@@ -37,6 +37,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
 </dict>
 </plist>
 EOF

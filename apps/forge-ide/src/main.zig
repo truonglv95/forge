@@ -11,7 +11,13 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     const args = try init.minimal.args.toSlice(allocator);
-    const workspace_path: []const u8 = if (args.len > 1) args[1] else ".";
+    var workspace_path: []const u8 = ".";
+    if (args.len > 1) {
+        workspace_path = args[1];
+        if (std.mem.startsWith(u8, workspace_path, "-psn_")) {
+            workspace_path = ".";
+        }
+    }
 
     std.debug.print("Forge IDE starting for workspace: {s}\n", .{workspace_path});
 
