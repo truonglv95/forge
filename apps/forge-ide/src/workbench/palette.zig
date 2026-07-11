@@ -115,7 +115,7 @@ pub const Palette = struct {
             .{ .id = "view.focus_agent", .title = "View: Focus Agent Panel", .category = "View", .command = .focus_agent },
             .{ .id = "nav.back", .title = "Navigate: Back", .category = "Navigate", .command = .nav_back },
             .{ .id = "nav.forward", .title = "Navigate: Forward", .category = "Navigate", .command = .nav_forward },
-            .{ .id = "ai.open_forge_toml", .title = "AI: Open forge.toml", .category = "AI", .command = .ai_open_forge_toml },
+            .{ .id = "ai.open_settings_toml", .title = "AI: Open ~/.forge/settings.toml", .category = "AI", .command = .ai_open_settings_toml },
             .{ .id = "ai.open_mcp", .title = "AI: Open MCP Config (.mcp.json)", .category = "AI", .command = .ai_open_mcp_config },
             .{ .id = "settings.open", .title = "Preferences: Open Settings", .category = "Preferences", .command = .open_settings },
             .{ .id = "ai.toggle_mcp", .title = "AI: Toggle MCP Tools", .category = "AI", .command = .ai_toggle_mcp },

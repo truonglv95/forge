@@ -641,7 +641,7 @@ test "generateAndPersist with ollama when server is running" {
 
     const provider_options = provider_factory.Options{
         .provider_name = "ollama",
-        .model = ollama_provider.default_model,
+        .model = "test-model",
         .fake_response = "",
     };
 
@@ -678,7 +678,7 @@ test "generateAndPersist ollama via WorkspaceRoot.open path" {
 
     const provider_options = provider_factory.Options{
         .provider_name = "ollama",
-        .model = ollama_provider.default_model,
+        .model = "test-model",
         .fake_response = "",
     };
 

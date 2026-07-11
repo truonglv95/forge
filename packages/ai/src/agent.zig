@@ -126,7 +126,8 @@ pub fn run(
     intent: []const u8,
     config: Config,
 ) AgentError!Result {
-    var provider_handle = provider_factory.create(allocator, io, environ_map, config.provider_options) catch {
+    var provider_handle = provider_factory.create(allocator, io, environ_map, config.provider_options) catch |err| {
+        std.debug.print("Provider factory create failed: {any}\n", .{err});
         return error.ProviderFailed;
     };
     defer provider_handle.deinit(allocator);

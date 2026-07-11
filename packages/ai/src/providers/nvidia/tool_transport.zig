@@ -1,5 +1,5 @@
 const std = @import("std");
-const openrouter_provider = @import("provider.zig");
+const nvidia_provider = @import("provider.zig");
 const openai_sse = @import("../openai/sse.zig");
 const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
@@ -7,12 +7,12 @@ const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
 const kernel = @import("forge-kernel");
 
-pub const OpenRouterTransport = struct {
-    openrouter: *openrouter_provider.OpenRouterProvider,
+pub const NvidiaTransport = struct {
+    nvidia: *nvidia_provider.NvidiaProvider,
     io: std.Io,
     mcp: ?*mcp_registry.Registry,
 
-    pub fn transport(self: *OpenRouterTransport) turn.Transport {
+    pub fn transport(self: *NvidiaTransport) turn.Transport {
         return .{
             .ptr = self,
             .complete_turn = completeTurn,
@@ -22,7 +22,7 @@ pub const OpenRouterTransport = struct {
         };
     }
 
-    pub fn declarationsJson(self: *const OpenRouterTransport, allocator: std.mem.Allocator) ![]const u8 {
+    pub fn declarationsJson(self: *const NvidiaTransport, allocator: std.mem.Allocator) ![]const u8 {
         if (self.mcp) |reg| return reg.buildDeclarationsJson(allocator);
         return try allocator.dupe(u8, tool_registry.native_declarations_json);
     }
@@ -34,17 +34,17 @@ pub const OpenRouterTransport = struct {
         tool_declarations_json: []const u8,
         cancel_token: ?*const kernel.cancellation.CancellationToken,
     ) turn.TransportError!turn.Completion {
-        const self: *OpenRouterTransport = @ptrCast(@alignCast(ptr));
+        const self: *NvidiaTransport = @ptrCast(@alignCast(ptr));
         if (cancel_token) |token| if (token.isCancelled()) return error.Cancelled;
 
-        var bridge = StreamBridge{ .openrouter = self.openrouter };
+        var bridge = StreamBridge{ .nvidia = self.nvidia };
         var parser = openai_sse.Parser.init(allocator, .{
             .on_chunk = StreamBridge.onChunk,
             .context = &bridge,
         });
         defer parser.deinit();
 
-        fetchStreamChatInto(self.openrouter, allocator, self.io, conversation_json, tool_declarations_json, cancel_token, &parser) catch |err| return switch (err) {
+        fetchStreamChatInto(self.nvidia, allocator, self.io, conversation_json, tool_declarations_json, cancel_token, &parser) catch |err| return switch (err) {
             error.Cancelled => error.Cancelled,
             error.AuthenticationFailed => error.AuthenticationFailed,
             error.RateLimitExceeded => error.RateLimitExceeded,
@@ -54,7 +54,7 @@ pub const OpenRouterTransport = struct {
         };
         parser.finish() catch return error.MalformedResponse;
 
-        self.openrouter.latest_usage = parser.latest_usage;
+        self.nvidia.latest_usage = parser.latest_usage;
 
         if (parser.takeToolCall()) |call| {
             return .{ .tool_call = .{
@@ -119,16 +119,16 @@ pub const OpenRouterTransport = struct {
 };
 
 const StreamBridge = struct {
-    openrouter: *openrouter_provider.OpenRouterProvider,
+    nvidia: *nvidia_provider.NvidiaProvider,
 
     fn onChunk(context: ?*anyopaque, chunk: []const u8) void {
         const bridge: *StreamBridge = @ptrCast(@alignCast(context.?));
-        if (bridge.openrouter.stream_callback) |callback| callback(bridge.openrouter.stream_context, chunk);
+        if (bridge.nvidia.stream_callback) |callback| callback(bridge.nvidia.stream_context, chunk);
     }
 };
 
 fn fetchStreamChatInto(
-    openrouter: *openrouter_provider.OpenRouterProvider,
+    nvidia: *nvidia_provider.NvidiaProvider,
     allocator: std.mem.Allocator,
     io: std.Io,
     messages_body: []const u8,
@@ -138,20 +138,20 @@ fn fetchStreamChatInto(
 ) !void {
     if (cancel_token) |token| if (token.isCancelled()) return error.Cancelled;
 
-    const endpoint = try openrouter_provider.buildChatEndpoint(allocator, openrouter.base_url);
+    const endpoint = try nvidia_provider.buildChatEndpoint(allocator, nvidia.base_url);
     defer allocator.free(endpoint);
 
     const openai_tools = tool_registry.geminiDeclarationsToOllama(allocator, tools_json) catch return error.ProviderFailed;
     defer allocator.free(openai_tools);
 
-    const model_escaped = try jsonString(allocator, openrouter.model_name);
+    const model_escaped = try jsonString(allocator, nvidia.model_name);
     defer allocator.free(model_escaped);
     const payload = try std.fmt.allocPrint(allocator,
         \\{{"model":{s},"messages":[{s}],"tools":{s},"tool_choice":"auto","stream":true}}
     , .{ model_escaped, messages_body, openai_tools });
     defer allocator.free(payload);
 
-    const auth = try std.fmt.allocPrint(allocator, "Bearer {s}", .{openrouter.creds.api_key});
+    const auth = try std.fmt.allocPrint(allocator, "Bearer {s}", .{nvidia.creds.api_key});
     defer allocator.free(auth);
     const headers = [_]std.http.Header{
         .{ .name = "Authorization", .value = auth },
@@ -175,26 +175,11 @@ fn fetchStreamChatInto(
 
     return switch (result.status) {
         .ok => {},
-        .unauthorized, .forbidden => {
-            std.debug.print("OpenRouter auth failed: {}\n", .{result.status});
-            return error.AuthenticationFailed;
-        },
-        .too_many_requests => {
-            std.debug.print("OpenRouter rate limit: {}\n", .{result.status});
-            return error.RateLimitExceeded;
-        },
-        .payload_too_large, .uri_too_long, .bad_request => {
-            std.debug.print("OpenRouter context/bad request: {}\n", .{result.status});
-            return error.ContextLengthExceeded;
-        },
-        .request_timeout, .service_unavailable, .bad_gateway, .gateway_timeout => {
-            std.debug.print("OpenRouter network error: {}\n", .{result.status});
-            return error.NetworkError;
-        },
-        else => {
-            std.debug.print("OpenRouter provider failed with status: {}\n", .{result.status});
-            return error.ProviderFailed;
-        },
+        .unauthorized, .forbidden => error.AuthenticationFailed,
+        .too_many_requests => error.RateLimitExceeded,
+        .payload_too_large, .uri_too_long, .bad_request => error.ContextLengthExceeded,
+        .request_timeout, .service_unavailable, .bad_gateway, .gateway_timeout => error.NetworkError,
+        else => error.ProviderFailed,
     };
 }
 

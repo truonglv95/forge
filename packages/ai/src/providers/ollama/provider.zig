@@ -9,7 +9,7 @@ const mcp_registry = @import("../../mcp_registry.zig");
 const ollama_transport = @import("tool_transport.zig");
 
 pub const default_host = "http://127.0.0.1:11434";
-pub const default_model = "qwen2.5-coder:7b";
+// default_model removed
 pub const host_env_var = "OLLAMA_HOST";
 pub const num_ctx_env_var = "FORGE_OLLAMA_NUM_CTX";
 pub const default_num_ctx: usize = 131_072;
@@ -52,7 +52,7 @@ pub const OllamaProvider = struct {
         const host = try resolveHost(allocator, environ_map, options.base_url);
         defer allocator.free(host);
 
-        const model_name: []const u8 = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse default_model else options.model) else default_model;
+        const model_name: []const u8 = if (@hasField(@TypeOf(options), "model")) (if (@typeInfo(@TypeOf(options.model)) == .optional) options.model orelse return error.ModelRequired else options.model) else return error.ModelRequired;
         const num_ctx = resolveNumCtx(environ_map);
 
         const owned_model = try allocator.dupe(u8, model_name);
@@ -421,7 +421,7 @@ test "OllamaProvider test mode" {
 
     var p = try OllamaProvider.create(allocator, std.testing.io, null, .{
         .base_url = default_host,
-        .model = default_model,
+        .model = "test-model",
     });
     defer p.deinit(allocator);
 
@@ -442,7 +442,7 @@ test "OllamaProvider test mode" {
 
 test "buildClassifierPayload uses json format" {
     const allocator = std.testing.allocator;
-    const payload = try buildClassifierPayload(allocator, default_model, default_num_ctx, "INTENT_CLASSIFIER_MODE\nclassify this");
+    const payload = try buildClassifierPayload(allocator, "test-model", default_num_ctx, "INTENT_CLASSIFIER_MODE\nclassify this");
     defer allocator.free(payload);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"format\":\"json\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"num_ctx\":131072") != null);
@@ -451,7 +451,7 @@ test "buildClassifierPayload uses json format" {
 
 test "buildRequestPayload uses json format for proposals" {
     const allocator = std.testing.allocator;
-    const payload = try buildRequestPayload(allocator, default_model, default_num_ctx, "Respond with JSON");
+    const payload = try buildRequestPayload(allocator, "test-model", default_num_ctx, "Respond with JSON");
     defer allocator.free(payload);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"format\":\"json\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"num_ctx\":131072") != null);
@@ -460,7 +460,7 @@ test "buildRequestPayload uses json format for proposals" {
 
 test "buildRequestPayload omits json format for markdown plans" {
     const allocator = std.testing.allocator;
-    const payload = try buildRequestPayload(allocator, default_model, default_num_ctx, "MARKDOWN PLAN MODE\nWrite a plan");
+    const payload = try buildRequestPayload(allocator, "test-model", default_num_ctx, "MARKDOWN PLAN MODE\nWrite a plan");
     defer allocator.free(payload);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"format\":null") != null);
 }
@@ -472,7 +472,7 @@ test "OllamaProvider live chat when server is running" {
 
     var p = try OllamaProvider.create(allocator, std.testing.io, null, .{
         .base_url = default_host,
-        .model = default_model,
+        .model = "test-model",
     });
     defer p.deinit(allocator);
 
@@ -499,7 +499,7 @@ test "OllamaProvider planner-sized json prompt" {
 
     var p = try OllamaProvider.create(allocator, std.testing.io, null, .{
         .base_url = default_host,
-        .model = default_model,
+        .model = "test-model",
     });
     defer p.deinit(allocator);
 

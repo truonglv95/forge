@@ -16,7 +16,7 @@ pub const scroll_bar_w: f32 = scrollbar.track_w;
 pub const composer_pad: f32 = tokens.space.lg;
 pub const input_min_h: f32 = 56;
 pub const input_max_h: f32 = 220;
-pub const composer_chrome_h: f32 = tokens.space.lg;
+pub const composer_chrome_h: f32 = toolbar_h + 44;
 pub const composer_base_h: f32 = composer_chrome_h + input_min_h;
 pub const composer_max_h: f32 = composer_chrome_h + input_max_h;
 pub const attachment_row_h: f32 = 26;
@@ -31,21 +31,11 @@ pub const ModelOption = struct {
     provider: []const u8,
 };
 
-pub const default_models = [_]ModelOption{
-    .{ .id = "qwen3.5:35b", .label = "Qwen 3.5 35B (Ollama)", .provider = "ollama" },
-    .{ .id = "qwen2.5-coder:7b", .label = "Qwen 2.5 Coder 7B (Ollama)", .provider = "ollama" },
-    .{ .id = "gemini-2.5-flash", .label = "Gemini 2.5 Flash", .provider = "gemini" },
-    .{ .id = "gemini-2.5-pro", .label = "Gemini 2.5 Pro", .provider = "gemini" },
-    .{ .id = "gemini-2.0-flash", .label = "Gemini 2.0 Flash", .provider = "gemini" },
-    .{ .id = "openai/gpt-4o-mini", .label = "GPT-4o Mini (OpenRouter)", .provider = "openrouter" },
-    .{ .id = "anthropic/claude-sonnet-4", .label = "Claude Sonnet 4 (OpenRouter)", .provider = "openrouter" },
-};
+pub const default_models_str = "qwen3.5:35b|Qwen 3.5 35B (Ollama)|ollama,qwen2.5-coder:7b|Qwen 2.5 Coder 7B (Ollama)|ollama,gemini-2.5-flash|Gemini 2.5 Flash|gemini,gemini-2.5-pro|Gemini 2.5 Pro|gemini,gemini-2.0-flash|Gemini 2.0 Flash|gemini,openai/gpt-4o-mini|GPT-4o Mini (OpenRouter)|openrouter,anthropic/claude-sonnet-4|Claude Sonnet 4 (OpenRouter)|openrouter,z-ai/glm-5.2|GLM-5.2 (OpenRouter)|openrouter,z-ai/glm-5.2|GLM-5.2 (NVIDIA)|nvidia,meta/llama-3.1-70b-instruct|Llama 3.1 70B (NVIDIA)|nvidia";
 
 pub fn parseCustomModels(allocator: std.mem.Allocator, custom_str: []const u8) ![]ModelOption {
     var list: std.ArrayList(ModelOption) = .empty;
     defer list.deinit(allocator);
-
-    try list.appendSlice(allocator, &default_models);
 
     var it = std.mem.splitScalar(u8, custom_str, ',');
     while (it.next()) |part| {
@@ -211,8 +201,8 @@ pub fn computeLayout(
     // input_h is the area for the text itself
     const input_h = inputTextHeight(attachment_count, visual_lines);
 
-    const mode_btn = Rect{ .x = box_x, .y = toolbar_y + 4, .w = 0, .h = 0 };
-    const model_btn = Rect{ .x = box_x, .y = toolbar_y + 4, .w = 0, .h = 0 };
+    const mode_btn = Rect{ .x = box_x + 10, .y = toolbar_y + 4, .w = 160, .h = 24 };
+    const model_btn = Rect{ .x = mode_btn.x + mode_btn.w + 6, .y = toolbar_y + 4, .w = 360, .h = 24 };
 
     // Send and scope are positioned at the bottom right inside the input box
     const send_btn = Rect{ .x = box_x + box_w - 32, .y = inner_bottom - 28, .w = 24, .h = 24 };
@@ -336,14 +326,25 @@ fn drawDropdownButton(rect: Rect, label: []const u8, open: bool, enabled: bool, 
 }
 
 fn drawMenu(rect: Rect, labels: [][]const u8, selected: usize) void {
+    var max_text_w: f32 = 0;
+    for (labels) |item| {
+        var item_buf: [64:0]u8 = undefined;
+        const clipped = if (item.len > 63) item[0..63] else item;
+        @memcpy(item_buf[0..clipped.len], clipped);
+        item_buf[clipped.len] = 0;
+        const text_w = renderer.Renderer.measureText(@ptrCast(&item_buf), 10.5);
+        if (text_w > max_text_w) max_text_w = text_w;
+    }
+    const menu_w = @max(rect.w, max_text_w + 72);
+
     const row_h: f32 = 24;
     const menu_h = @as(f32, @floatFromInt(labels.len)) * row_h + 8;
     const menu_y = rect.y - menu_h - 4;
-    renderer.Renderer.drawRoundedRect(rect.x, menu_y, rect.w, menu_h, 8, .{ .r = 0.12, .g = 0.14, .b = 0.18, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(rect.x, menu_y, menu_w, menu_h, 8, .{ .r = 0.12, .g = 0.14, .b = 0.18, .a = 1.0 });
     var row_y = menu_y + 4;
     for (labels, 0..) |item, index| {
         if (index == selected) {
-            renderer.Renderer.drawRoundedRect(rect.x + 4, row_y, rect.w - 8, row_h - 2, 4, .{ .r = 0.2, .g = 0.32, .b = 0.48, .a = 1.0 });
+            renderer.Renderer.drawRoundedRect(rect.x + 4, row_y, menu_w - 8, row_h - 2, 4, .{ .r = 0.2, .g = 0.32, .b = 0.48, .a = 1.0 });
         }
         var item_buf: [64:0]u8 = undefined;
         const clipped = if (item.len > 63) item[0..63] else item;
@@ -390,6 +391,7 @@ pub fn draw(
     agent: *agent_session.Session,
     layout_info: Layout,
     model_id: ?[]const u8,
+    provider: ?[]const u8,
     models: []const ModelOption,
     prompt: *const editor.Buffer,
     prompt_scroll_y: f32,
@@ -412,7 +414,8 @@ pub fn draw(
     const attachment_count = agent.attachments.items.len;
     const mode_menu_open = agent.mode_menu_open;
     const model_menu_open = agent.model_menu_open;
-    defer agent.unlock();
+    const mode = agent.mode;
+    agent.unlock();
 
     if (attachment_count > 0) {
         var chip_x = layout_info.box_x + 12;
@@ -475,12 +478,6 @@ pub fn draw(
         layout_info.composer_h,
     );
     drawPromptScrollbar(layout_info, scroll_y, layout_info.box_x + layout_info.box_w - scroll_bar_w - 4, show_scroll);
-
-    _ = mode_menu_open;
-    _ = model_menu_open;
-    _ = model_id;
-    _ = models;
-
     // Render Attach (Scope) button
     const scope_hover = if (disabled) false else state.last_mouse_x >= layout_info.scope_btn.x and state.last_mouse_x < layout_info.scope_btn.x + layout_info.scope_btn.w and state.last_mouse_y >= layout_info.scope_btn.y and state.last_mouse_y < layout_info.scope_btn.y + layout_info.scope_btn.h;
     if (scope_hover) {
@@ -495,6 +492,39 @@ pub fn draw(
     }
     const send_c = if (disabled) renderer.Color{ .r = 0.4, .g = 0.4, .b = 0.4, .a = 1.0 } else renderer.Color{ .r = 0.72, .g = 0.76, .b = 0.84, .a = 1.0 };
     renderer.Renderer.drawSvg(renderer.icons.send, layout_info.send_btn.x + 2, layout_info.send_btn.y + 2, 20, 20, send_c);
+
+    drawDropdownButton(layout_info.mode_btn, modeLabel(mode), mode_menu_open, !disabled, "", null);
+    drawDropdownButton(layout_info.model_btn, modelLabel(models, model_id), model_menu_open, !disabled, "", null);
+
+    if (mode_menu_open and !disabled) {
+        var labels: [modes.len][]const u8 = undefined;
+        for (modes, 0..) |entry, i| labels[i] = entry.label;
+        var selected: usize = 0;
+        for (modes, 0..) |entry, i| {
+            if (entry.mode == mode) selected = i;
+        }
+        drawMenu(layout_info.mode_btn, &labels, selected);
+    }
+
+    if (model_menu_open and !disabled) {
+        var labels_buf: [200][]const u8 = undefined;
+        const len = if (models.len > labels_buf.len) labels_buf.len else models.len;
+        for (models[0..len], 0..) |entry, i| labels_buf[i] = entry.label;
+
+        var selected: usize = 0;
+        if (model_id) |id| {
+            for (models[0..len], 0..) |entry, i| {
+                if (std.mem.eql(u8, entry.id, id)) {
+                    if (provider) |p| {
+                        if (std.mem.eql(u8, entry.provider, p)) selected = i;
+                    } else {
+                        selected = i;
+                    }
+                }
+            }
+        }
+        drawMenu(layout_info.model_btn, labels_buf[0..len], selected);
+    }
 }
 
 pub const Hit = enum {
@@ -520,20 +550,42 @@ pub fn hitTest(
     defer agent.unlock();
 
     if (agent.mode_menu_open) {
+        var max_text_w: f32 = 0;
+        for (modes) |entry| {
+            var item_buf: [64:0]u8 = undefined;
+            const clipped = if (entry.label.len > 63) entry.label[0..63] else entry.label;
+            @memcpy(item_buf[0..clipped.len], clipped);
+            item_buf[clipped.len] = 0;
+            const text_w = renderer.Renderer.measureText(@ptrCast(&item_buf), 10.5);
+            if (text_w > max_text_w) max_text_w = text_w;
+        }
+        const menu_w = @max(layout_info.mode_btn.w, max_text_w + 72);
+
         const row_h: f32 = 24;
         const menu_h = @as(f32, @floatFromInt(modes.len)) * row_h + 8;
         const menu_y = layout_info.mode_btn.y - menu_h - 4;
-        if (x >= layout_info.mode_btn.x and x < layout_info.mode_btn.x + layout_info.mode_btn.w and y >= menu_y and y < menu_y + menu_h) {
+        if (x >= layout_info.mode_btn.x and x < layout_info.mode_btn.x + menu_w and y >= menu_y and y < menu_y + menu_h) {
             const row = @as(usize, @intFromFloat((y - menu_y - 4) / row_h));
             if (row < modes.len) return .mode_item;
         }
     }
 
     if (agent.model_menu_open) {
+        var max_text_w: f32 = 0;
+        for (models) |entry| {
+            var item_buf: [64:0]u8 = undefined;
+            const clipped = if (entry.label.len > 63) entry.label[0..63] else entry.label;
+            @memcpy(item_buf[0..clipped.len], clipped);
+            item_buf[clipped.len] = 0;
+            const text_w = renderer.Renderer.measureText(@ptrCast(&item_buf), 10.5);
+            if (text_w > max_text_w) max_text_w = text_w;
+        }
+        const menu_w = @max(layout_info.model_btn.w, max_text_w + 72);
+
         const row_h: f32 = 24;
         const menu_h = @as(f32, @floatFromInt(models.len)) * row_h + 8;
         const menu_y = layout_info.model_btn.y - menu_h - 4;
-        if (x >= layout_info.model_btn.x and x < layout_info.model_btn.x + layout_info.model_btn.w and y >= menu_y and y < menu_y + menu_h) {
+        if (x >= layout_info.model_btn.x and x < layout_info.model_btn.x + menu_w and y >= menu_y and y < menu_y + menu_h) {
             const row = @as(usize, @intFromFloat((y - menu_y - 4) / row_h));
             if (row < models.len) return .model_item;
         }
@@ -558,10 +610,22 @@ pub fn modeIndexAt(agent: *agent_session.Session, layout_info: Layout, x: f32, y
     agent.lock();
     defer agent.unlock();
     if (!agent.mode_menu_open) return null;
+
+    var max_text_w: f32 = 0;
+    for (modes) |entry| {
+        var item_buf: [64:0]u8 = undefined;
+        const clipped = if (entry.label.len > 63) entry.label[0..63] else entry.label;
+        @memcpy(item_buf[0..clipped.len], clipped);
+        item_buf[clipped.len] = 0;
+        const text_w = renderer.Renderer.measureText(@ptrCast(&item_buf), 10.5);
+        if (text_w > max_text_w) max_text_w = text_w;
+    }
+    const menu_w = @max(layout_info.mode_btn.w, max_text_w + 72);
+
     const row_h: f32 = 24;
     const menu_h = @as(f32, @floatFromInt(modes.len)) * row_h + 8;
     const menu_y = layout_info.mode_btn.y - menu_h - 4;
-    if (x < layout_info.mode_btn.x or x >= layout_info.mode_btn.x + layout_info.mode_btn.w) return null;
+    if (x < layout_info.mode_btn.x or x >= layout_info.mode_btn.x + menu_w) return null;
     if (y < menu_y or y >= menu_y + menu_h) return null;
     const row = @as(usize, @intFromFloat((y - menu_y - 4) / row_h));
     if (row >= modes.len) return null;
@@ -572,10 +636,22 @@ pub fn modelIndexAt(agent: *agent_session.Session, layout_info: Layout, models: 
     agent.lock();
     defer agent.unlock();
     if (!agent.model_menu_open) return null;
+
+    var max_text_w: f32 = 0;
+    for (models) |entry| {
+        var item_buf: [64:0]u8 = undefined;
+        const clipped = if (entry.label.len > 63) entry.label[0..63] else entry.label;
+        @memcpy(item_buf[0..clipped.len], clipped);
+        item_buf[clipped.len] = 0;
+        const text_w = renderer.Renderer.measureText(@ptrCast(&item_buf), 10.5);
+        if (text_w > max_text_w) max_text_w = text_w;
+    }
+    const menu_w = @max(layout_info.model_btn.w, max_text_w + 72);
+
     const row_h: f32 = 24;
     const menu_h = @as(f32, @floatFromInt(models.len)) * row_h + 8;
     const menu_y = layout_info.model_btn.y - menu_h - 4;
-    if (x < layout_info.model_btn.x or x >= layout_info.model_btn.x + layout_info.model_btn.w) return null;
+    if (x < layout_info.model_btn.x or x >= layout_info.model_btn.x + menu_w) return null;
     if (y < menu_y or y >= menu_y + menu_h) return null;
     const row = @as(usize, @intFromFloat((y - menu_y - 4) / row_h));
     if (row >= models.len) return null;

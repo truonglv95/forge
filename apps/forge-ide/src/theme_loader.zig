@@ -86,8 +86,8 @@ fn readExtensionThemeId(source: []const u8) ?[]const u8 {
 }
 
 pub fn readUserSettings(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !?[]const u8 {
-    // Read from global ~/.forge/settings.toml
-    const settings_abs = workspace.global_store.joinHome(allocator, "settings.toml") catch return null;
+    // Read from global ~/.forge/theme.toml
+    const settings_abs = workspace.global_store.joinHome(allocator, "theme.toml") catch return null;
     defer allocator.free(settings_abs);
     const content = workspace.global_store.readAbsoluteFile(allocator, io, settings_abs) catch |err| switch (err) {
         error.FileNotFound => {

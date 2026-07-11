@@ -202,6 +202,23 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     else
         return;
 
+    if (event.keycode == 0 and event.modifiers & shared.cmd_mask != 0) { // Command+A
+        active_buffer.selectAll();
+        return;
+    }
+
+    if (event.keycode == 8 and event.modifiers & shared.cmd_mask != 0) { // Command+C
+        if (active_buffer.selectedText(wb.allocator)) |text| {
+            if (text.len > 0) {
+                renderer.Renderer.setClipboardText(text);
+                wb.allocator.free(text);
+                return;
+            } else {
+                wb.allocator.free(text);
+            }
+        } else |_| {}
+    }
+
     if (event.keycode == 13 and event.modifiers & shared.cmd_mask != 0) {
         wb.dispatch(.close_active_tab) catch {};
         return;

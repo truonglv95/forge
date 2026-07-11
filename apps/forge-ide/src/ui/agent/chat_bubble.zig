@@ -249,7 +249,12 @@ pub fn drawAgentMessageWithCache(
     const text_x = inner_x + 28;
     const text_w = content_w - 28;
 
+    const copy_x = text_x + text_w - 20;
+    renderer.Renderer.drawSvg(renderer.icons.file, copy_x - 24, y + 5, 14, 14, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
+    renderer.Renderer.drawSvg(renderer.icons.copy_icon, copy_x, y + 5, 14, 14, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
+
     const body_h = if (line_cache) |cache| cache.height else chat_markdown.contentHeight(text, text_w);
+
     const min_h: f32 = 24.0;
     const final_h = @max(body_h, min_h);
 
@@ -271,6 +276,23 @@ pub fn drawAgentMessageWithCache(
         chat_markdown.drawSimpleContent(text, text_x, y, text_w, style.fg);
     renderer.Renderer.popClipRect();
     return final_h + bubble_gap + 8.0;
+}
+
+pub fn hitTestAgentOpen(inner_x: f32, content_w: f32, y: f32, event_x: f32, event_y: f32) bool {
+    const text_x = inner_x + 28;
+    const text_w = content_w - 28;
+    const copy_x = text_x + text_w - 20;
+    const open_x = copy_x - 24;
+    const copy_y = y + 5;
+    return event_x >= open_x and event_x <= open_x + 20 and event_y >= copy_y - 5 and event_y <= copy_y + 25;
+}
+
+pub fn hitTestAgentCopy(inner_x: f32, content_w: f32, y: f32, event_x: f32, event_y: f32) bool {
+    const text_x = inner_x + 28;
+    const text_w = content_w - 28;
+    const copy_x = text_x + text_w - 20;
+    const copy_y = y + 5;
+    return event_x >= copy_x and event_x <= copy_x + 20 and event_y >= copy_y - 5 and event_y <= copy_y + 25;
 }
 
 pub const agent_text_style = chat_markdown.Style{

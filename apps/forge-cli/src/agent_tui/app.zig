@@ -133,7 +133,7 @@ pub const App = struct {
         const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, "interactive", io, opened.root);
         const model = try std.fmt.allocPrint(allocator, "{s}/{s}", .{
             provider_opts.options.provider_name,
-            provider_opts.options.model orelse defaultModel(provider_opts.options.provider_name),
+            provider_opts.options.model orelse "auto",
         });
 
         const folder = try workspaceDisplayNameAlloc(allocator, environ_map, opened.path);
@@ -2067,14 +2067,6 @@ fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
             app.mutex.unlock();
         },
     }
-}
-
-fn defaultModel(name: []const u8) []const u8 {
-    if (std.mem.eql(u8, name, "ollama")) return "qwen2.5-coder:7b";
-    if (std.mem.eql(u8, name, "gemini")) return "gemini-2.5-flash";
-    if (std.mem.eql(u8, name, "openrouter")) return "openai/gpt-4o-mini";
-    if (std.mem.eql(u8, name, "fake")) return "fake";
-    return "auto";
 }
 
 fn workspaceDisplayNameAlloc(

@@ -8,6 +8,7 @@ const debug_panel = @import("../sidebar/debug_panel.zig");
 const git_panel = @import("../sidebar/git_panel.zig");
 const extensions_panel = @import("../sidebar/extensions_panel.zig");
 const ai_settings_panel = @import("../agent/ai_settings_panel.zig");
+const chat_layout = @import("../../workbench/chat_layout.zig");
 const proposal_review_panel = @import("../editor/proposal_review_panel.zig");
 const header_toolbar = @import("../chrome/header_toolbar.zig");
 const plugin = @import("forge-plugin");
@@ -280,6 +281,16 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
             wb.agent.lock();
             wb.agent.unlock();
+
+            if (chat_layout.hitTestMessageOpen(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |index| {
+                wb.dispatch(.{ .agent_open_message = index }) catch {};
+                return;
+            }
+
+            if (chat_layout.hitTestMessageCopy(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |index| {
+                wb.dispatch(.{ .agent_copy_message = index }) catch {};
+                return;
+            }
 
             // Actually, we can add a toggleAgentStep method to workbench that iterates chat history and steps.
             if (agent_panel.hitTestSteps(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |step_idx| {

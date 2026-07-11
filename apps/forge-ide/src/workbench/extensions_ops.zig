@@ -102,7 +102,7 @@ pub fn persistExtensionTheme(wb: anytype, qualified: []const u8) !void {
         , .{qualified});
     defer wb.allocator.free(content);
 
-    const settings_abs = try workspace.global_store.joinHome(wb.allocator, "settings.toml");
+    const settings_abs = try workspace.global_store.joinHome(wb.allocator, "theme.toml");
     defer wb.allocator.free(settings_abs);
     try workspace.global_store.replaceAbsoluteFile(wb.io, settings_abs, content);
 }

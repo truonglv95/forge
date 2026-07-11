@@ -47,12 +47,11 @@ pub fn setAgentModelIndex(wb: anytype, index: usize) !void {
     try ai_config_io.writeAiProvider(wb.allocator, wb.io, wb.workspace_root, option.provider);
     try ai_config_io.writeAiModel(wb.allocator, wb.io, wb.workspace_root, option.id);
     for (wb.tabs.tabs.items) |*doc| {
-        const wp = @import("forge-workspace").WorkspacePath.parse(doc.path) catch continue;
-        if (std.mem.eql(u8, wp.raw, "forge.toml")) {
+        if (std.mem.endsWith(u8, doc.path, "settings.toml")) {
             @import("../workspace_io.zig").loadDocument(wb.io, wb.workspace_root, doc) catch {};
         }
     }
-    try wb.setStatus("Model saved to forge.toml");
+    try wb.setStatus("Model saved to ~/.forge/settings.toml");
 }
 
 pub fn resolveWorkbenchHome(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
@@ -96,8 +95,10 @@ pub fn toggleAiMcp(wb: anytype) !void {
     try wb.setStatus(if (next) "MCP tools enabled" else "MCP tools disabled");
 }
 
-pub fn openForgeToml(wb: anytype) !void {
-    try wb.openFile("forge.toml");
+pub fn openSettingsToml(wb: anytype) !void {
+    const settings_abs = try @import("forge-workspace").global_store.joinHome(wb.allocator, "settings.toml");
+    defer wb.allocator.free(settings_abs);
+    try wb.openFile(settings_abs);
 }
 
 pub fn openMcpConfig(wb: anytype) !void {
@@ -192,7 +193,7 @@ pub fn handleAiSettingsClick(wb: anytype, hit: @import("../ui/agent/ai_settings_
             closeAiSettings(
                 wb,
             );
-            try openForgeToml(
+            try openSettingsToml(
                 wb,
             );
         },

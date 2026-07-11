@@ -286,6 +286,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         &wb.agent,
         composer_layout,
         wb.ai_model,
+        wb.ai_provider,
         wb.ai_models,
         &wb.prompt_buffer,
         wb.prompt_scroll_y,

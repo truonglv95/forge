@@ -4,6 +4,7 @@ const fake_provider = @import("providers/fake/provider.zig");
 const gemini_provider = @import("providers/gemini/provider.zig");
 const ollama_provider = @import("providers/ollama/provider.zig");
 const openrouter_provider = @import("providers/openrouter/provider.zig");
+const nvidia_provider = @import("providers/nvidia/provider.zig");
 const credentials = @import("credentials.zig");
 
 pub const FactoryError = error{
@@ -73,8 +74,20 @@ fn wrapCreateOpenRouter(allocator: std.mem.Allocator, io: std.Io, environ_map: ?
     return openrouter_provider.OpenRouterProvider.create(allocator, io, environ_map, options);
 }
 
+fn wrapCreateNvidia(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return nvidia_provider.NvidiaProvider.create(allocator, io, environ_map, options);
+}
+
 const registry = [_]ProviderDef{
     .{ .name = "ollama", .create = wrapCreateOllama, .availability = .ollama_probe },
+    .{
+        .name = "nvidia",
+        .create = wrapCreateNvidia,
+        .availability = .{ .credentials = .{
+            .env_vars = &[_][]const u8{"NVIDIA_API_KEY"},
+            .keychain_service = "forge-nvidia",
+        } },
+    },
     .{
         .name = "openrouter",
         .create = wrapCreateOpenRouter,
@@ -154,6 +167,7 @@ pub fn create(
     options: Options,
 ) !provider_mod.Provider {
     const resolved_name = resolveProviderName(allocator, io, environ_map, options);
+    std.debug.print("🚀 CALLING API PROVIDER: {s} | MODEL: {s}\n", .{ resolved_name, options.model orelse "unknown" });
 
     if (findProvider(resolved_name)) |def| {
         return def.create(allocator, io, environ_map, options) catch |err| switch (err) {
@@ -170,6 +184,7 @@ pub fn create(
 test "auto resolves to fake without credentials or ollama" {
     var p = try create(std.testing.allocator, std.testing.io, null, .{
         .provider_name = "auto",
+        .model = "test-model",
         .fake_response = "{}",
     });
     defer p.deinit(std.testing.allocator);
