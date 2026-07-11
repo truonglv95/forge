@@ -1,11 +1,15 @@
 const std = @import("std");
 const path_mod = @import("path.zig");
 const atomic = @import("atomic.zig");
+const global_store = @import("global_store.zig");
 const toolchain_probe = @import("toolchain_probe.zig");
 const parser_catalog = @import("parser_catalog.zig");
 const parser_sync = @import("parser_sync.zig");
 
-pub const parser_lock_file = ".forge/parser_lock.json";
+/// Sub-path within the session directory.
+pub const parser_lock_filename = "parser_lock.json";
+/// Legacy alias.
+pub const parser_lock_file = parser_lock_filename;
 
 pub const tree_sitter_core_tag = parser_catalog.tree_sitter_core_tag;
 
@@ -198,7 +202,9 @@ fn persist(
     report: toolchain_probe.ToolchainReport,
     set: ParserSet,
 ) !void {
-    try root.dir.createDirPath(io, ".forge");
+    // Persist in session dir: ~/.forge/sessions/<hash>/
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
 
     const ToolchainJson = struct {
         detected_at_ms: i64,
@@ -211,7 +217,9 @@ fn persist(
         .languages = report.languages,
     }, .{});
     defer allocator.free(toolchain_json);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(toolchain_probe.toolchain_file), toolchain_json);
+    var tc_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tc_abs = try std.fmt.bufPrint(&tc_path_buf, "{s}/{s}", .{ session_dir, toolchain_probe.toolchain_filename });
+    global_store.replaceAbsoluteFile(io, tc_abs, toolchain_json) catch {};
 
     const LockJson = struct {
         tree_sitter_core: []const u8,
@@ -226,7 +234,9 @@ fn persist(
         .resolved = set.grammars,
     }, .{});
     defer allocator.free(lock_json);
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(parser_lock_file), lock_json);
+    var lock_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const lock_abs = try std.fmt.bufPrint(&lock_path_buf, "{s}/{s}", .{ session_dir, parser_lock_filename });
+    global_store.replaceAbsoluteFile(io, lock_abs, lock_json) catch {};
 }
 
 test "parser resolver builds parser_set_id from toolchain" {

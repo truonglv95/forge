@@ -215,14 +215,13 @@ pub fn handleAiSettingsClick(wb: anytype, hit: @import("../ui/agent/ai_settings_
 
 pub fn pasteIntoAgent(wb: anytype) !void {
     const timestamp_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const rel_path = try std.fmt.bufPrint(&path_buf, ".forge/attachments/att_{d}.png", .{timestamp_ms});
-    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try std.fmt.bufPrint(&abs_buf, "{s}/{s}", .{ wb.workspace_path, rel_path });
+    try ensureAgentAttachmentsDir(wb);
 
-    try ensureAgentAttachmentsDir(
-        wb,
-    );
+    // Build absolute path in session dir
+    const session_dir = try workspace.global_store.getSessionDir(wb.allocator, wb.io, wb.workspace_root);
+    defer wb.allocator.free(session_dir);
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try std.fmt.bufPrint(&abs_buf, "{s}/attachments/att_{d}.png", .{ session_dir, timestamp_ms });
 
     if (renderer.Renderer.saveClipboardPng(abs_path)) {
         var label_buf: [64:0]u8 = undefined;
@@ -231,12 +230,10 @@ pub fn pasteIntoAgent(wb: anytype) !void {
         try wb.agent.addAttachment(.{
             .kind = .image,
             .label = try wb.allocator.dupe(u8, label_buf[0..label.len]),
-            .stored_path = try wb.allocator.dupe(u8, rel_path),
+            .stored_path = try wb.allocator.dupe(u8, abs_path),
             .text_preview = null,
         });
-        refreshAgentContextPreview(
-            wb,
-        );
+        refreshAgentContextPreview(wb);
         try wb.setStatus("Pasted image attachment");
         return;
     }
@@ -270,10 +267,11 @@ pub fn pasteIntoAgent(wb: anytype) !void {
 }
 
 pub fn ensureAgentAttachmentsDir(wb: anytype) !void {
+    const session_dir = try workspace.global_store.getSessionDir(wb.allocator, wb.io, wb.workspace_root);
+    defer wb.allocator.free(session_dir);
     var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try std.fmt.bufPrint(&dir_buf, "{s}/.forge/attachments", .{wb.workspace_path});
-    std.Io.Dir.createDirPath(std.Io.Dir.cwd(), wb.io, dir_path) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
+    const att_dir = try std.fmt.bufPrint(&dir_buf, "{s}/attachments", .{session_dir});
+    workspace.global_store.mkdirAllAbsolute(att_dir) catch |err| switch (err) {
         else => return err,
     };
 }
@@ -366,15 +364,25 @@ pub fn showAgentReview(wb: anytype) !void {
         if (wb.agent.proposal_rel) |path| break :blk path;
         if (wb.agent.run_history.items.len == 0) break :blk null;
         const entry = wb.agent.run_history.items[wb.agent.selected_run_index];
-        owned_path = try std.fmt.allocPrint(wb.allocator, ".forge/proposals/{s}.json", .{entry.run_id});
-        break :blk owned_path.?;
+        // Build absolute proposal path in session dir
+        const sess_dir = workspace.global_store.getSessionDir(wb.allocator, wb.io, wb.workspace_root) catch null;
+        if (sess_dir) |sd| {
+            const proposal_abs = std.fmt.allocPrint(wb.allocator, "{s}/proposals/{s}.json", .{ sd, entry.run_id }) catch {
+                wb.allocator.free(sd);
+                break :blk null;
+            };
+            wb.allocator.free(sd);
+            owned_path = proposal_abs;
+        } else {
+            // Fallback: construct relative path (legacy)
+            owned_path = std.fmt.allocPrint(wb.allocator, ".forge/proposals/{s}.json", .{entry.run_id}) catch null;
+        }
+        break :blk owned_path;
     };
 
     if (proposal_rel) |rel| {
         try agent_workflow.loadProposalPreview(&agentHost(wb), rel);
-        openProposalReview(
-            wb,
-        );
+        openProposalReview(wb);
         wb.focused_panel = .proposal_review;
         try wb.setStatus("Proposal review opened");
         return;

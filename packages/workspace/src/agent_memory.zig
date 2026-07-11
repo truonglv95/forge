@@ -1,9 +1,11 @@
 const std = @import("std");
 const path_mod = @import("path.zig");
 const atomic = @import("atomic.zig");
+const global_store = @import("global_store.zig");
 
-pub const memory_dir = ".forge/memory/v1";
-pub const memories_file = ".forge/memory/v1/memories.jsonl";
+/// Relative sub-path within the session directory.
+pub const memory_subdir = "memory/v1";
+pub const memories_filename = "memory/v1/memories.jsonl";
 
 pub const Kind = enum {
     preference,
@@ -55,21 +57,18 @@ pub const AppendInput = struct {
     timestamp_ms: i64,
 };
 
-fn readRelativeFile(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, rel_path: []const u8) ![]u8 {
-    var file = try root.dir.openFile(io, rel_path, .{});
-    defer file.close(io);
-    const stat = try file.stat(io);
-    const size: usize = @intCast(stat.size);
-    const content = try allocator.alloc(u8, size);
-    errdefer allocator.free(content);
-    const read_len = try file.readPositionalAll(io, content, 0);
-    if (read_len != size) return error.UnexpectedEof;
-    return content;
+fn memoriesAbsPath(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ session_dir, memories_filename });
 }
 
-pub fn ensureLayout(io: std.Io, root: path_mod.WorkspaceRoot) !void {
-    try root.dir.createDirPath(io, ".forge");
-    try root.dir.createDirPath(io, memory_dir);
+pub fn ensureLayout(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !void {
+    const session_dir = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(session_dir);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const mem_dir = try std.fmt.bufPrint(&buf, "{s}/{s}", .{ session_dir, memory_subdir });
+    global_store.mkdirAllAbsolute(mem_dir) catch {};
 }
 
 pub fn makeMemoryId(allocator: std.mem.Allocator, timestamp_ms: i64) ![]u8 {
@@ -89,7 +88,9 @@ pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
         items.deinit(allocator);
     }
 
-    const content = readRelativeFile(allocator, io, root, memories_file) catch |err| switch (err) {
+    const abs_path = try memoriesAbsPath(allocator, io, root);
+    defer allocator.free(abs_path);
+    const content = global_store.readAbsoluteFile(allocator, io, abs_path) catch |err| switch (err) {
         error.FileNotFound => return EntryList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) },
         else => return err,
     };
@@ -141,7 +142,7 @@ pub fn appendEntry(
     root: path_mod.WorkspaceRoot,
     input: AppendInput,
 ) ![]const u8 {
-    try ensureLayout(io, root);
+    try ensureLayout(allocator, io, root);
 
     const id = try makeMemoryId(allocator, input.timestamp_ms);
     errdefer allocator.free(id);
@@ -164,7 +165,10 @@ pub fn appendEntry(
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator);
 
-    const existing = readRelativeFile(allocator, io, root, memories_file) catch |err| switch (err) {
+    const abs_path = try memoriesAbsPath(allocator, io, root);
+    defer allocator.free(abs_path);
+
+    const existing = global_store.readAbsoluteFile(allocator, io, abs_path) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return err,
     };
@@ -176,7 +180,7 @@ pub fn appendEntry(
 
     try buffer.appendSlice(allocator, line);
     try buffer.append(allocator, '\n');
-    try atomic.replaceFile(io, root, try path_mod.WorkspacePath.parse(memories_file), buffer.items);
+    try global_store.replaceAbsoluteFile(io, abs_path, buffer.items);
 
     return id;
 }

@@ -79,6 +79,20 @@ pub fn loadAll(
         try mergeJsonInto(allocator, io, snap.content, ctx, &merged, &global_enabled);
     }
 
+    // Also load global ~/.forge/mcp.json
+    const global_forge_mcp = workspace.global_store.joinHome(allocator, "mcp.json") catch null;
+    if (global_forge_mcp) |gp| {
+        defer allocator.free(gp);
+        if (std.Io.Dir.openFileAbsolute(io, gp, .{})) |gfile| {
+            defer gfile.close(io);
+            const content = readFileAlloc(allocator, io, gfile, 1024 * 1024) catch null;
+            if (content) |c| {
+                defer allocator.free(c);
+                try mergeJsonInto(allocator, io, c, ctx, &merged, &global_enabled);
+            }
+        } else |_| {}
+    }
+
     if (ctx.home_dir) |home| {
         const global_path = try std.fmt.allocPrint(allocator, "{s}/.cursor/mcp.json", .{home});
         defer allocator.free(global_path);

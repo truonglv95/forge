@@ -36,6 +36,19 @@ fn mkdirAll(path: []const u8) !void {
     _ = std.c.mkdir(z, 0o755);
 }
 
+/// Creates a directory at an absolute path (all intermediate dirs as needed).
+pub fn mkdirAllAbsolute(abs_path: []const u8) !void {
+    // Walk each prefix and mkdir
+    var i: usize = 1;
+    while (i <= abs_path.len) : (i += 1) {
+        if (i == abs_path.len or abs_path[i] == '/') {
+            var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+            const z = std.fmt.bufPrintZ(&buf, "{s}", .{abs_path[0..i]}) catch continue;
+            _ = std.c.mkdir(z, 0o755);
+        }
+    }
+}
+
 pub fn ensureLayout(io: std.Io) !void {
     const home = homeDirPath(std.heap.page_allocator) catch return;
     defer std.heap.page_allocator.free(home);

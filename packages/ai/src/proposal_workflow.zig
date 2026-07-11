@@ -176,29 +176,33 @@ pub fn generateAndPersist(
         const plan_body = plan_writer.writer.buffer[0..plan_writer.writer.end];
         owned_plan_body = allocator.dupe(u8, plan_body) catch return error.ProviderFailed;
 
+        // Store plan in session dir: ~/.forge/sessions/<hash>/plans/<run_id>.md
+        const session_dir = workspace.global_store.getSessionDir(allocator, io, root) catch return error.ProviderFailed;
+        defer allocator.free(session_dir);
+        var plan_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const plan_dir_abs = std.fmt.bufPrint(&plan_dir_buf, "{s}/plans", .{session_dir}) catch return error.ProviderFailed;
+        workspace.global_store.mkdirAllAbsolute(plan_dir_abs) catch {};
         var plan_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const plan_rel = std.fmt.bufPrint(&plan_path_buf, ".forge/plans/{s}.md", .{run_id}) catch return error.ProviderFailed;
-        owned_plan_rel = allocator.dupe(u8, plan_rel) catch return error.ProviderFailed;
+        const plan_abs = std.fmt.bufPrint(&plan_path_buf, "{s}/plans/{s}.md", .{ session_dir, run_id }) catch return error.ProviderFailed;
+        owned_plan_rel = allocator.dupe(u8, plan_abs) catch return error.ProviderFailed;
 
         workspace.history.ensureLayout(allocator, io, root) catch return error.ProviderFailed;
-        root.dir.createDirPath(io, ".forge/plans") catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return error.ProviderFailed,
-        };
-        workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(plan_rel) catch return error.ProviderFailed, plan_body) catch return error.ProviderFailed;
+        workspace.global_store.replaceAbsoluteFile(io, plan_abs, plan_body) catch return error.ProviderFailed;
 
         spec_writer.persistFromPlan(allocator, io, root, run_id, plan_body, intent) catch {};
 
         ctx_builder.addBlock(.intent, "implementation_plan", plan_body) catch return error.ProviderFailed;
         plan_inst = planner.Planner.init(allocator, llm, ctx_builder, options.conversation, images);
     } else if (options.mode == .plan and options.plan_phase == .proposal_only) {
+        // Read existing plan from session dir
+        const session_dir = workspace.global_store.getSessionDir(allocator, io, root) catch return error.ProviderFailed;
+        defer allocator.free(session_dir);
         var plan_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const plan_rel = std.fmt.bufPrint(&plan_path_buf, ".forge/plans/{s}.md", .{run_id}) catch return error.ProviderFailed;
-        var plan_snap = workspace.FileSnapshot.read(allocator, io, root, workspace.WorkspacePath.parse(plan_rel) catch return error.ProviderFailed) catch return error.ProviderFailed;
-        defer plan_snap.deinit();
-        owned_plan_body = allocator.dupe(u8, plan_snap.content) catch return error.ProviderFailed;
-        owned_plan_rel = allocator.dupe(u8, plan_rel) catch return error.ProviderFailed;
-        ctx_builder.addBlock(.intent, "implementation_plan", plan_snap.content) catch return error.ProviderFailed;
+        const plan_abs = std.fmt.bufPrint(&plan_path_buf, "{s}/plans/{s}.md", .{ session_dir, run_id }) catch return error.ProviderFailed;
+        const plan_content = workspace.global_store.readAbsoluteFile(allocator, io, plan_abs) catch return error.ProviderFailed;
+        owned_plan_body = plan_content;
+        owned_plan_rel = allocator.dupe(u8, plan_abs) catch return error.ProviderFailed;
+        ctx_builder.addBlock(.intent, "implementation_plan", plan_content) catch return error.ProviderFailed;
         plan_inst = planner.Planner.init(allocator, llm, ctx_builder, options.conversation, images);
     }
 
@@ -357,10 +361,15 @@ pub fn generateAndPersist(
     owned_body = null;
 
     workspace.history.ensureLayout(allocator, io, root) catch return error.ProviderFailed;
+    // Store proposal in session dir: ~/.forge/sessions/<hash>/proposals/<run_id>.json
+    const session_dir_p = workspace.global_store.getSessionDir(allocator, io, root) catch return error.ProviderFailed;
+    defer allocator.free(session_dir_p);
+    var prop_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const prop_dir_abs = std.fmt.bufPrint(&prop_dir_buf, "{s}/proposals", .{session_dir_p}) catch return error.ProviderFailed;
+    workspace.global_store.mkdirAllAbsolute(prop_dir_abs) catch {};
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.ProviderFailed;
-    workspace.atomic.ensureProposalDir(io, root) catch return error.ProviderFailed;
-    workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.ProviderFailed, final_body) catch return error.ProviderFailed;
+    const proposal_abs = std.fmt.bufPrint(&proposal_path_buf, "{s}/proposals/{s}.json", .{ session_dir_p, run_id }) catch return error.ProviderFailed;
+    workspace.global_store.replaceAbsoluteFile(io, proposal_abs, final_body) catch return error.ProviderFailed;
 
     const initial_state: run_record.State = .proposed;
 
@@ -369,7 +378,7 @@ pub fn generateAndPersist(
         .surface = options.surface,
         .intent = intent,
         .state = initial_state,
-        .proposal_path = proposal_rel,
+        .proposal_path = proposal_abs,
         .provider_id = meta.provider_name,
         .model_id = meta.model_name,
         .timestamp_ms = timestamp_ms,
@@ -385,7 +394,7 @@ pub fn generateAndPersist(
 
     emitProgress(options, .proposal_ready);
 
-    const owned_proposal_rel = allocator.dupe(u8, proposal_rel) catch return error.ProviderFailed;
+    const owned_proposal_rel = allocator.dupe(u8, proposal_abs) catch return error.ProviderFailed;
 
     return .{
         .run_id = run_id,

@@ -4,9 +4,15 @@ const atomic = @import("atomic.zig");
 const snapshot = @import("snapshot.zig");
 const history = @import("history.zig");
 const edit = @import("edit.zig");
+const global_store = @import("global_store.zig");
 
-pub const checkpoints_dir = ".forge/checkpoints";
-pub const index_file = ".forge/checkpoints/index.jsonl";
+/// Sub-paths within the session directory (~/.forge/sessions/<hash>/)
+pub const checkpoints_subdir = "checkpoints";
+pub const index_filename = "checkpoints/index.jsonl";
+
+// Legacy constants kept for backward compatibility / external references.
+pub const checkpoints_dir = checkpoints_subdir;
+pub const index_file = index_filename;
 
 pub const Entry = struct {
     id: u64,
@@ -37,9 +43,27 @@ pub const CheckpointError = error{
     OutOfMemory,
 } || snapshot.FileSnapshot.ReadError || path_mod.WorkspacePath.ValidationError || std.Io.File.OpenError;
 
+pub fn sessionDir(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
+    return global_store.getSessionDir(allocator, io, root);
+}
+
+pub fn checkpointAbsDir(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
+    const sess = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(sess);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ sess, checkpoints_subdir });
+}
+
+pub fn indexAbsPath(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) ![]u8 {
+    const sess = try global_store.getSessionDir(allocator, io, root);
+    defer allocator.free(sess);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ sess, index_filename });
+}
+
 pub fn ensureLayout(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !void {
     try history.ensureLayout(allocator, io, root);
-    try root.dir.createDirPath(io, checkpoints_dir);
+    const cp_dir = try checkpointAbsDir(allocator, io, root);
+    defer allocator.free(cp_dir);
+    global_store.mkdirAllAbsolute(cp_dir) catch {};
 }
 
 pub fn nextId(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) !u64 {
@@ -60,7 +84,9 @@ pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Work
         items.deinit(allocator);
     }
 
-    const content = readRelative(allocator, io, root, index_file) catch |err| switch (err) {
+    const idx_path = indexAbsPath(allocator, io, root) catch return EntryList{ .allocator = allocator, .items = &.{} };
+    defer allocator.free(idx_path);
+    const content = global_store.readAbsoluteFile(allocator, io, idx_path) catch |err| switch (err) {
         error.FileNotFound => return EntryList{ .allocator = allocator, .items = try items.toOwnedSlice(allocator) },
         else => return err,
     };
@@ -111,9 +137,15 @@ pub fn createFromEdits(
     const id = try nextId(allocator, io, root);
     const timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
 
+    const cp_base = checkpointAbsDir(allocator, io, root) catch return error.WorkspaceFailed;
+    defer allocator.free(cp_base);
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const checkpoint_root = try std.fmt.bufPrint(&root_buf, "{s}/{d}", .{ checkpoints_dir, id });
-    root.dir.createDirPath(io, checkpoint_root) catch return error.WorkspaceFailed;
+    const checkpoint_root_abs = std.fmt.bufPrint(&root_buf, "{s}/{d}", .{ cp_base, id }) catch return error.WorkspaceFailed;
+    global_store.mkdirAllAbsolute(checkpoint_root_abs) catch return error.WorkspaceFailed;
+    // Also keep a relative alias so backup paths inside root still work
+    var rel_root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const checkpoint_root = std.fmt.bufPrint(&rel_root_buf, "{s}/{d}", .{ checkpoints_subdir, id }) catch return error.WorkspaceFailed;
+    _ = checkpoint_root;
 
     const ManifestEntry = struct {
         path: []const u8,
@@ -147,16 +179,13 @@ pub fn createFromEdits(
                 };
                 defer snap.deinit();
 
+                // Store backup in session dir: ~/.forge/sessions/<hash>/checkpoints/<id>/<path>
                 var backup_buf: [std.fs.max_path_bytes]u8 = undefined;
-                const backup_rel = try std.fmt.bufPrint(&backup_buf, "{s}/{s}", .{ checkpoint_root, file_edit.path });
-                if (std.mem.lastIndexOfScalar(u8, backup_rel, '/')) |slash| {
-                    const parent = backup_rel[0..slash];
-                    root.dir.createDirPath(io, parent) catch |err| switch (err) {
-                        error.PathAlreadyExists => {},
-                        else => return error.WorkspaceFailed,
-                    };
+                const backup_abs = std.fmt.bufPrint(&backup_buf, "{s}/{s}", .{ checkpoint_root_abs, file_edit.path }) catch return error.WorkspaceFailed;
+                if (std.mem.lastIndexOfScalar(u8, backup_abs, '/')) |slash| {
+                    global_store.mkdirAllAbsolute(backup_abs[0..slash]) catch {};
                 }
-                atomic.replaceFile(io, root, path_mod.WorkspacePath.parse(backup_rel) catch return error.WorkspaceFailed, snap.content) catch return error.WorkspaceFailed;
+                global_store.replaceAbsoluteFile(io, backup_abs, snap.content) catch return error.WorkspaceFailed;
                 try manifest.append(allocator, .{
                     .path = try allocator.dupe(u8, file_edit.path),
                     .operation = try allocator.dupe(u8, op_name),
@@ -168,8 +197,8 @@ pub fn createFromEdits(
     const manifest_json = std.json.Stringify.valueAlloc(allocator, manifest.items, .{}) catch return error.WorkspaceFailed;
     defer allocator.free(manifest_json);
     var manifest_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const manifest_rel = try std.fmt.bufPrint(&manifest_buf, "{s}/manifest.json", .{checkpoint_root});
-    atomic.replaceFile(io, root, path_mod.WorkspacePath.parse(manifest_rel) catch return error.WorkspaceFailed, manifest_json) catch return error.WorkspaceFailed;
+    const manifest_abs = std.fmt.bufPrint(&manifest_buf, "{s}/manifest.json", .{checkpoint_root_abs}) catch return error.WorkspaceFailed;
+    global_store.replaceAbsoluteFile(io, manifest_abs, manifest_json) catch return error.WorkspaceFailed;
 
     const IndexLine = struct {
         id: u64,
@@ -190,7 +219,7 @@ pub fn createFromEdits(
     defer allocator.free(line);
     const line_with_nl = std.fmt.allocPrint(allocator, "{s}\n", .{line}) catch return error.WorkspaceFailed;
     defer allocator.free(line_with_nl);
-    try appendIndex(io, root, line_with_nl);
+    try appendIndex(allocator, io, root, line_with_nl);
 
     for (manifest.items) |entry| {
         allocator.free(entry.path);
@@ -254,28 +283,32 @@ pub fn linkTransaction(io: std.Io, root: path_mod.WorkspaceRoot, checkpoint_id: 
         try buffer.appendSlice(allocator, line);
         try buffer.append(allocator, '\n');
     }
-    atomic.replaceFile(io, root, path_mod.WorkspacePath.parse(index_file) catch return error.WorkspaceFailed, buffer.items) catch return error.WorkspaceFailed;
+    const idx_path = indexAbsPath(allocator, io, root) catch return error.WorkspaceFailed;
+    defer allocator.free(idx_path);
+    global_store.replaceAbsoluteFile(io, idx_path, buffer.items) catch return error.WorkspaceFailed;
 }
 
 /// Restores files captured in a checkpoint.
 pub fn restore(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, checkpoint_id: u64) CheckpointError!void {
     ensureExists(allocator, io, root, checkpoint_id) catch return error.CheckpointNotFound;
 
+    const cp_base = checkpointAbsDir(allocator, io, root) catch return error.CheckpointNotFound;
+    defer allocator.free(cp_base);
     var manifest_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const manifest_rel = try std.fmt.bufPrint(&manifest_buf, "{s}/{d}/manifest.json", .{ checkpoints_dir, checkpoint_id });
-    var manifest_snap = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse(manifest_rel));
-    defer manifest_snap.deinit();
+    const manifest_abs = std.fmt.bufPrint(&manifest_buf, "{s}/{d}/manifest.json", .{ cp_base, checkpoint_id }) catch return error.CheckpointNotFound;
+    const manifest_json = global_store.readAbsoluteFile(allocator, io, manifest_abs) catch return error.CheckpointNotFound;
+    defer allocator.free(manifest_json);
 
     const ManifestEntry = struct {
         path: []const u8,
         operation: []const u8,
     };
 
-    const parsed = std.json.parseFromSlice([]ManifestEntry, allocator, manifest_snap.content, .{}) catch return error.CheckpointNotFound;
+    const parsed = std.json.parseFromSlice([]ManifestEntry, allocator, manifest_json, .{}) catch return error.CheckpointNotFound;
     defer parsed.deinit();
 
     var checkpoint_root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const checkpoint_root = try std.fmt.bufPrint(&checkpoint_root_buf, "{s}/{d}", .{ checkpoints_dir, checkpoint_id });
+    const checkpoint_root_abs = std.fmt.bufPrint(&checkpoint_root_buf, "{s}/{d}", .{ cp_base, checkpoint_id }) catch return error.WorkspaceFailed;
 
     for (parsed.value) |entry| {
         const wp = path_mod.WorkspacePath.parse(entry.path) catch return error.WorkspaceFailed;
@@ -288,10 +321,10 @@ pub fn restore(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Workspac
         }
 
         var backup_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const backup_rel = try std.fmt.bufPrint(&backup_buf, "{s}/{s}", .{ checkpoint_root, entry.path });
-        var snap = try snapshot.FileSnapshot.read(allocator, io, root, try path_mod.WorkspacePath.parse(backup_rel));
-        defer snap.deinit();
-        atomic.replaceFile(io, root, wp, snap.content) catch return error.WorkspaceFailed;
+        const backup_abs = std.fmt.bufPrint(&backup_buf, "{s}/{s}", .{ checkpoint_root_abs, entry.path }) catch return error.WorkspaceFailed;
+        const backup_content = global_store.readAbsoluteFile(allocator, io, backup_abs) catch return error.CheckpointNotFound;
+        defer allocator.free(backup_content);
+        atomic.replaceFile(io, root, wp, backup_content) catch return error.WorkspaceFailed;
     }
 }
 
@@ -313,24 +346,27 @@ pub fn findEntry(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Worksp
     return error.CheckpointNotFound;
 }
 
-fn appendIndex(io: std.Io, root: path_mod.WorkspaceRoot, line: []const u8) CheckpointError!void {
+fn appendIndex(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, line: []const u8) CheckpointError!void {
+    const idx_path = indexAbsPath(allocator, io, root) catch return error.WorkspaceFailed;
+    defer allocator.free(idx_path);
+
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const allocator = arena.allocator();
+    const a = arena.allocator();
 
     var buffer: std.ArrayList(u8) = .empty;
-    defer buffer.deinit(allocator);
+    defer buffer.deinit(a);
 
-    const existing = readRelative(allocator, io, root, index_file) catch |err| switch (err) {
+    const existing = global_store.readAbsoluteFile(a, io, idx_path) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return error.WorkspaceFailed,
     };
     if (existing) |bytes| {
-        buffer.appendSlice(allocator, bytes) catch return error.WorkspaceFailed;
-        if (bytes.len > 0 and bytes[bytes.len - 1] != '\n') buffer.append(allocator, '\n') catch return error.WorkspaceFailed;
+        buffer.appendSlice(a, bytes) catch return error.WorkspaceFailed;
+        if (bytes.len > 0 and bytes[bytes.len - 1] != '\n') buffer.append(a, '\n') catch return error.WorkspaceFailed;
     }
-    buffer.appendSlice(allocator, line) catch return error.WorkspaceFailed;
-    atomic.replaceFile(io, root, path_mod.WorkspacePath.parse(index_file) catch return error.WorkspaceFailed, buffer.items) catch return error.WorkspaceFailed;
+    buffer.appendSlice(a, line) catch return error.WorkspaceFailed;
+    global_store.replaceAbsoluteFile(io, idx_path, buffer.items) catch return error.WorkspaceFailed;
 }
 
 fn readRelative(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, rel: []const u8) ![]u8 {
@@ -338,6 +374,11 @@ fn readRelative(allocator: std.mem.Allocator, io: std.Io, root: path_mod.Workspa
     var snap = try snapshot.FileSnapshot.read(allocator, io, root, wp);
     defer snap.deinit();
     return allocator.dupe(u8, snap.content);
+}
+
+/// Returns index entries. Alias used by linkTransaction.
+fn listEntriesAlloc(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot) CheckpointError!EntryList {
+    return listEntries(allocator, io, root);
 }
 
 test "checkpoint create and restore roundtrip" {

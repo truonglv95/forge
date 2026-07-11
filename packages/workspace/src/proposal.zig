@@ -2,6 +2,7 @@ const std = @import("std");
 const edit = @import("edit.zig");
 const path_mod = @import("path.zig");
 const snapshot = @import("snapshot.zig");
+const global_store = @import("global_store.zig");
 
 pub const schema_version: u32 = 1;
 
@@ -113,10 +114,16 @@ pub const OwnedProposal = struct {
     }
 
     pub fn readPath(allocator: std.mem.Allocator, io: std.Io, root: path_mod.WorkspaceRoot, proposal_path: []const u8) !OwnedProposal {
-        const wp = try path_mod.WorkspacePath.parse(proposal_path);
-        var snap = try snapshot.FileSnapshot.read(allocator, io, root, wp);
-        defer snap.deinit();
-        return parseJson(allocator, snap.content);
+        const content = if (std.fs.path.isAbsolute(proposal_path)) blk: {
+            break :blk try global_store.readAbsoluteFile(allocator, io, proposal_path);
+        } else blk: {
+            const wp = try path_mod.WorkspacePath.parse(proposal_path);
+            var snap = try snapshot.FileSnapshot.read(allocator, io, root, wp);
+            defer snap.deinit();
+            break :blk try allocator.dupe(u8, snap.content);
+        };
+        defer allocator.free(content);
+        return parseJson(allocator, content);
     }
 };
 

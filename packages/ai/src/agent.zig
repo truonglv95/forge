@@ -621,12 +621,17 @@ pub fn run(
     defer allocator.free(run_id);
 
     const augmented_body = final_proposal orelse return error.InvalidProposal;
+    // Store proposal in session dir: ~/.forge/sessions/<hash>/proposals/<run_id>.json
+    const session_dir_ag = workspace.global_store.getSessionDir(allocator, io, root) catch return error.WorkspaceFailed;
+    defer allocator.free(session_dir_ag);
+    var prop_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const prop_dir_abs = std.fmt.bufPrint(&prop_dir_buf, "{s}/proposals", .{session_dir_ag}) catch return error.WorkspaceFailed;
+    workspace.global_store.mkdirAllAbsolute(prop_dir_abs) catch {};
     var proposal_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const proposal_rel = std.fmt.bufPrint(&proposal_path_buf, ".forge/proposals/{s}.json", .{run_id}) catch return error.WorkspaceFailed;
+    const proposal_abs = std.fmt.bufPrint(&proposal_path_buf, "{s}/proposals/{s}.json", .{ session_dir_ag, run_id }) catch return error.WorkspaceFailed;
 
     workspace.history.ensureLayout(allocator, io, root) catch return error.WorkspaceFailed;
-    workspace.atomic.ensureProposalDir(io, root) catch return error.WorkspaceFailed;
-    workspace.atomic.replaceFile(io, root, workspace.WorkspacePath.parse(proposal_rel) catch return error.WorkspaceFailed, augmented_body) catch return error.WorkspaceFailed;
+    workspace.global_store.replaceAbsoluteFile(io, proposal_abs, augmented_body) catch return error.WorkspaceFailed;
 
     const meta = llm.metadata();
     const record = run_record.Record{
@@ -634,7 +639,7 @@ pub fn run(
         .surface = config.surface,
         .intent = intent,
         .state = .proposed,
-        .proposal_path = proposal_rel,
+        .proposal_path = proposal_abs,
         .provider_id = meta.provider_name,
         .model_id = meta.model_name,
         .timestamp_ms = timestamp_ms + 1,
@@ -648,14 +653,14 @@ pub fn run(
     defer allocator.free(index_line);
     workspace.runs.appendIndex(allocator, io, root, index_line) catch return error.WorkspaceFailed;
 
-    const propose_summary = std.fmt.allocPrint(allocator, "proposal at {s}", .{proposal_rel}) catch return error.WorkspaceFailed;
+    const propose_summary = std.fmt.allocPrint(allocator, "proposal at {s}", .{proposal_abs}) catch return error.WorkspaceFailed;
     defer allocator.free(propose_summary);
     try appendStep(allocator, &steps, next_index, "propose", propose_summary, run_id, effective_config);
     emitProgress(effective_config, .proposal_ready);
 
     const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
     const owned_run_id = allocator.dupe(u8, run_id) catch return error.WorkspaceFailed;
-    const owned_proposal = allocator.dupe(u8, proposal_rel) catch return error.WorkspaceFailed;
+    const owned_proposal = allocator.dupe(u8, proposal_abs) catch return error.WorkspaceFailed;
     const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
 
     const session_json = formatSessionJson(

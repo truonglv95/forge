@@ -19,15 +19,17 @@ pub const Settings = struct {
 };
 
 pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !Settings {
+    _ = root;
     var settings: Settings = .{};
     errdefer settings.deinit(allocator);
 
-    const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return settings;
-    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return settings;
-    defer snap.deinit();
+    const home_settings = workspace.global_store.joinHome(allocator, "settings.toml") catch return settings;
+    defer allocator.free(home_settings);
+    const content = workspace.global_store.readAbsoluteFile(allocator, io, home_settings) catch return settings;
+    defer allocator.free(content);
 
     var section: []const u8 = "";
-    var lines = std.mem.splitScalar(u8, snap.content, '\n');
+    var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw_line| {
         const without_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |index|
             raw_line[0..index]
@@ -96,23 +98,25 @@ pub fn writeWordWrap(
     root: workspace.WorkspaceRoot,
     enabled: bool,
 ) !void {
-    const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
+    _ = root;
+    const home_settings = try workspace.global_store.joinHome(allocator, "settings.toml");
+    defer allocator.free(home_settings);
     const value = if (enabled) "true" else "false";
 
-    var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch {
-        const content = try std.fmt.allocPrint(allocator, "[editor]\nword_wrap = {s}\n", .{value});
-        defer allocator.free(content);
-        try workspace.atomic.replaceFile(io, root, wp, content);
+    const content = workspace.global_store.readAbsoluteFile(allocator, io, home_settings) catch {
+        const default_content = try std.fmt.allocPrint(allocator, "[editor]\nword_wrap = {s}\n", .{value});
+        defer allocator.free(default_content);
+        try workspace.global_store.replaceAbsoluteFile(io, home_settings, default_content);
         return;
     };
-    defer snap.deinit();
+    defer allocator.free(content);
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     var in_editor = false;
     var wrote = false;
-    var lines = std.mem.splitScalar(u8, snap.content, '\n');
+    var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw_line| {
         const trimmed = std.mem.trim(u8, &std.ascii.whitespace, raw_line);
         if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
@@ -143,7 +147,7 @@ pub fn writeWordWrap(
         try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "word_wrap = {s}\n", .{value}));
     }
 
-    try workspace.atomic.replaceFile(io, root, wp, out.items);
+    try workspace.global_store.replaceAbsoluteFile(io, home_settings, out.items);
 }
 
 pub fn mergeExtensionTheme(allocator: std.mem.Allocator, existing: []const u8, qualified: []const u8) ![]u8 {
