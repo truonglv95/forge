@@ -37,6 +37,7 @@ pub const Status = struct {
     entries: []Entry,
     staged_ptrs: []*const Entry,
     unstaged_ptrs: []*const Entry,
+    directory_status: std.StringHashMap([2]u8),
     is_repo: bool,
     branch: ?[]const u8 = null,
     ahead: u32 = 0,
@@ -47,6 +48,9 @@ pub const Status = struct {
         allocator.free(self.entries);
         allocator.free(self.staged_ptrs);
         allocator.free(self.unstaged_ptrs);
+        var dir_it = self.directory_status.iterator();
+        while (dir_it.next()) |entry| allocator.free(entry.key_ptr.*);
+        self.directory_status.deinit();
         if (self.branch) |branch| allocator.free(branch);
         self.* = undefined;
     }
@@ -81,18 +85,36 @@ pub const Status = struct {
         }
         return null;
     }
+
+    pub fn directoryAggregate(self: *const Status, path: []const u8) ?[2]u8 {
+        var trimmed = path;
+        while (trimmed.len > 0 and (trimmed[trimmed.len - 1] == '/' or trimmed[trimmed.len - 1] == '\\')) {
+            trimmed = trimmed[0 .. trimmed.len - 1];
+        }
+        return self.directory_status.get(trimmed);
+    }
 };
+
+fn emptyStatus(allocator: std.mem.Allocator, is_repo: bool) Status {
+    return .{
+        .entries = &.{},
+        .staged_ptrs = &.{},
+        .unstaged_ptrs = &.{},
+        .directory_status = std.StringHashMap([2]u8).init(allocator),
+        .is_repo = is_repo,
+    };
+}
 
 /// Uses raw pipe/fork instead of std.process.spawn(Io) so C-opened PTY fds are not reused.
 pub fn refresh(allocator: std.mem.Allocator, workspace_path: []const u8) !Status {
     const output = runCapture(allocator, workspace_path, &.{
         "git", "status", "--porcelain=v1", "-b",
-    }) catch return .{ .entries = &.{}, .staged_ptrs = &.{}, .unstaged_ptrs = &.{}, .is_repo = false };
+    }) catch return emptyStatus(allocator, false);
     defer allocator.free(output);
 
     if (output.len == 0) {
         const is_repo = runExitCode(workspace_path, &.{ "git", "rev-parse", "--is-inside-work-tree" }) == 0;
-        return .{ .entries = &.{}, .staged_ptrs = &.{}, .unstaged_ptrs = &.{}, .is_repo = is_repo };
+        return emptyStatus(allocator, is_repo);
     }
 
     var branch: ?[]const u8 = null;
@@ -138,15 +160,63 @@ pub fn refresh(allocator: std.mem.Allocator, workspace_path: []const u8) !Status
         if (entry.isUnstaged()) try unstaged_ptrs.append(allocator, entry);
     }
 
+    var directory_status = std.StringHashMap([2]u8).init(allocator);
+    errdefer {
+        var dir_it = directory_status.iterator();
+        while (dir_it.next()) |entry| allocator.free(entry.key_ptr.*);
+        directory_status.deinit();
+    }
+    try buildDirectoryStatus(allocator, &directory_status, entries);
+
     return .{
         .entries = entries,
         .staged_ptrs = try staged_ptrs.toOwnedSlice(allocator),
         .unstaged_ptrs = try unstaged_ptrs.toOwnedSlice(allocator),
+        .directory_status = directory_status,
         .is_repo = true,
         .branch = branch,
         .ahead = ahead,
         .behind = behind,
     };
+}
+
+fn mergeStatus(current: [2]u8, next: [2]u8) [2]u8 {
+    var out = current;
+    if (out[0] == ' ' or out[0] == 0) out[0] = next[0];
+    if (out[1] == ' ' or out[1] == 0) out[1] = next[1];
+    if (next[0] == '?' or next[1] == '?') out = .{ '?', '?' };
+    if (next[0] == 'U' or next[1] == 'U') out = .{ 'U', 'U' };
+    return out;
+}
+
+fn addDirectoryAggregate(
+    allocator: std.mem.Allocator,
+    map: *std.StringHashMap([2]u8),
+    path: []const u8,
+    status: [2]u8,
+) !void {
+    const owned = try allocator.dupe(u8, path);
+    const gop = try map.getOrPut(owned);
+    if (gop.found_existing) {
+        allocator.free(owned);
+        gop.value_ptr.* = mergeStatus(gop.value_ptr.*, status);
+        return;
+    }
+    gop.value_ptr.* = status;
+}
+
+fn buildDirectoryStatus(
+    allocator: std.mem.Allocator,
+    map: *std.StringHashMap([2]u8),
+    entries: []const Entry,
+) !void {
+    for (entries) |entry| {
+        var slash_pos = std.mem.indexOfScalar(u8, entry.path, '/') orelse continue;
+        while (true) {
+            if (slash_pos > 0) try addDirectoryAggregate(allocator, map, entry.path[0..slash_pos], entry.status);
+            slash_pos = std.mem.indexOfScalarPos(u8, entry.path, slash_pos + 1, '/') orelse break;
+        }
+    }
 }
 
 fn runCapture(allocator: std.mem.Allocator, cwd: []const u8, args: []const []const u8) ![]u8 {

@@ -23,32 +23,11 @@ pub fn embedInto(allocator: std.mem.Allocator, text: []const u8, out: []f32) !vo
 
 pub fn embed(allocator: std.mem.Allocator, text: []const u8, out: *[dim]f32) !void {
     @memset(out, 0);
-    var tokens: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (tokens.items) |token| allocator.free(token);
-        tokens.deinit(allocator);
-    }
-    try tokenize(allocator, text, &tokens);
 
-    var unique = std.StringHashMap(void).init(allocator);
+    var unique = std.AutoHashMap(u64, void).init(allocator);
     defer unique.deinit();
 
-    for (tokens.items) |token| {
-        if (unique.contains(token)) continue;
-        try unique.put(token, {});
-
-        const h = std.hash.Wyhash.hash(0, token);
-        const bucket = h % dim;
-        const sign: f32 = if ((h >> 32) & 1 == 1) 1.0 else -1.0;
-        out[bucket] += sign;
-        if (token.len > 6) {
-            const stem_hash = std.hash.Wyhash.hash(1, token[0..6]);
-            const stem_bucket = stem_hash % dim;
-            const stem_sign: f32 = if ((stem_hash >> 32) & 1 == 1) 1.0 else -1.0;
-            out[stem_bucket] += stem_sign;
-        }
-    }
-
+    try tokenizeIntoVector(text, &unique, out);
     normalize(out);
 }
 
@@ -74,7 +53,11 @@ fn normalize(vec: *[dim]f32) void {
     for (0..dim) |i| vec[i] /= norm;
 }
 
-fn tokenize(allocator: std.mem.Allocator, text: []const u8, out: *std.ArrayList([]const u8)) !void {
+fn tokenizeIntoVector(
+    text: []const u8,
+    unique: *std.AutoHashMap(u64, void),
+    out: *[dim]f32,
+) !void {
     var start: usize = 0;
     while (start <= text.len) {
         const end = blk: {
@@ -85,16 +68,16 @@ fn tokenize(allocator: std.mem.Allocator, text: []const u8, out: *std.ArrayList(
         if (end > start) {
             const raw = text[start..end];
             if (raw.len >= 2) {
-                try appendLowerToken(allocator, out, raw);
+                try addLowerToken(unique, out, raw);
                 var segment_start: usize = 0;
                 for (raw, 0..) |char, index| {
                     if (index > segment_start and std.ascii.isUpper(char) and std.ascii.isLower(raw[index - 1])) {
-                        if (index - segment_start >= 2) try appendLowerToken(allocator, out, raw[segment_start..index]);
+                        if (index - segment_start >= 2) try addLowerToken(unique, out, raw[segment_start..index]);
                         segment_start = index;
                     }
                 }
                 if (segment_start > 0 and raw.len - segment_start >= 2) {
-                    try appendLowerToken(allocator, out, raw[segment_start..]);
+                    try addLowerToken(unique, out, raw[segment_start..]);
                 }
             }
         }
@@ -104,17 +87,46 @@ fn tokenize(allocator: std.mem.Allocator, text: []const u8, out: *std.ArrayList(
     }
 }
 
-fn appendLowerToken(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8), raw: []const u8) !void {
-    const lower = try allocator.dupe(u8, raw);
-    errdefer allocator.free(lower);
-    for (lower) |*char| char.* = std.ascii.toLower(char.*);
+fn addLowerToken(
+    unique: *std.AutoHashMap(u64, void),
+    out: *[dim]f32,
+    raw: []const u8,
+) !void {
+    if (raw.len < 2) return;
 
-    if (stop_words.has(lower)) {
-        allocator.free(lower);
+    var stack_buf: [256]u8 = undefined;
+    if (raw.len <= stack_buf.len) {
+        const lower = stack_buf[0..raw.len];
+        for (raw, 0..) |char, index| lower[index] = std.ascii.toLower(char);
+        if (stop_words.has(lower)) return;
+
+        const token_hash = std.hash.Wyhash.hash(0, lower);
+        const gop = try unique.getOrPut(token_hash);
+        if (gop.found_existing) return;
+        addHashedToken(out, token_hash);
+        if (lower.len > 6) addHashedToken(out, std.hash.Wyhash.hash(1, lower[0..6]));
         return;
     }
 
-    try out.append(allocator, lower);
+    var hasher = std.hash.Wyhash.init(0);
+    var stem_buf: [6]u8 = undefined;
+    for (raw, 0..) |char, index| {
+        const lower_char = std.ascii.toLower(char);
+        var one: [1]u8 = .{lower_char};
+        hasher.update(&one);
+        if (index < stem_buf.len) stem_buf[index] = lower_char;
+    }
+    const token_hash = hasher.final();
+    const gop = try unique.getOrPut(token_hash);
+    if (gop.found_existing) return;
+    addHashedToken(out, token_hash);
+    if (raw.len > 6) addHashedToken(out, std.hash.Wyhash.hash(1, &stem_buf));
+}
+
+fn addHashedToken(out: *[dim]f32, h: u64) void {
+    const bucket: usize = @intCast(h % dim);
+    const sign: f32 = if ((h >> 32) & 1 == 1) 1.0 else -1.0;
+    out[bucket] += sign;
 }
 
 fn isBoundary(c: u8) bool {

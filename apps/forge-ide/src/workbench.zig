@@ -47,6 +47,7 @@ const session_restore_mod = @import("workbench/session_restore.zig");
 const chat_persistence_mod = @import("workbench/chat_persistence.zig");
 const agent_ui_queue_mod = @import("workbench/agent_ui_queue.zig");
 const ghost_completion_mod = @import("workbench/ghost_completion.zig");
+const sync_mod = @import("forge-util").sync;
 
 pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, ai_settings, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename };
 pub const EditorPane = enum { primary, secondary };
@@ -90,6 +91,11 @@ pub const Workbench = struct {
     search_results: ?search_engine.ResultSet = null,
     search_scroll_y: f32 = 0,
     git_status: ?git_status_mod.Status = null,
+    git_refresh_mutex: sync_mod.Mutex = .{},
+    git_refresh_running: bool = false,
+    git_refresh_ready: bool = false,
+    git_refresh_failed: bool = false,
+    git_refresh_pending_status: ?git_status_mod.Status = null,
     git_scroll_y: f32 = 0,
     run_scroll_y: f32 = 0,
     breakpoints: breakpoints_mod.Store,
@@ -163,6 +169,7 @@ pub const Workbench = struct {
     conflict_path: ?[]const u8 = null,
     recovery_count: usize = 0,
     conflict_check_cooldown: f32 = 0,
+    conflict_full_check_cooldown: f32 = 30.0,
     terminal_prompt_refresh_cooldown: f32 = 3.0,
     terminal_boot_pending: bool = false,
     explorer_boot_pending: bool = false,
@@ -420,6 +427,11 @@ pub const Workbench = struct {
         self.git_commit_msg.deinit();
         if (self.search_results) |*results| results.deinit(self.allocator);
         if (self.git_status) |*status| status.deinit(self.allocator);
+        self.git_refresh_mutex.lock();
+        if (self.git_refresh_pending_status) |*status| status.deinit(self.allocator);
+        self.git_refresh_pending_status = null;
+        self.git_refresh_mutex.unlock();
+        self.git_refresh_mutex.deinit();
         if (self.debug_stop_path) |path| self.allocator.free(path);
         self.debug_variables.deinit();
         self.debug_callstack.deinit();
@@ -950,6 +962,14 @@ pub const Workbench = struct {
 
     pub fn refreshGitStatus(self: *Workbench) !void {
         return @import("workbench/git_ops.zig").refreshGitStatus(self);
+    }
+
+    pub fn scheduleGitStatusRefresh(self: *Workbench) void {
+        @import("workbench/git_ops.zig").scheduleGitStatusRefresh(self);
+    }
+
+    pub fn flushGitStatusRefresh(self: *Workbench) !bool {
+        return @import("workbench/git_ops.zig").flushGitStatusRefresh(self);
     }
 
     pub fn updateTerminalPrompt(self: *Workbench) !void {
@@ -1658,6 +1678,9 @@ pub const Workbench = struct {
     pub fn tickFrame(self: *Workbench, dt: f32) !void {
         self.workspace_symbol_picker.tick(dt);
         try self.flushAgentUi();
+        if (try self.flushGitStatusRefresh()) {
+            if (self.bottom_panel_mode == .terminal) self.updateTerminalPrompt() catch {};
+        }
 
         if (self.agent.worker_running) {
             var win_w: f32 = 0;
@@ -1674,16 +1697,26 @@ pub const Workbench = struct {
 
         self.conflict_check_cooldown -= dt;
         if (self.conflict_check_cooldown <= 0) {
-            self.conflict_check_cooldown = 2.0;
+            self.conflict_check_cooldown = 5.0;
             if (self.focused_panel != .palette and self.focused_panel != .recovery and self.focused_panel != .conflict) {
-                for (self.tabs.tabs.items) |*doc| {
+                self.conflict_full_check_cooldown -= 5.0;
+                const full_check = self.conflict_full_check_cooldown <= 0;
+                if (full_check) self.conflict_full_check_cooldown = 30.0;
+                if (full_check) {
+                    for (self.tabs.tabs.items) |*doc| {
+                        try doc.checkExternalConflict(self.io, self.workspace_root);
+                        if (doc.external_conflict and !doc.isDirty()) {
+                            try @import("workspace_io.zig").loadDocument(self.io, self.workspace_root, doc);
+                        }
+                    }
+                } else if (self.tabs.activeDoc()) |doc| {
                     try doc.checkExternalConflict(self.io, self.workspace_root);
                     if (doc.external_conflict and !doc.isDirty()) {
                         try @import("workspace_io.zig").loadDocument(self.io, self.workspace_root, doc);
                     }
                 }
-                if (self.tabs.activeDoc()) |doc| {
-                    if (doc.external_conflict) try self.openConflictDialog(doc.path);
+                if (self.tabs.activeDoc()) |active_doc| {
+                    if (active_doc.external_conflict) try self.openConflictDialog(active_doc.path);
                 }
             }
         }
@@ -1701,16 +1734,16 @@ pub const Workbench = struct {
             self.terminal_boot_pending = false;
             self.activeTerminal().ensureStarted() catch {};
             self.syncTerminalSize();
-            self.refreshGitStatus() catch {};
             self.updateTerminalPrompt() catch {};
+            self.scheduleGitStatusRefresh();
         }
 
         if (self.bottom_panel_mode == .terminal) {
             self.terminal_prompt_refresh_cooldown -= dt;
             if (self.terminal_prompt_refresh_cooldown <= 0) {
                 self.terminal_prompt_refresh_cooldown = 3.0;
-                self.refreshGitStatus() catch {};
                 self.updateTerminalPrompt() catch {};
+                self.scheduleGitStatusRefresh();
             }
             self.syncTerminalSize();
         }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const forge_util = @import("forge-util");
+const renderer = @import("forge-renderer");
 const agent_session = @import("../agent/session.zig");
 const agent_workflow = @import("../agent/workflow.zig");
 const workspace = @import("forge-workspace");
@@ -71,6 +72,7 @@ pub const Queue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         try self.items.append(allocator, op);
+        renderer.Renderer.requestRedraw();
     }
 
     pub fn takeAll(self: *Queue, allocator: std.mem.Allocator) ![]Op {

@@ -109,17 +109,6 @@ static CTLineRef ForgeGetCachedCTLine(NSString *text, CTFontRef font) {
 
 
 // --- Icon Atlas ---
-@interface ForgeIconAtlas : NSObject
-@property (strong) id<MTLTexture> texture;
-@property (assign) uint8_t *bitmapData;
-@property (strong) NSMutableDictionary *iconCache;
-@property (assign) int currentX;
-@property (assign) int currentY;
-@property (assign) int rowHeight;
-@property (assign) BOOL needsUpload;
-@property (assign) NSVGrasterizer *rasterizer;
-@end
-
 typedef struct {
     float uvX;
     float uvY;
@@ -127,11 +116,31 @@ typedef struct {
     float gh;
 } ForgeIconInfo;
 
+typedef struct {
+    const char* svg_ptr;
+    int w;
+    int h;
+    ForgeIconInfo info;
+} CachedIcon;
+
+@interface ForgeIconAtlas : NSObject {
+    CachedIcon _cachedIcons[256];
+    int _cachedIconCount;
+}
+@property (strong) id<MTLTexture> texture;
+@property (assign) uint8_t *bitmapData;
+@property (assign) int currentX;
+@property (assign) int currentY;
+@property (assign) int rowHeight;
+@property (assign) BOOL needsUpload;
+@property (assign) NSVGrasterizer *rasterizer;
+@end
+
 @implementation ForgeIconAtlas
 - (instancetype)initWithDevice:(id<MTLDevice>)device {
     self = [super init];
     if (self) {
-        _iconCache = [NSMutableDictionary new];
+        _cachedIconCount = 0;
         _currentX = 1;
         _currentY = 1;
         _rowHeight = 0;
@@ -151,12 +160,10 @@ typedef struct {
 }
 
 - (ForgeIconInfo)getIconInfo:(const char*)svg_string width:(int)w height:(int)h {
-    NSString *key = [NSString stringWithFormat:@"%lu_%d_%d", (unsigned long)[@(svg_string) hash], w, h];
-    NSValue *cached = _iconCache[key];
-    if (cached) {
-        ForgeIconInfo info;
-        [cached getValue:&info];
-        return info;
+    for (int i = 0; i < _cachedIconCount; i++) {
+        if (_cachedIcons[i].svg_ptr == svg_string && _cachedIcons[i].w == w && _cachedIcons[i].h == h) {
+            return _cachedIcons[i].info;
+        }
     }
     
     char* mut_svg = strdup(svg_string);
@@ -225,8 +232,13 @@ typedef struct {
     info.gw = w;
     info.gh = h;
     
-    _iconCache[key] = [NSValue valueWithBytes:&info objCType:@encode(ForgeIconInfo)];
-    
+    if (_cachedIconCount < 256) {
+        _cachedIcons[_cachedIconCount].svg_ptr = svg_string;
+        _cachedIcons[_cachedIconCount].w = w;
+        _cachedIcons[_cachedIconCount].h = h;
+        _cachedIcons[_cachedIconCount].info = info;
+        _cachedIconCount++;
+    }
     _currentX += w;
     _needsUpload = YES;
     
@@ -567,12 +579,14 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
         }
         const char *cChars = chars ? [chars UTF8String] : "";
         g_keyCallback(event.keyCode, cChars, true, ForgeMapModifiers(event.modifierFlags));
+        [self setNeedsDisplay:YES];
     }
 }
 
 - (void)keyUp:(NSEvent *)event {
     if (g_keyCallback) {
         g_keyCallback(event.keyCode, "", false, ForgeMapModifiers(event.modifierFlags));
+        [self setNeedsDisplay:YES];
     }
 }
 
@@ -581,6 +595,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
         g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 0, ForgeMapModifiers(event.modifierFlags));
+        [self setNeedsDisplay:YES];
     }
 }
 
@@ -588,6 +603,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
         g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 1, ForgeMapModifiers(event.modifierFlags));
+        [self setNeedsDisplay:YES];
     }
 }
 
@@ -595,6 +611,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
         g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 2, ForgeMapModifiers(event.modifierFlags));
+        [self setNeedsDisplay:YES];
     }
 }
 
@@ -602,6 +619,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
         g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 3, ForgeMapModifiers(event.modifierFlags));
+        [self setNeedsDisplay:YES];
     }
 }
 
@@ -616,6 +634,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
             dy *= 15.0;
         }
         g_mouseCallback(dx, dy, 0, 4, ForgeMapModifiers(event.modifierFlags));
+        [self setNeedsDisplay:YES];
     }
 }
 @end
@@ -940,6 +959,8 @@ void forge_mac_create_window(const char* title, int width, int height) {
         ForgeMTKView *mtkView = [[ForgeMTKView alloc] initWithFrame:frame device:device];
         mtkView.clearColor = MTLClearColorMake(0.1, 0.1, 0.15, 1.0);
         mtkView.preferredFramesPerSecond = 120; // Support ProMotion 120Hz displays
+        mtkView.enableSetNeedsDisplay = YES;
+        mtkView.paused = YES;
         
         window.acceptsMouseMovedEvents = YES;
         
@@ -962,8 +983,28 @@ void forge_mac_create_window(const char* title, int width, int height) {
         });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
             ForgeBringWindowToFront(window);
+            [mtkView setNeedsDisplay:YES];
         });
     }
+}
+
+void forge_mac_request_redraw(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_renderer && g_renderer.mtkView) {
+            [g_renderer.mtkView setNeedsDisplay:YES];
+        }
+    });
+}
+
+void forge_mac_set_continuous_rendering(bool enabled) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_renderer && g_renderer.mtkView) {
+            g_renderer.mtkView.paused = enabled ? NO : YES;
+            if (enabled) {
+                [g_renderer.mtkView setNeedsDisplay:YES];
+            }
+        }
+    });
 }
 
 void forge_mac_run(void) {

@@ -14,6 +14,7 @@ const keys_sidebar = @import("keys_sidebar.zig");
 pub fn onKeyEvent(event: renderer.KeyEvent) void {
     if (!event.is_down) return;
     const wb = state.wb orelse return;
+    state.markAllDirty();
 
     var win_h: f32 = 768;
     var win_w: f32 = 1024;
