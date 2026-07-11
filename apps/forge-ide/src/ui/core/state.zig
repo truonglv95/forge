@@ -19,6 +19,9 @@ pub var perf_measure_hits: u64 = 0;
 pub var perf_measure_misses: u64 = 0;
 pub var perf_markdown_height_hits: u64 = 0;
 pub var perf_markdown_height_misses: u64 = 0;
+pub var perf_redraw_requests: u64 = 0;
+pub var perf_frames: u64 = 0;
+pub var perf_agent_queue_coalesced: u64 = 0;
 pub var continuous_rendering_enabled: bool = false;
 
 pub const DirtyPanel = enum(u3) {

@@ -153,6 +153,14 @@ pub const Renderer = struct {
         mac.forge_mac_set_continuous_rendering(enabled);
     }
 
+    pub fn renderStats(redraw_requests: *u64, frames: *u64) void {
+        var native_requests: c_ulonglong = 0;
+        var native_frames: c_ulonglong = 0;
+        mac.forge_mac_get_render_stats(&native_requests, &native_frames);
+        redraw_requests.* = @intCast(native_requests);
+        frames.* = @intCast(native_frames);
+    }
+
     pub fn setRenderCallback(callback: *const fn () void) void {
         app_render_callback = callback;
     }

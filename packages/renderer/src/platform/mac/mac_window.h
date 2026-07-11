@@ -16,6 +16,7 @@ void forge_mac_run(void);
 void forge_mac_create_window(const char* title, int width, int height);
 void forge_mac_request_redraw(void);
 void forge_mac_set_continuous_rendering(bool enabled);
+void forge_mac_get_render_stats(unsigned long long *redraw_requests, unsigned long long *frames);
 
 typedef void (*ForgeRenderCallback)(void);
 typedef void (*ForgeKeyCallback)(int keycode, const char* chars, bool isDown, int modifiers);
