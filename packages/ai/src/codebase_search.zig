@@ -336,6 +336,8 @@ pub fn search(
     @memset(query_vec, 0);
 
     try embedQueryCached(allocator, io, &backend, query, index.dim, query_vec);
+    const query_norm_sq = normSquared(query_vec);
+    if (query_norm_sq == 0) return &.{};
 
     var scores: std.ArrayList(ScoreItem) = .empty;
     defer scores.deinit(allocator);
@@ -348,7 +350,7 @@ pub fn search(
         const byte_len = dim * @sizeOf(f32);
         if (offset + byte_len > index.vectors.len) continue;
         const vec = index.vectors[offset .. offset + byte_len];
-        const score = cosineBytes(query_vec, vec);
+        const score = cosineBytesWithNorm(query_vec, query_norm_sq, vec);
         if (score <= 0.001) continue; // pre-filter obvious misses only
         try insertTopScore(allocator, &scores, .{ .index = chunk_index, .score = score }, score_cap);
     }
@@ -420,20 +422,28 @@ fn cosineSlices(a: []const f32, b: []const f32) f32 {
     return dot / denom;
 }
 
+fn normSquared(values: []const f32) f32 {
+    var total: f32 = 0;
+    for (values) |value| total += value * value;
+    return total;
+}
+
 fn cosineBytes(a: []const f32, b_bytes: []const u8) f32 {
+    return cosineBytesWithNorm(a, normSquared(a), b_bytes);
+}
+
+fn cosineBytesWithNorm(a: []const f32, a_norm_sq: f32, b_bytes: []const u8) f32 {
     const len = @min(a.len, b_bytes.len / @sizeOf(f32));
     var dot: f32 = 0;
-    var na: f32 = 0;
     var nb: f32 = 0;
     for (0..len) |i| {
         const start = i * @sizeOf(f32);
         const bits = std.mem.readInt(u32, b_bytes[start..][0..4], .little);
         const b: f32 = @bitCast(bits);
         dot += a[i] * b;
-        na += a[i] * a[i];
         nb += b * b;
     }
-    const denom = @sqrt(na * nb);
+    const denom = @sqrt(a_norm_sq * nb);
     if (denom == 0) return 0;
     return dot / denom;
 }

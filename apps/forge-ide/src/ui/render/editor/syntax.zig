@@ -60,6 +60,44 @@ fn tokenColor(token_type: u32, theme: *const @import("forge-workspace").Theme) r
     return color(theme.colors.editor_fg);
 }
 
+const SemanticLineCache = struct {
+    tokens_ptr: usize = 0,
+    len: usize = 0,
+    line: usize = 0,
+    index: usize = 0,
+};
+
+var semantic_line_cache: SemanticLineCache = .{};
+
+fn firstSemanticTokenForLine(tokens: []lsp.semantic_tokens.AbsoluteToken, line_idx: usize) usize {
+    if (tokens.len == 0) return 0;
+
+    const ptr = @intFromPtr(tokens.ptr);
+    if (semantic_line_cache.tokens_ptr == ptr and
+        semantic_line_cache.len == tokens.len and
+        semantic_line_cache.index <= tokens.len and
+        semantic_line_cache.line <= line_idx)
+    {
+        var i = semantic_line_cache.index;
+        while (i < tokens.len and tokens[i].line < line_idx) : (i += 1) {}
+        semantic_line_cache = .{ .tokens_ptr = ptr, .len = tokens.len, .line = line_idx, .index = i };
+        return i;
+    }
+
+    var left: usize = 0;
+    var right: usize = tokens.len;
+    while (left < right) {
+        const mid = left + (right - left) / 2;
+        if (tokens[mid].line < line_idx) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    semantic_line_cache = .{ .tokens_ptr = ptr, .len = tokens.len, .line = line_idx, .index = left };
+    return left;
+}
+
 pub fn drawHighlightedLine(
     line: []const u8,
     line_idx: usize,
@@ -75,18 +113,7 @@ pub fn drawHighlightedLine(
 
     // Use semantic tokens if available
     if (semantic_tokens) |tokens| {
-        // Binary search for first token on this line
-        var left: usize = 0;
-        var right: usize = tokens.len;
-        while (left < right) {
-            const mid = left + (right - left) / 2;
-            if (tokens[mid].line < line_idx) {
-                left = mid + 1;
-            } else {
-                right = mid;
-            }
-        }
-        var i = left;
+        var i = firstSemanticTokenForLine(tokens, line_idx);
         var last_end: usize = 0;
         while (i < tokens.len and tokens[i].line == line_idx and span_count < spans.len) : (i += 1) {
             const tok = tokens[i];

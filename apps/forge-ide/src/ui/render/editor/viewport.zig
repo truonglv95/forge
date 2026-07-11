@@ -110,6 +110,12 @@ pub fn drawEditorViewport(
     };
 
     const diag_store = @import("../../../workbench/diagnostics_store.zig");
+    const semantic_tokens_for_file = blk: {
+        if (wb.lsp_sync.entries.get(file_path)) |entry| {
+            break :blk entry.semantic_tokens;
+        }
+        break :blk null;
+    };
 
     const resolved_hunks = blk: {
         const hash = std.hash.CityHash64.hash(file_path);
@@ -273,13 +279,7 @@ pub fn drawEditorViewport(
                 review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
                 overlays.drawFindHighlights(wb, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
 
-                const semantic_tokens = blk: {
-                    if (wb.lsp_sync.entries.get(file_path)) |entry| {
-                        break :blk entry.semantic_tokens;
-                    }
-                    break :blk null;
-                };
-                syntax.drawHighlightedLine(slice, seg.buf_line, seg.start_col, seg_text_x, line_num_y, theme, semantic_tokens);
+                syntax.drawHighlightedLine(slice, seg.buf_line, seg.start_col, seg_text_x, line_num_y, theme, semantic_tokens_for_file);
 
                 if (bracket_pair) |pair| {
                     bracket.drawBracketHighlight(editor_buf, pair, seg.buf_line, seg.start_col, seg.end_col, seg_text_x, line_num_y, line_h, font_size, theme);
@@ -363,13 +363,7 @@ pub fn drawEditorViewport(
                 review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, idx, text_x, line_num_y, line_h, font_size);
                 overlays.drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
 
-                const semantic_tokens = blk: {
-                    if (wb.lsp_sync.entries.get(file_path)) |entry| {
-                        break :blk entry.semantic_tokens;
-                    }
-                    break :blk null;
-                };
-                syntax.drawHighlightedLine(editor_buf.lineAt(idx), idx, 0, text_x, line_num_y, theme, semantic_tokens);
+                syntax.drawHighlightedLine(editor_buf.lineAt(idx), idx, 0, text_x, line_num_y, theme, semantic_tokens_for_file);
 
                 if (bracket_pair) |pair| {
                     bracket.drawBracketHighlight(editor_buf, pair, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, theme);

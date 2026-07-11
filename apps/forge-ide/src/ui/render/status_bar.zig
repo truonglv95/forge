@@ -47,7 +47,7 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
         const hit_pct: u64 = if (measure_total == 0) 0 else (state.perf_measure_hits * 100) / measure_total;
         const md_total = state.perf_markdown_height_hits + state.perf_markdown_height_misses;
         const md_hit_pct: u64 = if (md_total == 0) 0 else (state.perf_markdown_height_hits * 100) / md_total;
-        const perf = std.fmt.bufPrint(&perf_buf, "frame {d:.1} tick {d:.1} layout {d:.1} draw {d:.1} | side {d:.1} edit {d:.1} panel {d:.1} ai {d:.1} | text {d}% md {d}%", .{
+        const perf = std.fmt.bufPrint(&perf_buf, "frame {d:.1} tick {d:.1} layout {d:.1} draw {d:.1} | side {d:.1} edit {d:.1} panel {d:.1} ai {d:.1} | text {d}% md {d}% | redraw {d}/{d} q {d}", .{
             state.perf_frame_ms,
             state.perf_tick_ms,
             state.perf_layout_ms,
@@ -58,6 +58,9 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
             state.perf_agent_ms,
             hit_pct,
             md_hit_pct,
+            state.perf_redraw_requests,
+            state.perf_frames,
+            state.perf_agent_queue_coalesced,
         }) catch "";
         perf_buf[perf.len] = 0;
         renderer.Renderer.drawRect(@max(12, w - 860), h - 22, 848, 22, .{ .r = 0.08, .g = 0.08, .b = 0.09, .a = 0.92 });

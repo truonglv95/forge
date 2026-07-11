@@ -22,10 +22,13 @@ fn needsContinuousRendering(wb: anytype) bool {
     if (wb.agent.worker_running) return true;
     if (wb.completions.visible) return true;
     if (wb.palette.open or wb.workspace_symbol_picker.open) return true;
-    return switch (wb.focused_panel) {
-        .agent, .git, .find, .goto_line, .rename, .terminal => true,
-        else => false,
-    };
+    if (wb.agent_panel_visible) {
+        wb.agent.lock();
+        const live = wb.agent.stream_live or wb.agent.phase == .building_context or wb.agent.phase == .sending or wb.agent.phase == .streaming or wb.agent.phase == .parsing or wb.agent.phase == .waiting_approval;
+        wb.agent.unlock();
+        if (live) return true;
+    }
+    return false;
 }
 
 pub fn onRenderFrame() void {
@@ -140,7 +143,9 @@ pub fn onRenderFrame() void {
     state.perf_layout_ms = @floatFromInt(layout_end_ms - layout_start_ms);
     state.perf_frame_ms = @floatFromInt(frame_end_ms - frame_start_ms);
     renderer.Renderer.measureTextCacheStats(&state.perf_measure_hits, &state.perf_measure_misses);
+    renderer.Renderer.renderStats(&state.perf_redraw_requests, &state.perf_frames);
     chat_markdown.heightCacheStats(&state.perf_markdown_height_hits, &state.perf_markdown_height_misses);
+    state.perf_agent_queue_coalesced = wb.agent_ui_queue.coalescedCount();
     state.clearDirty();
 
     const continuous = needsContinuousRendering(wb);

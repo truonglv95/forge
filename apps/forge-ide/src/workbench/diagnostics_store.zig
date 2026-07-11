@@ -130,6 +130,15 @@ pub const Store = struct {
     }
 };
 
+const LineLookupCache = struct {
+    items_ptr: usize = 0,
+    len: usize = 0,
+    line: usize = 0,
+    index: usize = 0,
+};
+
+var line_lookup_cache: LineLookupCache = .{};
+
 fn findFirstForLine(items: []lsp.diagnostics.Diagnostic, line_index: usize) usize {
     var l: usize = 0;
     var r: usize = items.len;
@@ -144,8 +153,28 @@ fn findFirstForLine(items: []lsp.diagnostics.Diagnostic, line_index: usize) usiz
     return l;
 }
 
+fn findFirstForLineCached(items: []lsp.diagnostics.Diagnostic, line_index: usize) usize {
+    if (items.len == 0) return 0;
+
+    const ptr = @intFromPtr(items.ptr);
+    if (line_lookup_cache.items_ptr == ptr and
+        line_lookup_cache.len == items.len and
+        line_lookup_cache.index <= items.len and
+        line_index >= line_lookup_cache.line)
+    {
+        var i = line_lookup_cache.index;
+        while (i < items.len and items[i].line < line_index) : (i += 1) {}
+        line_lookup_cache = .{ .items_ptr = ptr, .len = items.len, .line = line_index, .index = i };
+        return i;
+    }
+
+    const i = findFirstForLine(items, line_index);
+    line_lookup_cache = .{ .items_ptr = ptr, .len = items.len, .line = line_index, .index = i };
+    return i;
+}
+
 pub fn countForLine(list: lsp.diagnostics.List, line_index: usize) usize {
-    const start_idx = findFirstForLine(list.items, line_index);
+    const start_idx = findFirstForLineCached(list.items, line_index);
     var count: usize = 0;
     for (list.items[start_idx..]) |item| {
         if (item.line != line_index) break;
@@ -155,7 +184,7 @@ pub fn countForLine(list: lsp.diagnostics.List, line_index: usize) usize {
 }
 
 pub fn worstSeverityOnLine(list: lsp.diagnostics.List, line_index: usize) ?lsp.diagnostics.Severity {
-    const start_idx = findFirstForLine(list.items, line_index);
+    const start_idx = findFirstForLineCached(list.items, line_index);
     var found: ?lsp.diagnostics.Severity = null;
     for (list.items[start_idx..]) |item| {
         if (item.line != line_index) break;
@@ -167,5 +196,5 @@ pub fn worstSeverityOnLine(list: lsp.diagnostics.List, line_index: usize) ?lsp.d
 }
 
 pub fn firstForLine(list: lsp.diagnostics.List, line_index: usize) usize {
-    return findFirstForLine(list.items, line_index);
+    return findFirstForLineCached(list.items, line_index);
 }

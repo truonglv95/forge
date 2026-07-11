@@ -4,6 +4,7 @@
 #import <CoreText/CoreText.h>
 #import <QuartzCore/QuartzCore.h>
 #import <string.h>
+#import <stdatomic.h>
 #import "mac_window.h"
 
 #define NANOSVG_IMPLEMENTATION
@@ -413,6 +414,9 @@ typedef struct {
 // --- Global Renderer State ---
 static ForgeRenderCallback g_renderCallback = NULL;
 static const NSUInteger kMaxVertices = 512000;
+static atomic_bool g_redrawPending = false;
+static atomic_ullong g_redrawRequestCount = 0;
+static atomic_ullong g_frameCount = 0;
 
 @class ForgeRenderer;
 static void ForgeEnsureVertexCapacity(NSUInteger needed);
@@ -505,6 +509,8 @@ static ForgeRenderer *g_renderer = nil;
 }
 
 - (void)drawInMTKView:(MTKView *)view {
+    atomic_store_explicit(&g_redrawPending, false, memory_order_release);
+    atomic_fetch_add_explicit(&g_frameCount, 1, memory_order_relaxed);
     _viewportSize.x = view.bounds.size.width;
     _viewportSize.y = view.bounds.size.height;
 
@@ -989,11 +995,24 @@ void forge_mac_create_window(const char* title, int width, int height) {
 }
 
 void forge_mac_request_redraw(void) {
+    if (atomic_exchange_explicit(&g_redrawPending, true, memory_order_acq_rel)) {
+        return;
+    }
+    atomic_fetch_add_explicit(&g_redrawRequestCount, 1, memory_order_relaxed);
     dispatch_async(dispatch_get_main_queue(), ^{
         if (g_renderer && g_renderer.mtkView) {
             [g_renderer.mtkView setNeedsDisplay:YES];
         }
     });
+}
+
+void forge_mac_get_render_stats(unsigned long long *redraw_requests, unsigned long long *frames) {
+    if (redraw_requests) {
+        *redraw_requests = atomic_load_explicit(&g_redrawRequestCount, memory_order_relaxed);
+    }
+    if (frames) {
+        *frames = atomic_load_explicit(&g_frameCount, memory_order_relaxed);
+    }
 }
 
 void forge_mac_set_continuous_rendering(bool enabled) {
