@@ -41,6 +41,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
 </plist>
 EOF
 
+echo "Code signing..."
+codesign --force --deep --sign - "$APP_DIR"
+
 echo "Building DMG..."
 rm -f Forge.dmg
 hdiutil create -volname "Forge" -srcfolder "$APP_DIR" -ov -format UDZO Forge.dmg
