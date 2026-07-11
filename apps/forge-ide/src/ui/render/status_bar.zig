@@ -1,6 +1,7 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
 const layout = @import("../core/layout.zig");
+const state = @import("../core/state.zig");
 const Workbench = @import("../../workbench.zig").Workbench;
 
 pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMode) void {
@@ -40,4 +41,26 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
         renderer.Renderer.drawText(wb.status_message, w - 320, h - 18, 12.0, .{ .r = 0.9, .g = 0.9, .b = 0.6, .a = 1.0 });
     }
     renderer.Renderer.drawText(@ptrCast(&status_buf), 20, h - 18, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+    if (state.perf_overlay_enabled) {
+        var perf_buf: [320:0]u8 = undefined;
+        const measure_total = state.perf_measure_hits + state.perf_measure_misses;
+        const hit_pct: u64 = if (measure_total == 0) 0 else (state.perf_measure_hits * 100) / measure_total;
+        const md_total = state.perf_markdown_height_hits + state.perf_markdown_height_misses;
+        const md_hit_pct: u64 = if (md_total == 0) 0 else (state.perf_markdown_height_hits * 100) / md_total;
+        const perf = std.fmt.bufPrint(&perf_buf, "frame {d:.1} tick {d:.1} layout {d:.1} draw {d:.1} | side {d:.1} edit {d:.1} panel {d:.1} ai {d:.1} | text {d}% md {d}%", .{
+            state.perf_frame_ms,
+            state.perf_tick_ms,
+            state.perf_layout_ms,
+            state.perf_draw_ms,
+            state.perf_sidebar_ms,
+            state.perf_editor_ms,
+            state.perf_panel_ms,
+            state.perf_agent_ms,
+            hit_pct,
+            md_hit_pct,
+        }) catch "";
+        perf_buf[perf.len] = 0;
+        renderer.Renderer.drawRect(@max(12, w - 860), h - 22, 848, 22, .{ .r = 0.08, .g = 0.08, .b = 0.09, .a = 0.92 });
+        renderer.Renderer.drawText(@ptrCast(&perf_buf), @max(20, w - 852), h - 18, 10.5, .{ .r = 0.65, .g = 0.75, .b = 0.9, .a = 1.0 });
+    }
 }

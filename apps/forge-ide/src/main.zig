@@ -8,9 +8,12 @@ const state = @import("ui/core/state.zig");
 const shell = @import("ui/core/shell.zig");
 
 pub fn main(init: std.process.Init) !void {
-    state.gpa = std.heap.page_allocator;
+    state.gpa = std.heap.c_allocator;
     const allocator = state.gpa;
     const io = init.io;
+    if (init.environ_map.get("FORGE_PERF")) |value| {
+        state.perf_overlay_enabled = std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "true");
+    }
 
     const args = try init.minimal.args.toSlice(allocator);
     var owned_workspace_path: ?[]u8 = null;

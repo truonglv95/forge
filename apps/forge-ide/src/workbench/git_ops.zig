@@ -1,12 +1,22 @@
 const std = @import("std");
 const git_status_mod = @import("../git/status.zig");
 const git_diff_mod = @import("../git/diff.zig");
+const background_jobs = @import("background_jobs.zig");
+const renderer = @import("forge-renderer");
 
 pub fn refreshGitStatus(wb: anytype) !void {
     const new_status = try git_status_mod.refresh(wb.allocator, wb.workspace_path);
+    replaceGitStatus(wb, new_status, true) catch |err| {
+        var owned = new_status;
+        owned.deinit(wb.allocator);
+        return err;
+    };
+}
+
+fn replaceGitStatus(wb: anytype, new_status: git_status_mod.Status, reset_scroll: bool) !void {
     if (wb.git_status) |*status| status.deinit(wb.allocator);
     wb.git_status = new_status;
-    wb.git_scroll_y = 0;
+    if (reset_scroll) wb.git_scroll_y = 0;
     if (wb.git_status.?.is_repo) {
         var buf: [96]u8 = undefined;
         const msg = try std.fmt.bufPrint(&buf, "Git: {d} change(s)", .{wb.git_status.?.entries.len});
@@ -14,6 +24,76 @@ pub fn refreshGitStatus(wb: anytype) !void {
     } else {
         try wb.setStatus("Not a git repository");
     }
+}
+
+const RefreshCtx = struct {
+    wb: *@import("../workbench.zig").Workbench,
+};
+
+pub fn scheduleGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) void {
+    wb.git_refresh_mutex.lock();
+    if (wb.git_refresh_running) {
+        wb.git_refresh_mutex.unlock();
+        return;
+    }
+    wb.git_refresh_running = true;
+    wb.git_refresh_failed = false;
+    wb.git_refresh_mutex.unlock();
+
+    background_jobs.spawnDetached("git-refresh", RefreshCtx, wb.allocator, .{ .wb = wb }, gitRefreshWorker) catch {
+        wb.git_refresh_mutex.lock();
+        wb.git_refresh_running = false;
+        wb.git_refresh_mutex.unlock();
+        return;
+    };
+}
+
+fn gitRefreshWorker(ctx: *RefreshCtx) void {
+    const wb = ctx.wb;
+    defer wb.allocator.destroy(ctx);
+
+    const result = git_status_mod.refresh(wb.allocator, wb.workspace_path);
+
+    wb.git_refresh_mutex.lock();
+    defer wb.git_refresh_mutex.unlock();
+
+    if (result) |status| {
+        if (wb.git_refresh_pending_status) |*old| old.deinit(wb.allocator);
+        wb.git_refresh_pending_status = status;
+        wb.git_refresh_ready = true;
+        wb.git_refresh_failed = false;
+    } else |_| {
+        wb.git_refresh_failed = true;
+    }
+    wb.git_refresh_running = false;
+    renderer.Renderer.requestRedraw();
+}
+
+pub fn flushGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) !bool {
+    wb.git_refresh_mutex.lock();
+    const ready = wb.git_refresh_ready;
+    const failed = wb.git_refresh_failed;
+    const pending = if (ready) wb.git_refresh_pending_status else null;
+    if (ready) {
+        wb.git_refresh_pending_status = null;
+        wb.git_refresh_ready = false;
+    }
+    wb.git_refresh_failed = false;
+    wb.git_refresh_mutex.unlock();
+
+    if (pending) |status| {
+        replaceGitStatus(wb, status, false) catch |err| {
+            var owned = status;
+            owned.deinit(wb.allocator);
+            return err;
+        };
+        return true;
+    }
+
+    if (failed) {
+        try wb.setStatus("Git refresh failed");
+    }
+    return false;
 }
 
 pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").Hit) !void {

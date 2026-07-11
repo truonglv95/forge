@@ -52,27 +52,35 @@ pub fn collectFromIntent(
 
     var chunks: std.ArrayList(ScoredChunk) = .empty;
     errdefer {
-        for (chunks.items) |chunk| allocator.free(chunk.path);
+        for (chunks.items) |chunk| {
+            allocator.free(chunk.path);
+            allocator.free(chunk.term);
+        }
         chunks.deinit(allocator);
     }
 
-    for (terms.items) |term| {
-        var result = workspace.search.searchContent(allocator, io, root, ".", term) catch continue;
-        defer result.deinit();
+    const pattern = try joinedTermPattern(allocator, terms.items);
+    defer allocator.free(pattern);
+    var result = workspace.search.grepContent(allocator, io, root, .{
+        .pattern = pattern,
+        .path = ".",
+        .case_sensitive = true,
+        .head_limit = @min(@max(options.max_chunks * 8, @as(usize, 24)), 200),
+    }) catch return &.{};
+    defer result.deinit();
 
-        for (result.matches) |match| {
-            if (shouldSkipPath(match.path, skip_paths)) continue;
-            const score = scoreMatch(match.path, match.line_text, term);
-            const line_start = if (match.line > options.context_lines) match.line - options.context_lines else 1;
-            const line_end = match.line + options.context_lines;
-            try chunks.append(allocator, .{
-                .path = try allocator.dupe(u8, match.path),
-                .line_start = line_start,
-                .line_end = line_end,
-                .score = score,
-                .term = try allocator.dupe(u8, term),
-            });
-        }
+    for (result.matches) |match| {
+        if (shouldSkipPath(match.path, skip_paths)) continue;
+        const best = bestTermForMatch(match.path, match.line_text, terms.items) orelse continue;
+        const line_start = if (match.line > options.context_lines) match.line - options.context_lines else 1;
+        const line_end = match.line + options.context_lines;
+        try chunks.append(allocator, .{
+            .path = try allocator.dupe(u8, match.path),
+            .line_start = line_start,
+            .line_end = line_end,
+            .score = best.score,
+            .term = try allocator.dupe(u8, best.term),
+        });
     }
 
     if (chunks.items.len == 0) return &.{};
@@ -127,6 +135,35 @@ pub fn collectFromIntent(
     chunks.deinit(allocator);
 
     return try selected.toOwnedSlice(allocator);
+}
+
+fn joinedTermPattern(allocator: std.mem.Allocator, terms: []const []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (terms, 0..) |term, index| {
+        if (index > 0) try out.append(allocator, '|');
+        try out.appendSlice(allocator, term);
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+fn bestTermForMatch(path: []const u8, line_text: []const u8, terms: []const []const u8) ?struct { term: []const u8, score: u32 } {
+    var best_term: ?[]const u8 = null;
+    var best_score: u32 = 0;
+    for (terms) |term| {
+        if (std.ascii.indexOfIgnoreCase(path, term) == null and
+            std.ascii.indexOfIgnoreCase(line_text, term) == null)
+        {
+            continue;
+        }
+        const score = scoreMatch(path, line_text, term);
+        if (best_term == null or score > best_score) {
+            best_term = term;
+            best_score = score;
+        }
+    }
+    if (best_term) |term| return .{ .term = term, .score = best_score };
+    return null;
 }
 
 /// Builds a ranked snippet block from intent keyword search, or null if nothing relevant.

@@ -104,6 +104,22 @@ pub const Result = struct {
     response_text: ?[]const u8 = null,
 };
 
+fn conversationBytes(turns: []const conversation.Turn) usize {
+    var total: usize = 0;
+    for (turns) |turn| total += turn.content.len;
+    return total;
+}
+
+fn autoBudgetTier(config: Config, provider_context_window: usize) context_budget.BudgetTier {
+    if (config.context_budget_tier != .full) return config.context_budget_tier;
+    const convo_bytes = conversationBytes(config.conversation);
+    const safe_bytes = context_budget.safePromptBytesForWindow(provider_context_window);
+    if (safe_bytes <= 512 * 1024) return .minimal;
+    if (convo_bytes > safe_bytes / 3) return .minimal;
+    if (convo_bytes > safe_bytes / 6 or config.resume_conversation_json.len > safe_bytes / 5) return .balanced;
+    return .full;
+}
+
 pub const AgentError = error{
     StepLimitReached,
     ProviderFailed,
@@ -180,6 +196,7 @@ pub fn run(
     };
     const model_context_bytes = context_budget.safePromptBytesForWindow(provider_handle.metadata().context_window);
     const context_max_bytes = @min(effective_config.context_max_bytes, model_context_bytes);
+    effective_config.context_budget_tier = autoBudgetTier(effective_config, provider_handle.metadata().context_window);
     const load_opts = context_loader.LoadOptions{
         .intent = intent,
         .explicit_files = effective_config.explicit_files,

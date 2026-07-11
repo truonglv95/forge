@@ -58,11 +58,10 @@ const LoadedIndex = struct {
     allocator: std.mem.Allocator,
     dim: u32,
     chunks: []StoredChunk,
-    vectors: []f32,
+    vectors: []u8,
 
     pub fn deinit(self: *LoadedIndex) void {
         for (self.chunks) |chunk| {
-            self.allocator.free(chunk.id);
             self.allocator.free(chunk.path);
             self.allocator.free(chunk.text);
             self.allocator.free(chunk.symbol);
@@ -76,11 +75,9 @@ const LoadedIndex = struct {
 };
 
 const StoredChunk = struct {
-    id: []const u8,
     path: []const u8,
     line_start: u32,
     line_end: u32,
-    file_hash: u64,
     text: []const u8,
     symbol: []const u8,
     kind: []const u8,
@@ -202,8 +199,27 @@ pub fn ensureIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Wor
     var backend = try resolveEmbedBackend(allocator, io, options);
     defer backend.deinit();
 
+    const backend_hash = hashEmbeddingBackend(backend);
+    const fingerprint = indexFingerprint(allocator, io, root) catch null orelse 0;
+    const now_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
+    if (!builtin.is_test and index_health_cache.fresh and
+        index_health_cache.fingerprint == fingerprint and
+        index_health_cache.backend_hash == backend_hash and
+        now_ms - index_health_cache.checked_ms < 3000)
+    {
+        return;
+    }
+
     const embedding_matches = manifestEmbeddingMatches(allocator, io, root, backend) catch false;
     const needs = try workspace.codebase_index.needsRebuild(allocator, io, root);
+    if (!needs and embedding_matches) {
+        index_health_cache = .{
+            .fingerprint = fingerprint,
+            .backend_hash = backend_hash,
+            .checked_ms = now_ms,
+            .fresh = true,
+        };
+    }
     if (needs or !embedding_matches) {
         clearSearchCaches(allocator);
         const metadata: workspace.codebase_index.EmbeddingMetadata = .{
@@ -231,7 +247,25 @@ pub fn ensureIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Wor
             else
                 try workspace.codebase_index.refreshWithMetadata(allocator, io, root, backend.dim, localEmbedAdapter, metadata);
         }
+        const refreshed_fingerprint = indexFingerprint(allocator, io, root) catch null orelse 0;
+        index_health_cache = .{
+            .fingerprint = refreshed_fingerprint,
+            .backend_hash = backend_hash,
+            .checked_ms = std.Io.Timestamp.now(io, .real).toMilliseconds(),
+            .fresh = true,
+        };
     }
+}
+
+fn hashEmbeddingBackend(backend: EmbedBackend) u64 {
+    var hasher = std.hash.Wyhash.init(0x4652475f454d4244);
+    hasher.update(backend.provider_name);
+    hasher.update("\n");
+    hasher.update(backend.model_name);
+    hasher.update("\n");
+    if (backend.ollama_base_url) |url| hasher.update(url);
+    hasher.update(std.mem.asBytes(&backend.dim));
+    return hasher.final();
 }
 
 const ScoreItem = struct { index: usize, score: f32 };
@@ -242,6 +276,15 @@ const IndexCacheEntry = struct {
 };
 
 var index_cache: ?IndexCacheEntry = null;
+
+const IndexHealthCache = struct {
+    fingerprint: u64 = 0,
+    backend_hash: u64 = 0,
+    checked_ms: i64 = 0,
+    fresh: bool = false,
+};
+
+var index_health_cache: IndexHealthCache = .{};
 
 const QueryCacheSlot = struct {
     key: u64 = 0,
@@ -262,6 +305,7 @@ pub fn clearSearchCaches(allocator: std.mem.Allocator) void {
         slot.* = .{};
     }
     query_cache_cursor = 0;
+    index_health_cache = .{};
 }
 
 pub fn search(
@@ -295,23 +339,19 @@ pub fn search(
 
     var scores: std.ArrayList(ScoreItem) = .empty;
     defer scores.deinit(allocator);
+    const score_cap = @max(options.top_k * 4, @as(usize, 64));
 
     const dim: usize = @intCast(index.dim);
     for (index.chunks, 0..) |chunk, chunk_index| {
         if (shouldSkip(chunk.path, skip_paths)) continue;
-        const offset = chunk_index * dim;
-        if (offset + dim > index.vectors.len) continue;
-        const vec = index.vectors[offset .. offset + dim];
-        const score = cosineSlices(query_vec, vec);
+        const offset = chunk_index * dim * @sizeOf(f32);
+        const byte_len = dim * @sizeOf(f32);
+        if (offset + byte_len > index.vectors.len) continue;
+        const vec = index.vectors[offset .. offset + byte_len];
+        const score = cosineBytes(query_vec, vec);
         if (score <= 0.001) continue; // pre-filter obvious misses only
-        try scores.append(allocator, .{ .index = chunk_index, .score = score });
+        try insertTopScore(allocator, &scores, .{ .index = chunk_index, .score = score }, score_cap);
     }
-
-    std.sort.pdq(ScoreItem, scores.items, {}, struct {
-        fn less(_: void, a: ScoreItem, b: ScoreItem) bool {
-            return a.score > b.score;
-        }
-    }.less);
 
     // Adaptive threshold: keep chunks within 20% of top score.
     // Falls back to a fixed floor when caller sets score_floor explicitly.
@@ -378,6 +418,48 @@ fn cosineSlices(a: []const f32, b: []const f32) f32 {
     const denom = @sqrt(na * nb);
     if (denom == 0) return 0;
     return dot / denom;
+}
+
+fn cosineBytes(a: []const f32, b_bytes: []const u8) f32 {
+    const len = @min(a.len, b_bytes.len / @sizeOf(f32));
+    var dot: f32 = 0;
+    var na: f32 = 0;
+    var nb: f32 = 0;
+    for (0..len) |i| {
+        const start = i * @sizeOf(f32);
+        const bits = std.mem.readInt(u32, b_bytes[start..][0..4], .little);
+        const b: f32 = @bitCast(bits);
+        dot += a[i] * b;
+        na += a[i] * a[i];
+        nb += b * b;
+    }
+    const denom = @sqrt(na * nb);
+    if (denom == 0) return 0;
+    return dot / denom;
+}
+
+fn insertTopScore(allocator: std.mem.Allocator, scores: *std.ArrayList(ScoreItem), item: ScoreItem, cap: usize) !void {
+    if (cap == 0) return;
+    if (scores.items.len == cap and item.score <= scores.items[scores.items.len - 1].score) return;
+
+    var pos: usize = 0;
+    while (pos < scores.items.len and scores.items[pos].score >= item.score) : (pos += 1) {}
+
+    if (scores.items.len < cap) {
+        try scores.append(allocator, item);
+        var i = scores.items.len - 1;
+        while (i > pos) : (i -= 1) {
+            scores.items[i] = scores.items[i - 1];
+        }
+        scores.items[pos] = item;
+        return;
+    }
+
+    var i = scores.items.len - 1;
+    while (i > pos) : (i -= 1) {
+        scores.items[i] = scores.items[i - 1];
+    }
+    scores.items[pos] = item;
 }
 
 pub fn freeResults(allocator: std.mem.Allocator, results: []ScoredChunk) void {
@@ -471,14 +553,16 @@ fn loadIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Workspace
         defer allocator.free(p);
         break :blk workspace.global_store.readAbsoluteFile(allocator, io, p);
     }) catch return emptyIndex(allocator));
-    defer allocator.free(vectors_bytes);
+    errdefer allocator.free(vectors_bytes);
 
     var chunks: std.ArrayList(StoredChunk) = .empty;
     errdefer {
         for (chunks.items) |chunk| {
-            allocator.free(chunk.id);
             allocator.free(chunk.path);
             allocator.free(chunk.text);
+            allocator.free(chunk.symbol);
+            allocator.free(chunk.kind);
+            allocator.free(chunk.language);
         }
         chunks.deinit(allocator);
     }
@@ -500,11 +584,9 @@ fn loadIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Workspace
         var parsed = try std.json.parseFromSlice(Row, allocator, line, .{});
         defer parsed.deinit();
         try chunks.append(allocator, .{
-            .id = try allocator.dupe(u8, parsed.value.id),
             .path = try allocator.dupe(u8, parsed.value.path),
             .line_start = parsed.value.line_start,
             .line_end = parsed.value.line_end,
-            .file_hash = parsed.value.file_hash,
             .text = try allocator.dupe(u8, parsed.value.text),
             .symbol = try allocator.dupe(u8, parsed.value.symbol),
             .kind = try allocator.dupe(u8, parsed.value.kind),
@@ -514,18 +596,24 @@ fn loadIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Workspace
 
     const dim: usize = @intCast(manifest_parsed.value.dim);
     const expected_vector_bytes = chunks.items.len * dim * @sizeOf(f32);
-    if (vectors_bytes.len < expected_vector_bytes) return emptyIndex(allocator);
-
-    const vector_count = chunks.items.len * dim;
-    const vectors = try allocator.alloc(f32, vector_count);
-    errdefer allocator.free(vectors);
-    @memcpy(std.mem.sliceAsBytes(vectors), vectors_bytes[0 .. vector_count * @sizeOf(f32)]);
+    if (vectors_bytes.len < expected_vector_bytes) {
+        for (chunks.items) |chunk| {
+            allocator.free(chunk.path);
+            allocator.free(chunk.text);
+            allocator.free(chunk.symbol);
+            allocator.free(chunk.kind);
+            allocator.free(chunk.language);
+        }
+        chunks.deinit(allocator);
+        allocator.free(vectors_bytes);
+        return emptyIndex(allocator);
+    }
 
     return LoadedIndex{
         .allocator = allocator,
         .dim = manifest_parsed.value.dim,
         .chunks = try chunks.toOwnedSlice(allocator),
-        .vectors = vectors,
+        .vectors = vectors_bytes,
     };
 }
 

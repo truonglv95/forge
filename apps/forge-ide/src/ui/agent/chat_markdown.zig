@@ -58,6 +58,29 @@ const Segment = union(enum) {
     code: []const u8,
 };
 
+const HeightCacheSlot = struct {
+    key: u64 = 0,
+    height: f32 = 0,
+};
+
+var height_cache: [512]HeightCacheSlot = [_]HeightCacheSlot{.{}} ** 512;
+var height_cache_hits: u64 = 0;
+var height_cache_misses: u64 = 0;
+
+fn heightCacheKey(text: []const u8, content_w: f32) u64 {
+    var hasher = std.hash.Wyhash.init(0x4652475f4d445f48);
+    const width_bits: u32 = @bitCast(content_w);
+    hasher.update(std.mem.asBytes(&width_bits));
+    hasher.update(text);
+    const key = hasher.final();
+    return if (key == 0) 1 else key;
+}
+
+pub fn heightCacheStats(hits: *u64, misses: *u64) void {
+    hits.* = height_cache_hits;
+    misses.* = height_cache_misses;
+}
+
 fn trimLine(line: []const u8) []const u8 {
     return std.mem.trim(u8, line, &std.ascii.whitespace);
 }
@@ -213,6 +236,23 @@ fn markdownTextHeight(text: []const u8, max_w: f32) f32 {
 
 pub fn contentHeight(text: []const u8, content_w: f32) f32 {
     if (text.len == 0) return body_line_h;
+    const key = heightCacheKey(text, content_w);
+    const start = @as(usize, @intCast(key % height_cache.len));
+    var insert_idx = start;
+    var probe: usize = 0;
+    while (probe < 4) : (probe += 1) {
+        const idx = (start + probe) % height_cache.len;
+        const slot = height_cache[idx];
+        if (slot.key == key) {
+            height_cache_hits += 1;
+            return slot.height;
+        }
+        if (slot.key == 0) {
+            insert_idx = idx;
+            break;
+        }
+    }
+
     const max_w = word_wrap.maxWidth(content_w);
     var total: f32 = 0;
     var cursor: usize = 0;
@@ -238,7 +278,10 @@ pub fn contentHeight(text: []const u8, content_w: f32) f32 {
         }
         break;
     }
-    return @max(body_line_h, total);
+    const height = @max(body_line_h, total);
+    height_cache_misses += 1;
+    height_cache[insert_idx] = .{ .key = key, .height = height };
+    return height;
 }
 
 fn freeSegments(allocator: std.mem.Allocator, segments: []Segment) void {

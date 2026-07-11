@@ -57,6 +57,29 @@ const ClipRect = struct {
 var clip_stack: [12]ClipRect = undefined;
 var clip_stack_len: usize = 0;
 var active_clip: ?ClipRect = null;
+var text_style_generation: u32 = 0;
+
+const MeasureCacheSlot = struct {
+    key: u64 = 0,
+    width: f32 = 0,
+};
+
+var measure_cache: [1024]MeasureCacheSlot = [_]MeasureCacheSlot{.{}} ** 1024;
+var measure_cache_hits: u64 = 0;
+var measure_cache_misses: u64 = 0;
+
+fn measureCacheKey(text: []const u8, font_size: f32) u64 {
+    var hasher = std.hash.Wyhash.init(0x4652475f54455854);
+    hasher.update(std.mem.asBytes(&text_style_generation));
+    const font_bits: u32 = @bitCast(font_size);
+    hasher.update(std.mem.asBytes(&font_bits));
+    hasher.update(text);
+    return hasher.final();
+}
+
+fn clearMeasureCache() void {
+    measure_cache = [_]MeasureCacheSlot{.{}} ** 1024;
+}
 
 fn applyClipRect(rect: ClipRect) void {
     mac.forge_mac_set_clip_rect(rect.x, rect.y, rect.w, rect.h);
@@ -120,6 +143,14 @@ pub const Renderer = struct {
 
     pub fn run() void {
         mac.forge_mac_run();
+    }
+
+    pub fn requestRedraw() void {
+        mac.forge_mac_request_redraw();
+    }
+
+    pub fn setContinuousRendering(enabled: bool) void {
+        mac.forge_mac_set_continuous_rendering(enabled);
     }
 
     pub fn setRenderCallback(callback: *const fn () void) void {
@@ -220,6 +251,8 @@ pub const Renderer = struct {
 
     pub fn setTextStyle(font_family: []const u8, font_weight: FontWeight) void {
         mac.forge_mac_set_text_style(@ptrCast(font_family.ptr), @intFromEnum(font_weight));
+        text_style_generation +%= 1;
+        clearMeasureCache();
     }
 
     pub fn applyThemeFont(theme: anytype) void {
@@ -242,7 +275,33 @@ pub const Renderer = struct {
 
     pub fn measureText(text: []const u8, font_size: f32) f32 {
         if (text.len == 0) return 0;
-        return mac.forge_mac_measure_text_width(@ptrCast(text.ptr), text.len, font_size);
+        const raw_key = measureCacheKey(text, font_size);
+        const key = if (raw_key == 0) @as(u64, 1) else raw_key;
+        const start = @as(usize, @intCast(key % measure_cache.len));
+        var insert_idx = start;
+        var probe: usize = 0;
+        while (probe < 4) : (probe += 1) {
+            const idx = (start + probe) % measure_cache.len;
+            const slot = measure_cache[idx];
+            if (slot.key == key) {
+                measure_cache_hits += 1;
+                return slot.width;
+            }
+            if (slot.key == 0) {
+                insert_idx = idx;
+                break;
+            }
+        }
+
+        const width = mac.forge_mac_measure_text_width(@ptrCast(text.ptr), text.len, font_size);
+        measure_cache_misses += 1;
+        measure_cache[insert_idx] = .{ .key = key, .width = width };
+        return width;
+    }
+
+    pub fn measureTextCacheStats(hits: *u64, misses: *u64) void {
+        hits.* = measure_cache_hits;
+        misses.* = measure_cache_misses;
     }
 
     pub fn setClipboardText(text: []const u8) void {

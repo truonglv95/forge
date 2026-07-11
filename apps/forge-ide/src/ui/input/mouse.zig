@@ -23,6 +23,7 @@ const keys_agent = @import("keys_agent.zig");
 
 pub fn onMouseEvent(event: renderer.MouseEvent) void {
     const wb = state.wb orelse return;
+    state.markAllDirty();
 
     var w: f32 = 0;
     var h: f32 = 0;
