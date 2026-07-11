@@ -44,8 +44,15 @@ EOF
 echo "Code signing..."
 codesign --force --deep --sign - "$APP_DIR"
 
+echo "Preparing DMG contents..."
+DMG_STAGING="zig-out/bin/dmg_staging"
+rm -rf "$DMG_STAGING"
+mkdir -p "$DMG_STAGING"
+mv "$APP_DIR" "$DMG_STAGING/"
+ln -s /Applications "$DMG_STAGING/Applications"
+
 echo "Building DMG..."
 rm -f Forge.dmg
-hdiutil create -volname "Forge" -srcfolder "$APP_DIR" -ov -format UDZO Forge.dmg
+hdiutil create -volname "Forge" -srcfolder "$DMG_STAGING" -ov -format UDZO Forge.dmg
 
 echo "Done! Forge.dmg is ready."
