@@ -292,6 +292,9 @@ pub fn buildChatEndpoint(allocator: std.mem.Allocator, base_url: []const u8) ![]
 
 fn buildRequestPayload(allocator: std.mem.Allocator, model_name: []const u8, prompt: []const u8) ![]u8 {
     const messages = [_]openai_compat.ChatMessage{.{ .role = "user", .content = prompt }};
+    if (openai_compat.promptWantsSchema(prompt)) {
+        return openai_compat.buildChatPayloadWithSchema(allocator, model_name, &messages);
+    }
     return openai_compat.buildChatPayload(allocator, model_name, &messages, openai_compat.promptWantsJson(prompt));
 }
 
@@ -301,8 +304,8 @@ test "buildChatEndpoint appends OpenAI-compatible route" {
     try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", endpoint);
 }
 
-test "buildRequestPayload requests json for proposals" {
-    const payload = try buildRequestPayload(std.testing.allocator, "test-model", "hello");
+test "buildRequestPayload requests json_schema for proposals" {
+    const payload = try buildRequestPayload(std.testing.allocator, "test-model", "Output ONLY a raw JSON object WorkspaceEdit");
     defer std.testing.allocator.free(payload);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "json_object") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "json_schema") != null);
 }

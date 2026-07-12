@@ -177,6 +177,26 @@ pub fn planWithIntent(
 }
 
 /// True when heuristic classification is uncertain and an LLM arbiter may help.
+/// Returns the recommended default max_tool_steps for a given intent.
+/// These values are used when the caller has not explicitly set --max-steps.
+///
+/// | Intent            | Steps | Rationale                                      |
+/// |-------------------|-------|------------------------------------------------|
+/// | edit_code         |    16 | Read several files + search + write + verify   |
+/// | debug_failure     |    20 | Trace + read + search + fix + test cycle       |
+/// | plan_change       |    10 | Mostly read + outline, no writes               |
+/// | explore_codebase  |     8 | Pure read, bounded by evidence gathering       |
+/// | answer_question   |     6 | Read-only, short answer path                   |
+pub fn defaultStepsForIntent(intent: TaskIntent) u32 {
+    return switch (intent) {
+        .edit_code => 16,
+        .debug_failure => 20,
+        .plan_change => 10,
+        .explore_codebase => 8,
+        .answer_question => 6,
+    };
+}
+
 pub fn heuristicNeedsLlm(input: RouteInput, heuristic_intent: TaskIntent) bool {
     if (input.mode == .plan or input.mode == .ask) return false;
 

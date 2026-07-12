@@ -1,0 +1,289 @@
+[
+  {
+    "id": "create-new-file",
+    "intent": "Create a file called CONTRIBUTORS.md containing a Forge contributors section with a placeholder entry",
+    "workspace_files": {
+      "sample.txt": "hello forge\n"
+    },
+    "expect": {
+      "path": "CONTRIBUTORS.md",
+      "contains": "Contributors",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "modify-existing-file",
+    "intent": "Modify sample.txt to add a line at the end: '# modified by eval'",
+    "workspace_files": {
+      "sample.txt": "hello forge search\n"
+    },
+    "expect": {
+      "path": "sample.txt",
+      "contains": "modified by eval",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "proposal-contract",
+    "intent": "Inspect sample.txt and propose a useful small change without applying",
+    "workspace_files": {
+      "sample.txt": "hello forge search\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "import-neighbor-context",
+    "intent": "Inspect main.zig and propose a tiny refactor",
+    "workspace_files": {
+      "main.zig": "const helper = @import(\"helper.zig\");\npub fn main() void { _ = helper.answer; }\n",
+      "helper.zig": "pub const answer: u32 = 42;\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2,
+      "has_import_neighbors": true
+    }
+  },
+  {
+    "id": "session-task-ledger",
+    "intent": "Inspect sample.txt and keep enough durable task state for resume",
+    "workspace_files": {
+      "sample.txt": "hello forge search\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2,
+      "min_ledger_entries": 2
+    }
+  },
+  {
+    "id": "explain-module",
+    "intent": "Explain what the TransactionService does and how apply() works. Do not propose any edits.",
+    "workspace_files": {
+      "transaction.zig": "pub const TransactionState = enum { proposed, validated, approved, applying, applied, validation_failed, undone, recovery_required };\npub const TransactionService = struct {\n    pub fn apply(self: *TransactionService, record: *TransactionRecord) !void {\n        if (record.state != .approved) return error.InvalidState;\n    }\n};\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 1
+    }
+  },
+  {
+    "id": "add-zig-test",
+    "intent": "Add a test to math.zig that verifies the add function returns the correct sum for inputs 2 and 3",
+    "workspace_files": {
+      "math.zig": "const std = @import(\"std\");\npub fn add(a: i32, b: i32) i32 { return a + b; }\n"
+    },
+    "expect": {
+      "path": "math.zig",
+      "contains": "testing.expectEqual",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "fix-zig-syntax-error",
+    "intent": "Fix the syntax error in broken.zig so it compiles. The missing semicolon is on line 3.",
+    "workspace_files": {
+      "broken.zig": "const std = @import(\"std\");\npub fn hello() void {\n    std.debug.print(\"hello\", .{})\n}\n"
+    },
+    "expect": {
+      "path": "broken.zig",
+      "contains": "print",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "rename-function",
+    "intent": "Rename the function 'compute' to 'calculate' in util.zig and update the call in main.zig",
+    "workspace_files": {
+      "util.zig": "pub fn compute(x: u32) u32 { return x * 2; }\n",
+      "main.zig": "const util = @import(\"util.zig\");\npub fn main() void { _ = util.compute(5); }\n"
+    },
+    "expect": {
+      "path": "main.zig",
+      "contains": "calculate",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "add-struct-field",
+    "intent": "Add a field 'version: u32 = 1' to the Config struct in config.zig",
+    "workspace_files": {
+      "config.zig": "pub const Config = struct {\n    name: []const u8 = \"\",\n    debug: bool = false,\n};\n"
+    },
+    "expect": {
+      "path": "config.zig",
+      "contains": "version",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "multi-file-refactor",
+    "intent": "Move the constant MAX_SIZE from constants.zig into config.zig and remove it from constants.zig",
+    "workspace_files": {
+      "constants.zig": "pub const MAX_SIZE: usize = 4096;\npub const VERSION: u32 = 1;\n",
+      "config.zig": "const constants = @import(\"constants.zig\");\npub const Config = struct { max: usize = constants.MAX_SIZE };\n"
+    },
+    "expect": {
+      "path": "config.zig",
+      "contains": "MAX_SIZE",
+      "min_steps": 3
+    }
+  },
+  {
+    "id": "add-docstring",
+    "intent": "Add a doc comment to the `process` function in processor.zig describing what it does",
+    "workspace_files": {
+      "processor.zig": "pub fn process(input: []const u8) []const u8 { return input; }\n"
+    },
+    "expect": {
+      "path": "processor.zig",
+      "contains": "///",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "search-then-read",
+    "intent": "Find all files that contain the word 'error' and summarize what kinds of errors are defined. Do not propose edits.",
+    "workspace_files": {
+      "a.zig": "pub const MyError = error{ NotFound, Overflow };\n",
+      "b.zig": "pub const IoError = error{ ReadFailed, WriteFailed };\n",
+      "c.zig": "pub fn ok() void {}\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "stale-conflict-detection",
+    "intent": "Read file.txt and propose changing its content to 'updated'. The file hash used in the proposal should be stale.",
+    "workspace_files": {
+      "file.txt": "original content\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 1
+    }
+  },
+  {
+    "id": "impossible-request",
+    "intent": "Download and install the latest version of Zig from ziglang.org",
+    "workspace_files": {
+      "sample.txt": "hello\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 1
+    }
+  },
+  {
+    "id": "ambiguous-scope",
+    "intent": "Fix the bug",
+    "workspace_files": {
+      "sample.txt": "no code here\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 1
+    }
+  },
+  {
+    "id": "config-change",
+    "intent": "Update forge.toml to set tab_width to 2",
+    "workspace_files": {
+      "forge.toml": "[project]\nname = \"test\"\n\n[editor]\ntab_width = 4\n"
+    },
+    "expect": {
+      "path": "forge.toml",
+      "contains": "tab_width = 2",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "add-error-handling",
+    "intent": "Add error handling to the readFile function in reader.zig so it returns an error instead of panicking",
+    "workspace_files": {
+      "reader.zig": "const std = @import(\"std\");\npub fn readFile(path: []const u8) []const u8 {\n    _ = path;\n    @panic(\"not implemented\");\n}\n"
+    },
+    "expect": {
+      "path": "reader.zig",
+      "contains": "error",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "extract-helper-function",
+    "intent": "Extract the validation logic in validate.zig into a separate helper function called checkLength",
+    "workspace_files": {
+      "validate.zig": "pub fn validate(input: []const u8) bool {\n    if (input.len == 0) return false;\n    if (input.len > 100) return false;\n    return true;\n}\n"
+    },
+    "expect": {
+      "path": "validate.zig",
+      "contains": "checkLength",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "add-readme-section",
+    "intent": "Add an 'Installation' section to README.md with a placeholder command 'zig build run'",
+    "workspace_files": {
+      "README.md": "# My Project\n\nA test project.\n"
+    },
+    "expect": {
+      "path": "README.md",
+      "contains": "Installation",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "create-agent-note",
+    "intent": "Create notes.txt containing a generated Forge note",
+    "workspace_files": {
+      "sample.txt": "hello forge search\n"
+    },
+    "expect": {
+      "path": "notes.txt",
+      "contains": "generated by forge ask",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "code-explanation-multi-file",
+    "intent": "Explain how server.zig uses the handler from handler.zig to process requests",
+    "workspace_files": {
+      "handler.zig": "pub fn handle(req: []const u8) []const u8 { return req; }\n",
+      "server.zig": "const handler = @import(\"handler.zig\");\npub fn serve(req: []const u8) []const u8 { return handler.handle(req); }\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2,
+      "has_import_neighbors": true
+    }
+  },
+  {
+    "id": "add-gitignore-entry",
+    "intent": "Add 'zig-out/' and '.zig-cache/' entries to the .gitignore file",
+    "workspace_files": {
+      ".gitignore": "*.o\n*.a\n"
+    },
+    "expect": {
+      "path": ".gitignore",
+      "contains": "zig-out",
+      "min_steps": 2
+    }
+  },
+  {
+    "id": "summarize-errors",
+    "intent": "List all error types defined in errors.zig and explain when each might occur. Do not make any changes.",
+    "workspace_files": {
+      "errors.zig": "pub const AppError = error{\n    NotFound,\n    Unauthorized,\n    InvalidInput,\n    InternalError,\n};\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 1
+    }
+  }
+]

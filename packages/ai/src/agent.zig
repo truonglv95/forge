@@ -222,6 +222,7 @@ pub fn run(
         .cancel_token = effective_config.cancel_token,
         .resolver = .{ .use_llm = effective_config.auto_capability and config.resume_session_id == null },
         .budget_tier = effective_config.context_budget_tier,
+        .task_ledger_json = effective_config.resume_task_ledger_json,
     }) catch return error.WorkspaceFailed;
     defer resolved_context.deinit();
     const resolved_route = resolved_context.route;

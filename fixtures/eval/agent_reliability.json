@@ -46,5 +46,17 @@
       "min_steps": 2,
       "has_import_neighbors": true
     }
+  },
+  {
+    "id": "session-task-ledger",
+    "intent": "Inspect sample.txt and keep enough durable task state for resume",
+    "workspace_files": {
+      "sample.txt": "hello forge search\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2,
+      "min_ledger_entries": 2
+    }
   }
 ]

@@ -1,6 +1,7 @@
 const std = @import("std");
 const context_loader = @import("context_loader.zig");
 const routing = @import("routing.zig");
+const task_ledger = @import("task_ledger.zig");
 
 pub const BudgetTier = enum {
     full,
@@ -70,6 +71,44 @@ pub fn applyTier(options: context_loader.LoadOptions, tier: BudgetTier, intent: 
     return out;
 }
 
+pub fn tierForLedger(base: BudgetTier, stats: task_ledger.Stats, intent: routing.TaskIntent) BudgetTier {
+    if (stats.phase == .blocked) return .minimal;
+    if (stats.longTask()) return downgrade(base);
+    if (stats.needsFreshEvidence() and (intent == .edit_code or intent == .debug_failure)) return if (base == .minimal) .minimal else .balanced;
+    return base;
+}
+
+pub fn applyLedger(
+    allocator: std.mem.Allocator,
+    options: context_loader.LoadOptions,
+    base_tier: BudgetTier,
+    intent: routing.TaskIntent,
+    ledger_json: []const u8,
+) context_loader.LoadOptions {
+    if (ledger_json.len == 0) return applyTier(options, base_tier, intent);
+    const stats = task_ledger.statsFromJson(allocator, ledger_json) catch return applyTier(options, base_tier, intent);
+    const tier = tierForLedger(base_tier, stats, intent);
+    var out = applyTier(options, tier, intent);
+    if (stats.needsFreshEvidence()) {
+        out.include_pre_retrieval = true;
+        out.retrieval_max_chunks = @max(out.retrieval_max_chunks, if (intent == .debug_failure) @as(usize, 12) else @as(usize, 10));
+        out.include_git_diff = true;
+        out.include_diagnostics = true;
+    }
+    if (stats.longTask()) {
+        out.recent_file_limit = @min(out.recent_file_limit, 4);
+        out.memory_max_entries = @min(out.memory_max_entries, 4);
+    }
+    return out;
+}
+
+fn downgrade(tier: BudgetTier) BudgetTier {
+    return switch (tier) {
+        .full => .balanced,
+        .balanced, .minimal => .minimal,
+    };
+}
+
 pub fn estimate(builder_bytes: usize, declarations_bytes: usize, conversation_bytes: usize) Estimate {
     return .{
         .context_bytes = builder_bytes,
@@ -119,4 +158,25 @@ test "applyTier shrinks retrieval context progressively" {
 test "tierForEstimate downgrades when prompt approaches model window" {
     try std.testing.expectEqual(BudgetTier.full, tierForEstimate(128_000, estimate(10_000, 1_000, 1_000)));
     try std.testing.expectEqual(BudgetTier.minimal, tierForEstimate(4_096, estimate(100_000, 10_000, 10_000)));
+}
+
+test "applyLedger keeps focused retrieval during repair" {
+    const allocator = std.testing.allocator;
+    const base = context_loader.LoadOptions{
+        .max_bytes = 8 * 1024 * 1024,
+        .retrieval_max_chunks = 4,
+        .recent_file_limit = 16,
+        .include_git_diff = false,
+        .include_diagnostics = false,
+    };
+    const ledger_json =
+        \\{"phase":"repairing","goal":"fix","entries":[
+        \\{"kind":"validation","step_index":4,"path":"","text":"zig build failed"}
+        \\]}
+    ;
+    const out = applyLedger(allocator, base, .full, .debug_failure, ledger_json);
+    try std.testing.expect(out.max_bytes <= 2 * 1024 * 1024);
+    try std.testing.expect(out.retrieval_max_chunks >= 12);
+    try std.testing.expect(out.include_git_diff);
+    try std.testing.expect(out.include_diagnostics);
 }

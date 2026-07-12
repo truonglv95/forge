@@ -15,6 +15,7 @@ pub const Input = struct {
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
     resolver: route_resolver.Options = .{},
     budget_tier: context_budget.BudgetTier = .full,
+    task_ledger_json: []const u8 = "",
 };
 
 pub const ResolvedContext = struct {
@@ -41,7 +42,13 @@ pub fn build(
         input.resolver,
     );
 
-    const load_options = context_budget.applyTier(resolved.context_plan.options, input.budget_tier, resolved.intent);
+    const load_options = context_budget.applyLedger(
+        allocator,
+        resolved.context_plan.options,
+        input.budget_tier,
+        resolved.intent,
+        input.task_ledger_json,
+    );
     var builder = try context_loader.build(allocator, io, root, load_options);
     errdefer builder.deinit();
 

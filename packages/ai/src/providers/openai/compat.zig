@@ -14,11 +14,38 @@ const JsonResponseFormat = struct {
     type: []const u8,
 };
 
+/// Structured output schema (OpenAI json_schema response_format).
+/// Used when requesting a WorkspaceEdit JSON proposal so the API enforces
+/// valid JSON output at the token level — eliminating most parse failures.
+const JsonSchemaResponseFormat = struct {
+    type: []const u8 = "json_schema",
+    json_schema: struct {
+        name: []const u8 = "workspace_edit",
+        strict: bool = true,
+        schema: struct {
+            type: []const u8 = "object",
+            properties: struct {
+                schema_version: struct { type: []const u8 = "integer" } = .{},
+                operations: struct { type: []const u8 = "array", items: struct { type: []const u8 = "object" } = .{} } = .{},
+            } = .{},
+            required: []const []const u8 = &.{ "schema_version", "operations" },
+            additionalProperties: bool = true,
+        } = .{},
+    } = .{},
+};
+
 const ChatRequest = struct {
     model: []const u8,
     messages: []const ChatMessage,
     stream: bool = true,
     response_format: ?JsonResponseFormat = null,
+};
+
+const ChatRequestSchema = struct {
+    model: []const u8,
+    messages: []const ChatMessage,
+    stream: bool = true,
+    response_format: JsonSchemaResponseFormat = .{},
 };
 
 pub fn resolveBaseUrl(
@@ -58,9 +85,34 @@ pub fn buildChatPayload(
     }, .{});
 }
 
+/// Builds a chat payload with structured output (json_schema) for proposal generation.
+/// This enforces the WorkspaceEdit JSON shape at the token level, eliminating
+/// most parse failures without changing content semantics.
+pub fn buildChatPayloadWithSchema(
+    allocator: std.mem.Allocator,
+    model_name: []const u8,
+    messages: []const ChatMessage,
+) ![]u8 {
+    return try std.json.Stringify.valueAlloc(allocator, ChatRequestSchema{
+        .model = model_name,
+        .messages = messages,
+        .stream = true,
+    }, .{});
+}
+
+/// Returns true when the prompt is an intent-classifier call (wants simple JSON)
+/// or a proposal-generation call (wants WorkspaceEdit JSON).
 pub fn promptWantsJson(prompt: []const u8) bool {
-    return std.mem.startsWith(u8, prompt, "INTENT_CLASSIFIER_MODE") or
-        std.mem.indexOf(u8, prompt, "MARKDOWN PLAN MODE") == null;
+    return std.mem.startsWith(u8, prompt, "INTENT_CLASSIFIER_MODE");
+}
+
+/// Returns true when the prompt is a proposal/repair generation call
+/// that should use the full json_schema structured output mode.
+pub fn promptWantsSchema(prompt: []const u8) bool {
+    // Proposal prompts contain either the planner header or the repair directive.
+    return std.mem.indexOf(u8, prompt, "WorkspaceEdit") != null or
+        std.mem.indexOf(u8, prompt, "schema_version") != null or
+        std.mem.indexOf(u8, prompt, "Output ONLY a raw JSON object") != null;
 }
 
 fn trimTrailingSlash(url: []const u8) []const u8 {
