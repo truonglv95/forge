@@ -96,8 +96,8 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .run_extension_command => |command_id| try wb.extension_host.executeCommand(command_id),
         .reload_extensions => try wb.reloadExtensions(),
         .set_sidebar_view => |view| {
-            if (view == .ai) {
-                try wb.openAiSettings();
+            if (view == .run) {
+                try wb.openSettingsModal();
                 return;
             }
             wb.sidebar_view = view;
@@ -107,7 +107,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
                 .git => .git,
                 .run => .run,
                 .extensions => .extensions,
-                .ai => .ai_settings,
+                .ai => .agent,
             };
             if (view == .git) try wb.refreshGitStatus();
         },
@@ -661,10 +661,10 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .toggle_agent_panel => wb.agent_panel_visible = !wb.agent_panel_visible,
         .chat_clear_history => try wb.clearChatHistory(),
         .close_proposal_review => wb.closeProposalReview(),
-        .close_ai_settings => wb.closeAiSettings(),
+        .close_settings_modal => wb.closeSettingsModal(),
+        .open_settings_modal => try wb.openSettingsModal(),
         .nav_back => try wb.navBack(),
         .nav_forward => try wb.navForward(),
-        .open_ai_settings => try wb.openAiSettings(),
         .focus_agent => {
             wb.agent_panel_visible = true;
             wb.focused_panel = .agent;

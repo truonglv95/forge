@@ -18,3 +18,10 @@ packages/mcp-computer/venv/
 packages/mcp-computer/__pycache__/
 .build/
 test.db
+
+# Binaries and assets
+bin/
+cursor.png
+
+# Configuration
+.mcp.json

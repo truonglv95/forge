@@ -7,7 +7,7 @@ const search_panel = @import("../sidebar/search_panel.zig");
 const debug_panel = @import("../sidebar/debug_panel.zig");
 const git_panel = @import("../sidebar/git_panel.zig");
 const extensions_panel = @import("../sidebar/extensions_panel.zig");
-const ai_settings_panel = @import("../agent/ai_settings_panel.zig");
+
 const chat_layout = @import("../../workbench/chat_layout.zig");
 const proposal_review_panel = @import("../editor/proposal_review_panel.zig");
 const header_toolbar = @import("../chrome/header_toolbar.zig");
@@ -78,6 +78,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         }
     } else if (event.action == .down) {
         if (wb.palette.open) return;
+        if (wb.settings_modal_open) {
+            wb.focused_panel = .settings_modal;
+            const settings_modal = @import("../settings_modal.zig");
+            const hit = settings_modal.hitTestPoint(wb, w, h, event.x, event.y);
+            wb.handleSettingsModalClick(hit) catch {};
+            return;
+        }
         if (event.y < layout.header_height) {
             if (header_toolbar.hitTest(w, wb.headerToolbarState(), event.x, event.y)) |action| {
                 wb.handleHeaderAction(action) catch {};
@@ -327,11 +334,6 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 if (proposal_review_panel.hitCloseTab(geo.editor_x, event.x, event.y)) {
                     wb.dispatch(.close_proposal_review) catch {};
                 }
-            } else if (wb.ai_settings_open) {
-                wb.focused_panel = .ai_settings;
-                if (ai_settings_panel.hitCloseTab(geo.editor_x, event.x, event.y)) {
-                    wb.dispatch(.close_ai_settings) catch {};
-                }
             } else {
                 wb.focused_panel = .editor;
                 var tab_layouts: std.ArrayList(tabs_ui.TabLayout) = .empty;
@@ -360,18 +362,6 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     event.y,
                 ) catch null) |hit| {
                     wb.handleProposalReviewClick(hit) catch {};
-                }
-                return;
-            }
-            if (wb.ai_settings_open) {
-                wb.focused_panel = .ai_settings;
-                if (ai_settings_panel.hitTestPoint(
-                    geo.editor_x,
-                    wb.ai_settings_scroll_y,
-                    event.x,
-                    event.y,
-                )) |hit| {
-                    wb.handleAiSettingsClick(hit) catch {};
                 }
                 return;
             }
@@ -570,9 +560,9 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         if (geo.shell_mode == .ide and wb.proposal_review_open and mx >= geo.editor_x and mx < geo.agent_splitter_x and my >= proposal_review_panel.contentTop()) {
             wb.proposal_review_scroll_y += scroll_delta_y;
             wb.clampProposalReviewScroll(geo.editor_h);
-        } else if (geo.shell_mode == .ide and wb.ai_settings_open and mx >= geo.editor_x and mx < geo.agent_splitter_x and my >= ai_settings_panel.contentTop()) {
-            wb.ai_settings_scroll_y += scroll_delta_y;
-            wb.clampAiSettingsScroll(geo.editor_h);
+        } else if (wb.settings_modal_open) {
+            wb.settings_modal_scroll_y += scroll_delta_y;
+            // TODO: clamp modal scroll if needed
         } else if (geo.shell_mode == .ide and mx >= geo.explorer_x and mx < geo.explorer_splitter_x and my >= layout.header_height) {
             switch (wb.sidebar_view) {
                 .extensions => {

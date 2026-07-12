@@ -185,7 +185,6 @@ pub const Session = struct {
             .backend = backend,
         };
         errdefer {
-            allocator.free(session.server_name);
             session.deinit();
         }
 

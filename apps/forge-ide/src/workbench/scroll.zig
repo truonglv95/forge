@@ -114,20 +114,6 @@ pub fn clampExtensionsScroll(wb: anytype, window_h: f32) void {
     );
 }
 
-pub fn clampAiSettingsScroll(wb: anytype, editor_h: f32) void {
-    const panel = @import("../ui/agent/ai_settings_panel.zig");
-    const lines = blk: {
-        const status = wb.ai_mcp_status orelse break :blk @as(usize, 1);
-        if (status.len == 0) break :blk @as(usize, 1);
-        var count: usize = 1;
-        for (status) |ch| {
-            if (ch == '\n') count += 1;
-        }
-        break :blk count;
-    };
-    wb.ai_settings_scroll_y = panel.clampScrollY(wb.ai_settings_scroll_y, editor_h, lines);
-}
-
 pub fn clampSearchScroll(wb: anytype, window_h: f32) void {
     const scroll = @import("../ui/sidebar/search_panel.zig");
     const count = if (wb.search_results) |results| results.matches.len else 0;

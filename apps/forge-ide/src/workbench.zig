@@ -49,7 +49,7 @@ const agent_ui_queue_mod = @import("workbench/agent_ui_queue.zig");
 const ghost_completion_mod = @import("workbench/ghost_completion.zig");
 const sync_mod = @import("forge-util").sync;
 
-pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, ai_settings, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename };
+pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, settings_modal, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename };
 pub const EditorPane = enum { primary, secondary };
 pub const ChatRole = @import("workbench/types.zig").ChatRole;
 pub const ChatMessage = struct {
@@ -154,8 +154,10 @@ pub const Workbench = struct {
     tab_scroll_x: f32 = 0,
     explorer_scroll_y: f32 = 0,
     extensions_scroll_y: f32 = 0,
-    ai_settings_scroll_y: f32 = 0,
-    ai_settings_open: bool = false,
+    settings_modal_scroll_y: f32 = 0,
+    settings_modal_open: bool = false,
+    settings_modal_tab: @import("ui/settings_modal.zig").Tab = .general,
+
     proposal_review_open: bool = false,
     proposal_review_scroll_y: f32 = 0,
     proposal_review_file_index: usize = 0,
@@ -405,6 +407,8 @@ pub const Workbench = struct {
         }
         self.recovery_count = recovery_mod.countRecoveryFiles(allocator, io, root) catch 0;
         if (self.recovery_count > 0) {
+            self.settings_modal_open = true;
+
             self.previous_focus = .editor;
             self.focused_panel = .recovery;
         }
@@ -556,7 +560,7 @@ pub const Workbench = struct {
                 self.agent_panel_visible = !self.agent_panel_visible;
                 try self.setStatus(if (self.agent_panel_visible) "Agent panel shown" else "Agent panel hidden");
             },
-            .open_settings => try self.openAiSettings(),
+            .open_settings => try self.openSettingsModal(),
             .toggle_agent_window => try self.dispatch(.toggle_shell_mode),
         }
     }
@@ -627,12 +631,12 @@ pub const Workbench = struct {
         return @import("workbench/agent_ops.zig").ensureMcpConfigFile(self);
     }
 
-    pub fn openAiSettings(self: *Workbench) !void {
-        return @import("workbench/agent_ops.zig").openAiSettings(self);
+    pub fn openSettingsModal(self: *Workbench) !void {
+        return @import("workbench/agent_ops.zig").openSettingsModal(self);
     }
 
-    pub fn closeAiSettings(self: *Workbench) void {
-        @import("workbench/agent_ops.zig").closeAiSettings(self);
+    pub fn closeSettingsModal(self: *Workbench) void {
+        @import("workbench/agent_ops.zig").closeSettingsModal(self);
     }
 
     pub fn openProposalReview(self: *Workbench) void {
@@ -651,8 +655,8 @@ pub const Workbench = struct {
         @import("workbench/scroll.zig").clampProposalReviewScroll(self, editor_h);
     }
 
-    pub fn handleAiSettingsClick(self: *Workbench, hit: @import("ui/agent/ai_settings_panel.zig").Hit) !void {
-        return @import("workbench/agent_ops.zig").handleAiSettingsClick(self, hit);
+    pub fn handleSettingsModalClick(self: *Workbench, hit: @import("ui/settings_modal.zig").Hit) !void {
+        return @import("workbench/agent_ops.zig").handleSettingsModalClick(self, hit);
     }
 
     fn resolveWorkbenchHome(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {

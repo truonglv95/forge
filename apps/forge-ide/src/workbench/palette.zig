@@ -108,7 +108,7 @@ pub const Palette = struct {
             .{ .id = "view.git", .title = "View: Show Source Control", .category = "View", .command = .{ .set_sidebar_view = .git } },
             .{ .id = "view.run", .title = "View: Show Run and Debug", .category = "View", .command = .{ .set_sidebar_view = .run } },
             .{ .id = "view.extensions", .title = "View: Show Extensions", .category = "View", .command = .{ .set_sidebar_view = .extensions } },
-            .{ .id = "view.ai", .title = "View: AI Settings", .category = "View", .command = .open_ai_settings },
+            .{ .id = "view.settings", .title = "View: Settings", .category = "View", .command = .open_settings_modal },
             .{ .id = "view.toggle_sidebar", .title = "View: Toggle Primary Sidebar", .category = "View", .command = .toggle_sidebar },
             .{ .id = "view.toggle_panel", .title = "View: Toggle Bottom Panel", .category = "View", .command = .toggle_bottom_panel },
             .{ .id = "view.toggle_agent", .title = "View: Toggle Agent Panel", .category = "View", .command = .toggle_agent_panel },

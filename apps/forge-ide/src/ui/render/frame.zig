@@ -2,7 +2,7 @@ const std = @import("std");
 const renderer = @import("forge-renderer");
 const state = @import("../core/state.zig");
 const layout = @import("../core/layout.zig");
-const ai_settings_panel = @import("../agent/ai_settings_panel.zig");
+const settings_modal = @import("../settings_modal.zig");
 const header_toolbar = @import("../chrome/header_toolbar.zig");
 const theme_loader = @import("../../theme_loader.zig");
 const agent_render = @import("agent.zig");
@@ -64,7 +64,6 @@ pub fn onRenderFrame() void {
     wb.clampSearchScroll(h);
     wb.clampGitScroll(h);
     wb.clampRunScroll(h);
-    if (wb.ai_settings_open) wb.clampAiSettingsScroll(geo.editor_h);
     if (wb.proposal_review_open) wb.clampProposalReviewScroll(geo.editor_h);
     const side_h = geo.content_h;
     const layout_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
@@ -104,12 +103,7 @@ pub fn onRenderFrame() void {
                     .git => sidebar_render.drawGitPanel(wb, geo.explorer_x, geo.explorer_w, h),
                     .run => sidebar_render.drawDebugPanel(wb, geo.explorer_x, geo.explorer_w, h),
                     .extensions => sidebar_render.drawExtensionsPanel(wb, geo.explorer_x, geo.explorer_w, h),
-                    .ai => ai_settings_panel.drawSidebarHint(
-                        geo.explorer_x,
-                        geo.explorer_w,
-                        layout.header_height + layout.activity_bar_height,
-                        side_h - layout.activity_bar_height,
-                    ),
+                    .ai => {},
                 }
                 const sidebar_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 state.perf_sidebar_ms = @floatFromInt(sidebar_end_ms - sidebar_start_ms);
@@ -141,6 +135,12 @@ pub fn onRenderFrame() void {
         if (wb.focused_panel == .conflict) dialogs.drawConflictDialog(wb, w, h);
         if (wb.focused_panel == .recovery) dialogs.drawRecoveryDialog(wb, w, h);
         if (wb.agent.scope_picker_open) agent_render.drawScopePicker(wb, geo.agent_x, geo.agent_w, h);
+
+        // Settings Modal must be drawn last to be on top
+        if (wb.settings_modal_open) {
+            settings_modal.draw(wb, w, h);
+        }
+
         const draw_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
         state.perf_draw_ms = @floatFromInt(draw_end_ms - draw_start_ms);
     }
