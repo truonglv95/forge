@@ -9,6 +9,7 @@ const ai_workflow = @import("../ai_workflow.zig");
 const cancel_scope_mod = @import("../cancel_scope.zig");
 const term = @import("term.zig");
 const cli_config = @import("../config.zig");
+const editor = @import("forge-editor");
 const commands = @import("commands.zig");
 const events_render = @import("../events_render.zig");
 
@@ -114,7 +115,9 @@ pub const App = struct {
     scan_summary: ?@import("forge-workspace").tree.ScanSummary = null,
     explorer_scroll_y: usize = 0,
     cli_config: cli_config.Config = .{},
-    show_explorer: bool = true,
+    show_explorer: bool = false,
+    show_editor: bool = false,
+    editor_buffer: ?*editor.Buffer = null,
     focus_explorer: bool = false,
     timeline_lines: std.ArrayList(ChatLine) = .empty,
     timeline_scroll: usize = 0,
@@ -171,6 +174,7 @@ pub const App = struct {
         app.terminal_size = terminal.size();
         app.cli_config = loaded_config;
         app.show_explorer = loaded_config.show_explorer;
+        app.show_editor = loaded_config.show_editor;
         return app;
     }
 
@@ -323,6 +327,45 @@ pub const App = struct {
             },
             .enter => {
                 self.mutex.lock();
+                if (self.focus_explorer) {
+                    if (self.scan_summary) |s| {
+                        if (self.explorer_scroll_y < s.entries.len) {
+                            const entry = s.entries[self.explorer_scroll_y];
+                            if (entry.kind == .file) {
+                                if (self.editor_buffer) |buf| {
+                                    buf.deinit();
+                                    self.allocator.destroy(buf);
+                                }
+                                self.editor_buffer = self.allocator.create(editor.Buffer) catch null;
+                                if (self.editor_buffer) |buf| {
+                                    buf.* = editor.Buffer.init(self.allocator) catch unreachable;
+                                    const abs_path = std.fs.path.join(self.allocator, &.{ self.opened.path, entry.path }) catch "";
+                                    if (abs_path.len > 0) {
+                                        defer self.allocator.free(abs_path);
+                                        if (std.Io.Dir.openFile(std.Io.Dir.cwd(), self.io, abs_path, .{})) |*file| {
+                                            defer file.close(self.io);
+                                            if (file.stat(self.io)) |stat| {
+                                                const size: usize = @intCast(stat.size);
+                                                if (size > 0 and size < 10 * 1024 * 1024) {
+                                                    if (self.allocator.alloc(u8, size)) |text| {
+                                                        defer self.allocator.free(text);
+                                                        if (file.readPositionalAll(self.io, text, 0)) |_| {
+                                                            buf.loadFromSlice(text) catch {};
+                                                            self.show_editor = true;
+                                                        } else |_| {}
+                                                    } else |_| {}
+                                                }
+                                            } else |_| {}
+                                        } else |_| {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.markDirty();
+                    self.mutex.unlock();
+                    return;
+                }
                 const is_cmd = self.input.items.len > 0 and self.input.items[0] == '/';
                 const has_space = std.mem.indexOfScalar(u8, self.input.items, ' ') != null;
                 if (is_cmd and !has_space) {
@@ -1782,8 +1825,12 @@ pub const App = struct {
         // 0: none, 1: thinking, 2: diff
 
         const explorer_width: u16 = if (self.show_explorer) self.cli_config.explorer_width else 0;
-        const chat_x: u16 = if (self.show_explorer) explorer_width + 2 else 1;
-        const chat_cols: u16 = if (self.show_explorer) size.cols - explorer_width - 1 else size.cols;
+        const remaining_cols: u16 = if (self.show_explorer) size.cols - explorer_width - 1 else size.cols;
+        const editor_width: u16 = if (self.show_editor) remaining_cols / 2 else 0;
+        const chat_cols: u16 = if (self.show_editor) remaining_cols - editor_width - 1 else remaining_cols;
+
+        const editor_x: u16 = if (self.show_explorer) explorer_width + 2 else 1;
+        const chat_x: u16 = if (self.show_editor) editor_x + editor_width + 1 else editor_x;
         const width = @max(20, @as(usize, chat_cols) - 2);
         const source_lines = if (self.show_timeline)
             self.timeline_lines.items
@@ -1974,6 +2021,45 @@ pub const App = struct {
             self.frame.appendSlice("\x1b[?25h") catch {};
         } else {
             self.frame.appendSlice("\x1b[?25l") catch {};
+        }
+
+        if (self.show_editor) {
+            var b_row: u16 = 1;
+            while (b_row <= size.rows) : (b_row += 1) {
+                self.frame.moveTo(b_row, editor_x + editor_width);
+                if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                self.frame.appendSlice("│") catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            }
+
+            var e_row: u16 = 1;
+            self.frame.moveTo(e_row, editor_x);
+            if (!self.focus_explorer) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.green) catch {};
+                self.frame.appendSlice(" EDITOR ") catch {};
+            } else {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                self.frame.appendSlice(" EDITOR ") catch {};
+            }
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            e_row += 1;
+
+            if (self.editor_buffer) |buf| {
+                const max_lines = chat_rows - 1;
+                const total_lines = buf.lines.items.len;
+                const start_idx = 0; // TODO: scroll_y
+                const end_idx = @min(start_idx + max_lines, total_lines);
+                for (buf.lines.items[start_idx..end_idx], start_idx..) |line, i| {
+                    _ = i;
+                    self.frame.moveTo(e_row, editor_x);
+                    var scratch_line: [512]u8 = undefined;
+                    const clipped = term.truncateEnd(&scratch_line, line.items, editor_width);
+                    self.frame.appendSlice(clipped) catch {};
+                    e_row += 1;
+                }
+            }
         }
 
         if (self.show_explorer) {

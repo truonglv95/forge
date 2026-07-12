@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const Config = struct {
-    show_explorer: bool = true,
+    show_explorer: bool = false,
     explorer_width: u16 = 30,
     show_editor: bool = false,
     keybinding: []const u8 = "standard",
