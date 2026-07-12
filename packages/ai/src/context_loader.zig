@@ -1028,32 +1028,61 @@ pub fn renderManifestJson(builder: *const context.ContextBuilder, writer: *std.I
     for (builder.blocks.items) |block| {
         if (!first) try writer.writeAll(",");
         first = false;
-        try writer.print(
-            "{{\"kind\":\"{s}\",\"name\":\"{s}\",\"included\":true,\"truncated\":{},\"bytes\":{d}}}",
-            .{ @tagName(block.block_type), block.name, block.is_truncated, block.content.len },
-        );
+        try writer.writeAll("{\"kind\":");
+        try writeJsonString(writer, @tagName(block.block_type));
+        try writer.writeAll(",\"name\":");
+        try writeJsonString(writer, block.name);
+        try writer.print(",\"included\":true,\"truncated\":{},\"bytes\":{d}", .{ block.is_truncated, block.content.len });
+        if (block.detail) |detail| {
+            try writer.writeAll(",\"reason\":");
+            try writeJsonString(writer, detail);
+        }
+        try writer.writeAll("}");
     }
 
     var reject_it = builder.rejected.iterator();
     while (reject_it.next()) |entry| {
         if (!first) try writer.writeAll(",");
         first = false;
-        try writer.print(
-            "{{\"kind\":\"file\",\"name\":\"{s}\",\"included\":false,\"reason\":\"{s}\",\"bytes\":0}}",
-            .{ entry.key_ptr.*, entry.value_ptr.* },
-        );
+        try writer.writeAll("{\"kind\":\"file\",\"name\":");
+        try writeJsonString(writer, entry.key_ptr.*);
+        try writer.writeAll(",\"included\":false,\"reason\":");
+        try writeJsonString(writer, entry.value_ptr.*);
+        try writer.writeAll(",\"bytes\":0}");
     }
 
     for (builder.manifest_extras.items) |extra| {
         if (!first) try writer.writeAll(",");
         first = false;
-        try writer.print(
-            "{{\"kind\":\"{s}\",\"name\":\"{s}\",\"included\":true,\"truncated\":false,\"bytes\":{d}}}",
-            .{ @tagName(extra.kind), extra.name, extra.bytes },
-        );
+        try writer.writeAll("{\"kind\":");
+        try writeJsonString(writer, @tagName(extra.kind));
+        try writer.writeAll(",\"name\":");
+        try writeJsonString(writer, extra.name);
+        try writer.print(",\"included\":true,\"truncated\":false,\"bytes\":{d}", .{extra.bytes});
+        try writer.writeAll(",\"reason\":");
+        try writeJsonString(writer, extra.detail);
+        try writer.writeAll("}");
     }
 
     try writer.print("],\"budget_bytes\":{d},\"used_bytes\":{d}}}\n", .{ builder.max_bytes, builder.used_bytes });
+}
+
+fn writeJsonString(writer: *std.Io.Writer, text: []const u8) !void {
+    try writer.writeByte('"');
+    for (text) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            0x08 => try writer.writeAll("\\b"),
+            0x0c => try writer.writeAll("\\f"),
+            0...0x07, 0x0b, 0x0e...0x1f => try writer.print("\\u{x:0>4}", .{c}),
+            else => try writer.writeByte(c),
+        }
+    }
+    try writer.writeByte('"');
 }
 
 test "collectManifest includes blocks and rejections" {
@@ -1089,6 +1118,23 @@ test "collectManifest includes blocks and rejections" {
         }
     }
     try std.testing.expect(found_rules and found_env_reject and found_missing);
+}
+
+test "renderManifestJson escapes names and reasons" {
+    const allocator = std.testing.allocator;
+    var builder = context.ContextBuilder.init(allocator, 1000);
+    defer builder.deinit();
+
+    try builder.addBlockWithDetail(.file, "src/quote\"file.zig", "content", "line\nreason");
+    try builder.rejected.put(try allocator.dupe(u8, "bad\"path.zig"), "missing\nfile");
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try renderManifestJson(&builder, &out.writer);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, out.writer.buffered(), .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.object.get("items") != null);
 }
 
 test "import graph auto-neighbors respect budget" {

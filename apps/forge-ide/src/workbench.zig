@@ -89,6 +89,11 @@ pub const Workbench = struct {
     bottom_panel_mode: commands_mod.BottomPanelMode = .output,
     search_buffer: editor.Buffer,
     search_results: ?search_engine.ResultSet = null,
+    search_mutex: sync_mod.Mutex = .{},
+    search_running: bool = false,
+    search_ready: bool = false,
+    search_failed: bool = false,
+    search_pending_results: ?search_engine.ResultSet = null,
     search_scroll_y: f32 = 0,
     git_status: ?git_status_mod.Status = null,
     git_refresh_mutex: sync_mod.Mutex = .{},
@@ -426,6 +431,11 @@ pub const Workbench = struct {
         self.search_buffer.deinit();
         self.git_commit_msg.deinit();
         if (self.search_results) |*results| results.deinit(self.allocator);
+        self.search_mutex.lock();
+        if (self.search_pending_results) |*results| results.deinit(self.allocator);
+        self.search_pending_results = null;
+        self.search_mutex.unlock();
+        self.search_mutex.deinit();
         if (self.git_status) |*status| status.deinit(self.allocator);
         self.git_refresh_mutex.lock();
         if (self.git_refresh_pending_status) |*status| status.deinit(self.allocator);
@@ -958,6 +968,10 @@ pub const Workbench = struct {
 
     pub fn runSearch(self: *Workbench) !void {
         return @import("workbench/search_ops.zig").runSearch(self);
+    }
+
+    pub fn flushSearchResults(self: *Workbench) !bool {
+        return @import("workbench/search_ops.zig").flushSearchResults(self);
     }
 
     pub fn refreshGitStatus(self: *Workbench) !void {
@@ -1678,6 +1692,7 @@ pub const Workbench = struct {
     pub fn tickFrame(self: *Workbench, dt: f32) !void {
         self.workspace_symbol_picker.tick(dt);
         try self.flushAgentUi();
+        _ = try self.flushSearchResults();
         if (try self.flushGitStatusRefresh()) {
             if (self.bottom_panel_mode == .terminal) self.updateTerminalPrompt() catch {};
         }

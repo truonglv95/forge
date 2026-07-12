@@ -205,6 +205,8 @@ fn runAgent(
         .approve_every_time_tools = workspace_cmd.approved(parsed),
         .turn_callback = if (event_stream) AgentEventWriter.onTurn else null,
         .turn_context = &event_writer,
+        .compaction_callback = if (event_stream) AgentEventWriter.onCompaction else null,
+        .compaction_context = &event_writer,
         .step_begin_callback = if (event_stream) AgentEventWriter.onStepBegin else null,
         .step_begin_context = &event_writer,
         .step_callback = if (event_stream) AgentEventWriter.onStep else null,
@@ -240,7 +242,7 @@ fn runAgent(
     else
         ai.agent.run(allocator, io, environ_map, opened.root, target, agent_config)) catch |err| switch (err) {
         ai.agent.AgentError.StepLimitReached => {
-            if (event_stream) try event_writer.agentError(.step_limit_reached, "agent reached step limit before completing", true) else try writer.writeAll("error: agent reached step limit before completing\n");
+            if (event_stream) try event_writer.agentError(.step_limit_reached, "agent reached step limit; compact checkpoint saved, resume the session to continue", true) else try writer.writeAll("error: agent reached step limit; compact checkpoint saved, resume the session to continue\n");
             return 2;
         },
         ai.agent.AgentError.Cancelled => {
@@ -260,7 +262,7 @@ fn runAgent(
             return 2;
         },
         ai.agent.AgentError.ContextLengthExceeded => {
-            if (event_stream) try event_writer.agentError(.context_length_exceeded, "agent provider rejected the context; reduce --budget-bytes or attached files", true) else try writer.writeAll("error: agent provider rejected the context; reduce --budget-bytes or attached files\n");
+            if (event_stream) try event_writer.agentError(.context_length_exceeded, "agent compacted context but the provider still rejected it; resume, reduce --budget-bytes, or switch model", true) else try writer.writeAll("error: agent compacted context but the provider still rejected it; resume, reduce --budget-bytes, or switch model\n");
             return 2;
         },
         ai.agent.AgentError.NetworkError => {
@@ -452,6 +454,11 @@ const AgentEventWriter = struct {
         self.llmTurn(next_step) catch {};
     }
 
+    fn onCompaction(ctx: ?*anyopaque, reason: []const u8, before_bytes: usize, after_bytes: usize, step_index: u32, attempt: u8) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        self.contextCompacted(reason, before_bytes, after_bytes, step_index, attempt) catch {};
+    }
+
     fn onStepBegin(ctx: ?*anyopaque, step: ai.agent.StepBegin) void {
         const self: *@This() = @ptrCast(@alignCast(ctx.?));
         self.toolCall(step.index, step.tool_name, step.args_json) catch {};
@@ -502,6 +509,24 @@ const AgentEventWriter = struct {
         try self.writer.print(
             "{{\"schema_version\":{d},\"type\":\"{s}\",\"next_step\":{d}}}\n",
             .{ ai.agent_event.schema_version, ai.agent_event.typeName(.llm_turn), next_step },
+        );
+    }
+
+    fn contextCompacted(self: *@This(), reason: []const u8, before_bytes: usize, after_bytes: usize, step_index: u32, attempt: u8) !void {
+        const reason_json = try jsonString(self.allocator, reason);
+        defer self.allocator.free(reason_json);
+        try self.writer.print(
+            "{{\"schema_version\":{d},\"type\":\"{s}\",\"reason\":{s},\"step\":{d},\"attempt\":{d},\"before_bytes\":{d},\"after_bytes\":{d},\"saved_bytes\":{d}}}\n",
+            .{
+                ai.agent_event.schema_version,
+                ai.agent_event.typeName(.context_compacted),
+                reason_json,
+                step_index,
+                attempt,
+                before_bytes,
+                after_bytes,
+                if (before_bytes > after_bytes) before_bytes - after_bytes else 0,
+            },
         );
     }
 

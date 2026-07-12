@@ -34,6 +34,22 @@ pub fn searchWorkspace(
     explorer: *const explorer_tree.Tree,
     query: []const u8,
 ) !ResultSet {
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(allocator);
+    for (explorer.entries) |entry| {
+        if (entry.kind != .file) continue;
+        try paths.append(allocator, entry.path);
+    }
+    return searchWorkspacePaths(allocator, io, root, paths.items, query);
+}
+
+pub fn searchWorkspacePaths(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    paths: []const []const u8,
+    query: []const u8,
+) !ResultSet {
     var list: std.ArrayList(Match) = .empty;
     errdefer {
         for (list.items) |*match| match.deinit(allocator);
@@ -46,23 +62,21 @@ pub fn searchWorkspace(
     const lower_query = try toLower(allocator, trimmed);
     defer allocator.free(lower_query);
 
-    for (explorer.entries) |entry| {
+    for (paths) |path| {
         if (list.items.len >= max_results) break;
-        if (entry.kind != .file) continue;
-        if (shouldSkipPath(entry.path)) continue;
+        if (shouldSkipPath(path)) continue;
 
-        const base = std.fs.path.basename(entry.path);
+        const base = std.fs.path.basename(path);
         if (containsIgnoreCase(base, lower_query)) {
             try list.append(allocator, .{
-                .path = try allocator.dupe(u8, entry.path),
+                .path = try allocator.dupe(u8, path),
                 .line = null,
                 .preview = try std.fmt.allocPrint(allocator, "{s}", .{base}),
             });
             continue;
         }
 
-        if (!containsIgnoreCase(entry.path, lower_query)) continue;
-        try searchFileContent(allocator, io, root, entry.path, lower_query, &list);
+        try searchFileContent(allocator, io, root, path, lower_query, &list);
     }
 
     return .{ .matches = try list.toOwnedSlice(allocator) };

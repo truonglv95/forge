@@ -138,3 +138,11 @@ fn isGitDiffPseudoPath(path: []const u8) bool {
 fn mapTool(err: tool_executor.AgentToolError) DispatchError {
     return err;
 }
+
+test "read_file git diff pseudo paths are recognized" {
+    try std.testing.expect(isGitDiffPseudoPath("git_diff"));
+    try std.testing.expect(isGitDiffPseudoPath(".git_diff"));
+    try std.testing.expect(isGitDiffPseudoPath(" git diff "));
+    try std.testing.expect(isGitDiffPseudoPath("git:working-tree"));
+    try std.testing.expect(!isGitDiffPseudoPath("src/git_diff.zig"));
+}

@@ -1880,15 +1880,7 @@ fn workerMain(ctx: *WorkerCtx) void {
     if (resume_id == null) {
         app.appendConversation(.user, intent) catch {};
     }
-    if (app.refreshContextLabel(intent)) |summary| {
-        var context_buf: [160]u8 = undefined;
-        const line = std.fmt.bufPrint(
-            &context_buf,
-            "Context built: {d} files · {d} blocks · {d}kB",
-            .{ summary.files, summary.blocks, summary.used_bytes / 1024 },
-        ) catch "Context built";
-        app.pushLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
-    }
+    app.pushLine(.system, app.allocator.dupe(u8, "Building prompt context...") catch return) catch {};
 
     const parsed = app.parsed;
     var provider_opts = ai_workflow.agentProviderOptionsFromFlags(app.allocator, parsed.flags, intent, app.io, app.opened.root);
@@ -1945,6 +1937,8 @@ fn workerMain(ctx: *WorkerCtx) void {
         .step_context = app,
         .turn_callback = turnBridge,
         .turn_context = app,
+        .compaction_callback = compactionBridge,
+        .compaction_context = app,
         .progress_callback = progressBridge,
         .progress_context = app,
     };
@@ -1991,9 +1985,9 @@ fn workerMain(ctx: *WorkerCtx) void {
 fn agentErrorMessage(allocator: std.mem.Allocator, err: ai.agent.AgentError) ![]u8 {
     const text: []const u8 = switch (err) {
         error.ProviderFailed => "Agent error: LLM provider failed (timeout, malformed response, or context too long). Try again, use a shorter request, or run `forge agent resume <session_id>`.",
-        error.ContextLengthExceeded => "Agent error: context too long for the model. Retry with fewer attached files or a shorter prompt.",
+        error.ContextLengthExceeded => "Agent error: compacted context is still too long for the model. Resume, reduce attachments, or switch to a larger-context model.",
         error.NetworkError => "Agent error: cannot reach Ollama. Check `ollama serve` and OLLAMA_HOST.",
-        error.StepLimitReached => "Agent error: step limit reached before finishing. Resume the session or increase --max-steps.",
+        error.StepLimitReached => "Agent error: step limit reached; compact checkpoint saved. Resume the session or increase --max-steps.",
         error.DuplicateLoop => "Agent error: agent repeated the same tool calls. Give a more specific file/symbol or use /resume.",
         error.NoProgress => "Agent error: no progress after broad searches. Point to a specific file or task.",
         else => return std.fmt.allocPrint(allocator, "Agent error: {s}", .{@errorName(err)}),
@@ -2023,14 +2017,26 @@ fn stepBridge(context: ?*anyopaque, step: ai.agent.Step) void {
 
 fn turnBridge(context: ?*anyopaque, next_step_index: u32) void {
     const app: *App = @ptrCast(@alignCast(context.?));
+    _ = next_step_index;
     app.mutex.lock();
     app.stream_line_index = null;
-    app.active_progress_len = 0;
+    const label = "Thinking...";
+    const len = @min(label.len, app.active_progress.len);
+    @memcpy(app.active_progress[0..len], label[0..len]);
+    app.active_progress_len = len;
+    app.markDirty();
     app.mutex.unlock();
+}
 
-    var buf: [96]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "↻ call llm  next tool step {d}", .{next_step_index}) catch return;
-    app.pushLine(.tool, app.allocator.dupe(u8, line) catch return) catch {};
+fn compactionBridge(context: ?*anyopaque, reason: []const u8, before_bytes: usize, after_bytes: usize, step_index: u32, attempt: u8) void {
+    const app: *App = @ptrCast(@alignCast(context.?));
+    var buf: [192]u8 = undefined;
+    const line = std.fmt.bufPrint(
+        &buf,
+        "Compacted context: {s} · step {d} · attempt {d} · {d}kB -> {d}kB",
+        .{ reason, step_index, attempt, before_bytes / 1024, after_bytes / 1024 },
+    ) catch return;
+    app.pushLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
 }
 
 fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
@@ -2052,6 +2058,7 @@ fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
             app.active_progress_len = 0;
             app.markDirty();
             app.mutex.unlock();
+            app.pushLine(.system, app.allocator.dupe(u8, "Context ready. Retrieval and tool evidence will appear below.") catch return) catch {};
         },
         .plan_ready, .proposal_ready => {
             var buf: [64]u8 = undefined;

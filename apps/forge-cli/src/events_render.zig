@@ -26,6 +26,20 @@ pub fn renderPreviewAlloc(allocator: std.mem.Allocator, ndjson_line: []const u8)
     if (std.mem.eql(u8, type_str, "context_manifest_built")) {
         return std.fmt.allocPrint(allocator, "context_manifest  used_bytes={d} blocks={d}", .{ jsonInt(obj, "used_bytes"), jsonInt(obj, "blocks") });
     }
+    if (std.mem.eql(u8, type_str, "context_compacted")) {
+        return std.fmt.allocPrint(
+            allocator,
+            "context_compacted  {s} step={d} attempt={d} {d}kB -> {d}kB saved={d}kB",
+            .{
+                jsonStr(obj, "reason"),
+                jsonInt(obj, "step"),
+                jsonInt(obj, "attempt"),
+                @divTrunc(jsonInt(obj, "before_bytes"), 1024),
+                @divTrunc(jsonInt(obj, "after_bytes"), 1024),
+                @divTrunc(jsonInt(obj, "saved_bytes"), 1024),
+            },
+        );
+    }
     if (std.mem.eql(u8, type_str, "run_started")) {
         return allocator.dupe(u8, "run_started");
     }
@@ -101,4 +115,15 @@ fn jsonInt(obj: std.json.ObjectMap, key: []const u8) i64 {
 
 fn clip(s: []const u8, max: usize) []const u8 {
     return if (s.len > max) s[0..max] else s;
+}
+
+test "renderPreviewAlloc renders context compacted event" {
+    const allocator = std.testing.allocator;
+    const rendered = try renderPreviewAlloc(
+        allocator,
+        "{\"schema_version\":1,\"type\":\"context_compacted\",\"reason\":\"conversation_budget\",\"step\":9,\"attempt\":1,\"before_bytes\":262144,\"after_bytes\":16384,\"saved_bytes\":245760}",
+    );
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "context_compacted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "256kB -> 16kB") != null);
 }
