@@ -34,6 +34,12 @@ fn needsContinuousRendering(wb: anytype) bool {
 pub fn onRenderFrame() void {
     const wb = state.wb orelse return;
     const frame_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+
+    // Frame Allocator for Declarative UI
+    var frame_arena = std.heap.ArenaAllocator.init(wb.allocator);
+    defer frame_arena.deinit();
+    const frame_alloc = frame_arena.allocator();
+
     const editor_buf = wb.activeBuffer();
     const theme = &wb.theme;
 
@@ -89,11 +95,11 @@ pub fn onRenderFrame() void {
         if (geo.shell_mode == .ide) {
             if (wb.sidebar_visible and geo.explorer_w > 0) {
                 const sidebar_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
-                sidebar_render.drawActivityBar(wb, geo.explorer_w);
+                sidebar_render.drawActivityBar(wb, geo.explorer_w, frame_alloc);
                 renderer.Renderer.drawRect(geo.explorer_x - 1, layout.header_height, 1, side_h, subtle_border);
                 renderer.Renderer.drawRect(geo.editor_x - 1, layout.header_height, 1, side_h, subtle_border);
                 switch (wb.sidebar_view) {
-                    .explorer => sidebar_render.drawExplorerPanel(wb, geo.explorer_x, geo.explorer_w, h),
+                    .explorer => sidebar_render.drawExplorerPanel(wb, geo.explorer_x, geo.explorer_w, h, frame_alloc),
                     .search => sidebar_render.drawSearchPanel(wb, geo.explorer_x, geo.explorer_w, h),
                     .git => sidebar_render.drawGitPanel(wb, geo.explorer_x, geo.explorer_w, h),
                     .run => sidebar_render.drawDebugPanel(wb, geo.explorer_x, geo.explorer_w, h),

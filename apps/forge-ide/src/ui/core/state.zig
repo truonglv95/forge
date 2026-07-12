@@ -4,6 +4,7 @@ const Workbench = @import("../../workbench.zig").Workbench;
 
 pub var gpa: std.mem.Allocator = undefined;
 pub var wb: ?*Workbench = undefined;
+pub var renderer_theme: *renderer.theme_mod.Theme = undefined;
 
 pub var time: f32 = 0;
 pub var perf_overlay_enabled: bool = false;
