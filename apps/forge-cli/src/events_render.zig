@@ -40,6 +40,13 @@ pub fn renderPreviewAlloc(allocator: std.mem.Allocator, ndjson_line: []const u8)
             },
         );
     }
+    if (std.mem.eql(u8, type_str, "telemetry")) {
+        return std.fmt.allocPrint(
+            allocator,
+            "telemetry  {s} {d}ms bytes={d} items={d} {s}",
+            .{ jsonStr(obj, "phase"), jsonInt(obj, "duration_ms"), jsonInt(obj, "bytes"), jsonInt(obj, "items"), jsonStr(obj, "detail") },
+        );
+    }
     if (std.mem.eql(u8, type_str, "run_started")) {
         return allocator.dupe(u8, "run_started");
     }

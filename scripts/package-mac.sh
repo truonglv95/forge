@@ -49,6 +49,23 @@ DMG_NAME="Forge-${VERSION}-${ARCH}.dmg"
 DMG_PATH="$ROOT/zig-out/${DMG_NAME}"
 ICON_FILE="ForgeIcon.icns"
 
+validate_app_bundle() {
+    local app="$1"
+    local exe="$app/Contents/MacOS/forge-ide"
+    local plist="$app/Contents/Info.plist"
+    local icon="$app/Contents/Resources/$ICON_FILE"
+
+    [ -d "$app" ] || { echo "error: missing app bundle: $app" >&2; exit 1; }
+    [ -f "$plist" ] || { echo "error: missing Info.plist" >&2; exit 1; }
+    [ -f "$exe" ] || { echo "error: missing executable: $exe" >&2; exit 1; }
+    [ -x "$exe" ] || { echo "error: executable is not marked +x: $exe" >&2; exit 1; }
+    [ -f "$icon" ] || { echo "error: missing app icon: $icon" >&2; exit 1; }
+
+    /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$plist" >/dev/null
+    /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" >/dev/null
+    /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$plist" >/dev/null
+}
+
 # ---------------------------------------------------------------------------
 echo "==> Building Forge IDE (ReleaseFast)..."
 zig build -Doptimize=ReleaseFast 2>&1
@@ -115,6 +132,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
+echo "==> Validating app bundle layout..."
+validate_app_bundle "$APP_BUNDLE"
+
 # ---------------------------------------------------------------------------
 # Code signing
 if [ -n "$SIGN_IDENTITY" ]; then
@@ -132,6 +152,7 @@ if [ -n "$SIGN_IDENTITY" ]; then
         "$APP_BUNDLE"
     echo "    => Signed OK"
     codesign --verify --deep --strict --verbose=1 "$APP_BUNDLE"
+    validate_app_bundle "$APP_BUNDLE"
 else
     echo "==> Ad-hoc signing app bundle for local launch..."
     # Finder/LaunchServices can reject a copied bundle whose inner Mach-O has a
@@ -143,6 +164,7 @@ else
     fi
     codesign --force --sign - "$APP_BUNDLE"
     codesign --verify --deep --strict --verbose=1 "$APP_BUNDLE"
+    validate_app_bundle "$APP_BUNDLE"
     echo "    => Ad-hoc signed OK (local use only; distribute with Developer ID + notarization)"
 fi
 

@@ -28,6 +28,7 @@ pub const Options = struct {
     fake_plan_response: ?[]const u8 = null,
     fake_tool_loop: bool = false,
     fake_tool_loop_short: bool = false,
+    fake_context_failures: u8 = 0,
 
     // Callbacks
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,

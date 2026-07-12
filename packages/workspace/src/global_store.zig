@@ -192,6 +192,21 @@ pub fn replaceAbsoluteFile(io: std.Io, path: []const u8, content: []const u8) !v
     try std.Io.Dir.renameAbsolute(tmp_path, path, io);
 }
 
+pub fn appendAbsoluteFile(io: std.Io, path: []const u8, content: []const u8) !void {
+    if (std.fs.path.dirname(path)) |dir| {
+        std.Io.Dir.createDirPath(.cwd(), io, dir) catch {};
+    }
+
+    var file = try std.Io.Dir.createFileAbsolute(io, path, .{
+        .truncate = false,
+        .lock = .exclusive,
+    });
+    defer file.close(io);
+
+    const stat = try file.stat(io);
+    try file.writePositionalAll(io, content, stat.size);
+}
+
 pub fn setForgeHomeOverride(path: []const u8) !void {
     test_forge_home_override = path;
 }

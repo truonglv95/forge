@@ -15,6 +15,7 @@ pub const FakeProvider = struct {
     stream_context: ?*anyopaque = null,
     tool_loop_enabled: bool = false,
     tool_loop_short: bool = false,
+    context_failures_remaining: u8 = 0,
 
     pub fn init(response: []const u8, plan_response: ?[]const u8, tool_loop_enabled: ?bool) FakeProvider {
         return .{
@@ -53,6 +54,7 @@ pub const FakeProvider = struct {
             .stream_context = if (@hasField(@TypeOf(options), "stream_context")) options.stream_context else null,
             .tool_loop_enabled = if (@hasField(@TypeOf(options), "fake_tool_loop")) options.fake_tool_loop else false,
             .tool_loop_short = if (@hasField(@TypeOf(options), "fake_tool_loop_short")) options.fake_tool_loop_short else false,
+            .context_failures_remaining = if (@hasField(@TypeOf(options), "fake_context_failures")) options.fake_context_failures else 0,
         };
         return ptr.providerInterface();
     }
@@ -114,7 +116,7 @@ pub const FakeProvider = struct {
 
         if (cancel_token.isCancelled()) return provider.ProviderError.NetworkError;
 
-        const payload = if (std.mem.indexOf(u8, prompt, "MARKDOWN PLAN MODE") != null)
+        const payload = if (std.mem.indexOf(u8, prompt, "MARKDOWN PLAN MODE") != null or std.mem.indexOf(u8, prompt, "REPAIR MODE") != null)
             self.plan_response orelse self.response
         else if (std.mem.indexOf(u8, prompt, "INTENT_CLASSIFIER_MODE") != null)
             self.response
@@ -152,6 +154,10 @@ pub const FakeProvider = struct {
         cancel_token: ?*const kernel.cancellation.CancellationToken,
     ) provider.ProviderError!agent_turn.Completion {
         const self: *FakeProvider = @ptrCast(@alignCast(ptr));
+        if (self.context_failures_remaining > 0) {
+            self.context_failures_remaining -= 1;
+            return error.ContextLengthExceeded;
+        }
         var transport_state = self.toolTransportState(mcp);
         return transport_state.transport().complete(allocator, conversation_json, tool_declarations_json, cancel_token) catch |err| return provider.mapTransportError(err);
     }

@@ -18,7 +18,7 @@ pub fn run(
 ) !u8 {
     if (parsed.positional.len == 0) {
         if (parsed.flags.json or parsed.flags.quiet or parsed.flags.non_interactive) {
-            try writer.writeAll("error: agent requires a subcommand (run|resume|list) in non-interactive mode\n");
+            try writer.writeAll("error: agent requires a subcommand (run|resume|list|events|timeline) in non-interactive mode\n");
             return 2;
         }
         const agent_tui = @import("agent_tui.zig");
@@ -34,6 +34,9 @@ pub fn run(
     }
     if (std.mem.eql(u8, subcommand, "events")) {
         return runEvents(allocator, io, parsed, writer);
+    }
+    if (std.mem.eql(u8, subcommand, "timeline")) {
+        return runTimeline(allocator, io, parsed, writer);
     }
     if (!std.mem.eql(u8, subcommand, "run")) {
         try writer.print("error: unknown agent subcommand '{s}'\n", .{subcommand});
@@ -137,6 +140,52 @@ fn runEvents(
         try writer.print("  {s}\n", .{rendered});
     }
     if (count == 0) try writer.writeAll("  (no events)\n");
+    return 0;
+}
+
+fn runTimeline(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    parsed: args_mod.CliArgs,
+    writer: *std.Io.Writer,
+) !u8 {
+    if (parsed.positional.len < 2) {
+        try writer.writeAll("error: agent timeline requires a session id\n");
+        return 2;
+    }
+
+    var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
+    defer opened.close(io);
+
+    const session_id = parsed.positional[1];
+    var doc = workspace.sessions.loadSession(allocator, io, session_id) catch {
+        try writer.print("error: no session '{s}'\n", .{session_id});
+        return 2;
+    };
+    defer workspace.sessions.deinitSession(allocator, &doc);
+
+    try writer.print("Agent timeline for {s}\n", .{session_id});
+    if (doc.task_ledger_json.len > 0) {
+        const timeline = ai.task_ledger.formatTimelineFromJson(allocator, doc.task_ledger_json, 80) catch {
+            try writer.writeAll("  (task ledger could not be rendered)\n");
+            return 0;
+        };
+        defer allocator.free(timeline);
+        var lines = std.mem.splitScalar(u8, timeline, '\n');
+        var count: usize = 0;
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            count += 1;
+            try writer.print("  {s}\n", .{line});
+        }
+        if (count > 0) return 0;
+    }
+
+    for (doc.steps) |step| {
+        const summary = if (step.summary.len > 180) step.summary[0..180] else step.summary;
+        try writer.print("  step {d}: {s} · {s}\n", .{ step.index, step.kind, summary });
+    }
+    if (doc.task_ledger_json.len == 0 and doc.steps.len == 0) try writer.writeAll("  (no timeline data)\n");
     return 0;
 }
 
