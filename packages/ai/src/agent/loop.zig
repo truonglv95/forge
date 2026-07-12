@@ -540,28 +540,28 @@ fn repairToolArgsJson(allocator: std.mem.Allocator, tool_name: []const u8, args_
             {
                 if (object.get("path") == null) {
                     if (firstStringField(object, &.{ "file", "filepath", "target", "filename" })) |path| {
-                        return std.json.Stringify.valueAlloc(allocator, .{ .path = path }, .{});
+                        return try std.json.Stringify.valueAlloc(allocator, .{ .path = path }, .{});
                     }
                 }
             }
             if (std.mem.eql(u8, tool_name, "search")) {
                 if (object.get("pattern") == null) {
                     if (firstStringField(object, &.{ "query", "term", "text" })) |pattern| {
-                        return std.json.Stringify.valueAlloc(allocator, .{ .pattern = pattern }, .{});
+                        return try std.json.Stringify.valueAlloc(allocator, .{ .pattern = pattern }, .{});
                     }
                 }
             }
             if (std.mem.eql(u8, tool_name, "codebase_search")) {
                 if (object.get("query") == null) {
                     if (firstStringField(object, &.{ "pattern", "term", "text" })) |query| {
-                        return std.json.Stringify.valueAlloc(allocator, .{ .query = query }, .{});
+                        return try std.json.Stringify.valueAlloc(allocator, .{ .query = query }, .{});
                     }
                 }
             }
             if (std.mem.eql(u8, tool_name, "run_command")) {
                 if (object.get("command") == null) {
                     if (firstStringField(object, &.{ "cmd", "shell", "text" })) |command| {
-                        return std.json.Stringify.valueAlloc(allocator, .{ .command = command }, .{});
+                        return try std.json.Stringify.valueAlloc(allocator, .{ .command = command }, .{});
                     }
                 }
             }
@@ -575,16 +575,16 @@ fn repairRawStringArgs(allocator: std.mem.Allocator, tool_name: []const u8, valu
     if (std.mem.eql(u8, tool_name, "read_file") or
         std.mem.eql(u8, tool_name, "list_tree"))
     {
-        return std.json.Stringify.valueAlloc(allocator, .{ .path = value }, .{});
+        return try std.json.Stringify.valueAlloc(allocator, .{ .path = value }, .{});
     }
     if (std.mem.eql(u8, tool_name, "search")) {
-        return std.json.Stringify.valueAlloc(allocator, .{ .pattern = value }, .{});
+        return try std.json.Stringify.valueAlloc(allocator, .{ .pattern = value }, .{});
     }
     if (std.mem.eql(u8, tool_name, "codebase_search")) {
-        return std.json.Stringify.valueAlloc(allocator, .{ .query = value }, .{});
+        return try std.json.Stringify.valueAlloc(allocator, .{ .query = value }, .{});
     }
     if (std.mem.eql(u8, tool_name, "run_command")) {
-        return std.json.Stringify.valueAlloc(allocator, .{ .command = value }, .{});
+        return try std.json.Stringify.valueAlloc(allocator, .{ .command = value }, .{});
     }
     return null;
 }
@@ -875,7 +875,15 @@ test "run compacts and retries after context length exceeded" {
     try builder.addBlock(.file, "src/main.zig", "pub fn main() void {}");
 
     var mock = MockTransport{};
-    const tool_ctx: tool_executor.Context = undefined;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const tool_ctx = tool_executor.Context{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .root = workspace.WorkspaceRoot.init(tmp.dir, "."),
+        .cwd = ".",
+        .profile = .read_only,
+    };
     var state = try run(allocator, mock.transport(), "[]", "large task", &builder, tool_ctx, null, .{
         .max_tool_steps = 3,
         .max_context_recovery_attempts = 1,

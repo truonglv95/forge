@@ -15,9 +15,19 @@ pub const Color = struct {
     a: f32,
 };
 
+pub const ViewData = union(enum) {
+    none: void,
+    icon: struct { svg: [:0]const u8, color: Color, size: f32 },
+    label: struct { text: []const u8, color: Color, size: f32 },
+};
+
 pub const View = struct {
+    flex_node: ?*root.layout.Node = null,
+    bg_color_id: ?[]const u8 = null,
+    theme: ?*const root.theme_mod.Theme = null,
     frame: Rect,
     bg_color: ?Color = null,
+    data: ViewData = .{ .none = {} },
     children: std.ArrayList(*View),
 
     pub fn init(frame: Rect) View {
@@ -36,42 +46,56 @@ pub const View = struct {
     }
 
     pub fn render(self: *const View) void {
-        if (self.bg_color) |color| {
+        var render_x = self.frame.x;
+        var render_y = self.frame.y;
+        var render_w = self.frame.w;
+        var render_h = self.frame.h;
+
+        if (self.flex_node) |node| {
+            render_x = node.layout_x;
+            render_y = node.layout_y;
+            render_w = node.layout_w;
+            render_h = node.layout_h;
+        }
+
+        var color_to_draw = self.bg_color;
+        if (self.bg_color_id) |id| {
+            if (self.theme) |t| {
+                color_to_draw = t.getColor(id);
+            }
+        }
+
+        if (color_to_draw) |color| {
             root.Renderer.drawRect(
-                self.frame.x,
-                self.frame.y,
-                self.frame.w,
-                self.frame.h,
+                render_x,
+                render_y,
+                render_w,
+                render_h,
                 color,
             );
+        }
+
+        switch (self.data) {
+            .none => {},
+            .icon => |icon| {
+                const center_x = render_x + (render_w / 2.0);
+                const center_y = render_y + (render_h / 2.0);
+                root.Renderer.drawSvg(
+                    icon.svg,
+                    center_x - (icon.size / 2.0),
+                    center_y - (icon.size / 2.0),
+                    icon.size,
+                    icon.size,
+                    icon.color,
+                );
+            },
+            .label => |label| {
+                root.Renderer.drawText(label.text, render_x, render_y, label.size, label.color);
+            },
         }
 
         for (self.children.items) |child| {
             child.render();
         }
-    }
-};
-
-pub const LabelView = struct {
-    view: View,
-    text: []const u8,
-    text_color: Color,
-    font_size: f32,
-
-    pub fn init(frame: Rect, text: []const u8) LabelView {
-        return .{
-            .view = View.init(frame),
-            .text = text,
-            .text_color = .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 },
-            .font_size = 14.0,
-        };
-    }
-
-    pub fn render(self: *const LabelView) void {
-        // Draw background and children
-        self.view.render();
-
-        // Draw Text
-        root.Renderer.drawText(self.text, self.view.frame.x, self.view.frame.y, self.font_size, self.text_color);
     }
 };

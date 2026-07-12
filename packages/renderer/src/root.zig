@@ -4,6 +4,8 @@ pub const mac = @cImport({
     @cInclude("mac_window.h");
 });
 
+pub const layout = @import("layout.zig");
+pub const theme_mod = @import("theme.zig");
 pub const view = @import("view.zig");
 pub const View = view.View;
 pub const Rect = view.Rect;

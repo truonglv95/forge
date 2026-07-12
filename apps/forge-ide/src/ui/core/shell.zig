@@ -1,6 +1,7 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
 const state = @import("state.zig");
+const workspace = @import("forge-workspace");
 
 fn allocView(allocator: std.mem.Allocator, frame: renderer.Rect, bg: ?renderer.Color) !*renderer.View {
     const view = try allocator.create(renderer.View);
@@ -10,6 +11,36 @@ fn allocView(allocator: std.mem.Allocator, frame: renderer.Rect, bg: ?renderer.C
 }
 
 pub fn initShell(allocator: std.mem.Allocator) !void {
+    // Initialize Theme
+    const t = try allocator.create(renderer.theme_mod.Theme);
+    t.* = renderer.theme_mod.Theme.init(allocator);
+    state.renderer_theme = t;
+
+    // Copy resolved defaults from workbench
+    if (state.wb) |wb| {
+        const c = wb.theme.colors;
+        t.colors.put("workbench.bg", .{ .r = c.workbench_bg.r, .g = c.workbench_bg.g, .b = c.workbench_bg.b, .a = c.workbench_bg.a }) catch {};
+        t.colors.put("header.bg", .{ .r = c.header_bg.r, .g = c.header_bg.g, .b = c.header_bg.b, .a = c.header_bg.a }) catch {};
+        t.colors.put("activity.bg", .{ .r = c.activity_bg.r, .g = c.activity_bg.g, .b = c.activity_bg.b, .a = c.activity_bg.a }) catch {};
+        t.colors.put("sidebar.bg", .{ .r = c.sidebar_bg.r, .g = c.sidebar_bg.g, .b = c.sidebar_bg.b, .a = c.sidebar_bg.a }) catch {};
+        t.colors.put("editor.bg", .{ .r = c.editor_bg.r, .g = c.editor_bg.g, .b = c.editor_bg.b, .a = c.editor_bg.a }) catch {};
+    }
+
+    t.metrics.put("explorer.header_padding", 8.0) catch {};
+    t.metrics.put("explorer.row_height", 24.0) catch {};
+    t.metrics.put("explorer.icon_size", 16.0) catch {};
+
+    // Load theme from ~/.forge/theme.toml if exists
+    if (workspace.global_store.joinHome(allocator, "theme.toml")) |theme_path| {
+        defer allocator.free(theme_path);
+        if (state.wb) |wb| {
+            if (workspace.global_store.readAbsoluteFile(allocator, wb.io, theme_path)) |content| {
+                defer allocator.free(content);
+                t.loadFromToml(content);
+            } else |_| {}
+        }
+    } else |_| {}
+
     const root = try allocView(allocator, .{ .x = 0, .y = 0, .w = 1024, .h = 768 }, .{ .r = 0.117, .g = 0.117, .b = 0.117, .a = 1.0 });
     state.root_view = root;
 

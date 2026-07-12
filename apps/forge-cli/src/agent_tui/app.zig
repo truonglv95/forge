@@ -650,16 +650,15 @@ pub const App = struct {
         defer if (session_id_opt) |id| self.allocator.free(id);
 
         self.mutex.lock();
-        defer self.mutex.unlock();
         self.show_timeline = !self.show_timeline;
         if (self.show_timeline) self.show_events = false;
         self.timeline_scroll = 0;
         self.markDirty();
+        const should_load = self.show_timeline and self.timeline_lines.items.len == 0;
+        self.mutex.unlock();
 
-        if (self.show_timeline and self.timeline_lines.items.len == 0) {
+        if (should_load) {
             const session_id = session_id_opt orelse return;
-            self.mutex.unlock();
-            defer self.mutex.lock();
             try self.loadTimelineFromSession(session_id);
         }
     }
