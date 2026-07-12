@@ -1,4 +1,5 @@
 const std = @import("std");
+const provider = @import("../provider.zig");
 const kernel = @import("forge-kernel");
 const context = @import("../context.zig");
 const tool_executor = @import("../tool_executor.zig");
@@ -449,7 +450,7 @@ fn executeTool(
             const message = maybe_message.?;
             defer allocator.free(message);
             emitTelemetry(config, .{ .phase = "tool_arg_repair", .items = step_index, .detail = "missing_write_evidence" });
-            transport.appendToolResult(allocator, conversation, effective_call.name, message) catch return error.ProviderFailed;
+            transport.appendToolResult(allocator, conversation, effective_call.name, message, &.{}) catch return error.ProviderFailed;
             if (config.step_callback) |callback| callback(config.step_context, step_index, subagent.classifyTool(effective_call.name).label(), message);
             if (config.checkpoint_callback) |checkpoint| {
                 if (!checkpoint(config.checkpoint_context, conversation.items, step_index + 1, "", "")) return error.ProviderFailed;
@@ -470,7 +471,7 @@ fn executeTool(
     }
 
     const tool_start_ms = std.Io.Timestamp.now(tool_ctx.io, .real).toMilliseconds();
-    const summary = tool_dispatch.execute(allocator, tool_ctx, mcp, effective_call) catch |err| {
+    var exec_result = tool_dispatch.execute(allocator, tool_ctx, mcp, effective_call) catch |err| {
         // Recoverable tool failures (bad path, malformed args) are fed back to the
         // model as an observation so it can correct itself instead of aborting the
         // whole run. Only truly fatal conditions propagate.
@@ -488,7 +489,7 @@ fn executeTool(
             .{ effective_call.name, recovery },
         ) catch return error.ProviderFailed;
         defer allocator.free(note);
-        transport.appendToolResult(allocator, conversation, effective_call.name, note) catch return error.ProviderFailed;
+        transport.appendToolResult(allocator, conversation, effective_call.name, note, &.{}) catch return error.ProviderFailed;
         if (config.step_callback) |callback| {
             const kind = subagent.classifyTool(effective_call.name).label();
             callback(config.step_context, step_index, kind, note);
@@ -498,20 +499,20 @@ fn executeTool(
         }
         return;
     };
-    defer allocator.free(summary);
+    defer exec_result.deinit(allocator);
 
     emitTelemetry(config, .{
         .phase = "tool",
         .duration_ms = millisSince(tool_ctx.io, tool_start_ms),
-        .bytes = summary.len,
+        .bytes = exec_result.text.len,
         .items = step_index,
         .detail = effective_call.name,
     });
 
-    const bounded = tool_observation.bound(allocator, effective_call.name, summary) catch return error.ProviderFailed;
+    const bounded = tool_observation.bound(allocator, effective_call.name, exec_result.text) catch return error.ProviderFailed;
     defer allocator.free(bounded);
 
-    transport.appendToolResult(allocator, conversation, effective_call.name, bounded) catch return error.ProviderFailed;
+    transport.appendToolResult(allocator, conversation, effective_call.name, bounded, exec_result.images) catch return error.ProviderFailed;
 
     if (config.step_callback) |callback| {
         const kind = subagent.classifyTool(effective_call.name).label();
@@ -860,12 +861,14 @@ test "run compacts and retries after context length exceeded" {
             conversation: *std.ArrayList(u8),
             tool_name: []const u8,
             result: []const u8,
+            images: []const provider.ImagePart,
         ) turn.TransportError!void {
             _ = ptr;
             _ = alloc;
             _ = conversation;
             _ = tool_name;
             _ = result;
+            _ = images;
         }
     };
 
@@ -953,12 +956,14 @@ test "step limit checkpoints compact resume state" {
             conversation: *std.ArrayList(u8),
             tool_name: []const u8,
             result: []const u8,
+            images: []const provider.ImagePart,
         ) turn.TransportError!void {
             _ = ptr;
             _ = alloc;
             _ = conversation;
             _ = tool_name;
             _ = result;
+            _ = images;
         }
     };
 
@@ -1070,12 +1075,14 @@ test "oversized conversation compacts before provider call" {
             conversation: *std.ArrayList(u8),
             tool_name: []const u8,
             result: []const u8,
+            images: []const provider.ImagePart,
         ) turn.TransportError!void {
             _ = ptr;
             _ = alloc;
             _ = conversation;
             _ = tool_name;
             _ = result;
+            _ = images;
         }
     };
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const core_provider = @import("../../provider.zig");
 const provider = @import("../../provider.zig");
 const kernel = @import("forge-kernel");
 const streaming = @import("../../streaming.zig");
@@ -106,7 +107,7 @@ pub const FakeProvider = struct {
         ptr: *anyopaque,
         allocator: std.mem.Allocator,
         prompt: []const u8,
-        images: []const provider.ImagePart,
+        images: []const core_provider.ImagePart,
         writer: *std.Io.Writer,
         cancel_token: *const kernel.cancellation.CancellationToken,
     ) provider.ProviderError!void {
@@ -200,10 +201,11 @@ pub const FakeProvider = struct {
         conversation: *std.ArrayList(u8),
         tool_name: []const u8,
         result: []const u8,
+        images: []const core_provider.ImagePart,
     ) provider.ProviderError!void {
         const self: *FakeProvider = @ptrCast(@alignCast(ptr));
         var transport_state = self.toolTransportState(null);
-        return transport_state.transport().appendToolResult(allocator, conversation, tool_name, result) catch |err| return provider.mapTransportError(err);
+        return transport_state.transport().appendToolResult(allocator, conversation, tool_name, result, images) catch |err| return provider.mapTransportError(err);
     }
 };
 
@@ -287,7 +289,7 @@ test "FakeProvider tool loop returns search then text" {
     defer conversation.deinit(allocator);
     try binding.transport().appendUserText(allocator, &conversation, "explore");
     try binding.transport().appendToolCall(allocator, &conversation, call_copy);
-    try binding.transport().appendToolResult(allocator, &conversation, call_copy.name, "found sample.txt");
+    try binding.transport().appendToolResult(allocator, &conversation, call_copy.name, "found sample.txt", &.{});
 
     var second = try binding.transport().complete(allocator, conversation.items, declarations, null);
     defer second.deinit(allocator);
@@ -303,7 +305,7 @@ test "FakeProvider tool loop returns search then text" {
         allocator.free(tree_copy.args_json);
     }
     try binding.transport().appendToolCall(allocator, &conversation, tree_copy);
-    try binding.transport().appendToolResult(allocator, &conversation, tree_copy.name, "tree listed");
+    try binding.transport().appendToolResult(allocator, &conversation, tree_copy.name, "tree listed", &.{});
 
     var third = try binding.transport().complete(allocator, conversation.items, declarations, null);
     defer third.deinit(allocator);

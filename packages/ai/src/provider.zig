@@ -97,6 +97,7 @@ pub const tool_loop_stubs = struct {
         _: *std.ArrayList(u8),
         _: []const u8,
         _: []const u8,
+        _: []const ImagePart,
     ) ProviderError!void {
         return error.ProviderInternalError;
     }
@@ -176,6 +177,7 @@ pub const Provider = struct {
             conversation: *std.ArrayList(u8),
             tool_name: []const u8,
             result: []const u8,
+            images: []const ImagePart,
         ) ProviderError!void,
         deinit: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void,
     };
@@ -240,9 +242,10 @@ pub const Provider = struct {
             conversation: *std.ArrayList(u8),
             tool_name: []const u8,
             result: []const u8,
+            images: []const ImagePart,
         ) agent_turn.TransportError!void {
             const self: *ToolLoopBinding = @ptrCast(@alignCast(ptr));
-            return self.provider.appendToolResult(allocator, conversation, tool_name, result) catch |err| return mapProviderToTransportError(err);
+            return self.provider.appendToolResult(allocator, conversation, tool_name, result, images) catch |err| return mapProviderToTransportError(err);
         }
     };
 
@@ -331,8 +334,9 @@ pub const Provider = struct {
         conversation: *std.ArrayList(u8),
         tool_name: []const u8,
         result: []const u8,
+        images: []const ImagePart,
     ) ProviderError!void {
-        return self.vtable.append_tool_result(self.ptr, allocator, conversation, tool_name, result);
+        return self.vtable.append_tool_result(self.ptr, allocator, conversation, tool_name, result, images);
     }
 
     pub fn deinit(self: Provider, allocator: std.mem.Allocator) void {

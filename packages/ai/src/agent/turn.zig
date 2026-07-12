@@ -1,6 +1,7 @@
 const std = @import("std");
 const kernel = @import("forge-kernel");
 const tool_args = @import("../tools/args.zig");
+const provider = @import("../provider.zig");
 
 pub const ToolCall = tool_args.ToolCall;
 
@@ -45,6 +46,7 @@ pub const Transport = struct {
         conversation: *std.ArrayList(u8),
         tool_name: []const u8,
         result: []const u8,
+        images: []const provider.ImagePart,
     ) TransportError!void,
 
     pub fn complete(
@@ -65,8 +67,8 @@ pub const Transport = struct {
         return self.append_tool_call(self.ptr, allocator, conversation, call);
     }
 
-    pub fn appendToolResult(self: Transport, allocator: std.mem.Allocator, conversation: *std.ArrayList(u8), tool_name: []const u8, result: []const u8) TransportError!void {
-        return self.append_tool_result(self.ptr, allocator, conversation, tool_name, result);
+    pub fn appendToolResult(self: Transport, allocator: std.mem.Allocator, conversation: *std.ArrayList(u8), tool_name: []const u8, result: []const u8, images: []const provider.ImagePart) TransportError!void {
+        return self.append_tool_result(self.ptr, allocator, conversation, tool_name, result, images);
     }
 };
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const workspace = @import("forge-workspace");
 const mcp_config = @import("mcp_config.zig");
 const mcp_client = @import("mcp_client.zig");
+const dispatch = @import("tools/dispatch.zig");
 const tool_registry = @import("tools/registry.zig");
 
 pub const RegistryError = error{
@@ -235,12 +236,12 @@ pub const Registry = struct {
         return null;
     }
 
-    pub fn callTool(self: *Registry, qualified_name: []const u8, arguments_json: []const u8) RegistryError![]u8 {
+    pub fn callTool(self: *Registry, qualified_name: []const u8, arguments_json: []const u8) RegistryError!dispatch.ExecutionResult {
         const tool = self.findTool(qualified_name) orelse return error.OutOfMemory;
         if (tool.session_index >= self.sessions.len) return error.OutOfMemory;
         return self.sessions[tool.session_index].callTool(tool.tool_name, arguments_json) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "MCP tool '{s}' failed: {s}", .{ qualified_name, @errorName(err) });
-            return msg;
+            return .{ .text = msg };
         };
     }
 

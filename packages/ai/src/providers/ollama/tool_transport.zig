@@ -1,4 +1,5 @@
 const std = @import("std");
+const core_provider = @import("../../provider.zig");
 const ollama_provider = @import("provider.zig");
 const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
@@ -121,8 +122,10 @@ pub const OllamaTransport = struct {
         conversation: *std.ArrayList(u8),
         tool_name: []const u8,
         result: []const u8,
+        images: []const core_provider.ImagePart,
     ) turn.TransportError!void {
         _ = ptr;
+        _ = images;
         if (conversation.items.len > 0) try conversation.append(allocator, ',');
         const escaped = try jsonString(allocator, result);
         defer allocator.free(escaped);

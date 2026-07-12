@@ -1,4 +1,5 @@
 const std = @import("std");
+const core_provider = @import("../../provider.zig");
 const gemini_provider = @import("provider.zig");
 const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
@@ -109,14 +110,32 @@ pub const GeminiTransport = struct {
         conversation: *std.ArrayList(u8),
         tool_name: []const u8,
         result: []const u8,
+        images: []const core_provider.ImagePart,
     ) turn.TransportError!void {
         _ = ptr;
         if (conversation.items.len > 0) try conversation.append(allocator, ',');
         const escaped = try jsonString(allocator, result);
         defer allocator.free(escaped);
-        const piece = try std.fmt.allocPrint(allocator, "{{\"role\":\"user\",\"parts\":[{{\"functionResponse\":{{\"name\":\"{s}\",\"response\":{{\"output\":{s}}}}}}}]}}", .{ tool_name, escaped });
-        defer allocator.free(piece);
-        try conversation.appendSlice(allocator, piece);
+
+        var piece: std.ArrayList(u8) = .empty;
+        defer piece.deinit(allocator);
+
+        try piece.appendSlice(allocator, "{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"");
+        try piece.appendSlice(allocator, tool_name);
+        try piece.appendSlice(allocator, "\",\"response\":{\"output\":");
+        try piece.appendSlice(allocator, escaped);
+        try piece.appendSlice(allocator, "}}}");
+
+        for (images) |img| {
+            try piece.appendSlice(allocator, ",{\"inlineData\":{\"mimeType\":\"");
+            try piece.appendSlice(allocator, img.mime_type);
+            try piece.appendSlice(allocator, "\",\"data\":\"");
+            try piece.appendSlice(allocator, img.data_base64);
+            try piece.appendSlice(allocator, "\"}}");
+        }
+        try piece.appendSlice(allocator, "]}");
+
+        try conversation.appendSlice(allocator, piece.items);
     }
 };
 

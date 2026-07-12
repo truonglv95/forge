@@ -2,6 +2,8 @@ const std = @import("std");
 const process_spawn = @import("forge-util").process_spawn;
 const mcp_config = @import("mcp_config.zig");
 const mcp_http = @import("mcp_http.zig");
+const provider = @import("provider.zig");
+const dispatch = @import("tools/dispatch.zig");
 
 pub const ClientError = error{
     SpawnFailed,
@@ -357,7 +359,7 @@ pub const Session = struct {
         return PromptList{ .allocator = self.allocator, .items = try items.toOwnedSlice(self.allocator) };
     }
 
-    pub fn callTool(self: *Session, tool_name: []const u8, arguments_json: []const u8) ClientError![]u8 {
+    pub fn callTool(self: *Session, tool_name: []const u8, arguments_json: []const u8) ClientError!dispatch.ExecutionResult {
         const params = try std.fmt.allocPrint(self.allocator, "{{\"name\":\"{s}\",\"arguments\":{s}}}", .{ tool_name, arguments_json });
         defer self.allocator.free(params);
         const result = try self.backend.request(self.allocator, "tools/call", params);
@@ -365,7 +367,7 @@ pub const Session = struct {
         return formatToolResult(self.allocator, result);
     }
 
-    fn formatToolResult(allocator: std.mem.Allocator, result_json: []const u8) ClientError![]u8 {
+    fn formatToolResult(allocator: std.mem.Allocator, result_json: []const u8) ClientError!dispatch.ExecutionResult {
         const Root = struct {
             isError: ?bool = null,
             content: ?[]struct {
@@ -381,6 +383,15 @@ pub const Session = struct {
 
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(allocator);
+        var images: std.ArrayList(provider.ImagePart) = .empty;
+        errdefer {
+            for (images.items) |img| {
+                allocator.free(img.mime_type);
+                allocator.free(img.data_base64);
+            }
+            images.deinit(allocator);
+        }
+
         if (parsed.value.content) |parts| {
             for (parts) |part| {
                 if (part.text) |text| {
@@ -388,15 +399,27 @@ pub const Session = struct {
                     try out.append(allocator, '\n');
                 } else if (part.data) |data| {
                     const mime = part.mimeType orelse "application/octet-stream";
-                    try out.print(allocator, "[{s} base64 {d} chars]\n", .{ mime, data.len });
+                    if (std.mem.startsWith(u8, mime, "image/")) {
+                        try images.append(allocator, .{
+                            .mime_type = try allocator.dupe(u8, mime),
+                            .data_base64 = try allocator.dupe(u8, data),
+                        });
+                    } else {
+                        try out.print(allocator, "[{s} base64 {d} chars]\n", .{ mime, data.len });
+                    }
                 } else if (part.type) |ty| {
                     try out.print(allocator, "[{s} content]\n", .{ty});
                 }
             }
         }
-        if (out.items.len == 0) return try allocator.dupe(u8, "(empty tool result)");
-        if (out.items[out.items.len - 1] == '\n') _ = out.pop();
-        return try out.toOwnedSlice(allocator);
+        if (out.items.len == 0 and images.items.len == 0) {
+            try out.appendSlice(allocator, "(empty tool result)");
+        }
+        if (out.items.len > 0 and out.items[out.items.len - 1] == '\n') _ = out.pop();
+        return .{
+            .text = try out.toOwnedSlice(allocator),
+            .images = try images.toOwnedSlice(allocator),
+        };
     }
 };
 
