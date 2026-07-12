@@ -10,6 +10,7 @@ pub const TaskIntent = enum {
     edit_code,
     debug_failure,
     explore_codebase,
+    computer_control,
 };
 
 pub const RouteInput = struct {
@@ -32,6 +33,7 @@ pub fn intentLabel(intent: TaskIntent) []const u8 {
         .edit_code => "edit_code",
         .debug_failure => "debug_failure",
         .explore_codebase => "explore_codebase",
+        .computer_control => "computer_control",
     };
 }
 
@@ -91,6 +93,9 @@ pub fn classify(input: RouteInput) TaskIntent {
         if (input.mode == .ask) return .answer_question;
         return .explore_codebase;
     }
+
+    if (containsAny(input.intent, &.{ "screen", "screenshot", "mouse", "keyboard", "điều khiển", "máy tính", "chuột", "bàn phím" }))
+        return .computer_control;
 
     if (input.mode == .agent and containsAny(input.intent, &.{
         "tiep tuc",
@@ -194,6 +199,7 @@ pub fn defaultStepsForIntent(intent: TaskIntent) u32 {
         .plan_change => 10,
         .explore_codebase => 8,
         .answer_question => 6,
+        .computer_control => 10,
     };
 }
 
@@ -203,6 +209,7 @@ pub fn heuristicNeedsLlm(input: RouteInput, heuristic_intent: TaskIntent) bool {
     if (isQuestionIntent(input.intent)) return false;
     if (heuristic_intent == .debug_failure) return false;
     if (heuristic_intent == .plan_change) return false;
+    if (heuristic_intent == .computer_control) return false;
 
     if (heuristic_intent == .edit_code and hasClearEditVerb(input.intent)) return false;
     if (heuristic_intent == .explore_codebase and hasClearExploreVerb(input.intent)) return false;
@@ -290,7 +297,7 @@ pub fn capabilityForIntent(mode: tools.Mode, intent: TaskIntent) tools.Capabilit
     if (mode == .ask or mode == .plan) return .read_only;
     return switch (intent) {
         .answer_question, .explore_codebase => .read_only,
-        .edit_code, .debug_failure, .plan_change => .propose_and_task,
+        .edit_code, .debug_failure, .plan_change, .computer_control => .propose_and_task,
     };
 }
 
@@ -343,6 +350,14 @@ pub fn applyContextPolicy(
             out.include_diagnostics = false;
             out.retrieval_max_chunks = 32;
             out.recent_file_limit = 24;
+        },
+        .computer_control => {
+            out.include_git_diff = false;
+            out.include_semantic_search = false;
+            out.include_diagnostics = false;
+            out.retrieval_max_chunks = 0;
+            out.recent_file_limit = 0;
+            out.include_agent_memory = true;
         },
     }
     return out;
@@ -453,7 +468,7 @@ pub fn formatRoutingSummary(
 
 fn mcpAllowedForIntent(intent: TaskIntent) bool {
     return switch (intent) {
-        .plan_change, .edit_code, .debug_failure => true,
+        .plan_change, .edit_code, .debug_failure, .computer_control => true,
         else => false,
     };
 }
