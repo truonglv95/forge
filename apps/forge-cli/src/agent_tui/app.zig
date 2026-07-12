@@ -640,12 +640,65 @@ pub const App = struct {
     }
 
     fn showTimeline(self: *App) !void {
+        const session_id_opt = blk: {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            if (self.last_session_id) |id| break :blk self.allocator.dupe(u8, id) catch null;
+            if (self.resume_session_id) |id| break :blk self.allocator.dupe(u8, id) catch null;
+            break :blk null;
+        };
+        defer if (session_id_opt) |id| self.allocator.free(id);
+
         self.mutex.lock();
         defer self.mutex.unlock();
         self.show_timeline = !self.show_timeline;
         if (self.show_timeline) self.show_events = false;
         self.timeline_scroll = 0;
         self.markDirty();
+
+        if (self.show_timeline and self.timeline_lines.items.len == 0) {
+            const session_id = session_id_opt orelse return;
+            self.mutex.unlock();
+            defer self.mutex.lock();
+            try self.loadTimelineFromSession(session_id);
+        }
+    }
+
+    fn loadTimelineFromSession(self: *App, session_id: []const u8) !void {
+        var doc = workspace.sessions.loadSession(self.allocator, self.io, session_id) catch {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "No timeline for {s}", .{session_id}) catch "No timeline";
+            try self.pushTimelineLine(.system, try self.allocator.dupe(u8, msg));
+            return;
+        };
+        defer workspace.sessions.deinitSession(self.allocator, &doc);
+
+        var header_buf: [256]u8 = undefined;
+        const header = std.fmt.bufPrint(&header_buf, "--- task timeline: {s} ---", .{session_id}) catch "--- task timeline ---";
+        try self.pushTimelineLine(.system, try self.allocator.dupe(u8, header));
+
+        if (doc.task_ledger_json.len > 0) {
+            const rendered = ai.task_ledger.formatTimelineFromJson(self.allocator, doc.task_ledger_json, 80) catch null;
+            if (rendered) |text| {
+                defer self.allocator.free(text);
+                var lines = std.mem.splitScalar(u8, text, '\n');
+                var count: usize = 0;
+                while (lines.next()) |line| {
+                    if (line.len == 0) continue;
+                    count += 1;
+                    try self.pushTimelineLine(.tool, try self.allocator.dupe(u8, line));
+                }
+                if (count > 0) return;
+            }
+        }
+
+        for (doc.steps) |step| {
+            var buf: [512]u8 = undefined;
+            const summary = if (step.summary.len > 260) step.summary[0..260] else step.summary;
+            const line = std.fmt.bufPrint(&buf, "step {d}: {s} · {s}", .{ step.index, step.kind, summary }) catch continue;
+            try self.pushTimelineLine(.tool, try self.allocator.dupe(u8, line));
+        }
+        if (doc.steps.len == 0) try self.pushTimelineLine(.system, try self.allocator.dupe(u8, "(no timeline data)"));
     }
 
     fn setAgentMode(self: *App, mode: ai.tools.Mode) !void {

@@ -198,21 +198,12 @@ pub fn appendIndex(allocator: std.mem.Allocator, io: std.Io, workspace_path: []c
     const index_path = try indexFilePath(allocator);
     defer allocator.free(index_path);
 
-    var buffer: std.ArrayList(u8) = .empty;
-    defer buffer.deinit(allocator);
-
-    const existing = global_store.readAbsoluteFile(allocator, io, index_path) catch |err| switch (err) {
-        error.FileNotFound => null,
-        else => return err,
-    };
-    if (existing) |bytes| {
-        defer allocator.free(bytes);
-        try buffer.appendSlice(allocator, bytes);
-        if (bytes.len > 0 and bytes[bytes.len - 1] != '\n') try buffer.append(allocator, '\n');
-    }
-
-    try buffer.appendSlice(allocator, line);
-    try global_store.replaceAbsoluteFile(io, index_path, buffer.items);
+    const line_with_nl = if (line.len > 0 and line[line.len - 1] == '\n')
+        try allocator.dupe(u8, line)
+    else
+        try std.fmt.allocPrint(allocator, "{s}\n", .{line});
+    defer allocator.free(line_with_nl);
+    try global_store.appendAbsoluteFile(io, index_path, line_with_nl);
 }
 
 pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, workspace_path: ?[]const u8) !IndexList {
@@ -243,7 +234,7 @@ pub fn listEntries(allocator: std.mem.Allocator, io: std.Io, workspace_path: ?[]
             timestamp_ms: i64,
             workspace_path: ?[]const u8 = null,
         };
-        var parsed = try std.json.parseFromSlice(JsonEntry, allocator, line, .{ .ignore_unknown_fields = true });
+        var parsed = std.json.parseFromSlice(JsonEntry, allocator, line, .{ .ignore_unknown_fields = true }) catch continue;
         defer parsed.deinit();
         if (workspace_path) |filter| {
             if (parsed.value.workspace_path) |stored| {
@@ -278,22 +269,12 @@ pub fn appendEvent(allocator: std.mem.Allocator, io: std.Io, session_id: []const
     const path = try sessionEventsPath(allocator, session_id);
     defer allocator.free(path);
 
-    var buffer: std.ArrayList(u8) = .empty;
-    defer buffer.deinit(allocator);
-
-    const existing = global_store.readAbsoluteFile(allocator, io, path) catch |err| switch (err) {
-        error.FileNotFound => null,
-        else => return err,
-    };
-    if (existing) |bytes| {
-        defer allocator.free(bytes);
-        try buffer.appendSlice(allocator, bytes);
-        if (bytes.len > 0 and bytes[bytes.len - 1] != '\n') try buffer.append(allocator, '\n');
-    }
-
-    try buffer.appendSlice(allocator, line);
-    if (line.len > 0 and line[line.len - 1] != '\n') try buffer.append(allocator, '\n');
-    try global_store.replaceAbsoluteFile(io, path, buffer.items);
+    const line_with_nl = if (line.len > 0 and line[line.len - 1] == '\n')
+        try allocator.dupe(u8, line)
+    else
+        try std.fmt.allocPrint(allocator, "{s}\n", .{line});
+    defer allocator.free(line_with_nl);
+    try global_store.appendAbsoluteFile(io, path, line_with_nl);
 }
 
 pub fn readEvents(allocator: std.mem.Allocator, io: std.Io, session_id: []const u8) ![]u8 {
@@ -333,7 +314,7 @@ test "sessions append events under global sessions dir" {
 }
 
 pub fn makeSessionId(allocator: std.mem.Allocator, timestamp_ms: i64) ![]u8 {
-    return try std.fmt.allocPrint(allocator, "sess_{d}", .{timestamp_ms});
+    return try std.fmt.allocPrint(allocator, "sess_{d}_{d}", .{ timestamp_ms, std.Thread.getCurrentId() });
 }
 
 pub fn deinitSession(allocator: std.mem.Allocator, doc: *SessionDoc) void {

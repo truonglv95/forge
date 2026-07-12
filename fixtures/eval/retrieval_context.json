@@ -1,0 +1,354 @@
+[
+  {
+    "id": "retrieves-target-symbol-file",
+    "context_only": true,
+    "intent": "Find where the websocket cleanup logic lives and inspect it",
+    "workspace_files": {
+      "src/services/socket.ts": "export function connectSocket(url: string) {\n  const socket = connect(url);\n  socket.on('message', handleMessage);\n  return () => {\n    socket.off('message', handleMessage);\n    socket.disconnect();\n  };\n}\n",
+      "src/ui/button.ts": "export function renderButton() { return null; }\n",
+      "README.md": "Demo project for Forge retrieval eval.\n"
+    },
+    "expect": { "proposal_only": true, "min_steps": 2, "context_top_k": 12, "context_includes": ["src/services/socket.ts", "connectSocket"] }
+  },
+  {
+    "id": "retrieves-import-neighbor",
+    "context_only": true,
+    "intent": "Inspect main.zig and the helper it imports",
+    "workspace_files": {
+      "main.zig": "const helper = @import(\"helper.zig\");\npub fn main() void { _ = helper.answer; }\n",
+      "helper.zig": "pub const answer: u32 = 42;\n",
+      "unrelated.zig": "pub const noise = true;\n"
+    },
+    "expect": { "proposal_only": true, "min_steps": 2, "has_import_neighbors": true, "context_top_k": 12, "context_includes": ["helper.zig", "answer"] }
+  },
+  {
+    "id": "retrieves-auth-token-refresh",
+    "context_only": true,
+    "intent": "Find refreshAuthToken and auth token expiry handling",
+    "workspace_files": {
+      "src/auth/session.ts": "export function refreshAuthToken(session) {\n  if (session.expiresAt < Date.now()) return renew(session.refreshToken);\n  return session.token;\n}\n",
+      "src/auth/login.ts": "export function login() { return true; }\n",
+      "src/search/noise.ts": "export const tokenBucket = 1;\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["src/auth/session.ts", "refreshAuthToken"] }
+  },
+  {
+    "id": "retrieves-payment-retry-policy",
+    "context_only": true,
+    "intent": "Where is payment retry backoff configured",
+    "workspace_files": {
+      "packages/billing/retry.ts": "export const paymentRetryBackoffMs = [100, 500, 2000];\nexport function shouldRetryPayment(code) { return code >= 500; }\n",
+      "packages/billing/invoice.ts": "export function createInvoice() {}\n",
+      "docs/payments.md": "Payments are retried on transient failures.\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/billing/retry.ts", "paymentRetryBackoffMs"] }
+  },
+  {
+    "id": "retrieves-route-guard",
+    "context_only": true,
+    "intent": "Inspect requireAdmin route guard behavior",
+    "workspace_files": {
+      "src/router/guards.ts": "export function requireAdmin(user) {\n  return user && user.roles.includes('admin');\n}\n",
+      "src/router/index.ts": "export const routes = [];\n",
+      "src/admin/panel.ts": "export const adminPanel = true;\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["src/router/guards.ts", "requireAdmin"] }
+  },
+  {
+    "id": "retrieves-cache-invalidation",
+    "context_only": true,
+    "intent": "Find invalidateUserCache implementation",
+    "workspace_files": {
+      "src/cache/users.ts": "export function invalidateUserCache(userId) {\n  userCache.delete(userId);\n}\n",
+      "src/cache/posts.ts": "export function invalidatePostCache(postId) { posts.delete(postId); }\n",
+      "src/users/model.ts": "export type User = { id: string };\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["src/cache/users.ts", "invalidateUserCache"] }
+  },
+  {
+    "id": "retrieves-terminal-scroll-state",
+    "context_only": true,
+    "intent": "Find terminal scroll offset state and update logic",
+    "workspace_files": {
+      "apps/ide/src/terminal/state.zig": "pub const TerminalState = struct { scroll_offset: i32 = 0 };\npub fn updateTerminalScroll(state: *TerminalState, delta: i32) void { state.scroll_offset += delta; }\n",
+      "apps/ide/src/editor/state.zig": "pub const EditorState = struct { cursor: usize = 0 };\n",
+      "README.md": "Terminal and editor are panels.\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["apps/ide/src/terminal/state.zig", "updateTerminalScroll"] }
+  },
+  {
+    "id": "retrieves-chat-markdown-renderer",
+    "context_only": true,
+    "intent": "Find markdown renderer for chat bubbles with headings",
+    "workspace_files": {
+      "apps/ide/src/ui/chat_markdown.zig": "pub fn renderMarkdownBubble(text: []const u8) void { _ = text; }\npub fn headingLevel(line: []const u8) u8 { return if (line.len > 0 and line[0] == '#') 1 else 0; }\n",
+      "apps/ide/src/ui/chat_bubble.zig": "pub fn renderBubble() void {}\n",
+      "docs/markdown.md": "### Chat output\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["apps/ide/src/ui/chat_markdown.zig", "headingLevel"] }
+  },
+  {
+    "id": "retrieves-git-status-model",
+    "context_only": true,
+    "intent": "Find GitStatusEntry and staged changes model",
+    "workspace_files": {
+      "src/git/status.zig": "pub const GitStatusEntry = struct { path: []const u8, staged: bool };\npub fn stagedChanges(entries: []GitStatusEntry) usize { return entries.len; }\n",
+      "src/git/diff.zig": "pub fn diff() void {}\n",
+      "src/ui/git_panel.zig": "pub fn renderGitPanel() void {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["src/git/status.zig", "GitStatusEntry"] }
+  },
+  {
+    "id": "retrieves-config-ollama-url",
+    "context_only": true,
+    "intent": "Find ollama_url config parsing",
+    "workspace_files": {
+      "packages/ai/src/config.zig": "pub const Config = struct { ollama_url: []const u8 = \"http://localhost:11434\" };\npub fn parseOllamaUrl(value: []const u8) []const u8 { return value; }\n",
+      "packages/ai/src/provider_factory.zig": "pub fn createProvider() void {}\n",
+      "forge.toml": "ollama_url = \"http://localhost:11434\"\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/src/config.zig", "parseOllamaUrl"] }
+  },
+  {
+    "id": "retrieves-openrouter-provider",
+    "context_only": true,
+    "intent": "Inspect OpenRouter provider create request",
+    "workspace_files": {
+      "packages/ai/src/providers/openrouter/provider.zig": "pub const OpenRouterProvider = struct {};\npub fn createOpenRouterRequest() void {}\n",
+      "packages/ai/src/providers/gemini/provider.zig": "pub const GeminiProvider = struct {};\n",
+      "packages/ai/src/provider_factory.zig": "const openrouter = true;\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/src/providers/openrouter/provider.zig", "createOpenRouterRequest"] }
+  },
+  {
+    "id": "retrieves-vector-cosine",
+    "context_only": true,
+    "intent": "Find cosine similarity implementation for local vectors",
+    "workspace_files": {
+      "packages/ai/src/local_vector.zig": "pub fn cosineSimilarity(a: []const f32, b: []const f32) f32 { _ = a; _ = b; return 1.0; }\n",
+      "packages/ai/src/codebase_search.zig": "pub fn searchVectors() void {}\n",
+      "packages/ai/src/context_rank.zig": "pub fn rank() void {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/src/local_vector.zig", "cosineSimilarity"] }
+  },
+  {
+    "id": "retrieves-python-db-migration",
+    "context_only": true,
+    "intent": "Where is apply_user_migration defined",
+    "workspace_files": {
+      "backend/db/migrations/users.py": "def apply_user_migration(conn):\n    conn.execute('alter table users add column timezone text')\n",
+      "backend/db/connection.py": "def connect(): pass\n",
+      "backend/api/users.py": "def get_user(): pass\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["backend/db/migrations/users.py", "apply_user_migration"] }
+  },
+  {
+    "id": "retrieves-go-rate-limiter",
+    "context_only": true,
+    "intent": "Find NewRateLimiter in Go middleware",
+    "workspace_files": {
+      "server/middleware/rate_limiter.go": "package middleware\nfunc NewRateLimiter(limit int) *Limiter { return &Limiter{} }\ntype Limiter struct{}\n",
+      "server/main.go": "package main\n",
+      "server/middleware/auth.go": "package middleware\nfunc Auth() {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["server/middleware/rate_limiter.go", "NewRateLimiter"] }
+  },
+  {
+    "id": "retrieves-rust-error-type",
+    "context_only": true,
+    "intent": "Inspect AppError enum in Rust service",
+    "workspace_files": {
+      "crates/api/src/error.rs": "pub enum AppError { NotFound, Unauthorized, Internal }\nimpl AppError { pub fn status_code(&self) -> u16 { 500 } }\n",
+      "crates/api/src/lib.rs": "mod error;\n",
+      "crates/core/src/error.rs": "pub enum CoreError { BadInput }\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["crates/api/src/error.rs", "AppError"] }
+  },
+  {
+    "id": "retrieves-react-hook-cleanup",
+    "context_only": true,
+    "intent": "Find useSocketCleanup React hook",
+    "workspace_files": {
+      "web/src/hooks/useSocketCleanup.ts": "export function useSocketCleanup(socket) {\n  useEffect(() => () => socket.disconnect(), [socket]);\n}\n",
+      "web/src/hooks/useTheme.ts": "export function useTheme() { return 'dark'; }\n",
+      "web/src/components/SocketView.tsx": "export function SocketView() { return null; }\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["web/src/hooks/useSocketCleanup.ts", "useSocketCleanup"] }
+  },
+  {
+    "id": "retrieves-css-token",
+    "context_only": true,
+    "intent": "Find panel border color design token",
+    "workspace_files": {
+      "web/src/styles/tokens.css": ":root { --panel-border-color: #2f333a; --accent-blue: #3b82f6; }\n",
+      "web/src/styles/layout.css": ".panel { border: 1px solid var(--panel-border-color); }\n",
+      "web/src/styles/theme.css": ":root { color-scheme: dark; }\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["web/src/styles/tokens.css", "panel-border-color"] }
+  },
+  {
+    "id": "retrieves-test-name",
+    "context_only": true,
+    "intent": "Find test for direct write evidence gate",
+    "workspace_files": {
+      "packages/ai/test/evidence_gate_test.zig": "test \"direct write requires fresh evidence\" { try expectBlockedWithoutRead(); }\nfn expectBlockedWithoutRead() !void {}\n",
+      "packages/ai/test/provider_test.zig": "test \"provider works\" {}\n",
+      "packages/ai/src/agent/loop.zig": "pub fn executeTool() void {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/test/evidence_gate_test.zig", "expectBlockedWithoutRead"] }
+  },
+  {
+    "id": "retrieves-cli-command",
+    "context_only": true,
+    "intent": "Where is forge agent resume command handled",
+    "workspace_files": {
+      "apps/forge-cli/src/agent_cmd.zig": "fn runResume(session_id: []const u8) void { _ = session_id; }\npub fn runAgentCommand() void {}\n",
+      "apps/forge-cli/src/main.zig": "const agent_cmd = @import(\"agent_cmd.zig\");\n",
+      "apps/forge-cli/src/task.zig": "pub fn runTask() void {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["apps/forge-cli/src/agent_cmd.zig", "runResume"] }
+  },
+  {
+    "id": "retrieves-session-persistence",
+    "context_only": true,
+    "intent": "Find persistSession implementation",
+    "workspace_files": {
+      "packages/workspace/src/sessions.zig": "pub fn persistSession(io: anytype, workspace_path: []const u8, session_id: []const u8, body: []const u8) !void { _ = io; _ = workspace_path; _ = session_id; _ = body; }\n",
+      "packages/workspace/src/history.zig": "pub fn appendEntry() void {}\n",
+      "packages/ai/src/agent.zig": "const sessions = @import(\"forge-workspace\").sessions;\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/workspace/src/sessions.zig", "persistSession"] }
+  },
+  {
+    "id": "retrieves-validation-hint",
+    "context_only": true,
+    "intent": "Find extractFailureHints from validation results",
+    "workspace_files": {
+      "packages/ai/src/validation_runner.zig": "pub fn extractFailureHints(allocator: anytype, results: anytype, max: usize) ![]const []const u8 { _ = allocator; _ = results; _ = max; return &.{}; }\n",
+      "packages/ai/src/repair_loop.zig": "pub fn trialApplyAndValidate() void {}\n",
+      "packages/ai/src/validation_hints.zig": "pub fn augmentProposalJson() void {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/src/validation_runner.zig", "extractFailureHints"] }
+  },
+  {
+    "id": "retrieves-diagnostic-store",
+    "context_only": true,
+    "intent": "Find diagnostics store updateDiagnostic function",
+    "workspace_files": {
+      "packages/lsp/src/diagnostics.zig": "pub fn updateDiagnostic(path: []const u8, message: []const u8) void { _ = path; _ = message; }\n",
+      "packages/lsp/src/completion.zig": "pub fn complete() void {}\n",
+      "apps/ide/src/problems.zig": "pub fn renderProblems() void {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/lsp/src/diagnostics.zig", "updateDiagnostic"] }
+  },
+  {
+    "id": "retrieves-task-ledger-phase",
+    "context_only": true,
+    "intent": "Inspect task ledger repairing phase",
+    "workspace_files": {
+      "packages/ai/src/task_ledger.zig": "pub const Phase = enum { planning, gathering, editing, validating, repairing, completed };\npub fn needsFreshEvidence() bool { return true; }\n",
+      "packages/ai/src/context_budget.zig": "pub fn applyLedger() void {}\n",
+      "packages/ai/src/agent/compaction.zig": "pub fn buildResumePrompt() void {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/src/task_ledger.zig", "repairing"] }
+  },
+  {
+    "id": "retrieves-context-budget",
+    "context_only": true,
+    "intent": "Find safePromptBytesForWindow context budget helper",
+    "workspace_files": {
+      "packages/ai/src/context_budget.zig": "pub fn safePromptBytesForWindow(context_window_tokens: usize) usize { return context_window_tokens * 2; }\n",
+      "packages/ai/src/context_loader.zig": "pub const LoadOptions = struct { max_bytes: usize = 0 };\n",
+      "packages/ai/src/provider.zig": "pub const ModelMetadata = struct { context_window: usize = 0 };\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/src/context_budget.zig", "safePromptBytesForWindow"] }
+  },
+  {
+    "id": "retrieves-agent-event",
+    "context_only": true,
+    "intent": "Find context_compacted event schema",
+    "workspace_files": {
+      "packages/ai/src/agent_event.zig": "pub const Type = enum { context_manifest_built, context_compacted, run_completed };\npub fn typeName(value: Type) []const u8 { return @tagName(value); }\n",
+      "apps/forge-cli/src/events_render.zig": "pub fn renderPreviewAlloc() void {}\n",
+      "packages/ai/src/trace.zig": "pub const schema_version = 1;\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/src/agent_event.zig", "context_compacted"] }
+  },
+  {
+    "id": "retrieves-mcp-config",
+    "context_only": true,
+    "intent": "Find MCP server config loader",
+    "workspace_files": {
+      "packages/ai/src/mcp_config.zig": "pub fn loadMcpServers(path: []const u8) void { _ = path; }\n",
+      "packages/ai/src/mcp_registry.zig": "pub const Registry = struct {};\n",
+      "packages/ai/src/mcp_client.zig": "pub fn callTool() void {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/src/mcp_config.zig", "loadMcpServers"] }
+  },
+  {
+    "id": "retrieves-command-allowlist",
+    "context_only": true,
+    "intent": "Where is validation command allowlist checked",
+    "workspace_files": {
+      "packages/ai/src/validation_runner.zig": "fn argvForTask(allocator: anytype, task: []const u8) ![]const []const u8 { _ = allocator; _ = task; return &.{}; }\nfn allowedCommandArgv() void {}\n",
+      "packages/ai/src/tool_executor.zig": "pub fn runCommand() void {}\n",
+      "Makefile": "test:\n\techo ok\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/ai/src/validation_runner.zig", "argvForTask"] }
+  },
+  {
+    "id": "retrieves-package-script",
+    "context_only": true,
+    "intent": "Find macOS package validation script function",
+    "workspace_files": {
+      "scripts/package-mac.sh": "validate_app_bundle() {\n  test -d \"$1/Contents/MacOS\"\n}\n",
+      "scripts/generate-mac-icon.sh": "echo icon\n",
+      "README.md": "Build mac app with package-mac.sh\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["scripts/package-mac.sh", "validate_app_bundle"] }
+  },
+  {
+    "id": "retrieves-ui-approval",
+    "context_only": true,
+    "intent": "Find waitForApproval in agent TUI",
+    "workspace_files": {
+      "apps/forge-cli/src/agent_tui/app.zig": "pub fn waitForApproval(tool_name: []const u8, args_json: []const u8) bool { _ = tool_name; _ = args_json; return true; }\n",
+      "apps/forge-cli/src/agent_tui/term.zig": "pub fn draw() void {}\n",
+      "apps/forge-cli/src/agent_cmd.zig": "fn approvalBridge() void {}\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["apps/forge-cli/src/agent_tui/app.zig", "waitForApproval"] }
+  },
+  {
+    "id": "retrieves-noise-duplicate-symbol",
+    "context_only": true,
+    "intent": "Find the production normalizeUserEmail implementation",
+    "workspace_files": {
+      "src/users/normalize.ts": "export function normalizeUserEmail(email: string) { return email.trim().toLowerCase(); }\n",
+      "tests/users/normalize.test.ts": "function normalizeUserEmailFixture(email: string) { return email; }\n",
+      "docs/users.md": "normalize user email before save\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["src/users/normalize.ts", "normalizeUserEmail"] }
+  },
+  {
+    "id": "retrieves-long-path-symbol",
+    "context_only": true,
+    "intent": "Find nested createWorkspaceCheckpoint implementation",
+    "workspace_files": {
+      "packages/workspace/src/checkpoint/create.zig": "pub fn createWorkspaceCheckpoint(name: []const u8) void { _ = name; }\n",
+      "packages/workspace/src/checkpoint/restore.zig": "pub fn restoreWorkspaceCheckpoint() void {}\n",
+      "packages/workspace/src/root.zig": "pub const WorkspaceRoot = struct {};\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["packages/workspace/src/checkpoint/create.zig", "createWorkspaceCheckpoint"] }
+  },
+  {
+    "id": "retrieves-docs-roadmap",
+    "context_only": true,
+    "intent": "Find roadmap item for long task recovery",
+    "workspace_files": {
+      "docs/roadmap/ROADMAP.md": "## Long task recovery\nPersist task ledger, compact context, and resume safely.\n",
+      "docs/CAPABILITY_MATRIX.md": "AI capabilities overview.\n",
+      "README.md": "Forge IDE\n"
+    },
+    "expect": { "context_top_k": 12, "context_includes": ["docs/roadmap/ROADMAP.md", "Long task recovery"] }
+  }
+]

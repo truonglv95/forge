@@ -11,6 +11,7 @@ pub const Type = enum {
     session_started,
     context_manifest_built,
     context_compacted,
+    telemetry,
     run_started,
     llm_turn,
     tool_call,
@@ -55,6 +56,7 @@ test "agent event schema names are stable" {
     try std.testing.expectEqualStrings("rate_limit_exceeded", errorCodeName(.rate_limit_exceeded));
     try std.testing.expectEqualStrings("context_manifest_built", typeName(.context_manifest_built));
     try std.testing.expectEqualStrings("context_compacted", typeName(.context_compacted));
+    try std.testing.expectEqualStrings("telemetry", typeName(.telemetry));
     try std.testing.expectEqualStrings("duplicate_loop", errorCodeName(.duplicate_loop));
 }
 

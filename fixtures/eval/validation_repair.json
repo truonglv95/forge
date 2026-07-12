@@ -1,0 +1,17 @@
+[
+  {
+    "id": "validation-fail-then-repair",
+    "intent": "Create status.txt so validation passes",
+    "workspace_files": {
+      "Makefile": "test:\n\tgrep -q fixed status.txt\n"
+    },
+    "fake_response": "{\"schema_version\":1,\"summary\":\"create broken status\",\"assumptions\":[],\"validation_tasks\":[\"make test\"],\"workspace_edit\":{\"files\":[{\"path\":\"status.txt\",\"operation\":\"create\",\"edits\":[{\"start\":0,\"end\":0,\"replacement\":\"broken\\n\"}]}]}}",
+    "fake_repair_response": "{\"schema_version\":1,\"summary\":\"repair status\",\"assumptions\":[],\"validation_tasks\":[\"make test\"],\"workspace_edit\":{\"files\":[{\"path\":\"status.txt\",\"operation\":\"create\",\"edits\":[{\"start\":0,\"end\":0,\"replacement\":\"fixed\\n\"}]}]}}",
+    "expect": {
+      "path": "status.txt",
+      "contains": "fixed",
+      "min_steps": 2,
+      "expect_repair": true
+    }
+  }
+]

@@ -1,0 +1,103 @@
+[
+  {
+    "id": "rename-service-function-and-import",
+    "intent": "Rename getUser to fetchUser in userService.ts and update api.ts to call the new name",
+    "workspace_files": {
+      "src/userService.ts": "export function getUser(id: string) {\n  return { id };\n}\n",
+      "src/api.ts": "import { getUser } from './userService';\nexport function loadUser(id: string) {\n  return getUser(id);\n}\n"
+    },
+    "fake_response": "{\"schema_version\":1,\"summary\":\"Rename user service API and update caller\",\"assumptions\":[],\"validation_tasks\":[\"auto:test\"],\"workspace_edit\":{\"files\":[{\"path\":\"src/userService.ts\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":57,\"replacement\":\"export function fetchUser(id: string) {\\n  return { id };\\n}\\n\"}]},{\"path\":\"src/api.ts\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":104,\"replacement\":\"import { fetchUser } from './userService';\\nexport function loadUser(id: string) {\\n  return fetchUser(id);\\n}\\n\"}]}]}}",
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/userService.ts", "contains": "fetchUser", "not_contains": "getUser" },
+        { "path": "src/api.ts", "contains": "fetchUser(id)", "not_contains": "getUser" }
+      ]
+    }
+  },
+  {
+    "id": "add-config-field-and-test",
+    "intent": "Add a version field to Config in config.zig and add a test in main.zig that checks the default version",
+    "workspace_files": {
+      "src/config.zig": "pub const Config = struct {\n    name: []const u8 = \"forge\",\n};\n",
+      "src/main.zig": "const config = @import(\"config.zig\");\npub fn main() void { _ = config.Config{}; }\n"
+    },
+    "fake_response": "{\"schema_version\":1,\"summary\":\"Add Config.version and a regression test\",\"assumptions\":[],\"validation_tasks\":[\"zig build test\"],\"workspace_edit\":{\"files\":[{\"path\":\"src/config.zig\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":63,\"replacement\":\"pub const Config = struct {\\n    name: []const u8 = \\\"forge\\\",\\n    version: u32 = 1,\\n};\\n\"}]},{\"path\":\"src/main.zig\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":82,\"replacement\":\"const std = @import(\\\"std\\\");\\nconst config = @import(\\\"config.zig\\\");\\npub fn main() void { _ = config.Config{}; }\\n\\ntest \\\"config default version\\\" {\\n    try std.testing.expectEqual(@as(u32, 1), config.Config{}.version);\\n}\\n\"}]}]}}",
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/config.zig", "contains": "version: u32 = 1" },
+        { "path": "src/main.zig", "contains": "config default version" },
+        { "path": "src/main.zig", "contains": "testing.expectEqual" }
+      ]
+    }
+  },
+  {
+    "id": "move-constant-between-zig-files",
+    "intent": "Move MAX_SIZE from constants.zig into config.zig and update Config to reference the local constant",
+    "workspace_files": {
+      "src/constants.zig": "pub const MAX_SIZE: usize = 4096;\npub const VERSION: u32 = 1;\n",
+      "src/config.zig": "const constants = @import(\"constants.zig\");\npub const Config = struct { max: usize = constants.MAX_SIZE };\n"
+    },
+    "fake_response": "{\"schema_version\":1,\"summary\":\"Move MAX_SIZE into config module\",\"assumptions\":[],\"validation_tasks\":[\"zig build test\"],\"workspace_edit\":{\"files\":[{\"path\":\"src/constants.zig\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":62,\"replacement\":\"pub const VERSION: u32 = 1;\\n\"}]},{\"path\":\"src/config.zig\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":107,\"replacement\":\"pub const MAX_SIZE: usize = 4096;\\npub const Config = struct { max: usize = MAX_SIZE };\\n\"}]}]}}",
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/constants.zig", "contains": "VERSION", "not_contains": "MAX_SIZE" },
+        { "path": "src/config.zig", "contains": "pub const MAX_SIZE" },
+        { "path": "src/config.zig", "contains": "max: usize = MAX_SIZE", "not_contains": "constants.MAX_SIZE" }
+      ]
+    }
+  },
+  {
+    "id": "add-logger-level-and-consumer",
+    "intent": "Change logInfo so it accepts a level argument and update app.ts to pass 'info'",
+    "workspace_files": {
+      "src/logger.ts": "export function logInfo(message: string) {\n  console.log(message);\n}\n",
+      "src/app.ts": "import { logInfo } from './logger';\nexport function start() {\n  logInfo('boot');\n}\n"
+    },
+    "fake_response": "{\"schema_version\":1,\"summary\":\"Add logging level argument and update caller\",\"assumptions\":[],\"validation_tasks\":[\"npm test\"],\"workspace_edit\":{\"files\":[{\"path\":\"src/logger.ts\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":69,\"replacement\":\"export function logInfo(level: 'info' | 'warn', message: string) {\\n  console.log(`[${level}] ${message}`);\\n}\\n\"}]},{\"path\":\"src/app.ts\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":83,\"replacement\":\"import { logInfo } from './logger';\\nexport function start() {\\n  logInfo('info', 'boot');\\n}\\n\"}]}]}}",
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/logger.ts", "contains": "level: 'info' | 'warn'" },
+        { "path": "src/app.ts", "contains": "logInfo('info', 'boot')" }
+      ]
+    }
+  },
+  {
+    "id": "docs-and-package-script",
+    "intent": "Document the test command in README.md and add a lint script to package.json",
+    "workspace_files": {
+      "README.md": "# Forge Eval\n\nA small fixture.\n",
+      "package.json": "{\n  \"scripts\": {\n    \"test\": \"vitest\"\n  }\n}\n"
+    },
+    "fake_response": "{\"schema_version\":1,\"summary\":\"Document test command and add lint script\",\"assumptions\":[],\"validation_tasks\":[\"npm test\"],\"workspace_edit\":{\"files\":[{\"path\":\"README.md\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":31,\"replacement\":\"# Forge Eval\\n\\nA small fixture.\\n\\n## Testing\\n\\nRun `npm test` before submitting changes.\\n\"}]},{\"path\":\"package.json\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":44,\"replacement\":\"{\\n  \\\"scripts\\\": {\\n    \\\"test\\\": \\\"vitest\\\",\\n    \\\"lint\\\": \\\"eslint .\\\"\\n  }\\n}\\n\"}]}]}}",
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "README.md", "contains": "## Testing" },
+        { "path": "README.md", "contains": "npm test" },
+        { "path": "package.json", "contains": "\"lint\": \"eslint .\"" }
+      ]
+    }
+  },
+  {
+    "id": "source-and-test-update",
+    "intent": "Add support for a 'delete' button label in button.ts and cover it in button.test.ts",
+    "workspace_files": {
+      "src/button.ts": "export function buttonLabel(kind: 'save' | 'cancel') {\n  return kind === 'save' ? 'Save' : 'Cancel';\n}\n",
+      "src/button.test.ts": "import { buttonLabel } from './button';\n"
+    },
+    "fake_response": "{\"schema_version\":1,\"summary\":\"Add delete button label and test coverage\",\"assumptions\":[],\"validation_tasks\":[\"npm test\"],\"workspace_edit\":{\"files\":[{\"path\":\"src/button.ts\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":103,\"replacement\":\"export function buttonLabel(kind: 'save' | 'cancel' | 'delete') {\\n  if (kind === 'save') return 'Save';\\n  if (kind === 'delete') return 'Delete';\\n  return 'Cancel';\\n}\\n\"}]},{\"path\":\"src/button.test.ts\",\"operation\":\"modify\",\"edits\":[{\"start\":0,\"end\":40,\"replacement\":\"import { buttonLabel } from './button';\\n\\ntest('delete label', () => {\\n  expect(buttonLabel('delete')).toBe('Delete');\\n});\\n\"}]}]}}",
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/button.ts", "contains": "'delete'" },
+        { "path": "src/button.ts", "contains": "return 'Delete'" },
+        { "path": "src/button.test.ts", "contains": "delete label" },
+        { "path": "src/button.test.ts", "contains": "toBe('Delete')" }
+      ]
+    }
+  }
+]

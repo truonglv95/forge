@@ -21,6 +21,8 @@ pub const Input = struct {
 pub const ResolvedContext = struct {
     route: route_resolver.Result,
     builder: context.ContextBuilder,
+    routing_ms: i64 = 0,
+    retrieval_ms: i64 = 0,
 
     pub fn deinit(self: *ResolvedContext) void {
         self.builder.deinit();
@@ -33,6 +35,7 @@ pub fn build(
     root: workspace.WorkspaceRoot,
     input: Input,
 ) !ResolvedContext {
+    const routing_start = std.Io.Timestamp.now(io, .real).toMilliseconds();
     const resolved = route_resolver.resolve(
         allocator,
         input.route,
@@ -41,6 +44,7 @@ pub fn build(
         input.cancel_token,
         input.resolver,
     );
+    const routing_end = std.Io.Timestamp.now(io, .real).toMilliseconds();
 
     const load_options = context_budget.applyLedger(
         allocator,
@@ -49,7 +53,9 @@ pub fn build(
         resolved.intent,
         input.task_ledger_json,
     );
+    const retrieval_start = std.Io.Timestamp.now(io, .real).toMilliseconds();
     var builder = try context_loader.build(allocator, io, root, load_options);
+    const retrieval_end = std.Io.Timestamp.now(io, .real).toMilliseconds();
     errdefer builder.deinit();
 
     var routing_buf: [160]u8 = undefined;
@@ -59,5 +65,11 @@ pub fn build(
     return .{
         .route = resolved,
         .builder = builder,
+        .routing_ms = millisDelta(routing_start, routing_end),
+        .retrieval_ms = millisDelta(retrieval_start, retrieval_end),
     };
+}
+
+fn millisDelta(start_ms: i64, end_ms: i64) i64 {
+    return if (end_ms >= start_ms) end_ms - start_ms else 0;
 }

@@ -14,17 +14,35 @@ pub const EvalError = error{
 };
 
 const TaskExpect = struct {
+    const File = struct {
+        path: []const u8,
+        contains: []const u8 = "",
+        not_contains: []const u8 = "",
+        exists: bool = true,
+    };
+
     proposal_only: bool = false,
+    step_limit_checkpoint: bool = false,
+    context_recovery: bool = false,
+    expect_repair: bool = false,
     path: []const u8 = "",
     contains: []const u8 = "",
+    files: []const File = &.{},
     min_steps: u32 = 0,
     has_import_neighbors: bool = false,
     min_ledger_entries: usize = 0,
+    context_includes: []const []const u8 = &.{},
+    context_top_k: usize = 0,
 };
 
 const Task = struct {
     id: []const u8,
     intent: []const u8,
+    context_only: bool = false,
+    max_steps: ?u32 = null,
+    fake_context_failures: u8 = 0,
+    fake_response: ?[]const u8 = null,
+    fake_repair_response: ?[]const u8 = null,
     workspace_files: std.StringHashMapUnmanaged([]const u8) = .{},
     expect: TaskExpect = .{},
 
@@ -39,6 +57,16 @@ const Task = struct {
         allocator.free(self.intent);
         if (self.expect.path.len > 0) allocator.free(self.expect.path);
         if (self.expect.contains.len > 0) allocator.free(self.expect.contains);
+        for (self.expect.files) |file| {
+            allocator.free(file.path);
+            if (file.contains.len > 0) allocator.free(file.contains);
+            if (file.not_contains.len > 0) allocator.free(file.not_contains);
+        }
+        if (self.expect.files.len > 0) allocator.free(self.expect.files);
+        for (self.expect.context_includes) |item| allocator.free(item);
+        if (self.expect.context_includes.len > 0) allocator.free(self.expect.context_includes);
+        if (self.fake_response) |text| allocator.free(text);
+        if (self.fake_repair_response) |text| allocator.free(text);
         self.* = undefined;
     }
 };
@@ -56,6 +84,9 @@ const Record = struct {
     task_success: bool,
     steps: usize,
     repair_attempts: u8,
+    context_hits: usize = 0,
+    context_best_rank: usize = 0,
+    context_blocks: usize = 0,
     reported_tokens: struct {
         prompt: usize = 0,
         completion: usize = 0,
@@ -77,6 +108,9 @@ const Summary = struct {
     average_steps: f64,
     average_repairs: f64,
     reported_tokens_total: u64,
+    context_hit_rate: f64 = 0,
+    context_rank_p50: f64 = 0,
+    context_rank_p95: f64 = 0,
     latency_ms_p50: f64,
     latency_ms_p95: f64,
     results_jsonl: []const u8,
@@ -127,26 +161,89 @@ pub fn run(
 
             seedWorkspace(allocator, io, eval_ws.root, task.workspace_files) catch return error.WorkspaceFailed;
 
-            var eval_flags = flags;
-            if (eval_flags.provider == null) eval_flags.provider = "fake";
-            const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, eval_flags, task.intent, io, null);
             const active_file: ?[]const u8 = blk: {
                 if (!task.expect.has_import_neighbors) break :blk null;
                 if (task.workspace_files.get("main.zig") != null) break :blk "main.zig";
                 break :blk null;
             };
+
+            if (task.context_only) {
+                const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
+                try latencies.append(allocator, latency_ms);
+                const context_result = contextExpectationOk(allocator, io, eval_ws.root, task.intent, active_file, task.expect) catch ContextExpectation{
+                    .ok = false,
+                    .reason = "context retrieval failed",
+                };
+                var rec = try makeRecord(
+                    allocator,
+                    task.id,
+                    rep_u32,
+                    provider_name,
+                    model_name,
+                    latency_ms,
+                    context_result.ok,
+                    context_result.ok,
+                    context_result.ok,
+                    context_result.ok,
+                    context_result.ok,
+                    0,
+                    0,
+                    .{},
+                    context_result.reason,
+                );
+                rec.context_hits = context_result.hits;
+                rec.context_best_rank = context_result.best_rank;
+                rec.context_blocks = context_result.blocks;
+                try records.append(allocator, rec);
+                continue;
+            }
+
+            var eval_flags = flags;
+            if (eval_flags.provider == null) eval_flags.provider = "fake";
+            var provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, eval_flags, task.intent, io, null);
+            provider_opts.options.fake_context_failures = task.fake_context_failures;
+            if (task.fake_response) |response_text| provider_opts.options.fake_response = response_text;
+            if (task.fake_repair_response) |repair_text| provider_opts.options.fake_plan_response = repair_text;
+            const task_max_steps = task.max_steps orelse max_steps;
             var result = ai.agent.run(allocator, io, environ_map, eval_ws.root, task.intent, .{
-                .max_steps = max_steps,
+                .max_steps = task_max_steps,
                 .provider_options = provider_opts.options,
-                .workspace_cwd = ".",
+                .workspace_cwd = eval_ws.absolute_path,
                 .active_file = active_file,
                 .mode = .agent,
                 .capability_profile = .propose,
-                .max_repair_attempts = if (std.mem.eql(u8, provider_opts.options.provider_name, "fake")) 0 else 2,
-            }) catch {
+                .max_repair_attempts = if (task.expect.expect_repair) 2 else if (std.mem.eql(u8, provider_opts.options.provider_name, "fake")) 0 else 2,
+            }) catch |err| {
                 const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
                 try latencies.append(allocator, latency_ms);
-                try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "agent run failed"));
+                if (task.expect.step_limit_checkpoint and err == error.StepLimitReached) {
+                    const checkpoint = latestResumableCheckpointOk(allocator, io, eval_ws.absolute_path, task.expect.min_ledger_entries) catch CheckpointExpectation{
+                        .ok = false,
+                        .steps = 0,
+                        .reason = "checkpoint inspection failed",
+                    };
+                    try records.append(allocator, try makeRecord(
+                        allocator,
+                        task.id,
+                        rep_u32,
+                        provider_name,
+                        model_name,
+                        latency_ms,
+                        checkpoint.ok,
+                        checkpoint.ok,
+                        checkpoint.ok,
+                        checkpoint.ok,
+                        checkpoint.ok,
+                        checkpoint.steps,
+                        0,
+                        .{},
+                        checkpoint.reason,
+                    ));
+                    continue;
+                }
+                const reason = try std.fmt.allocPrint(allocator, "agent run failed: {s}", .{@errorName(err)});
+                defer allocator.free(reason);
+                try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, reason));
                 continue;
             };
             defer ai.agent.deinitResult(allocator, &result);
@@ -184,6 +281,20 @@ pub fn run(
                 }
                 if (!found_imports) {
                     try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "missing import neighbors in context"));
+                    continue;
+                }
+            }
+            if (task.expect.context_includes.len > 0) {
+                const context_result = contextIncludesExpected(allocator, io, eval_ws.root, task.intent, task.expect) catch ContextExpectation{
+                    .ok = false,
+                    .reason = "context retrieval failed",
+                };
+                if (!context_result.ok) {
+                    var rec = try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, context_result.reason);
+                    rec.context_hits = context_result.hits;
+                    rec.context_best_rank = context_result.best_rank;
+                    rec.context_blocks = context_result.blocks;
+                    try records.append(allocator, rec);
                     continue;
                 }
             }
@@ -229,6 +340,17 @@ pub fn run(
                     continue;
                 }
             }
+            if (task.expect.context_recovery) {
+                const recovery_ok = sessionEventsContain(allocator, io, result.session_id, "context_compacted") catch false;
+                if (!recovery_ok) {
+                    try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "missing context recovery compaction event"));
+                    continue;
+                }
+            }
+            if (task.expect.expect_repair and result.repair_attempts == 0) {
+                try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "expected repair loop did not run"));
+                continue;
+            }
 
             const success = apply_success and validation_pass;
             token_total += @intCast(result.usage.total_tokens);
@@ -260,6 +382,9 @@ pub fn run(
     const validation_rate = rateBool(records.items, "validation_pass");
     const avg_steps = avgUsize(records.items, "steps");
     const avg_repairs = avgU8(records.items, "repair_attempts");
+    const context_hit_rate_value = contextHitRate(records.items);
+    const context_ranks = collectContextRanks(allocator, records.items) catch &.{};
+    defer if (context_ranks.len > 0) allocator.free(context_ranks);
     const p50 = percentile(latencies.items, 0.50);
     const p95 = percentile(latencies.items, 0.95);
     const git_commit = gitCommitShort(allocator, io) catch try allocator.dupe(u8, "unknown");
@@ -280,6 +405,9 @@ pub fn run(
         .average_steps = round2(avg_steps),
         .average_repairs = round2(avg_repairs),
         .reported_tokens_total = token_total,
+        .context_hit_rate = round4(context_hit_rate_value),
+        .context_rank_p50 = percentileUsize(context_ranks, 0.50),
+        .context_rank_p95 = percentileUsize(context_ranks, 0.95),
         .latency_ms_p50 = p50,
         .latency_ms_p95 = p95,
         .results_jsonl = out_path,
@@ -349,16 +477,75 @@ fn loadCorpus(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]Tas
             }
         }
 
+        if (obj.get("max_steps")) |v| {
+            if (v == .integer) task.max_steps = @intCast(v.integer);
+        }
+        if (obj.get("context_only")) |v| {
+            if (v == .bool) task.context_only = v.bool;
+        }
+        if (obj.get("fake_context_failures")) |v| {
+            if (v == .integer) task.fake_context_failures = @intCast(v.integer);
+        }
+        if (obj.get("fake_response")) |v| {
+            if (v == .string) task.fake_response = try allocator.dupe(u8, v.string);
+        }
+        if (obj.get("fake_repair_response")) |v| {
+            if (v == .string) task.fake_repair_response = try allocator.dupe(u8, v.string);
+        }
+
         if (obj.get("expect")) |ex| {
             if (ex != .object) return error.InvalidCorpus;
             if (ex.object.get("proposal_only")) |v| {
                 if (v == .bool) task.expect.proposal_only = v.bool;
+            }
+            if (ex.object.get("step_limit_checkpoint")) |v| {
+                if (v == .bool) task.expect.step_limit_checkpoint = v.bool;
+            }
+            if (ex.object.get("context_recovery")) |v| {
+                if (v == .bool) task.expect.context_recovery = v.bool;
+            }
+            if (ex.object.get("expect_repair")) |v| {
+                if (v == .bool) task.expect.expect_repair = v.bool;
             }
             if (ex.object.get("path")) |v| {
                 if (v == .string) task.expect.path = try allocator.dupe(u8, v.string);
             }
             if (ex.object.get("contains")) |v| {
                 if (v == .string) task.expect.contains = try allocator.dupe(u8, v.string);
+            }
+            if (ex.object.get("files")) |v| {
+                if (v != .array) return error.InvalidCorpus;
+                var files: std.ArrayList(TaskExpect.File) = .empty;
+                errdefer {
+                    for (files.items) |expected_file| {
+                        allocator.free(expected_file.path);
+                        if (expected_file.contains.len > 0) allocator.free(expected_file.contains);
+                        if (expected_file.not_contains.len > 0) allocator.free(expected_file.not_contains);
+                    }
+                    files.deinit(allocator);
+                }
+                for (v.array.items) |entry| {
+                    if (entry != .object) return error.InvalidCorpus;
+                    const path_value = entry.object.get("path") orelse return error.InvalidCorpus;
+                    if (path_value != .string) return error.InvalidCorpus;
+                    var expected_file = TaskExpect.File{
+                        .path = try allocator.dupe(u8, path_value.string),
+                    };
+                    if (entry.object.get("contains")) |contains_value| {
+                        if (contains_value != .string) return error.InvalidCorpus;
+                        expected_file.contains = try allocator.dupe(u8, contains_value.string);
+                    }
+                    if (entry.object.get("not_contains")) |not_contains_value| {
+                        if (not_contains_value != .string) return error.InvalidCorpus;
+                        expected_file.not_contains = try allocator.dupe(u8, not_contains_value.string);
+                    }
+                    if (entry.object.get("exists")) |exists_value| {
+                        if (exists_value != .bool) return error.InvalidCorpus;
+                        expected_file.exists = exists_value.bool;
+                    }
+                    try files.append(allocator, expected_file);
+                }
+                task.expect.files = try files.toOwnedSlice(allocator);
             }
             if (ex.object.get("min_steps")) |v| {
                 if (v == .integer) task.expect.min_steps = @intCast(v.integer);
@@ -368,6 +555,22 @@ fn loadCorpus(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]Tas
             }
             if (ex.object.get("min_ledger_entries")) |v| {
                 if (v == .integer) task.expect.min_ledger_entries = @intCast(v.integer);
+            }
+            if (ex.object.get("context_includes")) |v| {
+                if (v != .array) return error.InvalidCorpus;
+                var includes: std.ArrayList([]const u8) = .empty;
+                errdefer {
+                    for (includes.items) |item_text| allocator.free(item_text);
+                    includes.deinit(allocator);
+                }
+                for (v.array.items) |entry| {
+                    if (entry != .string) return error.InvalidCorpus;
+                    try includes.append(allocator, try allocator.dupe(u8, entry.string));
+                }
+                task.expect.context_includes = try includes.toOwnedSlice(allocator);
+            }
+            if (ex.object.get("context_top_k")) |v| {
+                if (v == .integer) task.expect.context_top_k = @intCast(v.integer);
             }
         }
 
@@ -393,6 +596,69 @@ fn sessionLedgerHasEntries(
     if (doc.task_ledger_json.len == 0) return false;
     const stats = ai.task_ledger.statsFromJson(allocator, doc.task_ledger_json) catch return false;
     return stats.entries >= min_entries;
+}
+
+fn sessionEventsContain(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    session_id: []const u8,
+    needle: []const u8,
+) !bool {
+    const body = try workspace.sessions.readEvents(allocator, io, session_id);
+    defer allocator.free(body);
+    return std.mem.indexOf(u8, body, needle) != null;
+}
+
+const CheckpointExpectation = struct {
+    ok: bool,
+    steps: usize,
+    reason: []const u8,
+};
+
+fn latestResumableCheckpointOk(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    workspace_path: []const u8,
+    min_ledger_entries: usize,
+) !CheckpointExpectation {
+    const offer_opt = try workspace.sessions.findLatestResumable(allocator, io, workspace_path);
+    var offer = offer_opt orelse return .{
+        .ok = false,
+        .steps = 0,
+        .reason = "missing resumable checkpoint",
+    };
+    defer workspace.sessions.deinitResumable(allocator, &offer);
+
+    var doc = try workspace.sessions.loadSession(allocator, io, offer.session_id);
+    defer workspace.sessions.deinitSession(allocator, &doc);
+
+    if (doc.conversation_json.len == 0) return .{
+        .ok = false,
+        .steps = doc.steps.len,
+        .reason = "checkpoint missing conversation state",
+    };
+    if (doc.task_ledger_json.len == 0) return .{
+        .ok = false,
+        .steps = doc.steps.len,
+        .reason = "checkpoint missing task ledger",
+    };
+    if (min_ledger_entries > 0) {
+        const stats = ai.task_ledger.statsFromJson(allocator, doc.task_ledger_json) catch return .{
+            .ok = false,
+            .steps = doc.steps.len,
+            .reason = "checkpoint task ledger malformed",
+        };
+        if (stats.entries < min_ledger_entries) return .{
+            .ok = false,
+            .steps = doc.steps.len,
+            .reason = "checkpoint task ledger too small",
+        };
+    }
+    return .{
+        .ok = true,
+        .steps = doc.steps.len,
+        .reason = "step limit checkpoint saved",
+    };
 }
 
 const EvalWorkspace = struct {
@@ -443,6 +709,9 @@ fn seedWorkspace(allocator: std.mem.Allocator, io: std.Io, root: workspace.Works
     var it = files.iterator();
     while (it.next()) |entry| {
         const path = try workspace.WorkspacePath.parse(entry.key_ptr.*);
+        if (std.fs.path.dirname(entry.key_ptr.*)) |dir_name| {
+            try workspace.atomic.createDirPath(io, root, dir_name);
+        }
         try workspace.atomic.replaceFile(io, root, path, entry.value_ptr.*);
     }
     _ = allocator;
@@ -478,15 +747,139 @@ fn postconditionOk(
     root: workspace.WorkspaceRoot,
     expect: TaskExpect,
 ) !struct { bool, []const u8 } {
+    if (expect.files.len > 0) {
+        for (expect.files) |file| {
+            const ok, const why = try filePostconditionOk(allocator, io, root, file);
+            if (!ok) return .{ false, why };
+        }
+        return .{ true, "postcondition satisfied" };
+    }
     if (expect.path.len == 0) return .{ true, "postcondition satisfied" };
+    return filePostconditionOk(allocator, io, root, .{
+        .path = expect.path,
+        .contains = expect.contains,
+    });
+}
+
+fn filePostconditionOk(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    expect: TaskExpect.File,
+) !struct { bool, []const u8 } {
     var snap = workspace.FileSnapshot.read(allocator, io, root, try workspace.WorkspacePath.parse(expect.path)) catch {
-        return .{ false, "missing expected file" };
+        return if (expect.exists) .{ false, "missing expected file" } else .{ true, "postcondition satisfied" };
     };
     defer snap.deinit();
+    if (!expect.exists) return .{ false, "file should not exist" };
     if (expect.contains.len > 0 and std.mem.indexOf(u8, snap.content, expect.contains) == null) {
         return .{ false, "expected content not found" };
     }
+    if (expect.not_contains.len > 0 and std.mem.indexOf(u8, snap.content, expect.not_contains) != null) {
+        return .{ false, "unexpected content found" };
+    }
     return .{ true, "postcondition satisfied" };
+}
+
+const ContextExpectation = struct {
+    ok: bool,
+    reason: []const u8,
+    hits: usize = 0,
+    best_rank: usize = 0,
+    blocks: usize = 0,
+};
+
+fn contextIncludesExpected(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    intent: []const u8,
+    expect: TaskExpect,
+) !ContextExpectation {
+    var ctx_builder = ai.context_loader.build(allocator, io, root, .{
+        .max_bytes = 512 * 1024,
+        .intent = intent,
+        .include_import_graph = true,
+        .include_semantic_search = true,
+        .auto_semantic_search = true,
+        .include_web = false,
+        .include_agent_memory = false,
+        .include_diagnostics = false,
+        .include_lsp_context = false,
+    }) catch return .{ .ok = false, .reason = "context retrieval failed" };
+    defer ctx_builder.deinit();
+
+    var hits: usize = 0;
+    var best_rank: usize = 0;
+    for (expect.context_includes) |needle| {
+        var found = false;
+        var rank: usize = 0;
+        for (ctx_builder.blocks.items, 0..) |block, index| {
+            if (std.mem.indexOf(u8, block.name, needle) != null or std.mem.indexOf(u8, block.content, needle) != null) {
+                found = true;
+                rank = index + 1;
+                break;
+            }
+        }
+        if (!found) return .{ .ok = false, .reason = "context missing expected file or symbol", .hits = hits, .best_rank = best_rank, .blocks = ctx_builder.blocks.items.len };
+        hits += 1;
+        if (best_rank == 0 or rank < best_rank) best_rank = rank;
+        if (expect.context_top_k > 0 and rank > expect.context_top_k) {
+            return .{ .ok = false, .reason = "context expected item ranked too low", .hits = hits, .best_rank = best_rank, .blocks = ctx_builder.blocks.items.len };
+        }
+    }
+    return .{ .ok = true, .reason = "context includes expected evidence", .hits = hits, .best_rank = best_rank, .blocks = ctx_builder.blocks.items.len };
+}
+
+fn contextExpectationOk(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    intent: []const u8,
+    active_file: ?[]const u8,
+    expect: TaskExpect,
+) !ContextExpectation {
+    var hits: usize = 0;
+    var best_rank: usize = 0;
+    var blocks: usize = 0;
+    if (expect.has_import_neighbors) {
+        var ctx_builder = ai.context_loader.build(allocator, io, root, .{
+            .max_bytes = 256 * 1024,
+            .intent = intent,
+            .active_file = active_file,
+            .include_import_graph = true,
+            .include_semantic_search = false,
+            .auto_semantic_search = false,
+            .include_web = false,
+            .include_recent_files = false,
+            .include_git_diff = false,
+            .include_project_rules = false,
+            .include_agent_memory = false,
+            .include_diagnostics = false,
+            .include_lsp_context = false,
+        }) catch return .{ .ok = false, .reason = "context build failed" };
+        defer ctx_builder.deinit();
+        blocks += ctx_builder.blocks.items.len;
+
+        var found_imports = false;
+        for (ctx_builder.blocks.items, 0..) |block, index| {
+            if (block.block_type == .imports) {
+                found_imports = true;
+                hits += 1;
+                best_rank = index + 1;
+                break;
+            }
+        }
+        if (!found_imports) return .{ .ok = false, .reason = "missing import neighbors in context", .hits = hits, .best_rank = best_rank, .blocks = blocks };
+    }
+    if (expect.context_includes.len > 0) {
+        var result = try contextIncludesExpected(allocator, io, root, intent, expect);
+        result.hits += hits;
+        if (result.best_rank == 0 or (best_rank > 0 and best_rank < result.best_rank)) result.best_rank = best_rank;
+        result.blocks += blocks;
+        return result;
+    }
+    return .{ .ok = true, .reason = "context expectation satisfied", .hits = hits, .best_rank = best_rank, .blocks = blocks };
 }
 
 fn persistRecords(allocator: std.mem.Allocator, io: std.Io, out_path: []const u8, records: []const Record) !void {
@@ -605,6 +998,41 @@ fn percentile(values: []const f64, fraction: f64) f64 {
     return tmp[idx];
 }
 
+fn percentileUsize(values: []const usize, fraction: f64) f64 {
+    if (values.len == 0) return 0;
+    const tmp = std.heap.page_allocator.alloc(usize, values.len) catch return @floatFromInt(values[0]);
+    defer std.heap.page_allocator.free(tmp);
+    @memcpy(tmp, values);
+    std.mem.sort(usize, tmp, {}, comptime std.sort.asc(usize));
+    const n: f64 = @floatFromInt(values.len);
+    const raw_pos = @ceil(n * fraction) - 1.0;
+    var idx_i64: i64 = @intFromFloat(raw_pos);
+    if (idx_i64 < 0) idx_i64 = 0;
+    var idx: usize = @intCast(idx_i64);
+    if (idx >= values.len) idx = values.len - 1;
+    return @floatFromInt(tmp[idx]);
+}
+
+fn contextHitRate(records: []const Record) f64 {
+    var total: usize = 0;
+    var success: usize = 0;
+    for (records) |record| {
+        if (record.context_blocks == 0 and record.context_hits == 0) continue;
+        total += 1;
+        if (record.context_hits > 0 and record.task_success) success += 1;
+    }
+    return if (total == 0) 0 else @as(f64, @floatFromInt(success)) / @as(f64, @floatFromInt(total));
+}
+
+fn collectContextRanks(allocator: std.mem.Allocator, records: []const Record) ![]usize {
+    var out: std.ArrayList(usize) = .empty;
+    errdefer out.deinit(allocator);
+    for (records) |record| {
+        if (record.context_best_rank > 0) try out.append(allocator, record.context_best_rank);
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
 fn round4(v: f64) f64 {
     return @as(f64, @floatFromInt(@as(i64, @intFromFloat(@round(v * 10000.0))))) / 10000.0;
 }
@@ -688,4 +1116,60 @@ test "ai-flow evaluator loads corpus and writes summary" {
     }, &out);
     try std.testing.expectEqual(@as(u8, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "\"success_rate\"") != null);
+}
+
+test "ai-flow evaluator loads retrieval context corpus" {
+    const allocator = std.testing.allocator;
+    const tasks = try loadCorpus(allocator, std.testing.io, "fixtures/eval/retrieval_context.json");
+    defer freeTasks(allocator, tasks);
+    try std.testing.expect(tasks.len >= 30);
+    try std.testing.expect(tasks[0].context_only);
+    try std.testing.expect(tasks[0].expect.context_includes.len > 0);
+}
+
+test "ai-flow evaluator runs retrieval context corpus" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+
+    var buffer: [4096]u8 = undefined;
+    var out = std.Io.Writer.fixed(&buffer);
+
+    const code = try run(allocator, io, &environ, .{
+        .provider = "fake",
+        .repeat = 1,
+        .max_steps = 4,
+        .output = ".zig-cache/eval/retrieval_context.test.jsonl",
+        .corpus = "fixtures/eval/retrieval_context.json",
+        .min_success_rate = 0.8,
+    }, &out);
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "\"success_rate\":1") != null);
+}
+
+test "ai-flow evaluator runs multi-file edit corpus" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+
+    var buffer: [4096]u8 = undefined;
+    var out = std.Io.Writer.fixed(&buffer);
+
+    const tasks = try loadCorpus(allocator, io, "fixtures/eval/multi_file_edits.json");
+    defer freeTasks(allocator, tasks);
+    try std.testing.expect(tasks.len >= 6);
+    try std.testing.expect(tasks[0].expect.files.len >= 2);
+
+    const code = try run(allocator, io, &environ, .{
+        .provider = "fake",
+        .repeat = 1,
+        .max_steps = 4,
+        .output = ".zig-cache/eval/multi_file_edits.test.jsonl",
+        .corpus = "fixtures/eval/multi_file_edits.json",
+        .min_success_rate = 1.0,
+    }, &out);
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "\"success_rate\":1") != null);
 }

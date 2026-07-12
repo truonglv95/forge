@@ -1,0 +1,40 @@
+[
+  {
+    "id": "step-limit-checkpoint-resumable",
+    "intent": "Inspect sample.txt and continue gathering context until the task can be safely edited",
+    "max_steps": 1,
+    "workspace_files": {
+      "sample.txt": "hello forge search sample\n"
+    },
+    "expect": {
+      "step_limit_checkpoint": true,
+      "min_ledger_entries": 2
+    }
+  },
+  {
+    "id": "long-task-ledger-survives-proposal",
+    "intent": "Inspect sample.txt and propose a durable long task plan",
+    "workspace_files": {
+      "sample.txt": "hello forge search sample\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2,
+      "min_ledger_entries": 2
+    }
+  },
+  {
+    "id": "context-length-recovers-with-compaction",
+    "intent": "Inspect sample.txt and recover after a simulated context length failure",
+    "fake_context_failures": 1,
+    "workspace_files": {
+      "sample.txt": "hello forge search sample\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2,
+      "min_ledger_entries": 2,
+      "context_recovery": true
+    }
+  }
+]

@@ -200,9 +200,17 @@ pub fn run(
         .has_active_file = effective_config.active_file != null,
         .has_selection = effective_config.has_selection,
     };
-    const model_context_bytes = context_budget.safePromptBytesForWindow(provider_handle.metadata().context_window);
-    const context_max_bytes = @min(effective_config.context_max_bytes, model_context_bytes);
-    effective_config.context_budget_tier = autoBudgetTier(effective_config, provider_handle.metadata().context_window);
+    const budget_plan = context_budget.planTokenBudget(allocator, .{
+        .context_window_tokens = provider_handle.metadata().context_window,
+        .configured_context_bytes = effective_config.context_max_bytes,
+        .conversation_bytes = conversationBytes(effective_config.conversation),
+        .resume_conversation_bytes = effective_config.resume_conversation_json.len,
+        .task_ledger_json = effective_config.resume_task_ledger_json,
+    });
+    effective_config.context_budget_tier = if (config.context_budget_tier != .full)
+        config.context_budget_tier
+    else
+        budget_plan.tier;
     const load_opts = context_loader.LoadOptions{
         .intent = intent,
         .explicit_files = effective_config.explicit_files,
@@ -211,10 +219,35 @@ pub fn run(
         .include_project_rules = true,
         .workspace_cwd = effective_config.workspace_cwd,
         .recent_files = effective_config.recent_files,
-        .max_bytes = context_max_bytes,
+        .max_bytes = budget_plan.max_context_bytes,
         .embedding = effective_config.embedding,
     };
 
+    const budget_detail = std.fmt.allocPrint(
+        allocator,
+        "tier={s} window={d} prompt_budget={d} context_tokens={d} history={d} completion_reserve={d} safety={d} ledger={s}/{d}",
+        .{
+            @tagName(effective_config.context_budget_tier),
+            provider_handle.metadata().context_window,
+            budget_plan.prompt_budget_tokens,
+            budget_plan.context_budget_tokens,
+            budget_plan.history_tokens,
+            budget_plan.completion_reserve_tokens,
+            budget_plan.safety_reserve_tokens,
+            @tagName(budget_plan.ledger_phase),
+            budget_plan.ledger_entries,
+        },
+    ) catch null;
+    defer if (budget_detail) |detail| allocator.free(detail);
+    event_logger.telemetry(.{
+        .phase = "context_budget",
+        .duration_ms = 0,
+        .bytes = budget_plan.max_context_bytes,
+        .items = budget_plan.context_budget_tokens,
+        .detail = budget_detail orelse @tagName(effective_config.context_budget_tier),
+    }) catch {};
+
+    const context_start_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
     var resolved_context = context_phase.build(allocator, io, root, .{
         .route = route_input,
         .load = load_opts,
@@ -224,6 +257,7 @@ pub fn run(
         .budget_tier = effective_config.context_budget_tier,
         .task_ledger_json = effective_config.resume_task_ledger_json,
     }) catch return error.WorkspaceFailed;
+    const context_end_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
     defer resolved_context.deinit();
     const resolved_route = resolved_context.route;
     const route = resolved_route.route;
@@ -237,6 +271,27 @@ pub fn run(
     var ctx_builder = &resolved_context.builder;
     emitProgress(effective_config, .context_built);
     event_logger.contextManifestBuilt(ctx_builder) catch {};
+    event_logger.telemetry(.{
+        .phase = "routing",
+        .duration_ms = resolved_context.routing_ms,
+        .bytes = intent.len,
+        .items = @intFromBool(resolved_route.used_llm),
+        .detail = routing.intentLabel(route.intent),
+    }) catch {};
+    event_logger.telemetry(.{
+        .phase = "retrieval",
+        .duration_ms = resolved_context.retrieval_ms,
+        .bytes = ctx_builder.used_bytes,
+        .items = ctx_builder.blocks.items.len,
+        .detail = @tagName(effective_config.context_budget_tier),
+    }) catch {};
+    event_logger.telemetry(.{
+        .phase = "context_build",
+        .duration_ms = millisDelta(context_start_ms, context_end_ms),
+        .bytes = ctx_builder.used_bytes,
+        .items = ctx_builder.blocks.items.len,
+        .detail = @tagName(effective_config.context_budget_tier),
+    }) catch {};
 
     var tool_cache = tool_executor.ToolCache.init(allocator);
     defer tool_cache.deinit();
@@ -328,6 +383,17 @@ pub fn run(
                 workspace.sessions.persistSession(self.io, self.workspace_path, self.session_id, body) catch return false;
                 return true;
             }
+
+            fn onTelemetry(ctx: ?*anyopaque, event: agent_loop.Telemetry) void {
+                const self: *@This() = @ptrCast(@alignCast(ctx.?));
+                self.logger.telemetry(.{
+                    .phase = event.phase,
+                    .duration_ms = event.duration_ms,
+                    .bytes = event.bytes,
+                    .items = event.items,
+                    .detail = event.detail,
+                }) catch {};
+            }
         };
         var native_ctx = NativeCtx{
             .allocator = allocator,
@@ -369,6 +435,8 @@ pub fn run(
             .pending_args_json = effective_config.resume_pending_tool_args,
             .approval_callback = effective_config.approval_callback,
             .approval_context = effective_config.approval_context,
+            .telemetry_callback = NativeCtx.onTelemetry,
+            .telemetry_context = &native_ctx,
             .approve_every_time_tools = effective_config.approve_every_time_tools,
             .max_context_recovery_attempts = effective_config.max_context_recovery_attempts,
             .max_conversation_bytes = effective_config.max_conversation_bytes,
@@ -517,8 +585,10 @@ pub fn run(
     var repair_attempt: u8 = 0;
     var use_repair_prompt = false;
     var json_repair_attempts: u8 = 0;
+    var evidence_retry_reads: u8 = 0;
     while (true) {
         response.writer.end = 0;
+        const planner_start_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
         if (!use_repair_prompt) {
             emitProgress(effective_config, .sending);
             planner_inst.plan(&response.writer, cancel_token) catch return error.ProviderFailed;
@@ -531,6 +601,13 @@ pub fn run(
                 final_proposal orelse "",
             ) catch return error.ProviderFailed;
         }
+        event_logger.telemetry(.{
+            .phase = if (use_repair_prompt) "repair" else "llm_call",
+            .duration_ms = millisDelta(planner_start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds()),
+            .bytes = response.writer.end,
+            .items = json_repair_attempts,
+            .detail = if (use_repair_prompt) "proposal_repair" else "proposal_plan",
+        }) catch {};
         emitProgress(effective_config, .streaming);
         emitProgress(effective_config, .parsing);
 
@@ -555,6 +632,36 @@ pub fn run(
 
         const prepared = proposal_precondition.fillMissingExpectedHashes(allocator, io, root, normalized) catch normalized;
         defer if (prepared.ptr != normalized.ptr) allocator.free(prepared);
+
+        const evidence_issue = validateProposalEvidenceForSteps(allocator, prepared, steps.items) catch return error.InvalidProposal;
+        defer if (evidence_issue) |issue| allocator.free(issue);
+        if (evidence_issue) |issue| {
+            if (evidence_retry_reads < 4 and tools.isAllowed(effective_config.capability_profile, .read_file)) {
+                if (extractBacktickBorrowed(issue)) |missing_path| {
+                    evidence_retry_reads += 1;
+                    if (readFreshEvidenceSummary(allocator, io, root, missing_path)) |summary| {
+                        defer allocator.free(summary);
+                        try appendStep(allocator, &steps, next_index, "read_file", summary, null, effective_config);
+                        next_index += 1;
+                        continue;
+                    } else |_| {}
+                }
+            }
+            if (json_repair_attempts < 2) {
+                json_repair_attempts += 1;
+                use_repair_prompt = true;
+                if (validation_report) |old| allocator.free(old);
+                validation_report = std.fmt.allocPrint(
+                    allocator,
+                    "proposal evidence check failed: {s}\nUse read_file to retrieve fresh file content/hash/line evidence before modifying or deleting an existing file, then output ONLY valid WorkspaceEdit JSON.",
+                    .{issue},
+                ) catch null;
+                if (final_proposal) |old| allocator.free(old);
+                final_proposal = allocator.dupe(u8, prepared) catch return error.InvalidProposal;
+                continue;
+            }
+            return error.InvalidProposal;
+        }
 
         proposal_workflow.validateProposalBody(allocator, prepared) catch {
             if (json_repair_attempts < 2) {
@@ -598,7 +705,15 @@ pub fn run(
             validation_report = std.fmt.allocPrint(allocator, "review:\n{s}\n", .{review_text_opt orelse ""}) catch null;
         } else |_| {}
         event_logger.validationStarted(repair_attempt + 1) catch {};
+        const trial_start_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
         const trial = repair_loop.trialApplyAndValidate(allocator, io, root, config.workspace_cwd, final_proposal.?) catch break;
+        event_logger.telemetry(.{
+            .phase = "apply",
+            .duration_ms = millisDelta(trial_start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds()),
+            .bytes = final_proposal.?.len,
+            .items = trial.task_count,
+            .detail = "trial_apply",
+        }) catch {};
         event_logger.validationResult(repair_attempt + 1, trial.passed, trial.task_count, trial.failed_count, trial.hint_paths, trial.report) catch {};
         if (trial.passed or repair_attempt >= config.max_repair_attempts) {
             if (trial.hint_paths.len > 0) {
@@ -671,7 +786,15 @@ pub fn run(
     const proposal_abs = std.fmt.bufPrint(&proposal_path_buf, "{s}/proposals/{s}.json", .{ session_dir_ag, run_id }) catch return error.WorkspaceFailed;
 
     workspace.history.ensureLayout(allocator, io, root) catch return error.WorkspaceFailed;
+    const persist_start_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
     workspace.global_store.replaceAbsoluteFile(io, proposal_abs, augmented_body) catch return error.WorkspaceFailed;
+    event_logger.telemetry(.{
+        .phase = "apply",
+        .duration_ms = millisDelta(persist_start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds()),
+        .bytes = augmented_body.len,
+        .items = 1,
+        .detail = "proposal_persist",
+    }) catch {};
 
     const meta = llm.metadata();
     const record = run_record.Record{
@@ -1021,6 +1144,38 @@ fn firstToken(intent: []const u8, buffer: []u8) []const u8 {
     return buffer[0..len];
 }
 
+fn millisDelta(start_ms: i64, end_ms: i64) i64 {
+    return if (end_ms <= start_ms) 0 else end_ms - start_ms;
+}
+
+fn extractBacktickBorrowed(text: []const u8) ?[]const u8 {
+    const first = std.mem.indexOfScalar(u8, text, '`') orelse return null;
+    const rest = text[first + 1 ..];
+    const second_rel = std.mem.indexOfScalar(u8, rest, '`') orelse return null;
+    return rest[0..second_rel];
+}
+
+fn readFreshEvidenceSummary(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    rel_path: []const u8,
+) ![]const u8 {
+    const path = try workspace.WorkspacePath.parse(rel_path);
+    var snap = try workspace.FileSnapshot.read(allocator, io, root, path);
+    defer snap.deinit();
+    var line_count: usize = 1;
+    for (snap.content) |byte| {
+        if (byte == '\n') line_count += 1;
+    }
+    const end_line = @min(line_count, 400);
+    return try std.fmt.allocPrint(
+        allocator,
+        "File `{s}` hash={x} bytes={d} lines=1-{d}\n",
+        .{ rel_path, snap.hash, snap.content.len, end_line },
+    );
+}
+
 fn appendStep(
     allocator: std.mem.Allocator,
     steps: *std.ArrayList(Step),
@@ -1111,6 +1266,33 @@ const EventLogger = struct {
             .used_bytes = builder.used_bytes,
             .blocks = builder.blocks.items.len,
             .has_import_neighbors = has_import_neighbors,
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn telemetry(self: *EventLogger, payload: struct {
+        phase: []const u8,
+        duration_ms: i64,
+        bytes: usize = 0,
+        items: usize = 0,
+        detail: []const u8 = "",
+    }) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.telemetry),
+            phase: []const u8,
+            duration_ms: i64,
+            bytes: usize,
+            items: usize,
+            detail: []const u8,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .phase = payload.phase,
+            .duration_ms = payload.duration_ms,
+            .bytes = payload.bytes,
+            .items = payload.items,
+            .detail = payload.detail,
         }, .{});
         defer self.allocator.free(json);
         try self.appendJson(json);
@@ -1552,6 +1734,23 @@ fn buildTaskLedgerJson(
     var snapshot = try task_ledger.fromSteps(allocator, intent, items, phase);
     defer snapshot.deinit(allocator);
     return task_ledger.toJsonAlloc(allocator, snapshot);
+}
+
+fn validateProposalEvidenceForSteps(
+    allocator: std.mem.Allocator,
+    proposal_body: []const u8,
+    steps: []const Step,
+) !?[]const u8 {
+    var items = try allocator.alloc(task_ledger.StepInput, steps.len);
+    defer allocator.free(items);
+    for (steps, 0..) |step, index| {
+        items[index] = .{
+            .index = step.index,
+            .kind = step.kind,
+            .summary = step.summary,
+        };
+    }
+    return task_ledger.validateProposalEvidence(allocator, proposal_body, items);
 }
 
 fn phaseFromExecutionState(state: []const u8) task_ledger.Phase {

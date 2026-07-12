@@ -700,8 +700,29 @@ pub fn replaceFileContent(ctx: Context, args: @import("tools/args.zig").ReplaceF
         cb(ctx.edit_context, ws_edit);
     }
 
-    const summary = std.fmt.allocPrint(ctx.allocator, "Edited {s} ({d} blocks)", .{ args.path, args.edits.len }) catch return error.WorkspaceFailed;
+    const summary = blk: {
+        const wp = workspace.WorkspacePath.parse(args.path) catch break :blk std.fmt.allocPrint(ctx.allocator, "Write `{s}` ({d} blocks)", .{ args.path, args.edits.len }) catch return error.WorkspaceFailed;
+        var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch break :blk std.fmt.allocPrint(ctx.allocator, "Write `{s}` ({d} blocks)", .{ args.path, args.edits.len }) catch return error.WorkspaceFailed;
+        defer snap.deinit();
+        const first = if (args.edits.len > 0) summarizeEditPreview(args.edits[0].replace) else "";
+        if (first.len > 0) {
+            break :blk std.fmt.allocPrint(
+                ctx.allocator,
+                "Write `{s}` hash={x} blocks={d}: {s}",
+                .{ args.path, snap.hash, args.edits.len, first },
+            ) catch return error.WorkspaceFailed;
+        }
+        break :blk std.fmt.allocPrint(ctx.allocator, "Write `{s}` hash={x} blocks={d}", .{ args.path, snap.hash, args.edits.len }) catch return error.WorkspaceFailed;
+    };
     return .{ .summary = summary };
+}
+
+fn summarizeEditPreview(text: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
+    if (trimmed.len == 0) return "";
+    var end: usize = 0;
+    while (end < trimmed.len and trimmed[end] != '\n' and trimmed[end] != '\r') : (end += 1) {}
+    return trimmed[0..@min(end, 96)];
 }
 
 fn unsafeEditShrinkReason(
