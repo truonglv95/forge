@@ -22,6 +22,7 @@ const agent_cmd = @import("agent_cmd.zig");
 const parsers_cmd = @import("parsers_cmd.zig");
 const ext_cmd = @import("ext_cmd.zig");
 const eval_cmd = @import("eval_cmd.zig");
+const ecosystem_cmd = @import("ecosystem_cmd.zig");
 
 const Io = std.Io;
 
@@ -117,6 +118,9 @@ fn run(
         .eval => {
             return eval_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
+        .ecosystem => {
+            return ecosystem_cmd.run(allocator, io, &parsed, writer) catch 2;
+        },
         .ext => {
             if (parsed.positional.len == 0) {
                 try writer.print("usage: forge ext <list|install|uninstall> [id]\n", .{});
@@ -163,6 +167,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  plan       Plan a proposal using AI
         \\  parsers    Sync Tree-sitter parser lock for the workspace (sync)
         \\  eval       Run evaluation suites (ai-flow)
+        \\  ecosystem  Manage AI tools, context sources, skill packs, eval packs, providers
         \\  ext        Manage extensions (list|install|uninstall)
         \\  help       Show this help
         \\

@@ -54,6 +54,7 @@ pub const Config = struct {
     initial_step_index: u32 = 1,
     pending_tool: []const u8 = "",
     pending_args_json: []const u8 = "",
+    initial_task_ledger_json: []const u8 = "",
     approval_callback: ?ApprovalCallback = null,
     approval_context: ?*anyopaque = null,
     approve_every_time_tools: bool = false,
@@ -156,6 +157,15 @@ pub fn run(
 
     if (config.initial_conversation_json.len > 0) {
         conversation.appendSlice(allocator, config.initial_conversation_json) catch return error.ProviderFailed;
+        if (config.initial_task_ledger_json.len > 0) {
+            const ledger_prompt = std.fmt.allocPrint(
+                allocator,
+                "Task ledger checkpoint. Use this as durable task state; do not treat it as source code.\n```json\n{s}\n```",
+                .{config.initial_task_ledger_json},
+            ) catch return error.ProviderFailed;
+            defer allocator.free(ledger_prompt);
+            transport.appendUserText(allocator, &conversation, ledger_prompt) catch return error.ProviderFailed;
+        }
     } else {
         transport.appendUserText(allocator, &conversation, prompt) catch return error.ProviderFailed;
     }
@@ -193,13 +203,15 @@ pub fn run(
                 if (context_recoveries >= config.max_context_recovery_attempts) return error.ContextLengthExceeded;
                 context_recoveries += 1;
                 const before_bytes = conversation.items.len;
+                var recovery_options = compaction.recoveryOptions(context_recoveries);
+                recovery_options.task_ledger_json = config.initial_task_ledger_json;
                 const recovery_prompt = compaction.buildRecoveryPrompt(
                     allocator,
                     intent,
                     ctx_builder,
                     conversation.items,
                     config.task_intent,
-                    compaction.recoveryOptions(context_recoveries),
+                    recovery_options,
                 ) catch return error.ProviderFailed;
                 defer allocator.free(recovery_prompt);
                 conversation.clearRetainingCapacity();
@@ -257,6 +269,8 @@ fn compactConversationIfNeeded(
 
     const next_attempt = if (compactions.* == std.math.maxInt(u8)) compactions.* else compactions.* + 1;
     const before_bytes = conversation.items.len;
+    var compact_options = compaction.recoveryOptions(next_attempt);
+    compact_options.task_ledger_json = config.initial_task_ledger_json;
     const compact_prompt = compaction.buildResumePrompt(
         allocator,
         intent,
@@ -264,7 +278,7 @@ fn compactConversationIfNeeded(
         conversation.items,
         config.task_intent,
         step_index,
-        compaction.recoveryOptions(next_attempt),
+        compact_options,
     ) catch return error.ProviderFailed;
     defer allocator.free(compact_prompt);
 
@@ -292,6 +306,8 @@ fn checkpointCompactResume(
     else
         config.max_context_recovery_attempts + 1;
     const before_bytes = conversation.items.len;
+    var resume_options = compaction.recoveryOptions(checkpoint_attempt);
+    resume_options.task_ledger_json = config.initial_task_ledger_json;
     const resume_prompt = compaction.buildResumePrompt(
         allocator,
         intent,
@@ -299,7 +315,7 @@ fn checkpointCompactResume(
         conversation.items,
         config.task_intent,
         step_index,
-        compaction.recoveryOptions(checkpoint_attempt),
+        resume_options,
     ) catch return error.ProviderFailed;
     defer allocator.free(resume_prompt);
 

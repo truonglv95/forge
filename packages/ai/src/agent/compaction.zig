@@ -7,6 +7,7 @@ pub const Options = struct {
     attempt: u8 = 1,
     max_conversation_tail: usize = 12 * 1024,
     max_manifest_bytes: usize = 16 * 1024,
+    task_ledger_json: []const u8 = "",
 };
 
 pub fn recoveryOptions(attempt: u8) Options {
@@ -63,6 +64,7 @@ pub fn buildRecoveryPrompt(
 
     try writer.writeAll("Compacted context manifest:\n");
     try writer.writeAll(manifest);
+    try writeTaskLedger(writer, options.task_ledger_json);
     try writer.writeAll("\nCompacted prior conversation tail:\n```json\n");
     try writer.writeAll(convo_tail);
     try writer.writeAll("\n```\n\n");
@@ -112,6 +114,7 @@ pub fn buildResumePrompt(
 
     try writer.writeAll("Compact context manifest:\n");
     try writer.writeAll(manifest);
+    try writeTaskLedger(writer, options.task_ledger_json);
     try writer.writeAll("\nRecent conversation/tool evidence tail:\n```json\n");
     try writer.writeAll(convo_tail);
     try writer.writeAll("\n```\n\n");
@@ -131,6 +134,13 @@ pub fn buildResumePrompt(
 pub fn trimTail(text: []const u8, max_bytes: usize) []const u8 {
     if (text.len <= max_bytes) return text;
     return text[text.len - max_bytes ..];
+}
+
+fn writeTaskLedger(writer: *std.Io.Writer, task_ledger_json: []const u8) !void {
+    if (task_ledger_json.len == 0) return;
+    try writer.writeAll("\nTask ledger checkpoint:\n```json\n");
+    try writer.writeAll(trimTail(task_ledger_json, 8192));
+    try writer.writeAll("\n```\n");
 }
 
 pub const SummaryStep = struct {
@@ -196,6 +206,21 @@ test "buildSessionSummary keeps latest tool evidence" {
     defer allocator.free(summary);
     try std.testing.expect(std.mem.indexOf(u8, summary, "fix context") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "replace_file_content") != null);
+}
+
+test "buildResumePrompt includes task ledger when present" {
+    const allocator = std.testing.allocator;
+    var builder = context.ContextBuilder.init(allocator, 4096);
+    defer builder.deinit();
+    try builder.addBlock(.intent, "intent", "fix resume");
+
+    const prompt = try buildResumePrompt(allocator, "fix resume", &builder, "[]", .edit_code, 7, .{
+        .task_ledger_json = "{\"goal\":\"fix resume\",\"phase\":\"editing\"}",
+    });
+    defer allocator.free(prompt);
+
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Task ledger checkpoint") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "\"phase\":\"editing\"") != null);
 }
 
 test "recoveryOptions shrink context across attempts" {

@@ -30,6 +30,7 @@ const route_resolver = @import("route_resolver.zig");
 const context_manifest = @import("context_manifest.zig");
 const context_budget = @import("context_budget.zig");
 const agent_event = @import("agent_event.zig");
+const task_ledger = @import("task_ledger.zig");
 
 pub const Config = struct {
     max_steps: u32 = 128,
@@ -70,6 +71,7 @@ pub const Config = struct {
     lsp_context: ?*anyopaque = null,
     use_inline_edits: bool = false,
     resume_conversation_json: []const u8 = "",
+    resume_task_ledger_json: []const u8 = "",
     resume_next_step_index: u32 = 1,
     resume_pending_tool: []const u8 = "",
     resume_pending_tool_args: []const u8 = "",
@@ -360,6 +362,7 @@ pub fn run(
             .checkpoint_callback = NativeCtx.onCheckpoint,
             .checkpoint_context = &native_ctx,
             .initial_conversation_json = effective_config.resume_conversation_json,
+            .initial_task_ledger_json = effective_config.resume_task_ledger_json,
             .initial_step_index = effective_config.resume_next_step_index,
             .pending_tool = effective_config.resume_pending_tool,
             .pending_args_json = effective_config.resume_pending_tool_args,
@@ -972,6 +975,7 @@ pub fn resumeSession(
     resumed.resume_session_id = doc.session_id;
     resumed.resume_steps = prior_steps;
     resumed.resume_conversation_json = doc.conversation_json;
+    resumed.resume_task_ledger_json = doc.task_ledger_json;
     resumed.resume_next_step_index = doc.next_step_index;
     resumed.resume_pending_tool = doc.pending_tool;
     resumed.resume_pending_tool_args = doc.pending_tool_args;
@@ -1393,10 +1397,13 @@ fn formatCheckpointSessionJson(
         pending_tool_args: []const u8,
         conversation_json: []const u8,
         compact_summary: []const u8,
+        task_ledger_json: []const u8,
         provider_kind: []const u8,
     };
     const compact_summary = try buildCompactSummary(allocator, intent, steps, null, conversation_json);
     defer allocator.free(compact_summary);
+    const task_ledger_json = try buildTaskLedgerJson(allocator, intent, steps, phaseFromExecutionState(execution_state));
+    defer allocator.free(task_ledger_json);
     return std.json.Stringify.valueAlloc(allocator, CheckpointDoc{
         .session_id = session_id,
         .intent = intent,
@@ -1410,6 +1417,7 @@ fn formatCheckpointSessionJson(
         .pending_tool_args = pending_tool_args,
         .conversation_json = conversation_json,
         .compact_summary = compact_summary,
+        .task_ledger_json = task_ledger_json,
         .provider_kind = provider_kind,
     }, .{});
 }
@@ -1473,6 +1481,7 @@ fn formatSessionJson(
         pending_tool_args: []const u8,
         conversation_json: []const u8,
         compact_summary: []const u8,
+        task_ledger_json: []const u8,
         provider_kind: []const u8,
     };
 
@@ -1481,6 +1490,8 @@ fn formatSessionJson(
     run_ids[0] = run_id;
     const compact_summary = try buildCompactSummary(allocator, intent, steps, null, conversation_json);
     defer allocator.free(compact_summary);
+    const task_ledger_json = try buildTaskLedgerJson(allocator, intent, steps, .summarizing);
+    defer allocator.free(task_ledger_json);
 
     return std.json.Stringify.valueAlloc(allocator, SessionDoc{
         .session_id = session_id,
@@ -1498,6 +1509,7 @@ fn formatSessionJson(
         .pending_tool_args = "",
         .conversation_json = conversation_json,
         .compact_summary = compact_summary,
+        .task_ledger_json = task_ledger_json,
         .provider_kind = provider_kind,
     }, .{});
 }
@@ -1519,6 +1531,34 @@ fn buildCompactSummary(
         };
     }
     return agent_compaction.buildSessionSummary(allocator, intent, items, final_text, conversation_json);
+}
+
+fn buildTaskLedgerJson(
+    allocator: std.mem.Allocator,
+    intent: []const u8,
+    steps: []const Step,
+    phase: task_ledger.Phase,
+) ![]u8 {
+    var items = try allocator.alloc(task_ledger.StepInput, steps.len);
+    defer allocator.free(items);
+    for (steps, 0..) |step, index| {
+        items[index] = .{
+            .index = step.index,
+            .kind = step.kind,
+            .summary = step.summary,
+        };
+    }
+    var snapshot = try task_ledger.fromSteps(allocator, intent, items, phase);
+    defer snapshot.deinit(allocator);
+    return task_ledger.toJsonAlloc(allocator, snapshot);
+}
+
+fn phaseFromExecutionState(state: []const u8) task_ledger.Phase {
+    if (std.mem.eql(u8, state, "completed")) return .completed;
+    if (std.mem.eql(u8, state, "failed")) return .blocked;
+    if (std.mem.eql(u8, state, "proposal_ready")) return .summarizing;
+    if (std.mem.eql(u8, state, "tool_pending")) return .gathering;
+    return .gathering;
 }
 
 fn resolveHomeDir(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
@@ -1647,6 +1687,8 @@ test "agent resumes exact transport conversation after step limit" {
     defer workspace.sessions.deinitSession(allocator, &checkpoint);
     try std.testing.expectEqualStrings("exploring", checkpoint.execution_state);
     try std.testing.expect(checkpoint.conversation_json.len > 0);
+    try std.testing.expect(checkpoint.task_ledger_json.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, checkpoint.task_ledger_json, "search sample") != null);
     try std.testing.expectEqual(@as(u32, 2), checkpoint.next_step_index);
 
     var result = try resumeSession(allocator, io, null, root, session_id, .{
