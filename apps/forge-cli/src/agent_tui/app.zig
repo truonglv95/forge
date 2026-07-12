@@ -8,6 +8,7 @@ const workspace_cmd = @import("../workspace_cmd.zig");
 const ai_workflow = @import("../ai_workflow.zig");
 const cancel_scope_mod = @import("../cancel_scope.zig");
 const term = @import("term.zig");
+const cli_config = @import("../config.zig");
 const commands = @import("commands.zig");
 const events_render = @import("../events_render.zig");
 
@@ -110,6 +111,11 @@ pub const App = struct {
     show_events: bool = false,
     events_lines: std.ArrayList(ChatLine) = .empty,
     show_timeline: bool = false,
+    scan_summary: ?@import("forge-workspace").tree.ScanSummary = null,
+    explorer_scroll_y: usize = 0,
+    cli_config: cli_config.Config = .{},
+    show_explorer: bool = true,
+    focus_explorer: bool = false,
     timeline_lines: std.ArrayList(ChatLine) = .empty,
     timeline_scroll: usize = 0,
     terminal_size: term.Terminal.Size = .{ .rows = 25, .cols = 80 },
@@ -141,6 +147,7 @@ pub const App = struct {
 
         const folder = try workspaceDisplayNameAlloc(allocator, environ_map, opened.path);
 
+        const loaded_config = cli_config.loadConfig(allocator, environ_map, io);
         var app = App{
             .allocator = allocator,
             .io = io,
@@ -162,6 +169,8 @@ pub const App = struct {
         try app.refreshStatus();
         try app.pushStartupIntro();
         app.terminal_size = terminal.size();
+        app.cli_config = loaded_config;
+        app.show_explorer = loaded_config.show_explorer;
         return app;
     }
 
@@ -298,6 +307,9 @@ pub const App = struct {
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
                     self.applyCommandSuggestion();
                     self.markDirty();
+                } else if (self.input.items.len == 0) {
+                    self.focus_explorer = !self.focus_explorer;
+                    self.markDirty();
                 }
                 self.mutex.unlock();
             },
@@ -394,6 +406,11 @@ pub const App = struct {
                 self.mutex.unlock();
             },
             .up => {
+                if (self.focus_explorer) {
+                    if (self.explorer_scroll_y > 0) self.explorer_scroll_y -= 1;
+                    self.markDirty();
+                    return;
+                }
                 self.mutex.lock();
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
                     var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
@@ -414,6 +431,13 @@ pub const App = struct {
                 self.mutex.unlock();
             },
             .down => {
+                if (self.focus_explorer) {
+                    if (self.scan_summary) |s| {
+                        if (self.explorer_scroll_y + 1 < s.entries.len) self.explorer_scroll_y += 1;
+                    }
+                    self.markDirty();
+                    return;
+                }
                 self.mutex.lock();
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
                     var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
@@ -1757,7 +1781,10 @@ pub const App = struct {
         defer block_states.deinit(self.allocator);
         // 0: none, 1: thinking, 2: diff
 
-        const width = @max(20, @as(usize, size.cols) - 2);
+        const explorer_width: u16 = if (self.show_explorer) self.cli_config.explorer_width else 0;
+        const chat_x: u16 = if (self.show_explorer) explorer_width + 2 else 1;
+        const chat_cols: u16 = if (self.show_explorer) size.cols - explorer_width - 1 else size.cols;
+        const width = @max(20, @as(usize, chat_cols) - 2);
         const source_lines = if (self.show_timeline)
             self.timeline_lines.items
         else if (self.show_events)
@@ -1830,10 +1857,10 @@ pub const App = struct {
             const color = colorForLine(line.kind, line.text);
 
             const padding: usize = if (block > 0) 2 else 0;
-            const content_cols = size.cols - 1 - padding * 2;
+            const content_cols = chat_cols - 1 - padding * 2;
             const clipped = term.truncateEnd(&scratch, line.text, @intCast(content_cols));
 
-            self.frame.moveTo(row, 1);
+            self.frame.moveTo(row, chat_x);
 
             // Left padding
             if (padding > 0) {
@@ -1893,7 +1920,8 @@ pub const App = struct {
             row += 1;
         }
         while (row <= chat_rows) : (row += 1) {
-            self.frame.writeRow(row, size.cols, "");
+            self.frame.moveTo(row, chat_x);
+            self.frame.data.appendNTimes(self.allocator, ' ', chat_cols) catch {};
         }
 
         var footer_row = chat_rows + 1;
@@ -1948,6 +1976,56 @@ pub const App = struct {
             self.frame.appendSlice("\x1b[?25l") catch {};
         }
 
+        if (self.show_explorer) {
+            var b_row: u16 = 1;
+            while (b_row <= size.rows) : (b_row += 1) {
+                self.frame.moveTo(b_row, explorer_width + 1);
+                if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                self.frame.appendSlice("│") catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            }
+            if (self.scan_summary) |s| {
+                var e_row: u16 = 1;
+                self.frame.moveTo(e_row, 1);
+                if (self.focus_explorer) {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.green) catch {};
+                    self.frame.appendSlice(" EXPLORER (Focused) ") catch {};
+                } else {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                    self.frame.appendSlice(" EXPLORER ") catch {};
+                }
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                e_row += 1;
+                const max_items = if (chat_rows > 1) chat_rows - 1 else 0;
+                const total_items = s.entries.len;
+                const start_idx = @min(self.explorer_scroll_y, total_items);
+                const end_idx = @min(start_idx + max_items, total_items);
+                for (s.entries[start_idx..end_idx], start_idx..) |entry, i| {
+                    self.frame.moveTo(e_row, 1);
+                    var buf: [256]u8 = undefined;
+                    const name = std.fs.path.basename(entry.path);
+                    const prefix = if (entry.kind == .directory) "▸ " else "  ";
+                    const line = std.fmt.bufPrint(&buf, "{s}{s}", .{ prefix, name }) catch "";
+                    var scratch2: [512]u8 = undefined;
+                    const clipped = term.truncateEnd(&scratch2, line, explorer_width);
+
+                    const is_selected = (i == self.explorer_scroll_y) and self.focus_explorer;
+                    if (is_selected) {
+                        if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+                    }
+                    self.frame.appendSlice(clipped) catch {};
+                    if (clipped.len < explorer_width) {
+                        self.frame.data.appendNTimes(self.allocator, ' ', explorer_width - clipped.len) catch {};
+                    }
+                    if (is_selected) {
+                        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                    }
+                    e_row += 1;
+                }
+            }
+        }
         self.frame.flush();
     }
 
