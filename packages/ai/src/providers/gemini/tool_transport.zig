@@ -152,7 +152,22 @@ fn fetchStreamGenerateContentInto(
     const endpoint = try std.fmt.allocPrint(allocator, "{s}{s}:streamGenerateContent?alt=sse", .{ stream_endpoint_base, gemini.model_name });
     defer allocator.free(endpoint);
 
-    const payload = try std.fmt.allocPrint(allocator,
+    // Detect proposal-generation calls: no tool declarations means the
+    // planner/repairer is asking for a structured WorkspaceEdit JSON directly.
+    // In that case we use Gemini's response_schema constraint to enforce valid
+    // JSON output at the token level, eliminating most parse failures.
+    const schema_mode = std.mem.eql(u8, declarations_json, "[]") or
+        std.mem.eql(u8, declarations_json, "") or
+        declarations_json.len == 0;
+
+    const payload = if (schema_mode) blk: {
+        // Minimal WorkspaceEdit schema: object with schema_version int and
+        // operations array. The model still fills content — we only constrain
+        // the outer shape so parse never fails due to non-JSON preamble.
+        break :blk try std.fmt.allocPrint(allocator,
+            \\{{"contents":[{s}],"generationConfig":{{"temperature":0.2,"thinkingConfig":{{"includeThoughts":true}},"responseMimeType":"application/json","responseSchema":{{"type":"OBJECT","properties":{{"schema_version":{{"type":"INTEGER"}},"operations":{{"type":"ARRAY","items":{{"type":"OBJECT"}}}}}},"required":["schema_version","operations"]}}}}}}
+        , .{contents_body});
+    } else try std.fmt.allocPrint(allocator,
         \\{{"contents":[{s}],"tools":[{{"functionDeclarations":{s}}}],"generationConfig":{{"temperature":0.2,"thinkingConfig":{{"includeThoughts":true}}}}}}
     , .{ contents_body, declarations_json });
     defer allocator.free(payload);

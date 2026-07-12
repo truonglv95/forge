@@ -152,13 +152,30 @@ fn runAgent(
     var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
     defer opened.close(io);
     workspace_cmd.scheduleSemanticIndex(allocator, io, environ_map, opened);
+    // Clean up any .forge-trial-* directories left behind by a killed process.
+    // Silent: errors are ignored so this never blocks the agent from starting.
+    ai.repair_loop.cleanupStaleTrials(io, opened.path, 24 * 60 * 60);
 
     var scope = try cancel_scope_mod.Scope.init(allocator);
     defer scope.deinit();
     if (!parsed.flags.quiet and !parsed.flags.json) scope.installSigint();
 
     const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, target, io, opened.root);
-    const max_steps = if (parsed.flags.max_steps > 0) parsed.flags.max_steps else 8;
+    const explicit_max_steps = parsed.flags.max_steps > 0;
+    // Use per-intent default when --max-steps is not explicitly set.
+    // The heuristic classify runs in O(1) before context builds, so latency is
+    // negligible. The resolved intent (post-LLM) may later update agent_config
+    // but the initial value gives a safe upper bound for the explore phase.
+    const heuristic_intent = ai.routing.classify(.{
+        .mode = modeFromFlags(parsed.flags),
+        .intent = if (parsed.positional.len > 1) parsed.positional[1] else "",
+        .has_active_file = false,
+        .has_selection = false,
+    });
+    const max_steps: u32 = if (explicit_max_steps)
+        parsed.flags.max_steps
+    else
+        ai.routing.defaultStepsForIntent(heuristic_intent);
     const progress_writer: ?*std.Io.Writer = null;
     var cancel_token = scope.token();
     const event_stream = eventStreamMode(parsed.flags) catch {

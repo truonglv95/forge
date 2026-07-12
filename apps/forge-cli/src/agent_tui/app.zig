@@ -109,6 +109,9 @@ pub const App = struct {
     last_session_id: ?[]u8 = null,
     show_events: bool = false,
     events_lines: std.ArrayList(ChatLine) = .empty,
+    show_timeline: bool = false,
+    timeline_lines: std.ArrayList(ChatLine) = .empty,
+    timeline_scroll: usize = 0,
     terminal_size: term.Terminal.Size = .{ .rows = 25, .cols = 80 },
     active_tool: [96]u8 = undefined,
     active_tool_len: usize = 0,
@@ -119,7 +122,7 @@ pub const App = struct {
     last_tool_review_kind: ?[]u8 = null,
     command_index: usize = 0,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/events", "/resume", "/sessions", "/mock", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -166,6 +169,7 @@ pub const App = struct {
         if (self.worker) |thread| thread.join();
         self.freeLines();
         self.freeEventsLines();
+        self.freeTimelineLines();
         self.input.deinit(self.allocator);
         for (self.conversation.items) |turn| self.allocator.free(turn.content);
         self.conversation.deinit(self.allocator);
@@ -300,6 +304,7 @@ pub const App = struct {
             .escape => {
                 self.mutex.lock();
                 if (self.show_events) self.show_events = false;
+                if (self.show_timeline) self.show_timeline = false;
                 self.focus_action = false;
                 self.markDirty();
                 self.mutex.unlock();
@@ -630,7 +635,17 @@ pub const App = struct {
             .sessions => try self.listSessions(),
             .resume_session => |session_id| try self.resumeSession(session_id),
             .events => |session_id| try self.showEvents(session_id),
+            .timeline => try self.showTimeline(),
         }
+    }
+
+    fn showTimeline(self: *App) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.show_timeline = !self.show_timeline;
+        if (self.show_timeline) self.show_events = false;
+        self.timeline_scroll = 0;
+        self.markDirty();
     }
 
     fn setAgentMode(self: *App, mode: ai.tools.Mode) !void {
@@ -787,6 +802,18 @@ pub const App = struct {
             const line = std.fmt.bufPrint(&buf, "step {d}: [{s}] {s}", .{ step.index, step.kind, clipped }) catch continue;
             try self.pushLine(.tool, try self.allocator.dupe(u8, line));
         }
+        if (doc.task_ledger_json.len > 0) {
+            const stats = ai.task_ledger.statsFromJson(self.allocator, doc.task_ledger_json) catch null;
+            if (stats) |ledger| {
+                var buf: [256]u8 = undefined;
+                const line = std.fmt.bufPrint(
+                    &buf,
+                    "Task ledger: phase={s} entries={d} reads={d} edits={d} blockers={d}",
+                    .{ @tagName(ledger.phase), ledger.entries, ledger.file_reads, ledger.file_edits, ledger.blockers },
+                ) catch "Task ledger loaded";
+                try self.pushLine(.system, try self.allocator.dupe(u8, line));
+            }
+        }
 
         if (doc.proposal_path.len > 0) {
             try self.setPendingProposal(doc.proposal_path);
@@ -867,6 +894,9 @@ pub const App = struct {
         self.stream_line_index = null;
         self.markDirty();
         self.mutex.unlock();
+        var line_buf: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(&line_buf, "start · {s}", .{intent}) catch "start";
+        try self.pushTimelineLine(.system, try self.allocator.dupe(u8, line));
 
         self.worker = try std.Thread.spawn(.{}, workerMain, .{ctx});
     }
@@ -1096,6 +1126,7 @@ pub const App = struct {
         self.mutex.lock();
         self.freeEventsLines();
         self.show_events = true;
+        self.show_timeline = false;
         self.events_scroll = 0;
         self.mutex.unlock();
 
@@ -1150,6 +1181,21 @@ pub const App = struct {
             return;
         };
         self.events_scroll = 0;
+    }
+
+    fn pushTimelineLine(self: *App, kind: LineKind, text: []u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.timeline_lines.append(self.allocator, .{ .kind = kind, .text = text }) catch {
+            self.allocator.free(text);
+            return;
+        };
+        if (self.timeline_lines.items.len > 500) {
+            const old = self.timeline_lines.orderedRemove(0);
+            self.allocator.free(old.text);
+        }
+        self.timeline_scroll = 0;
+        self.markDirty();
     }
 
     fn applyPendingProposal(self: *App) !void {
@@ -1240,6 +1286,11 @@ pub const App = struct {
     fn freeEventsLines(self: *App) void {
         for (self.events_lines.items) |line| self.allocator.free(line.text);
         self.events_lines.clearRetainingCapacity();
+    }
+
+    fn freeTimelineLines(self: *App) void {
+        for (self.timeline_lines.items) |line| self.allocator.free(line.text);
+        self.timeline_lines.clearRetainingCapacity();
     }
 
     fn refreshStatus(self: *App) !void {
@@ -1655,8 +1706,18 @@ pub const App = struct {
         // 0: none, 1: thinking, 2: diff
 
         const width = @max(20, @as(usize, size.cols) - 2);
-        const source_lines = if (self.show_events) self.events_lines.items else self.lines.items;
-        const source_scroll_ptr: *usize = if (self.show_events) &self.events_scroll else &self.scroll;
+        const source_lines = if (self.show_timeline)
+            self.timeline_lines.items
+        else if (self.show_events)
+            self.events_lines.items
+        else
+            self.lines.items;
+        const source_scroll_ptr: *usize = if (self.show_timeline)
+            &self.timeline_scroll
+        else if (self.show_events)
+            &self.events_scroll
+        else
+            &self.scroll;
 
         var current_block: u8 = 0;
 
@@ -1695,7 +1756,7 @@ pub const App = struct {
                 display_lines.append(self.allocator, .{ .kind = .agent, .text = owned_status }) catch {};
                 block_states.append(self.allocator, 0) catch {};
             } else |_| {}
-        } else if (!self.show_events) {
+        } else if (!self.show_events and !self.show_timeline) {
             if (self.formatPromptLine(self.input.items)) |owned_prompt| {
                 wrapped_cache.append(self.allocator, owned_prompt) catch self.allocator.free(owned_prompt);
                 display_lines.append(self.allocator, .{ .kind = .user, .text = owned_prompt }) catch {};
@@ -1729,7 +1790,7 @@ pub const App = struct {
             }
 
             if (line.kind == .user) {
-                if (!self.agent_busy and !self.show_events and i + 1 == total) live_prompt_row = row;
+                if (!self.agent_busy and !self.show_events and !self.show_timeline and i + 1 == total) live_prompt_row = row;
                 var prefix_buf: [256]u8 = undefined;
                 const prefix = self.promptPrefix(&prefix_buf) catch "";
                 const prefix_part = if (std.mem.startsWith(u8, clipped, prefix)) prefix else "";
@@ -2008,16 +2069,26 @@ fn approvalBridge(context: ?*anyopaque, tool_name: []const u8, args_json: []cons
 fn stepBeginBridge(context: ?*anyopaque, step: ai.agent.StepBegin) void {
     const app: *App = @ptrCast(@alignCast(context.?));
     app.onStepBegin(step.index, step.tool_name, step.args_json);
+    var buf: [512]u8 = undefined;
+    const args = if (step.args_json.len > 220) step.args_json[0..220] else step.args_json;
+    const line = std.fmt.bufPrint(&buf, "#{d} call {s} {s}", .{ step.index, step.tool_name, args }) catch return;
+    app.pushTimelineLine(.tool, app.allocator.dupe(u8, line) catch return) catch {};
 }
 
 fn stepBridge(context: ?*anyopaque, step: ai.agent.Step) void {
     const app: *App = @ptrCast(@alignCast(context.?));
     app.onStepDone(step.index, step.kind, step.summary);
+    var buf: [512]u8 = undefined;
+    const summary = if (step.summary.len > 260) step.summary[0..260] else step.summary;
+    const line = std.fmt.bufPrint(&buf, "#{d} done {s} · {s}", .{ step.index, step.kind, summary }) catch return;
+    app.pushTimelineLine(.tool, app.allocator.dupe(u8, line) catch return) catch {};
 }
 
 fn turnBridge(context: ?*anyopaque, next_step_index: u32) void {
     const app: *App = @ptrCast(@alignCast(context.?));
-    _ = next_step_index;
+    var buf: [96]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "turn · next step {d}", .{next_step_index}) catch "turn";
+    app.pushTimelineLine(.agent, app.allocator.dupe(u8, line) catch return) catch {};
     app.mutex.lock();
     app.stream_line_index = null;
     const label = "Thinking...";
@@ -2037,6 +2108,7 @@ fn compactionBridge(context: ?*anyopaque, reason: []const u8, before_bytes: usiz
         .{ reason, step_index, attempt, before_bytes / 1024, after_bytes / 1024 },
     ) catch return;
     app.pushLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
+    app.pushTimelineLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
 }
 
 fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
@@ -2059,11 +2131,13 @@ fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
             app.markDirty();
             app.mutex.unlock();
             app.pushLine(.system, app.allocator.dupe(u8, "Context ready. Retrieval and tool evidence will appear below.") catch return) catch {};
+            app.pushTimelineLine(.system, app.allocator.dupe(u8, "context · ready") catch return) catch {};
         },
         .plan_ready, .proposal_ready => {
             var buf: [64]u8 = undefined;
             const line = std.fmt.bufPrint(&buf, "● {s}", .{label}) catch return;
             app.pushLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
+            app.pushTimelineLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
         },
         .planning, .sending, .streaming, .parsing, .repairing => {
             app.mutex.lock();
@@ -2072,6 +2146,9 @@ fn progressBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
             app.active_progress_len = len;
             app.markDirty();
             app.mutex.unlock();
+            var buf: [96]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "phase · {s}", .{label}) catch return;
+            app.pushTimelineLine(.system, app.allocator.dupe(u8, line) catch return) catch {};
         },
     }
 }

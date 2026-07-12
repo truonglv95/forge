@@ -113,6 +113,81 @@ const TrialWorkspace = struct {
     }
 };
 
+/// Removes stale `.forge-trial-*` directories that were left behind when the
+/// process was killed during a repair trial. Safe to call multiple times.
+///
+/// `workspace_parent_path` is the parent directory of the workspace root
+/// (i.e. `dirname(workspace_cwd)`). Trial dirs are always siblings of the
+/// workspace root because `TrialWorkspace.create` places them there.
+///
+/// Only removes directories older than `max_age_seconds` (default 24 h) to
+/// avoid touching trials that belong to another running process.
+pub fn cleanupStaleTrials(
+    io: std.Io,
+    workspace_cwd: []const u8,
+    max_age_seconds: i64,
+) void {
+    const parent_path = std.fs.path.dirname(workspace_cwd) orelse return;
+    var parent_dir = std.Io.Dir.openDirAbsolute(io, parent_path, .{ .access_sub_paths = true, .iterate = true }) catch return;
+    defer parent_dir.close(io);
+
+    const workspace_name = std.fs.path.basename(workspace_cwd);
+    const now_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
+    const max_age_ms: i64 = max_age_seconds * 1000;
+
+    var iter = parent_dir.iterate();
+    var candidates: [64][std.fs.max_name_bytes]u8 = undefined;
+    var candidate_lens: [64]usize = undefined;
+    var candidate_count: usize = 0;
+
+    // Collect candidates first to avoid iterator invalidation during delete.
+    while (iter.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, ".forge-trial-")) continue;
+        if (!std.mem.startsWith(u8, entry.name[".forge-trial-".len..], workspace_name)) continue;
+        if (candidate_count >= candidates.len) break;
+        const name_len = @min(entry.name.len, std.fs.max_name_bytes - 1);
+        @memcpy(candidates[candidate_count][0..name_len], entry.name[0..name_len]);
+        candidate_lens[candidate_count] = name_len;
+        candidate_count += 1;
+    }
+
+    for (candidates[0..candidate_count], candidate_lens[0..candidate_count]) |*name_buf, name_len| {
+        const dir_name = name_buf[0..name_len];
+        // Parse timestamp from name: .forge-trial-<workspace>-<timestamp_ms>-<tid>
+        const age_ms = ageFromTrialName(dir_name, now_ms);
+        if (age_ms >= 0 and age_ms < max_age_ms) continue; // still fresh
+        parent_dir.deleteTree(io, dir_name) catch {};
+    }
+}
+
+/// Extracts the age in milliseconds of a trial directory from its name.
+/// Returns -1 if the name cannot be parsed.
+fn ageFromTrialName(name: []const u8, now_ms: i64) i64 {
+    // Format: .forge-trial-<workspace_name>-<timestamp_ms>-<thread_id>
+    // Find the last two '-' delimiters.
+    var last_dash: ?usize = null;
+    var second_last_dash: ?usize = null;
+    var i: usize = name.len;
+    while (i > 0) {
+        i -= 1;
+        if (name[i] == '-') {
+            if (last_dash == null) {
+                last_dash = i;
+            } else {
+                second_last_dash = i;
+                break;
+            }
+        }
+    }
+    const ts_start = (second_last_dash orelse return -1) + 1;
+    const ts_end = last_dash orelse return -1;
+    if (ts_end <= ts_start) return -1;
+    const ts_str = name[ts_start..ts_end];
+    const ts_ms = std.fmt.parseInt(i64, ts_str, 10) catch return -1;
+    return now_ms - ts_ms;
+}
+
 pub fn hasFailures(results: []const validation_runner.Result) bool {
     for (results) |item| {
         if (!item.skipped and item.exit_code != 0) return true;
@@ -188,6 +263,17 @@ pub fn trialApplyAndValidate(
     var report_buf: std.ArrayList(u8) = .empty;
     errdefer report_buf.deinit(allocator);
     try report_buf.appendSlice(allocator, "isolation: snapshot (disposable workspace; not an OS security boundary)\n");
+    const validation_summary = try std.fmt.allocPrint(allocator, "validation summary: {d} task(s), {d} failed\n", .{ task_count, failed_count });
+    defer allocator.free(validation_summary);
+    try report_buf.appendSlice(allocator, validation_summary);
+    if (workspace_edit.files.len > 0) {
+        try report_buf.appendSlice(allocator, "changed files:\n");
+        for (workspace_edit.files) |file_edit| {
+            const changed = try std.fmt.allocPrint(allocator, " - {s}\n", .{file_edit.path});
+            try report_buf.appendSlice(allocator, changed);
+            allocator.free(changed);
+        }
+    }
     if (hint_paths.len > 0) {
         try report_buf.appendSlice(allocator, "hints:\n");
         for (hint_paths) |p| {
@@ -235,6 +321,8 @@ test "repair trial applies only inside disposable snapshot" {
     defer allocator.free(result.report);
     try std.testing.expect(result.passed);
     try std.testing.expect(std.mem.indexOf(u8, result.report, "isolation: snapshot") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.report, "validation summary") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.report, "changed files") != null);
 
     var unchanged = try workspace.FileSnapshot.read(allocator, io, root, try workspace.WorkspacePath.parse("source.txt"));
     defer unchanged.deinit();

@@ -1,6 +1,7 @@
 const std = @import("std");
 const args_mod = @import("args.zig");
 const eval_ai_flow = @import("eval_ai_flow.zig");
+const eval_summary = @import("eval_summary.zig");
 
 pub fn run(
     allocator: std.mem.Allocator,
@@ -17,9 +18,12 @@ pub fn run(
     }
 
     const suite = parsed.positional[0];
+    if (std.mem.eql(u8, suite, "summary")) {
+        return eval_summary.run(allocator, io, environ_map, parsed.flags, writer);
+    }
     if (!std.mem.eql(u8, suite, "ai-flow")) {
         try writer.print("error: unknown eval suite '{s}'\n", .{suite});
-        try writer.writeAll("usage: forge eval ai-flow\n");
+        try writer.writeAll("usage: forge eval ai-flow|summary\n");
         return 2;
     }
 

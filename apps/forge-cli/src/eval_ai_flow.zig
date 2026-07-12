@@ -19,6 +19,7 @@ const TaskExpect = struct {
     contains: []const u8 = "",
     min_steps: u32 = 0,
     has_import_neighbors: bool = false,
+    min_ledger_entries: usize = 0,
 };
 
 const Task = struct {
@@ -221,6 +222,13 @@ pub fn run(
                 try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "insufficient tool exploration"));
                 continue;
             }
+            if (task.expect.min_ledger_entries > 0) {
+                const ledger_ok = sessionLedgerHasEntries(allocator, io, result.session_id, task.expect.min_ledger_entries) catch false;
+                if (!ledger_ok) {
+                    try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "session task ledger missing or too small"));
+                    continue;
+                }
+            }
 
             const success = apply_success and validation_pass;
             token_total += @intCast(result.usage.total_tokens);
@@ -358,6 +366,9 @@ fn loadCorpus(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]Tas
             if (ex.object.get("has_import_neighbors")) |v| {
                 if (v == .bool) task.expect.has_import_neighbors = v.bool;
             }
+            if (ex.object.get("min_ledger_entries")) |v| {
+                if (v == .integer) task.expect.min_ledger_entries = @intCast(v.integer);
+            }
         }
 
         try tasks.append(allocator, task);
@@ -369,6 +380,19 @@ fn loadCorpus(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]Tas
 fn freeTasks(allocator: std.mem.Allocator, tasks: []Task) void {
     for (tasks) |*task| task.deinit(allocator);
     allocator.free(tasks);
+}
+
+fn sessionLedgerHasEntries(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    session_id: []const u8,
+    min_entries: usize,
+) !bool {
+    var doc = try workspace.sessions.loadSession(allocator, io, session_id);
+    defer workspace.sessions.deinitSession(allocator, &doc);
+    if (doc.task_ledger_json.len == 0) return false;
+    const stats = ai.task_ledger.statsFromJson(allocator, doc.task_ledger_json) catch return false;
+    return stats.entries >= min_entries;
 }
 
 const EvalWorkspace = struct {

@@ -53,6 +53,24 @@ pub const Snapshot = struct {
     }
 };
 
+pub const Stats = struct {
+    phase: Phase = .planning,
+    entries: usize = 0,
+    file_reads: usize = 0,
+    file_edits: usize = 0,
+    blockers: usize = 0,
+    validations: usize = 0,
+    searches: usize = 0,
+
+    pub fn longTask(self: Stats) bool {
+        return self.entries >= 16 or self.file_reads >= 8 or self.searches >= 8;
+    }
+
+    pub fn needsFreshEvidence(self: Stats) bool {
+        return self.phase == .repairing or self.phase == .blocked or self.blockers > 0 or self.validations > 0;
+    }
+};
+
 pub fn fromSteps(
     allocator: std.mem.Allocator,
     goal: []const u8,
@@ -90,6 +108,39 @@ pub fn fromSteps(
         .goal = try allocator.dupe(u8, goal),
         .entries = try entries.toOwnedSlice(allocator),
     };
+}
+
+pub fn statsFromJson(allocator: std.mem.Allocator, json: []const u8) !Stats {
+    if (json.len == 0) return .{};
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidTaskLedger;
+    const obj = parsed.value.object;
+
+    var stats = Stats{};
+    if (obj.get("phase")) |phase_value| {
+        if (phase_value == .string) stats.phase = parsePhase(phase_value.string);
+    }
+    if (obj.get("entries")) |entries_value| {
+        if (entries_value == .array) {
+            stats.entries = entries_value.array.items.len;
+            for (entries_value.array.items) |entry_value| {
+                if (entry_value != .object) continue;
+                const kind_value = entry_value.object.get("kind") orelse continue;
+                if (kind_value != .string) continue;
+                const kind = parseEntryKind(kind_value.string);
+                switch (kind) {
+                    .file_read => stats.file_reads += 1,
+                    .file_edited => stats.file_edits += 1,
+                    .blocker => stats.blockers += 1,
+                    .validation => stats.validations += 1,
+                    .search => stats.searches += 1,
+                    else => {},
+                }
+            }
+        }
+    }
+    return stats;
 }
 
 pub fn toJsonAlloc(allocator: std.mem.Allocator, snapshot: Snapshot) ![]u8 {
@@ -133,6 +184,20 @@ pub fn classifyStep(kind: []const u8, summary: []const u8) EntryKind {
     if (containsAny(kind, &.{ "grep", "search", "list_tree", "Tree" })) return .search;
     if (containsAny(kind, &.{ "run_command", "Run" })) return .command;
     if (containsAny(kind, &.{ "validate", "test", "diagnostic" })) return .validation;
+    return .decision;
+}
+
+fn parsePhase(value: []const u8) Phase {
+    inline for (@typeInfo(Phase).@"enum".fields) |field| {
+        if (std.mem.eql(u8, value, field.name)) return @enumFromInt(field.value);
+    }
+    return .planning;
+}
+
+fn parseEntryKind(value: []const u8) EntryKind {
+    inline for (@typeInfo(EntryKind).@"enum".fields) |field| {
+        if (std.mem.eql(u8, value, field.name)) return @enumFromInt(field.value);
+    }
     return .decision;
 }
 
@@ -188,4 +253,21 @@ test "ledger markdown compacts older entries" {
 
     try std.testing.expect(std.mem.indexOf(u8, text, "older ledger") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "src/b.zig") != null);
+}
+
+test "ledger stats parse persisted checkpoint json" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"phase":"repairing","goal":"fix","entries":[
+        \\{"kind":"goal","step_index":0,"path":"","text":"fix"},
+        \\{"kind":"file_read","step_index":1,"path":"src/a.zig","text":"Read"},
+        \\{"kind":"validation","step_index":2,"path":"","text":"zig build failed"},
+        \\{"kind":"blocker","step_index":3,"path":"","text":"Tool failed"}
+        \\]}
+    ;
+    const stats = try statsFromJson(allocator, json);
+    try std.testing.expectEqual(Phase.repairing, stats.phase);
+    try std.testing.expectEqual(@as(usize, 1), stats.file_reads);
+    try std.testing.expectEqual(@as(usize, 1), stats.validations);
+    try std.testing.expect(stats.needsFreshEvidence());
 }
