@@ -108,6 +108,9 @@ pub fn intentGuidance(intent: routing.TaskIntent) []const u8 {
         .plan_change =>
         \\Task: plan a change. Gather architecture context; avoid mutating tools until a proposal is requested.
         ,
+        .computer_control =>
+        \\Task: control the computer. Observe the screen and interact with the UI.
+        ,
         .answer_question =>
         \\Task: answer from existing context. Avoid redundant search when manifest paths already cover the topic.
         ,

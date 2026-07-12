@@ -61,6 +61,18 @@ pub fn buildExplorePrompt(
             \\
         );
     }
+    if (options.task_intent == .computer_control) {
+        try writer.writeAll(
+            \\Computer Control policy:
+            \\- Use the `mcp_computer-control_take_screenshot` tool to observe the screen and get the current visual state.
+            \\- Analyze the screenshot to identify the exact coordinates (x, y) of UI elements.
+            \\- Use `mcp_computer-control_mouse_move`, `mcp_computer-control_mouse_click`, `mcp_computer-control_keyboard_type`, and `mcp_computer-control_keyboard_press` to interact with the UI.
+            \\- Wait for the UI to respond before taking the next action. Take additional screenshots if needed to verify the state.
+            \\- Never guess coordinates; always verify them from the screenshot.
+            \\- Finish with a concise summary of the actions taken.
+            \\
+        );
+    }
     try writer.print("\nUser intent: {s}\n\n", .{intent});
 
     if (options.preloaded_retrieval) {
