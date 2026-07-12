@@ -1,4 +1,5 @@
 const std = @import("std");
+const core_provider = @import("../../provider.zig");
 const openrouter_provider = @import("provider.zig");
 const openai_sse = @import("../openai/sse.zig");
 const tool_registry = @import("../../tools/registry.zig");
@@ -107,8 +108,10 @@ pub const OpenRouterTransport = struct {
         conversation: *std.ArrayList(u8),
         tool_name: []const u8,
         result: []const u8,
+        images: []const core_provider.ImagePart,
     ) turn.TransportError!void {
         _ = ptr;
+        _ = images;
         if (conversation.items.len > 0) try conversation.append(allocator, ',');
         const escaped = try jsonString(allocator, result);
         defer allocator.free(escaped);

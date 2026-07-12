@@ -1,4 +1,5 @@
 const std = @import("std");
+const core_provider = @import("../../provider.zig");
 const provider = @import("../../provider.zig");
 const credentials = @import("../../credentials.zig");
 const kernel = @import("forge-kernel");
@@ -102,7 +103,7 @@ pub const OpenRouterProvider = struct {
         ptr: *anyopaque,
         allocator: std.mem.Allocator,
         prompt: []const u8,
-        images: []const provider.ImagePart,
+        images: []const core_provider.ImagePart,
         writer: *std.Io.Writer,
         cancel_token: *const kernel.cancellation.CancellationToken,
     ) provider.ProviderError!void {
@@ -226,10 +227,11 @@ pub const OpenRouterProvider = struct {
         conversation: *std.ArrayList(u8),
         tool_name: []const u8,
         result: []const u8,
+        images: []const core_provider.ImagePart,
     ) provider.ProviderError!void {
         const self: *OpenRouterProvider = @ptrCast(@alignCast(ptr));
         var transport_state = self.toolTransportState(undefined, null);
-        return transport_state.transport().appendToolResult(allocator, conversation, tool_name, result) catch |err| return provider.mapTransportError(err);
+        return transport_state.transport().appendToolResult(allocator, conversation, tool_name, result, images) catch |err| return provider.mapTransportError(err);
     }
 };
 
