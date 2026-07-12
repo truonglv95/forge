@@ -77,12 +77,21 @@ pub fn rerank(
 
     var merged: std.ArrayList(Merged) = .empty;
     defer merged.deinit(allocator);
+    var path_index = std.StringHashMap(std.ArrayList(usize)).init(allocator);
+    defer {
+        var it = path_index.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(allocator);
+        }
+        path_index.deinit();
+    }
     errdefer {
         for (merged.items) |item| allocator.free(item.path);
     }
 
     for (inputs) |item| {
-        try upsertMerged(allocator, &merged, item);
+        try upsertMerged(allocator, &merged, &path_index, item);
     }
 
     var ranked: std.ArrayList(RankedHit) = .empty;
@@ -219,9 +228,20 @@ pub fn formatBlock(allocator: std.mem.Allocator, hits: []const RankedHit) !?[]co
     return try out.toOwnedSlice(allocator);
 }
 
-fn upsertMerged(allocator: std.mem.Allocator, merged: *std.ArrayList(Merged), item: Input) !void {
-    for (merged.items) |*existing| {
-        if (!std.mem.eql(u8, existing.path, item.path)) continue;
+fn upsertMerged(
+    allocator: std.mem.Allocator,
+    merged: *std.ArrayList(Merged),
+    path_index: *std.StringHashMap(std.ArrayList(usize)),
+    item: Input,
+) !void {
+    const gop = try path_index.getOrPut(item.path);
+    if (!gop.found_existing) {
+        gop.key_ptr.* = try allocator.dupe(u8, item.path);
+        gop.value_ptr.* = .empty;
+    }
+
+    for (gop.value_ptr.items) |merged_index| {
+        var existing = &merged.items[merged_index];
         if (!rangesOverlap(existing.line_start, existing.line_end, item.line_start, item.line_end)) continue;
 
         existing.line_start = @min(existing.line_start, item.line_start);
@@ -264,7 +284,9 @@ fn upsertMerged(allocator: std.mem.Allocator, merged: *std.ArrayList(Merged), it
             entry.keyword_score = item.source_score;
         },
     }
+    const new_index = merged.items.len;
     try merged.append(allocator, entry);
+    try gop.value_ptr.append(allocator, new_index);
 }
 
 fn selectWithDiversity(allocator: std.mem.Allocator, ranked: []RankedHit, options: Options) ![]RankedHit {

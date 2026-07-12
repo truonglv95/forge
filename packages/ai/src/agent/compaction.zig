@@ -9,6 +9,26 @@ pub const Options = struct {
     max_manifest_bytes: usize = 16 * 1024,
 };
 
+pub fn recoveryOptions(attempt: u8) Options {
+    return switch (attempt) {
+        0, 1 => .{
+            .attempt = attempt,
+            .max_conversation_tail = 12 * 1024,
+            .max_manifest_bytes = 16 * 1024,
+        },
+        2 => .{
+            .attempt = attempt,
+            .max_conversation_tail = 4 * 1024,
+            .max_manifest_bytes = 8 * 1024,
+        },
+        else => .{
+            .attempt = attempt,
+            .max_conversation_tail = 2 * 1024,
+            .max_manifest_bytes = 4 * 1024,
+        },
+    };
+}
+
 pub fn buildRecoveryPrompt(
     allocator: std.mem.Allocator,
     intent: []const u8,
@@ -53,6 +73,55 @@ pub fn buildRecoveryPrompt(
         \\- Preserve completed tool evidence and edits.
         \\- If the original task is complete, answer with a concise final summary.
         \\- If not complete, continue the tool loop with the smallest useful next step.
+        \\
+    );
+
+    return try out.toOwnedSlice();
+}
+
+pub fn buildResumePrompt(
+    allocator: std.mem.Allocator,
+    intent: []const u8,
+    builder: *const context.ContextBuilder,
+    conversation_json: []const u8,
+    task_intent: routing.TaskIntent,
+    next_step_index: u32,
+    options: Options,
+) ![]u8 {
+    var summary = try context_manifest.summarize(allocator, builder);
+    defer context_manifest.freeSummary(allocator, &summary);
+
+    const manifest_full = try context_manifest.formatManifest(allocator, builder, summary);
+    defer allocator.free(manifest_full);
+    const manifest = trimTail(manifest_full, options.max_manifest_bytes);
+    const convo_tail = trimTail(conversation_json, options.max_conversation_tail);
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    const writer = &out.writer;
+
+    try writer.print(
+        \\You are resuming a long-running Forge coding-agent task from a compact checkpoint.
+        \\Do not restart from scratch. Continue from the evidence and state below.
+        \\
+        \\Task intent: {s}
+        \\Next step index: {d}
+        \\User goal: {s}
+        \\
+    , .{ routing.intentLabel(task_intent), next_step_index, intent });
+
+    try writer.writeAll("Compact context manifest:\n");
+    try writer.writeAll(manifest);
+    try writer.writeAll("\nRecent conversation/tool evidence tail:\n```json\n");
+    try writer.writeAll(convo_tail);
+    try writer.writeAll("\n```\n\n");
+
+    try writer.writeAll(
+        \\Resume rules:
+        \\- Use the tail as memory, not as authoritative source code.
+        \\- Retrieve fresh file contents before editing.
+        \\- Prefer one focused next tool call over broad repo scans.
+        \\- If enough work is done, answer with a final summary.
         \\
     );
 
@@ -127,4 +196,12 @@ test "buildSessionSummary keeps latest tool evidence" {
     defer allocator.free(summary);
     try std.testing.expect(std.mem.indexOf(u8, summary, "fix context") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "replace_file_content") != null);
+}
+
+test "recoveryOptions shrink context across attempts" {
+    const first = recoveryOptions(1);
+    const second = recoveryOptions(2);
+    const third = recoveryOptions(3);
+    try std.testing.expect(second.max_conversation_tail < first.max_conversation_tail);
+    try std.testing.expect(third.max_manifest_bytes < second.max_manifest_bytes);
 }

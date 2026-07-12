@@ -5,12 +5,8 @@ const background_jobs = @import("background_jobs.zig");
 const renderer = @import("forge-renderer");
 
 pub fn refreshGitStatus(wb: anytype) !void {
-    const new_status = try git_status_mod.refresh(wb.allocator, wb.workspace_path);
-    replaceGitStatus(wb, new_status, true) catch |err| {
-        var owned = new_status;
-        owned.deinit(wb.allocator);
-        return err;
-    };
+    scheduleGitStatusRefresh(wb);
+    try wb.setStatus("Git refresh running...");
 }
 
 fn replaceGitStatus(wb: anytype, new_status: git_status_mod.Status, reset_scroll: bool) !void {

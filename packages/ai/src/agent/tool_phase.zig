@@ -37,6 +37,8 @@ pub const Input = struct {
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
     turn_callback: ?agent_loop.TurnCallback = null,
     turn_context: ?*anyopaque = null,
+    compaction_callback: ?agent_loop.CompactionCallback = null,
+    compaction_context: ?*anyopaque = null,
     step_begin_callback: ?agent_loop.StepBeginCallback = null,
     step_begin_context: ?*anyopaque = null,
     step_callback: ?agent_loop.StepCallback = null,
@@ -50,7 +52,9 @@ pub const Input = struct {
     approval_callback: ?agent_loop.ApprovalCallback = null,
     approval_context: ?*anyopaque = null,
     approve_every_time_tools: bool = false,
-    max_context_recovery_attempts: u8 = 2,
+    max_context_recovery_attempts: u8 = 3,
+    max_conversation_bytes: usize = 256 * 1024,
+    max_conversation_compactions: u8 = 4,
 };
 
 pub fn runTransport(
@@ -111,6 +115,8 @@ pub fn runNative(
             .cancel_token = input.cancel_token,
             .turn_callback = input.turn_callback,
             .turn_context = input.turn_context,
+            .compaction_callback = input.compaction_callback,
+            .compaction_context = input.compaction_context,
             .step_begin_callback = input.step_begin_callback,
             .step_begin_context = input.step_begin_context,
             .step_callback = input.step_callback,
@@ -127,6 +133,8 @@ pub fn runNative(
             .task_intent = input.task_intent,
             .preloaded_retrieval = preloaded_retrieval,
             .max_context_recovery_attempts = input.max_context_recovery_attempts,
+            .max_conversation_bytes = input.max_conversation_bytes,
+            .max_conversation_compactions = input.max_conversation_compactions,
         },
     );
     return state;

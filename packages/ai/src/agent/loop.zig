@@ -15,6 +15,14 @@ const compaction = @import("compaction.zig");
 pub const StepCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
 pub const StepBeginCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
 pub const TurnCallback = *const fn (?*anyopaque, u32) void;
+pub const CompactionCallback = *const fn (
+    ?*anyopaque,
+    reason: []const u8,
+    before_bytes: usize,
+    after_bytes: usize,
+    step_index: u32,
+    attempt: u8,
+) void;
 pub const CheckpointCallback = *const fn (
     ?*anyopaque,
     conversation_json: []const u8,
@@ -34,6 +42,8 @@ pub const Config = struct {
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
     turn_callback: ?TurnCallback = null,
     turn_context: ?*anyopaque = null,
+    compaction_callback: ?CompactionCallback = null,
+    compaction_context: ?*anyopaque = null,
     step_begin_callback: ?StepBeginCallback = null,
     step_begin_context: ?*anyopaque = null,
     step_callback: ?StepCallback = null,
@@ -49,7 +59,9 @@ pub const Config = struct {
     approve_every_time_tools: bool = false,
     task_intent: routing.TaskIntent = .explore_codebase,
     preloaded_retrieval: bool = false,
-    max_context_recovery_attempts: u8 = 2,
+    max_context_recovery_attempts: u8 = 3,
+    max_conversation_bytes: usize = 256 * 1024,
+    max_conversation_compactions: u8 = 4,
 };
 
 pub const RunState = struct {
@@ -161,6 +173,7 @@ pub fn run(
     var turn_i: u32 = 0;
     var malformed_repairs: u8 = 0;
     var context_recoveries: u8 = 0;
+    var conversation_compactions: u8 = 0;
     while (turn_i < config.max_tool_steps) : (turn_i += 1) {
         if (config.cancel_token) |token| {
             if (token.isCancelled()) return error.Cancelled;
@@ -170,6 +183,8 @@ pub fn run(
             callback(config.turn_context, step_index);
         }
 
+        try compactConversationIfNeeded(allocator, transport, &conversation, intent, ctx_builder, config, step_index, &conversation_compactions);
+
         var completion = transport.complete(allocator, conversation.items, tool_declarations_json, config.cancel_token) catch |err| switch (err) {
             error.Cancelled => return error.Cancelled,
             error.AuthenticationFailed => return error.AuthenticationFailed,
@@ -177,17 +192,19 @@ pub fn run(
             error.ContextLengthExceeded => {
                 if (context_recoveries >= config.max_context_recovery_attempts) return error.ContextLengthExceeded;
                 context_recoveries += 1;
+                const before_bytes = conversation.items.len;
                 const recovery_prompt = compaction.buildRecoveryPrompt(
                     allocator,
                     intent,
                     ctx_builder,
                     conversation.items,
                     config.task_intent,
-                    .{ .attempt = context_recoveries },
+                    compaction.recoveryOptions(context_recoveries),
                 ) catch return error.ProviderFailed;
                 defer allocator.free(recovery_prompt);
                 conversation.clearRetainingCapacity();
                 transport.appendUserText(allocator, &conversation, recovery_prompt) catch return error.ProviderFailed;
+                emitCompaction(config, "provider_context_length", before_bytes, conversation.items.len, step_index, context_recoveries);
                 if (config.checkpoint_callback) |checkpoint| {
                     if (!checkpoint(config.checkpoint_context, conversation.items, step_index, "", "")) return error.ProviderFailed;
                 }
@@ -220,7 +237,89 @@ pub fn run(
             },
         }
     }
+    try checkpointCompactResume(allocator, transport, &conversation, intent, ctx_builder, config, step_index);
     return error.StepLimitReached;
+}
+
+fn compactConversationIfNeeded(
+    allocator: std.mem.Allocator,
+    transport: turn.Transport,
+    conversation: *std.ArrayList(u8),
+    intent: []const u8,
+    ctx_builder: *const context.ContextBuilder,
+    config: Config,
+    step_index: u32,
+    compactions: *u8,
+) LoopError!void {
+    if (config.max_conversation_bytes == 0) return;
+    if (conversation.items.len <= config.max_conversation_bytes) return;
+    if (compactions.* >= config.max_conversation_compactions) return;
+
+    const next_attempt = if (compactions.* == std.math.maxInt(u8)) compactions.* else compactions.* + 1;
+    const before_bytes = conversation.items.len;
+    const compact_prompt = compaction.buildResumePrompt(
+        allocator,
+        intent,
+        ctx_builder,
+        conversation.items,
+        config.task_intent,
+        step_index,
+        compaction.recoveryOptions(next_attempt),
+    ) catch return error.ProviderFailed;
+    defer allocator.free(compact_prompt);
+
+    conversation.clearRetainingCapacity();
+    transport.appendUserText(allocator, conversation, compact_prompt) catch return error.ProviderFailed;
+    compactions.* = next_attempt;
+    emitCompaction(config, "conversation_budget", before_bytes, conversation.items.len, step_index, next_attempt);
+    if (config.checkpoint_callback) |checkpoint| {
+        if (!checkpoint(config.checkpoint_context, conversation.items, step_index, "", "")) return error.ProviderFailed;
+    }
+}
+
+fn checkpointCompactResume(
+    allocator: std.mem.Allocator,
+    transport: turn.Transport,
+    conversation: *std.ArrayList(u8),
+    intent: []const u8,
+    ctx_builder: *const context.ContextBuilder,
+    config: Config,
+    step_index: u32,
+) LoopError!void {
+    const checkpoint = config.checkpoint_callback orelse return;
+    const checkpoint_attempt = if (config.max_context_recovery_attempts == std.math.maxInt(u8))
+        config.max_context_recovery_attempts
+    else
+        config.max_context_recovery_attempts + 1;
+    const before_bytes = conversation.items.len;
+    const resume_prompt = compaction.buildResumePrompt(
+        allocator,
+        intent,
+        ctx_builder,
+        conversation.items,
+        config.task_intent,
+        step_index,
+        compaction.recoveryOptions(checkpoint_attempt),
+    ) catch return error.ProviderFailed;
+    defer allocator.free(resume_prompt);
+
+    conversation.clearRetainingCapacity();
+    transport.appendUserText(allocator, conversation, resume_prompt) catch return error.ProviderFailed;
+    emitCompaction(config, "step_limit_checkpoint", before_bytes, conversation.items.len, step_index, checkpoint_attempt);
+    if (!checkpoint(config.checkpoint_context, conversation.items, step_index, "", "")) return error.ProviderFailed;
+}
+
+fn emitCompaction(
+    config: Config,
+    reason: []const u8,
+    before_bytes: usize,
+    after_bytes: usize,
+    step_index: u32,
+    attempt: u8,
+) void {
+    if (config.compaction_callback) |callback| {
+        callback(config.compaction_context, reason, before_bytes, after_bytes, step_index, attempt);
+    }
 }
 
 fn executeTool(
@@ -442,4 +541,209 @@ test "run compacts and retries after context length exceeded" {
     try std.testing.expectEqual(@as(u8, 2), mock.calls);
     try std.testing.expectEqual(@as(u8, 2), mock.user_appends);
     try std.testing.expectEqualStrings("Recovered answer.", state.final_text.?);
+}
+
+test "step limit checkpoints compact resume state" {
+    const allocator = std.testing.allocator;
+
+    const MockTransport = struct {
+        fn transport(self: *@This()) turn.Transport {
+            return .{
+                .ptr = self,
+                .complete_turn = complete,
+                .append_user_text = appendUser,
+                .append_tool_call = appendToolCall,
+                .append_tool_result = appendToolResult,
+            };
+        }
+
+        fn complete(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation_json: []const u8,
+            tool_declarations_json: []const u8,
+            cancel_token: ?*const kernel.cancellation.CancellationToken,
+        ) turn.TransportError!turn.Completion {
+            _ = ptr;
+            _ = alloc;
+            _ = conversation_json;
+            _ = tool_declarations_json;
+            _ = cancel_token;
+            return error.ProviderFailed;
+        }
+
+        fn appendUser(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            text: []const u8,
+        ) turn.TransportError!void {
+            _ = ptr;
+            conversation.clearRetainingCapacity();
+            try conversation.appendSlice(alloc, text);
+        }
+
+        fn appendToolCall(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            call: turn.ToolCall,
+        ) turn.TransportError!void {
+            _ = ptr;
+            _ = alloc;
+            _ = conversation;
+            _ = call;
+        }
+
+        fn appendToolResult(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            tool_name: []const u8,
+            result: []const u8,
+        ) turn.TransportError!void {
+            _ = ptr;
+            _ = alloc;
+            _ = conversation;
+            _ = tool_name;
+            _ = result;
+        }
+    };
+
+    const CheckpointState = struct {
+        called: bool = false,
+        step: u32 = 0,
+
+        fn checkpoint(
+            ctx: ?*anyopaque,
+            conversation_json: []const u8,
+            next_step_index: u32,
+            pending_tool: []const u8,
+            pending_args_json: []const u8,
+        ) bool {
+            _ = pending_tool;
+            _ = pending_args_json;
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.called = true;
+            self.step = next_step_index;
+            return std.mem.indexOf(u8, conversation_json, "compact checkpoint") != null and
+                std.mem.indexOf(u8, conversation_json, "Retrieve fresh file contents before editing") != null;
+        }
+    };
+
+    var builder = context.ContextBuilder.init(allocator, 4096);
+    defer builder.deinit();
+    try builder.addBlock(.intent, "intent", "implement a long feature");
+    try builder.addBlock(.file, "src/main.zig", "pub fn main() void {}");
+
+    var mock = MockTransport{};
+    var conversation: std.ArrayList(u8) = .empty;
+    defer conversation.deinit(allocator);
+    try conversation.appendSlice(allocator,
+        \\{"role":"user","content":"implement a long feature"}
+        \\{"role":"tool","content":"large prior evidence"}
+    );
+
+    var checkpoint_state = CheckpointState{};
+    try checkpointCompactResume(allocator, mock.transport(), &conversation, "implement a long feature", &builder, .{
+        .checkpoint_callback = CheckpointState.checkpoint,
+        .checkpoint_context = &checkpoint_state,
+        .max_context_recovery_attempts = 3,
+    }, 47);
+
+    try std.testing.expect(checkpoint_state.called);
+    try std.testing.expectEqual(@as(u32, 47), checkpoint_state.step);
+    try std.testing.expect(std.mem.indexOf(u8, conversation.items, "Next step index: 47") != null);
+    try std.testing.expect(std.mem.indexOf(u8, conversation.items, "large prior evidence") != null);
+}
+
+test "oversized conversation compacts before provider call" {
+    const allocator = std.testing.allocator;
+
+    const MockTransport = struct {
+        user_appends: u8 = 0,
+
+        fn transport(self: *@This()) turn.Transport {
+            return .{
+                .ptr = self,
+                .complete_turn = complete,
+                .append_user_text = appendUser,
+                .append_tool_call = appendToolCall,
+                .append_tool_result = appendToolResult,
+            };
+        }
+
+        fn complete(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation_json: []const u8,
+            tool_declarations_json: []const u8,
+            cancel_token: ?*const kernel.cancellation.CancellationToken,
+        ) turn.TransportError!turn.Completion {
+            _ = ptr;
+            _ = alloc;
+            _ = conversation_json;
+            _ = tool_declarations_json;
+            _ = cancel_token;
+            return error.ProviderFailed;
+        }
+
+        fn appendUser(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            text: []const u8,
+        ) turn.TransportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.user_appends += 1;
+            conversation.clearRetainingCapacity();
+            try conversation.appendSlice(alloc, text);
+        }
+
+        fn appendToolCall(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            call: turn.ToolCall,
+        ) turn.TransportError!void {
+            _ = ptr;
+            _ = alloc;
+            _ = conversation;
+            _ = call;
+        }
+
+        fn appendToolResult(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            tool_name: []const u8,
+            result: []const u8,
+        ) turn.TransportError!void {
+            _ = ptr;
+            _ = alloc;
+            _ = conversation;
+            _ = tool_name;
+            _ = result;
+        }
+    };
+
+    var builder = context.ContextBuilder.init(allocator, 4096);
+    defer builder.deinit();
+    try builder.addBlock(.intent, "intent", "long task");
+    try builder.addBlock(.file, "src/main.zig", "pub fn main() void {}");
+
+    var mock = MockTransport{};
+    var conversation: std.ArrayList(u8) = .empty;
+    defer conversation.deinit(allocator);
+    try conversation.appendNTimes(allocator, 'x', 2048);
+
+    var compactions: u8 = 0;
+    try compactConversationIfNeeded(allocator, mock.transport(), &conversation, "long task", &builder, .{
+        .max_conversation_bytes = 512,
+    }, 9, &compactions);
+
+    try std.testing.expectEqual(@as(u8, 1), mock.user_appends);
+    try std.testing.expectEqual(@as(u8, 1), compactions);
+    try std.testing.expect(std.mem.indexOf(u8, conversation.items, "compact checkpoint") != null);
+    try std.testing.expect(std.mem.indexOf(u8, conversation.items, "Next step index: 9") != null);
 }

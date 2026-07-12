@@ -240,8 +240,10 @@ pub fn hitTestMessageOpen(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
 
     const scroll_y = wb.chat_scroll_y;
     const base_y = chat_top - scroll_y + history_prefix;
+    const start_i = firstVisibleIndex(cache, scroll_y, history_prefix);
+    const end_i = lastVisibleIndex(cache, scroll_y, history_prefix, cache.viewport_h);
 
-    for (wb.chat_history.items, 0..) |msg, i| {
+    for (wb.chat_history.items[start_i..end_i], start_i..) |msg, i| {
         if (msg.role != .agent) continue;
         if (i >= cache.message_heights.items.len) break;
         const msg_h = cache.message_heights.items[i];
@@ -286,8 +288,10 @@ pub fn hitTestMessageCopy(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
 
     const scroll_y = wb.chat_scroll_y;
     const base_y = chat_top - scroll_y + history_prefix;
+    const start_i = firstVisibleIndex(cache, scroll_y, history_prefix);
+    const end_i = lastVisibleIndex(cache, scroll_y, history_prefix, cache.viewport_h);
 
-    for (wb.chat_history.items, 0..) |msg, i| {
+    for (wb.chat_history.items[start_i..end_i], start_i..) |msg, i| {
         if (msg.role != .agent) continue;
         if (i >= cache.message_heights.items.len) break;
         const msg_h = cache.message_heights.items[i];
@@ -424,8 +428,10 @@ pub fn hitTestChatSelection(wb: anytype, agent_x: f32, agent_w: f32, event_x: f3
 
     const scroll_y = wb.chat_scroll_y;
     const base_y = chat_top - scroll_y + history_prefix;
+    const start_i = firstVisibleIndex(cache, scroll_y, history_prefix);
+    const end_i = lastVisibleIndex(cache, scroll_y, history_prefix, cache.viewport_h);
 
-    for (wb.chat_history.items, 0..) |msg, i| {
+    for (wb.chat_history.items[start_i..end_i], start_i..) |msg, i| {
         if (msg.role == .tool or msg.content.len == 0) continue;
         if (i >= cache.message_heights.items.len) break;
         const msg_h = cache.message_heights.items[i];

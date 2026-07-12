@@ -58,6 +58,8 @@ pub const Config = struct {
     progress_context: ?*anyopaque = null,
     step_callback: ?*const fn (?*anyopaque, Step) void = null,
     step_context: ?*anyopaque = null,
+    compaction_callback: ?agent_loop.CompactionCallback = null,
+    compaction_context: ?*anyopaque = null,
     step_begin_callback: ?*const fn (?*anyopaque, StepBegin) void = null,
     step_begin_context: ?*anyopaque = null,
     turn_callback: ?*const fn (?*anyopaque, u32) void = null,
@@ -77,7 +79,9 @@ pub const Config = struct {
     approval_context: ?*anyopaque = null,
     approve_every_time_tools: bool = false,
     max_repair_attempts: u8 = 2,
-    max_context_recovery_attempts: u8 = 2,
+    max_context_recovery_attempts: u8 = 3,
+    max_conversation_bytes: usize = 256 * 1024,
+    max_conversation_compactions: u8 = 4,
     context_budget_tier: context_budget.BudgetTier = .full,
 };
 
@@ -271,6 +275,7 @@ pub fn run(
             session_id: []const u8,
             intent: []const u8,
             steps: *std.ArrayList(Step),
+            logger: *EventLogger,
             config: Config,
             provider_kind: []const u8,
 
@@ -279,6 +284,14 @@ pub fn run(
                 if (self.config.turn_callback) |callback| {
                     callback(self.config.turn_context, index);
                 }
+            }
+
+            fn onCompaction(ctx: ?*anyopaque, reason: []const u8, before_bytes: usize, after_bytes: usize, step_index: u32, attempt: u8) void {
+                const self: *@This() = @ptrCast(@alignCast(ctx.?));
+                if (self.config.compaction_callback) |callback| {
+                    callback(self.config.compaction_context, reason, before_bytes, after_bytes, step_index, attempt);
+                }
+                self.logger.contextCompacted(reason, before_bytes, after_bytes, step_index, attempt) catch {};
             }
 
             fn onStepBegin(ctx: ?*anyopaque, index: u32, tool_name: []const u8, args_json: []const u8) void {
@@ -320,6 +333,7 @@ pub fn run(
             .session_id = session_id,
             .intent = intent,
             .steps = &steps,
+            .logger = &event_logger,
             .config = effective_config,
             .provider_kind = llm.metadata().provider_name,
         };
@@ -337,6 +351,8 @@ pub fn run(
             .cancel_token = effective_config.cancel_token,
             .turn_callback = if (effective_config.turn_callback != null) NativeCtx.onTurn else null,
             .turn_context = &native_ctx,
+            .compaction_callback = NativeCtx.onCompaction,
+            .compaction_context = &native_ctx,
             .step_begin_callback = if (effective_config.step_begin_callback != null) NativeCtx.onStepBegin else null,
             .step_begin_context = &native_ctx,
             .step_callback = NativeCtx.onStep,
@@ -351,6 +367,8 @@ pub fn run(
             .approval_context = effective_config.approval_context,
             .approve_every_time_tools = effective_config.approve_every_time_tools,
             .max_context_recovery_attempts = effective_config.max_context_recovery_attempts,
+            .max_conversation_bytes = effective_config.max_conversation_bytes,
+            .max_conversation_compactions = effective_config.max_conversation_compactions,
         })) |maybe_loop_state| {
             var loop_state = maybe_loop_state orelse break :blk false;
             defer loop_state.deinit(allocator);
@@ -1088,6 +1106,29 @@ const EventLogger = struct {
             .used_bytes = builder.used_bytes,
             .blocks = builder.blocks.items.len,
             .has_import_neighbors = has_import_neighbors,
+        }, .{});
+        defer self.allocator.free(json);
+        try self.appendJson(json);
+    }
+
+    fn contextCompacted(self: *EventLogger, reason: []const u8, before_bytes: usize, after_bytes: usize, step_index: u32, attempt: u8) !void {
+        const Json = struct {
+            schema_version: u32 = agent_event.schema_version,
+            type: []const u8 = agent_event.typeName(.context_compacted),
+            reason: []const u8,
+            step: u32,
+            attempt: u8,
+            before_bytes: usize,
+            after_bytes: usize,
+            saved_bytes: usize,
+        };
+        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
+            .reason = reason,
+            .step = step_index,
+            .attempt = attempt,
+            .before_bytes = before_bytes,
+            .after_bytes = after_bytes,
+            .saved_bytes = if (before_bytes > after_bytes) before_bytes - after_bytes else 0,
         }, .{});
         defer self.allocator.free(json);
         try self.appendJson(json);
