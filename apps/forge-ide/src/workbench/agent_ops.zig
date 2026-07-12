@@ -128,26 +128,23 @@ pub fn ensureMcpConfigFile(wb: anytype) !void {
     try workspace.atomic.replaceFile(wb.io, wb.workspace_root, target, example_snap.content);
 }
 
-pub fn openAiSettings(wb: anytype) !void {
-    if (!wb.ai_settings_open) {
+pub fn openSettingsModal(wb: anytype) !void {
+    if (!wb.settings_modal_open) {
         wb.previous_focus = wb.focused_panel;
     }
-    wb.ai_settings_open = true;
-    wb.sidebar_visible = true;
-    wb.sidebar_view = .ai;
-    wb.focused_panel = .ai_settings;
-    wb.ai_settings_scroll_y = 0;
+    wb.settings_modal_open = true;
+    wb.focused_panel = .settings_modal;
+    wb.settings_modal_scroll_y = 0;
     try refreshAiMcpStatus(
         wb,
     );
 }
 
-pub fn closeAiSettings(wb: anytype) void {
-    wb.ai_settings_open = false;
-    if (wb.focused_panel == .ai_settings) {
-        wb.focused_panel = if (wb.previous_focus == .ai_settings) .editor else wb.previous_focus;
+pub fn closeSettingsModal(wb: anytype) void {
+    wb.settings_modal_open = false;
+    if (wb.focused_panel == .settings_modal) {
+        wb.focused_panel = if (wb.previous_focus == .settings_modal) .editor else wb.previous_focus;
     }
-    if (wb.sidebar_view == .ai) wb.sidebar_view = .explorer;
 }
 
 pub fn openProposalReview(wb: anytype) void {
@@ -186,31 +183,13 @@ pub fn handleProposalReviewClick(wb: anytype, hit: @import("../ui/editor/proposa
     }
 }
 
-pub fn handleAiSettingsClick(wb: anytype, hit: @import("../ui/agent/ai_settings_panel.zig").Hit) !void {
+pub fn handleSettingsModalClick(wb: anytype, hit: @import("../ui/settings_modal.zig").Hit) !void {
     switch (hit) {
-        .toggle_mcp => try wb.toggleAiMcp(),
-        .open_forge_toml => {
-            closeAiSettings(
-                wb,
-            );
-            try openSettingsToml(
-                wb,
-            );
+        .close_modal => closeSettingsModal(wb),
+        .switch_tab => |tab| {
+            wb.settings_modal_tab = tab;
         },
-        .open_mcp_json => {
-            closeAiSettings(
-                wb,
-            );
-            try openMcpConfig(
-                wb,
-            );
-        },
-        .refresh_mcp => try refreshAiMcpStatus(
-            wb,
-        ),
-        .close_tab => closeAiSettings(
-            wb,
-        ),
+        .none => {},
     }
 }
 

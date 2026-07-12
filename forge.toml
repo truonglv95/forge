@@ -24,13 +24,13 @@ apply_mode = "review"
 provider = "ollama"
 model = "qwen3.5:35b"
 # Ollama server URL. Change this to a remote server when local Ollama is unavailable.
-ollama_url = "http://117.50.76.44:3694"
+ollama_url = "http://localhost:11434"
 # Optional OpenRouter-compatible base URL. Requires OPENROUTER_API_KEY when provider = "openrouter".
 openrouter_url = "https://openrouter.ai/api/v1"
 # Embedding provider is configured separately from the chat model. It may reuse
 # the same Ollama host, but should use an embedding model.
 embedding_provider = "ollama"
 embedding_model = "nomic-embed-text"
-embedding_url = "http://117.50.76.44:3694"
+embedding_url = "http://localhost:11434"
 # Enable MCP tools from .mcp.json (Cursor / VS Code compatible format)
 mcp = true

@@ -5,7 +5,6 @@ const layout = @import("../../core/layout.zig");
 const editor_scroll = @import("../../editor/editor_scroll.zig");
 const tabs_ui = @import("../../editor/tabs.zig");
 const proposal_review_panel = @import("../../editor/proposal_review_panel.zig");
-const ai_settings_panel = @import("../../agent/ai_settings_panel.zig");
 const Workbench = @import("../../../workbench.zig").Workbench;
 const Buffer = @import("forge-editor").Buffer;
 const syntax = @import("syntax.zig");
@@ -19,10 +18,7 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
         proposal_review_panel.draw(wb, editor_x, editor_w, editor_h);
         return;
     }
-    if (wb.ai_settings_open) {
-        ai_settings_panel.draw(wb, editor_x, editor_w, editor_h);
-        return;
-    }
+
     const theme = &wb.theme;
     const ui_size = theme.ui_font_size;
     const border = syntax.color(theme.colors.border);
