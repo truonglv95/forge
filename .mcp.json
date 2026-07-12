@@ -19,6 +19,10 @@
     "postgres": {
       "command": "uvx",
       "args": ["mcp-server-postgres", "postgresql://user:pass@localhost:5432/mydb"]
+    },
+    "computer-control": {
+      "command": "packages/mcp-computer/venv/bin/python3",
+      "args": ["packages/mcp-computer/server.py"]
     }
   }
 }
