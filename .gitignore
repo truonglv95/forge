@@ -12,3 +12,9 @@ test_map
 scripts/__pycache__/
 
 .env
+
+# Python MCP Server
+packages/mcp-computer/venv/
+packages/mcp-computer/__pycache__/
+.build/
+test.db
