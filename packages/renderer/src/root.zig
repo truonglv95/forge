@@ -1,8 +1,17 @@
 const std = @import("std");
 
-pub const mac = @cImport({
-    @cInclude("mac_window.h");
-});
+const builtin = @import("builtin");
+
+const backend = blk: {
+    switch (builtin.os.tag) {
+        .macos => break :blk @cImport({ @cInclude("shared/backend.h"); @cInclude("mac/mac_window.h"); }),
+        .linux, .windows => break :blk @cImport({ @cInclude("shared/backend.h"); }),
+        else => @compileError("unsupported OS"),
+    }
+};
+
+// Legacy alias for any code still referencing mac.*
+pub const mac = backend;
 
 pub const layout = @import("layout.zig");
 pub const theme_mod = @import("theme.zig");
@@ -84,7 +93,7 @@ fn clearMeasureCache() void {
 }
 
 fn applyClipRect(rect: ClipRect) void {
-    mac.forge_mac_set_clip_rect(rect.x, rect.y, rect.w, rect.h);
+    backend.forge_backend_set_clip_rect(rect.x, rect.y, rect.w, rect.h);
     active_clip = rect;
 }
 
@@ -133,32 +142,32 @@ export fn internal_mouse_callback(x: f32, y: f32, button: c_int, action: c_int, 
 
 pub const Renderer = struct {
     pub fn init() void {
-        mac.forge_mac_init();
-        mac.forge_mac_set_render_callback(internal_render_callback);
-        mac.forge_mac_set_key_callback(internal_key_callback);
-        mac.forge_mac_set_mouse_callback(internal_mouse_callback);
+        backend.forge_backend_init();
+        backend.forge_backend_set_render_callback(internal_render_callback);
+        backend.forge_backend_set_key_callback(internal_key_callback);
+        backend.forge_backend_set_mouse_callback(internal_mouse_callback);
     }
 
     pub fn createWindow(title: []const u8, width: i32, height: i32) void {
-        mac.forge_mac_create_window(@ptrCast(title), width, height);
+        backend.forge_backend_create_window(@ptrCast(title), width, height);
     }
 
     pub fn run() void {
-        mac.forge_mac_run();
+        backend.forge_backend_run();
     }
 
     pub fn requestRedraw() void {
-        mac.forge_mac_request_redraw();
+        backend.forge_backend_request_redraw();
     }
 
     pub fn setContinuousRendering(enabled: bool) void {
-        mac.forge_mac_set_continuous_rendering(enabled);
+        backend.forge_backend_set_continuous_rendering(enabled);
     }
 
     pub fn renderStats(redraw_requests: *u64, frames: *u64) void {
         var native_requests: c_ulonglong = 0;
         var native_frames: c_ulonglong = 0;
-        mac.forge_mac_get_render_stats(&native_requests, &native_frames);
+        backend.forge_backend_get_render_stats(&native_requests, &native_frames);
         redraw_requests.* = @intCast(native_requests);
         frames.* = @intCast(native_frames);
     }
@@ -176,11 +185,11 @@ pub const Renderer = struct {
     }
 
     pub fn getWindowSize(width: *f32, height: *f32) void {
-        mac.forge_mac_get_window_size(width, height);
+        backend.forge_backend_get_window_size(width, height);
     }
 
     pub fn setCursor(cursor_type: i32) void {
-        mac.forge_mac_set_cursor(@as(c_int, @intCast(cursor_type)));
+        backend.forge_backend_set_cursor(@as(c_int, @intCast(cursor_type)));
     }
 
     pub fn setClipRect(x: f32, y: f32, w: f32, h: f32) void {
@@ -209,21 +218,21 @@ pub const Renderer = struct {
     }
 
     pub fn clearClipRect() void {
-        mac.forge_mac_clear_clip_rect();
+        backend.forge_backend_clear_clip_rect();
         active_clip = null;
         clip_stack_len = 0;
     }
 
     pub fn flushBatch() void {
-        mac.forge_mac_flush_batch();
+        backend.forge_backend_flush_batch();
     }
 
     pub fn drawRect(x: f32, y: f32, w: f32, h: f32, color: Color) void {
-        mac.forge_mac_draw_rect(x, y, w, h, color.r, color.g, color.b, color.a);
+        backend.forge_backend_draw_rect(x, y, w, h, color.r, color.g, color.b, color.a);
     }
 
     pub fn drawRoundedRect(x: f32, y: f32, w: f32, h: f32, radius: f32, color: Color) void {
-        mac.forge_mac_draw_rounded_rect(x, y, w, h, color.r, color.g, color.b, color.a, radius);
+        backend.forge_backend_draw_rounded_rect(x, y, w, h, color.r, color.g, color.b, color.a, radius);
     }
 
     pub fn drawText(text: []const u8, x: f32, y: f32, font_size: f32, color: Color) void {
@@ -231,7 +240,7 @@ pub const Renderer = struct {
         // Many UI call sites pass stack [:0] buffers via @ptrCast; truncate at first NUL.
         const len = std.mem.indexOfScalar(u8, text, 0) orelse text.len;
         if (len == 0) return;
-        mac.forge_mac_draw_text_len(@ptrCast(text.ptr), len, x, y, font_size, color.r, color.g, color.b, color.a);
+        backend.forge_backend_draw_text_len(@ptrCast(text.ptr), len, x, y, font_size, color.r, color.g, color.b, color.a);
     }
 
     pub fn drawStyledText(text: []const u8, x: f32, y: f32, font_size: f32, spans: []const TextSpan) void {
@@ -240,16 +249,16 @@ pub const Renderer = struct {
             drawText(text, x, y, font_size, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
             return;
         }
-        mac.forge_mac_draw_styled_text(@ptrCast(text.ptr), text.len, x, y, font_size, @ptrCast(spans.ptr), spans.len);
+        backend.forge_backend_draw_styled_text(@ptrCast(text.ptr), text.len, x, y, font_size, @ptrCast(spans.ptr), spans.len);
     }
 
     pub fn drawSvg(svg_string: [:0]const u8, x: f32, y: f32, w: f32, h: f32, color: Color) void {
-        mac.forge_mac_draw_svg(svg_string.ptr, x, y, w, h, color.r, color.g, color.b, color.a);
+        backend.forge_backend_draw_svg(svg_string.ptr, x, y, w, h, color.r, color.g, color.b, color.a);
     }
 
     pub fn getResolvedFontName(buf: []u8) void {
         if (buf.len == 0) return;
-        mac.forge_mac_get_resolved_font_name(@ptrCast(buf.ptr), buf.len);
+        backend.forge_backend_get_resolved_font_name(@ptrCast(buf.ptr), buf.len);
     }
 
     pub const FontWeight = enum(c_int) {
@@ -260,7 +269,7 @@ pub const Renderer = struct {
     };
 
     pub fn setTextStyle(font_family: []const u8, font_weight: FontWeight) void {
-        mac.forge_mac_set_text_style(@ptrCast(font_family.ptr), @intFromEnum(font_weight));
+        backend.forge_backend_set_text_style(@ptrCast(font_family.ptr), @intFromEnum(font_weight));
         text_style_generation +%= 1;
         clearMeasureCache();
     }
@@ -276,11 +285,11 @@ pub const Renderer = struct {
     }
 
     pub fn setEditorTextMetrics(font_size: f32, line_height: f32, baseline: f32) void {
-        mac.forge_mac_set_editor_text_metrics(font_size, line_height, baseline);
+        backend.forge_backend_set_editor_text_metrics(font_size, line_height, baseline);
     }
 
     pub fn getFontMetrics(font_size: f32, char_width: *f32, line_height: *f32, baseline: *f32) void {
-        mac.forge_mac_get_font_metrics(font_size, char_width, line_height, baseline);
+        backend.forge_backend_get_font_metrics(font_size, char_width, line_height, baseline);
     }
 
     pub fn measureText(text: []const u8, font_size: f32) f32 {
@@ -303,7 +312,7 @@ pub const Renderer = struct {
             }
         }
 
-        const width = mac.forge_mac_measure_text_width(@ptrCast(text.ptr), text.len, font_size);
+        const width = backend.forge_backend_measure_text_width(@ptrCast(text.ptr), text.len, font_size);
         measure_cache_misses += 1;
         measure_cache[insert_idx] = .{ .key = key, .width = width };
         return width;
@@ -316,18 +325,29 @@ pub const Renderer = struct {
 
     pub fn setClipboardText(text: []const u8) void {
         if (text.len == 0) return;
-        mac.forge_mac_set_clipboard_text(@ptrCast(text.ptr), text.len);
+        backend.forge_backend_set_clipboard_text(@ptrCast(text.ptr), text.len);
     }
 
     pub fn clipboardText(allocator: std.mem.Allocator) ![]u8 {
         var buf: [16384]u8 = undefined;
-        const len = mac.forge_mac_get_clipboard_text(&buf, buf.len);
+        const len = backend.forge_backend_get_clipboard_text(&buf, buf.len);
         if (len == 0) return try allocator.dupe(u8, "");
         return try allocator.dupe(u8, buf[0..len]);
     }
 
     pub fn saveClipboardPng(path: []const u8) bool {
         if (path.len == 0) return false;
-        return mac.forge_mac_save_clipboard_png(@ptrCast(path.ptr)) == 1;
+        return backend.forge_backend_save_clipboard_png(@ptrCast(path.ptr)) == 1;
     }
 };
+
+pub const active_backend = switch (builtin.os.tag) {
+    .macos => "macos-metal",
+    .linux => "linux-x11",
+    .windows => "windows-win32",
+    else => "unsupported",
+};
+
+test "active_backend is set for current platform" {
+    try std.testing.expect(std.mem.indexOf(u8, active_backend, "unsupported") == null);
+}
