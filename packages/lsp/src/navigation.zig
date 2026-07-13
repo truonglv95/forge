@@ -159,7 +159,7 @@ test "parse definition response" {
     const json =
         \\{"jsonrpc":"2.0","id":1,"result":{"uri":"file:///proj/src/main.zig","range":{"start":{"line":10,"character":4},"end":{"line":10,"character":8}}}}
     ;
-    const loc = (try parseDefinitionResponse(allocator, json)).?;
+    var loc = (try parseDefinitionResponse(allocator, json)).?;
     defer loc.deinit(allocator);
     try std.testing.expectEqualStrings("file:///proj/src/main.zig", loc.uri);
     try std.testing.expectEqual(@as(u32, 10), loc.line);

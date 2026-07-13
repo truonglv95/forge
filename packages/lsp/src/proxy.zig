@@ -394,10 +394,18 @@ pub const Proxy = struct {
         if (job.request_json.len > job.max_request_bytes) return error.RequestTooLarge;
         const config = self.state.registry.findByLanguageId(job.language_id) orelse return error.LanguageNotConfigured;
         const session = try ensureSession(self.state, config);
-        return session.sendRawRequest(job.request_json, job.response_out) catch |err| {
+        const result = session.sendRawRequest(job.request_json, job.response_out) catch |err| {
+            // Session failed — remove it and retry once with a fresh session.
             removeSession(self.state, job.language_id);
-            return if (err == error.OutOfMemory) error.OutOfMemory else error.SessionFailed;
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            // Auto-restart: try to create a new session and resend.
+            const retry_session = ensureSession(self.state, config) catch return error.SessionFailed;
+            return retry_session.sendRawRequest(job.request_json, job.response_out) catch |retry_err| {
+                removeSession(self.state, job.language_id);
+                return if (retry_err == error.OutOfMemory) error.OutOfMemory else error.SessionFailed;
+            };
         };
+        return result;
     }
 
     fn applyRegistrySnapshot(self: *Proxy, snapshot: []registry.ServerConfig) void {
