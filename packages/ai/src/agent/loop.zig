@@ -469,7 +469,19 @@ fn executeTool(
         }
     }
 
-    const policy = tool_registry.policyFor(effective_call.name);
+    // Use policyForMcp when MCP tools are available so that read-only MCP
+    // tools (annotations.readOnly=true) get low/automatic policy instead
+    // of the default high/every_time.
+    const policy = blk: {
+        if (mcp) |reg| {
+            if (reg.hasTool(effective_call.name)) {
+                if (reg.findTool(effective_call.name)) |tool| {
+                    break :blk tool_registry.policyForMcp(effective_call.name, tool.annotations_json);
+                }
+            }
+        }
+        break :blk tool_registry.policyFor(effective_call.name);
+    };
     if (policy.approval == .every_time or policy.approval == .review) {
         if (config.approval_callback) |approve| {
             if (!approve(config.approval_context, effective_call.name, effective_call.args_json, policy)) return error.NotAllowed;

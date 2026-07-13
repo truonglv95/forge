@@ -16,6 +16,10 @@ pub const RegisteredTool = struct {
     description: ?[]const u8,
     input_schema_json: []const u8,
     session_index: usize,
+    /// MCP tool annotations JSON (may contain readOnly hint).
+    /// When present, Forge uses this to infer risk/approval policy via
+    /// mcp_capability.inferPolicy() instead of defaulting to high risk.
+    annotations_json: ?[]const u8 = null,
 };
 
 pub const RegisteredResource = struct {
@@ -309,6 +313,7 @@ pub const Registry = struct {
         allocator.free(tool.tool_name);
         if (tool.description) |d| allocator.free(d);
         allocator.free(tool.input_schema_json);
+        if (tool.annotations_json) |a| allocator.free(a);
     }
 
     fn freeResource(allocator: std.mem.Allocator, res: RegisteredResource) void {
