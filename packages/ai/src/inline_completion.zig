@@ -127,7 +127,7 @@ pub fn complete(
     defer conversation.deinit(allocator);
     provider_handle.appendToolUserText(allocator, &conversation, prompt) catch return error.ProviderFailed;
 
-    const completion = provider_handle.completeTurn(
+    var completion = provider_handle.completeTurn(
         allocator,
         io,
         null,

@@ -38,8 +38,8 @@ pub fn runLaunchConfig(wb: anytype, index: usize) !void {
         wb.debug_console.clear();
         clearDebugStop(wb);
         clearDebugInspect(wb);
-        try wb.debug_console.log("Starting interactive lldb session…");
-        try wb.debug_lldb.start(
+        try wb.debug_console.log("Starting DAP debug session (lldb-dap)…");
+        try wb.debug_dap.start(
             wb.allocator,
             wb.workspace_path,
             path,
@@ -107,7 +107,9 @@ pub fn applyDebugStop(wb: anytype, parsed_path: []const u8, line: usize) void {
         }
         wb.debug_stop_path = wb.allocator.dupe(u8, doc.path) catch return;
         wb.debug_stop_line = line;
-        if (wb.debug_lldb.isActive()) {
+        if (wb.debug_dap.isActive()) {
+            wb.debug_dap.refreshBacktrace() catch {};
+        } else if (wb.debug_lldb.isActive()) {
             wb.debug_lldb.refreshBacktrace() catch {};
         }
         if (wb.activeFilePath()) |active| {
@@ -146,48 +148,67 @@ pub fn onDebugFinished(context: ?*anyopaque, exit_code: i32) void {
 }
 
 pub fn debugContinue(wb: anytype) !void {
-    if (!wb.debug_lldb.isActive()) {
+    if (!debugSessionActive(wb)) {
         try wb.setStatus("No active debug session");
         return;
     }
     clearDebugInspect(wb);
-    try wb.debug_lldb.continueExecution();
+    if (wb.debug_dap.isActive()) {
+        try wb.debug_dap.continueExecution();
+    } else {
+        try wb.debug_lldb.continueExecution();
+    }
     try wb.setStatus("Debug: continue");
 }
 
 pub fn debugStepOver(wb: anytype) !void {
-    if (!wb.debug_lldb.isActive()) {
+    if (!debugSessionActive(wb)) {
         try wb.setStatus("No active debug session");
         return;
     }
     clearDebugInspect(wb);
-    try wb.debug_lldb.stepOver();
+    if (wb.debug_dap.isActive()) {
+        try wb.debug_dap.stepOver();
+    } else {
+        try wb.debug_lldb.stepOver();
+    }
     try wb.setStatus("Debug: step over");
 }
 
 pub fn debugStepInto(wb: anytype) !void {
-    if (!wb.debug_lldb.isActive()) {
+    if (!debugSessionActive(wb)) {
         try wb.setStatus("No active debug session");
         return;
     }
     clearDebugInspect(wb);
-    try wb.debug_lldb.stepInto();
+    if (wb.debug_dap.isActive()) {
+        try wb.debug_dap.stepInto();
+    } else {
+        try wb.debug_lldb.stepInto();
+    }
     try wb.setStatus("Debug: step into");
 }
 
 pub fn debugStepOut(wb: anytype) !void {
-    if (!wb.debug_lldb.isActive()) {
+    if (!debugSessionActive(wb)) {
         try wb.setStatus("No active debug session");
         return;
     }
     clearDebugInspect(wb);
-    try wb.debug_lldb.stepOut();
+    if (wb.debug_dap.isActive()) {
+        try wb.debug_dap.stepOut();
+    } else {
+        try wb.debug_lldb.stepOut();
+    }
     try wb.setStatus("Debug: step out");
 }
 
 pub fn debugStop(wb: anytype) void {
-    if (!wb.debug_lldb.isActive()) return;
-    wb.debug_lldb.stop();
+    if (wb.debug_dap.isActive()) {
+        wb.debug_dap.stop();
+    } else if (wb.debug_lldb.isActive()) {
+        wb.debug_lldb.stop();
+    } else return;
     clearDebugStop(wb);
     clearDebugInspect(wb);
     wb.task_output.setRunning(false);
@@ -207,6 +228,13 @@ pub fn handleDebugClick(wb: anytype, hit: @import("../ui/sidebar/debug_panel.zig
             .stop => wb.dispatch(.debug_stop) catch {},
         },
     }
+}
+
+/// Returns true if either the DAP session or the legacy LLDB session is
+/// currently active. The DAP session is preferred when both are running
+/// (which shouldn't happen in practice, but defensive code is good).
+pub fn debugSessionActive(wb: anytype) bool {
+    return wb.debug_dap.isActive() or wb.debug_lldb.isActive();
 }
 
 pub fn copyDebugVariable(wb: anytype, index: usize) !void {

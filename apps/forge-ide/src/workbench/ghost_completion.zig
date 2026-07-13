@@ -9,6 +9,8 @@
 
 const std = @import("std");
 const forge_util = @import("forge-util");
+const ai = @import("forge-ai");
+const kernel = @import("forge-kernel");
 
 /// Debounce delay in milliseconds before a completion request fires.
 pub const debounce_ms: f32 = 600.0;
@@ -21,7 +23,12 @@ pub const max_suffix_bytes: usize = 1024;
 pub const max_completion_bytes: usize = 512;
 
 pub const Config = struct {
-    /// "ollama" | "gemini"
+    /// "ollama" | "gemini" | "ai"
+    /// - "ollama": direct HTTP to a local Ollama server (FIM prompt)
+    /// - "gemini": direct HTTP to Google Gemini API
+    /// - "ai": uses `forge-ai.inline_completion` module which routes through
+    ///         the provider factory (supports gemini/openai/openrouter/nvidia/
+    ///         ollama/fake, credential lookup, cancellation, etc.)
     provider: []const u8 = "ollama",
     /// e.g. "qwen2.5-coder:7b" or "gemini-2.0-flash"
     model: []const u8 = "qwen2.5-coder:7b",
@@ -31,12 +38,31 @@ pub const Config = struct {
     gemini_api_key: []const u8 = "",
     /// Whether ghost completion is enabled at all
     enabled: bool = true,
+
+    // --- "ai" provider configuration ------------------------------------
+
+    /// Forge-AI provider name when `provider == "ai"`. Defaults to "auto"
+    /// which lets the provider factory pick the first available provider
+    /// based on environment variables / keychain.
+    ai_provider: []const u8 = "auto",
+    /// Optional base URL override (e.g. for self-hosted OpenAI-compatible
+    /// endpoints). When null, the provider's default URL is used.
+    ai_base_url: ?[]const u8 = null,
 };
 
 pub const Store = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     config: Config,
+
+    /// Process environment map — needed for `forge-ai` provider factory to
+    /// look up API keys (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`).
+    environ_map: ?*const std.process.Environ.Map = null,
+
+    /// Path of the file currently being edited (owned, updated by
+    /// `setFilePath`). Used by the `ai` provider to build a proper
+    /// inline-completion prompt with language detection.
+    file_path: ?[]const u8 = null,
 
     // Debounce countdown (counts down in milliseconds via frame delta).
     debounce_remaining: f32 = 0,
@@ -71,6 +97,24 @@ pub const Store = struct {
 
     pub fn deinit(self: *Store) void {
         self.clearGhostUnlocked();
+        if (self.file_path) |p| self.allocator.free(p);
+        self.file_path = null;
+    }
+
+    /// Update the path of the file currently being edited. The Store keeps
+    /// an owned copy so callers may free `path` immediately. Used by the
+    /// `ai` provider for language detection and to give the model context
+    /// about which file is being completed.
+    pub fn setFilePath(self: *Store, path: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.file_path) |p| self.allocator.free(p);
+        self.file_path = self.allocator.dupe(u8, path) catch null;
+    }
+
+    /// Update the environment map reference (does not take ownership).
+    pub fn setEnvironMap(self: *Store, environ_map: ?*const std.process.Environ.Map) void {
+        self.environ_map = environ_map;
     }
 
     // -----------------------------------------------------------------------
@@ -245,10 +289,55 @@ pub const Store = struct {
 
     fn fetchBlocking(self: *Store, prefix: []const u8, suffix: []const u8, gen: u64) ?[]const u8 {
         _ = gen;
+        if (std.mem.eql(u8, self.config.provider, "ai")) {
+            return self.fetchViaInlineCompletion(prefix, suffix) catch null;
+        }
         if (std.mem.eql(u8, self.config.provider, "ollama")) {
             return self.fetchOllama(prefix, suffix) catch null;
         }
         return self.fetchGemini(prefix, suffix) catch null;
+    }
+
+    /// Routes the completion request through the `forge-ai.inline_completion`
+    /// module, which uses the provider factory to support any configured
+    /// provider (Gemini, OpenAI, OpenRouter, NVIDIA, Ollama, Fake) with
+    /// proper credential lookup, language detection, prompt construction,
+    /// and fence stripping. This is the recommended path for new setups.
+    fn fetchViaInlineCompletion(self: *Store, prefix: []const u8, suffix: []const u8) ![]const u8 {
+        const path = self.file_path orelse "untitled";
+
+        var result = ai.inline_completion.complete(
+            self.allocator,
+            self.io,
+            self.environ_map,
+            .{
+                .prefix = prefix,
+                .suffix = suffix,
+                .file_path = path,
+                .max_tokens = 64,
+                .timeout_ms = 3000,
+            },
+            .{
+                .provider_name = self.config.ai_provider,
+                .model = self.config.model,
+                .base_url = self.config.ai_base_url,
+            },
+            null,
+        ) catch return error.ProviderFailed;
+        defer result.deinit(self.allocator);
+
+        if (result.text.len == 0) return error.EmptyCompletion;
+
+        // For ghost text we want a single line (multi-line ghost text is
+        // supported by the Store but visually confusing for inline completion).
+        const single_line = if (std.mem.indexOfScalar(u8, result.text, '\n')) |nl|
+            result.text[0..nl]
+        else
+            result.text;
+        const trimmed = std.mem.trimEnd(u8, single_line, &std.ascii.whitespace);
+        if (trimmed.len == 0) return error.EmptyCompletion;
+
+        return self.allocator.dupe(u8, trimmed[0..@min(trimmed.len, max_completion_bytes)]);
     }
 
     fn buildFimPrompt(self: *Store, prefix: []const u8, suffix: []const u8) ![]const u8 {
