@@ -33,6 +33,8 @@ pub const code_action = @import("code_action.zig");
 pub const sync = @import("sync.zig");
 pub const workspace_symbol = @import("workspace_symbol.zig");
 pub const semantic_tokens = @import("semantic_tokens.zig");
+pub const dap_client = @import("dap_client.zig");
+pub const DapClient = dap_client.DapClient;
 
 pub fn acceptsRequests(state: ServerState) bool {
     return state == .ready;
