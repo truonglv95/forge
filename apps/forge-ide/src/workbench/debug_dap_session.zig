@@ -20,7 +20,7 @@ const forge_util = @import("forge-util");
 const breakpoints_mod = @import("breakpoints.zig");
 
 /// Configurable DAP server. Defaults to `lldb-dap` (LLVM's DAP server).
-pub const default_adapter_command: []const []const u8 = &.{ "lldb-dap" };
+pub const default_adapter_command: []const []const u8 = &.{"lldb-dap"};
 
 pub const Session = struct {
     allocator: std.mem.Allocator,
@@ -194,6 +194,42 @@ pub const Session = struct {
         var buf: [128]u8 = undefined;
         const body = std.fmt.bufPrint(&buf, "{{\"threadId\":{d}}}", .{tid}) catch return error.OutOfMemory;
         _ = self.sendRequestFireAndForget("stepOut", body) catch {};
+    }
+
+    /// P1.5-3: Evaluate a watch expression in the current frame context.
+    /// Returns the result string (owned) or an error message.
+    /// The `frame_id` should be the top frame from the last stackTrace
+    /// response (0 means no frame context).
+    pub fn evaluate(self: *Session, expression: []const u8, frame_id: u32) ![]const u8 {
+        // Build escaped expression into a buffer.
+        var escaped_buf: std.ArrayList(u8) = .empty;
+        defer escaped_buf.deinit(self.allocator);
+        try appendEscaped(&escaped_buf, self.allocator, expression);
+
+        var body_buf: [1024]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf, "{{\"expression\":\"{s}\",\"frameId\":{d},\"context\":\"watch\"}}", .{ escaped_buf.items, frame_id }) catch return error.OutOfMemory;
+        const response = self.sendRequestBlocking("evaluate", body) catch return error.ReadFailed;
+        defer self.allocator.free(response);
+
+        // Extract the "result" field from the response.
+        const result_start = std.mem.indexOf(u8, response, "\"result\":\"");
+        if (result_start == null) return error.ProtocolError;
+        const result_end_idx = result_start.? + "\"result\":\"".len;
+        var end = result_end_idx;
+        while (end < response.len) {
+            if (response[end] == '\\' and end + 1 < response.len) {
+                end += 2;
+                continue;
+            }
+            if (response[end] == '"') break;
+            end += 1;
+        }
+        if (end > response.len) return error.ProtocolError;
+        const raw_result = response[result_end_idx..end];
+        // Unescape.
+        var unescaped: [1024]u8 = undefined;
+        const len = unescapeString(raw_result, &unescaped);
+        return self.allocator.dupe(u8, unescaped[0..len]) catch error.OutOfMemory;
     }
 
     // -------------------------------------------------------------------

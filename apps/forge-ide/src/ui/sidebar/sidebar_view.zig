@@ -5,6 +5,7 @@ pub const SidebarView = enum {
     run,
     extensions,
     ai,
+    outline,
 };
 
-pub const all = [_]SidebarView{ .explorer, .search, .git, .run, .extensions, .ai };
+pub const all = [_]SidebarView{ .explorer, .search, .git, .run, .extensions, .ai, .outline };

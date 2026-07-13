@@ -5,6 +5,7 @@ pub const Settings = struct {
     tab_width: u8 = 4,
     font_size: f32 = 14,
     word_wrap: bool = false,
+    format_on_save: bool = false,
     terminal_shell: ?[]const u8 = null,
     // Ghost text / inline AI completion settings ([ghost_completion] section)
     ghost_provider: []const u8 = "ollama",
@@ -61,6 +62,8 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceR
                 if (parsed >= 8 and parsed <= 48) settings.font_size = parsed;
             } else if (std.mem.eql(u8, key, "word_wrap")) {
                 settings.word_wrap = std.mem.eql(u8, value, "true");
+            } else if (std.mem.eql(u8, key, "format_on_save")) {
+                settings.format_on_save = std.mem.eql(u8, value, "true");
             }
         } else if (std.mem.eql(u8, section, "terminal")) {
             if (std.mem.eql(u8, key, "shell")) {

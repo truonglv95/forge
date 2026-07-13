@@ -38,7 +38,7 @@ pub const OpenAIProvider = struct {
             allocator,
             io,
             environ_map,
-            &[_][]const u8{ "OPENAI_API_KEY" },
+            &[_][]const u8{"OPENAI_API_KEY"},
             "forge-openai",
             "default",
         ) catch |err| switch (err) {

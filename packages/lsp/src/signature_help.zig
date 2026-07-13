@@ -2,7 +2,6 @@ const std = @import("std");
 
 /// Signature help support (textDocument/signatureHelp).
 /// Provides function signature information as the user types.
-
 pub const SignatureInfo = struct {
     label: []const u8,
     documentation: ?[]const u8 = null,

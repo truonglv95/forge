@@ -2,12 +2,16 @@ const std = @import("std");
 const editor = @import("forge-editor");
 const workspace = @import("forge-workspace");
 const plugin = @import("forge-plugin");
+const lsp = @import("forge-lsp");
 const workspace_io = @import("../workspace_io.zig");
 const explorer_ops = @import("../explorer/ops.zig");
 const recovery_mod = @import("recovery.zig");
 const agent_workflow = @import("../agent/workflow.zig");
 const tasks_mod = @import("tasks.zig");
 const commands_mod = @import("commands.zig");
+const state = @import("../ui/core/state.zig");
+const Workbench = @import("../workbench.zig").Workbench;
+const mention_resolver_mod = @import("mention_resolver.zig");
 const Command = commands_mod.Command;
 
 pub fn dispatch(wb: anytype, command: Command) !void {
@@ -32,6 +36,10 @@ pub fn dispatch(wb: anytype, command: Command) !void {
                 try wb.openConflictDialog(doc.path);
                 return;
             }
+            // P1-2: Format on save (best-effort — don't block save on format failure).
+            if (wb.user_settings.format_on_save) {
+                wb.formatDocument() catch {};
+            }
             try workspace_io.saveDocument(wb.io, wb.workspace_root, doc);
             try recovery_mod.snapshotDirtyDocs(wb.allocator, wb.io, wb.workspace_root, &wb.tabs);
             workspace.hooks.runOnSave(wb.allocator, wb.io, wb.workspace_root, doc.path, wb.workspace_path) catch {};
@@ -44,6 +52,8 @@ pub fn dispatch(wb: anytype, command: Command) !void {
                 try wb.reloadUserSettings();
             }
             try wb.setStatus("Saved");
+            // P1-4: Show toast notification on save.
+            _ = wb.notifications.success("File saved") catch {};
         },
         .explorer_toggle => |path| {
             try wb.explorer.toggleExpand(path);
@@ -108,6 +118,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
                 .run => .run,
                 .extensions => .extensions,
                 .ai => .agent,
+                .outline => .editor,
             };
             if (view == .git) try wb.refreshGitStatus();
         },
@@ -279,6 +290,30 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             defer wb.prompt_buffer.allocator.free(prompt_text);
             const trimmed = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);
             if (trimmed.len == 0) return;
+
+            // P1.5-1: Resolve @mentions in the prompt and build a context
+            // preamble that gets prepended to the user's intent.
+            var resolved = mention_resolver_mod.resolveMentions(
+                wb.allocator,
+                wb.io,
+                wb.workspace_root,
+                trimmed,
+            ) catch mention_resolver_mod.ResolvedList{ .items = &.{} };
+            defer resolved.deinit(wb.allocator);
+
+            const preamble = mention_resolver_mod.buildContextPreamble(wb.allocator, resolved.items) catch try wb.allocator.dupe(u8, "");
+            defer wb.allocator.free(preamble);
+
+            // Combine preamble + user prompt.
+            const full_prompt = if (preamble.len > 0)
+                std.fmt.allocPrint(wb.allocator, "{s}{s}", .{ preamble, trimmed }) catch try wb.allocator.dupe(u8, trimmed)
+            else
+                try wb.allocator.dupe(u8, trimmed);
+            defer wb.allocator.free(full_prompt);
+
+            // For the chat display, show the original (trimmed) prompt
+            // without the preamble — users don't want to see the context
+            // block in the chat bubble.
             const owned_prompt = try wb.allocator.dupe(u8, trimmed);
             defer wb.allocator.free(owned_prompt);
 
@@ -291,8 +326,19 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             wb.chat_follow_stream = true;
             const active = wb.tabs.activeDoc();
             const active_path = if (active) |doc| doc.path else null;
-            const scope = wb.agent.effectiveScope(active_path);
-            agent_workflow.spawnGenerate(&wb.agentHost(), owned_prompt, scope, active_path) catch |err| {
+
+            // Collect file paths from resolved mentions to use as scope_files.
+            // This supplements the agent's existing scope with files the user
+            // explicitly mentioned via @file: tokens.
+            var scope_files: std.ArrayList([]const u8) = .empty;
+            defer scope_files.deinit(wb.allocator);
+            for (resolved.items) |m| {
+                if (m.kind == .file and m.ok) {
+                    scope_files.append(wb.allocator, m.label) catch {};
+                }
+            }
+
+            agent_workflow.spawnGenerate(&wb.agentHost(), full_prompt, scope_files.items, active_path) catch |err| {
                 const msg = switch (err) {
                     error.AgentBusy => "Agent is already running",
                     else => "Agent failed to start",
@@ -689,5 +735,211 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             const msg = if (wb.ghost.config.enabled) "Ghost completion enabled" else "Ghost completion disabled";
             try wb.setStatus(msg);
         },
+        // P0-4: Multi-cursor
+        .editor_add_cursor_next => {
+            const doc = wb.tabs.activeDoc() orelse return;
+            const word = wordAtCursor(&doc.buffer) orelse {
+                try wb.setStatus("No word at cursor to match");
+                return;
+            };
+            const added = wb.multi_cursor.addNextOccurrence(&doc.buffer, doc.buffer.cursor, word) catch false;
+            if (!added) try wb.setStatus("No more occurrences");
+        },
+        .editor_add_cursor_all => {
+            const doc = wb.tabs.activeDoc() orelse return;
+            const word = wordAtCursor(&doc.buffer) orelse {
+                try wb.setStatus("No word at cursor to match");
+                return;
+            };
+            _ = wb.multi_cursor.addAllOccurrences(&doc.buffer, word) catch 0;
+            var buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "{d} cursors", .{wb.multi_cursor.count()}) catch "Multi-cursor active";
+            try wb.setStatus(msg);
+        },
+        .editor_clear_cursors => {
+            wb.multi_cursor.clear();
+            try wb.setStatus("Cursors cleared");
+        },
+        // P0-4: Code folding
+        .editor_fold_toggle => {
+            const doc = wb.tabs.activeDoc() orelse return;
+            if (wb.fold_dirty) {
+                wb.fold_controller.computeRanges(&doc.buffer) catch {};
+                wb.fold_dirty = false;
+            }
+            const toggled = wb.fold_controller.toggleAtLine(@intCast(doc.buffer.cursor.row));
+            if (!toggled) try wb.setStatus("No fold at cursor");
+        },
+        .editor_fold_all => {
+            const doc = wb.tabs.activeDoc() orelse return;
+            if (wb.fold_dirty) {
+                wb.fold_controller.computeRanges(&doc.buffer) catch {};
+                wb.fold_dirty = false;
+            }
+            wb.fold_controller.foldAll();
+            try wb.setStatus("Folded all");
+        },
+        .editor_unfold_all => {
+            wb.fold_controller.unfoldAll();
+            try wb.setStatus("Unfolded all");
+        },
+        // P0-5: Context menu
+        .editor_open_context_menu => {
+            // Open at cursor's screen position (approximated via click pos
+            // stored by mouse handler). For keyboard invocation (Cmd+.
+            // already maps to problem.quick_fix), use last mouse position.
+            wb.context_menu.openEditor(state.last_mouse_x, state.last_mouse_y) catch {};
+        },
+        .editor_apply_quick_fix => |index| {
+            // Index comes from clicking a context-menu quick-fix item.
+            // For now, we delegate to the existing problem_quick_fix path
+            // (which applies the first available fix). Future work: index
+            // into the LSP codeAction array.
+            _ = index;
+            try wb.quickFixAtCursor();
+        },
+        .editor_show_quick_fixes => {
+            // Open the existing problem_quick_fix path which shows the
+            // first available fix. A full menu UI is future work.
+            try wb.quickFixAtCursor();
+        },
+        // P0-2: Inline edit (Cmd+K)
+        .inline_edit_open => {
+            try openInlineEdit(wb);
+        },
+        .inline_edit_submit => {
+            try submitInlineEdit(wb);
+        },
+        .inline_edit_accept => {
+            if (wb.tabs.activeDoc()) |doc| {
+                try doc.buffer.acceptInlineEdit();
+                wb.inline_edit.close();
+                try wb.setStatus("Inline edit applied");
+            }
+        },
+        .inline_edit_reject => {
+            if (wb.tabs.activeDoc()) |doc| {
+                try doc.buffer.rejectInlineEdit();
+            }
+            wb.inline_edit.close();
+            try wb.setStatus("Inline edit rejected");
+        },
+        .inline_edit_cancel => {
+            wb.inline_edit.close();
+            try wb.setStatus("Inline edit cancelled");
+        },
+        // P0-3: @mentions (basic dispatch — most logic in input handler)
+        .chat_mention_file => {
+            wb.mention_picker.open();
+            wb.mention_picker.setKind(.file);
+        },
+        .chat_mention_symbol => {
+            wb.mention_picker.open();
+            wb.mention_picker.setKind(.symbol);
+        },
+        .chat_mention_folder => {
+            wb.mention_picker.open();
+            wb.mention_picker.setKind(.folder);
+        },
+        .chat_mention_web => {
+            wb.mention_picker.open();
+            wb.mention_picker.setKind(.web);
+            wb.mention_picker.setWebItem() catch {};
+        },
+        .chat_mention_select => |index| {
+            if (index < wb.mention_picker.items.items.len) {
+                wb.mention_picker.selected = index;
+            }
+        },
+        .chat_mention_dismiss => {
+            wb.mention_picker.close();
+        },
+        // P1.5-3: Watch expressions
+        .debug_watch_add => |expr| {
+            const trimmed = std.mem.trim(u8, expr, &std.ascii.whitespace);
+            if (trimmed.len == 0) return;
+            _ = wb.watch_expressions.add(trimmed) catch {
+                try wb.setStatus("Failed to add watch expression");
+                return;
+            };
+            try wb.refreshWatchExpressions();
+            try wb.setStatus("Watch expression added");
+        },
+        .debug_watch_remove => |index| {
+            wb.watch_expressions.remove(index);
+            try wb.setStatus("Watch expression removed");
+        },
+        .debug_watch_clear => {
+            wb.watch_expressions.clear();
+            try wb.setStatus("Watch expressions cleared");
+        },
+        .debug_watch_refresh => {
+            try wb.refreshWatchExpressions();
+            try wb.setStatus("Watch expressions refreshed");
+        },
     }
+}
+
+// --- Helpers for P0-5 (context menu / quick fix) ---
+
+fn wordAtCursor(buf: anytype) ?[]const u8 {
+    const line = buf.lineAt(buf.cursor.row);
+    if (line.len == 0) return null;
+    var start = buf.cursor.col;
+    var end = buf.cursor.col;
+    if (start > 0) start -= 1;
+    while (start > 0 and (std.ascii.isAlphanumeric(line[start - 1]) or line[start - 1] == '_')) : (start -= 1) {}
+    while (end < line.len and (std.ascii.isAlphanumeric(line[end]) or line[end] == '_')) : (end += 1) {}
+    if (start >= end) return null;
+    return line[start..end];
+}
+
+// --- Helpers for P0-2 (inline edit) ---
+
+fn openInlineEdit(wb: *Workbench) !void {
+    const doc = wb.tabs.activeDoc() orelse {
+        try wb.setStatus("No active file");
+        return;
+    };
+    const sel = doc.buffer.selectionOrdered();
+    const has_selection = sel.start.row != sel.end.row or sel.start.col != sel.end.col;
+    if (!has_selection) {
+        try wb.setStatus("Select code first (drag in editor)");
+        return;
+    }
+    const selected = doc.buffer.selectedText(wb.allocator) catch {
+        try wb.setStatus("Failed to read selection");
+        return;
+    };
+    defer wb.allocator.free(selected);
+    try wb.inline_edit.open(
+        doc.path,
+        sel.start.row,
+        sel.start.col,
+        sel.end.row,
+        sel.end.col,
+        selected,
+    );
+}
+
+fn submitInlineEdit(wb: *Workbench) !void {
+    if (!wb.inline_edit.active) return;
+    if (wb.inline_edit.promptText().len == 0) {
+        try wb.setStatus("Type an instruction first");
+        return;
+    }
+    wb.inline_edit.markPending();
+    try wb.setStatus("Generating edit…");
+    // Spawn a generate run with the inline-edit prompt as intent. The
+    // agent will produce a proposal which the user can review/apply via
+    // the existing proposal review UI (Tab accept / Esc reject).
+    const intent = try wb.inline_edit.buildAgentPrompt();
+    defer wb.allocator.free(intent);
+    const scope_files: []const []const u8 = &.{};
+    const active_file = wb.inline_edit.file_path;
+    agent_workflow.spawnGenerate(&wb.agentHost(), intent, scope_files, active_file) catch |err| {
+        std.log.warn("inline_edit agent run failed: {s}", .{@errorName(err)});
+        wb.inline_edit.close();
+        try wb.setStatus("Inline edit failed");
+    };
 }

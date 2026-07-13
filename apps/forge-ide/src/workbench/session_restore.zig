@@ -203,6 +203,7 @@ fn sidebarName(view: sidebar_view_mod.SidebarView) []const u8 {
         .run => "run",
         .extensions => "extensions",
         .ai => "ai",
+        .outline => "outline",
     };
 }
 
@@ -212,6 +213,7 @@ fn parseSidebar(name: []const u8) sidebar_view_mod.SidebarView {
     if (std.mem.eql(u8, name, "run")) return .run;
     if (std.mem.eql(u8, name, "extensions")) return .extensions;
     if (std.mem.eql(u8, name, "ai")) return .ai;
+    if (std.mem.eql(u8, name, "outline")) return .outline;
     return .explorer;
 }
 

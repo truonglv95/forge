@@ -14,7 +14,6 @@ const buffer_mod = @import("buffer.zig");
 ///
 /// When multiple cursors are active, edits are applied in reverse row
 /// order (bottom-up) so that row indices remain stable for earlier cursors.
-
 pub const MultiCursor = struct {
     allocator: std.mem.Allocator,
     /// Secondary cursors (primary is Buffer.cursor). Always sorted by

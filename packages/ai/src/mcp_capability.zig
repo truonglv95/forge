@@ -12,7 +12,6 @@ const kernel = @import("forge-kernel");
 /// The declaration lives in the MCP server's tool annotations (MCP spec
 /// 2024-11-05: `annotations.readOnly` boolean). When present, Forge uses
 /// it to set the tool's risk/approval policy instead of defaulting to high.
-
 pub const McpCapability = enum {
     read_only,
     mutate,

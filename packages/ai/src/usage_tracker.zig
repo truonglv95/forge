@@ -9,7 +9,6 @@ const provider = @import("provider.zig");
 ///
 /// Cost estimation uses a simple per-1K-token pricing table. Prices are
 /// approximate and should be updated from provider docs periodically.
-
 pub const UsageTracker = struct {
     allocator: std.mem.Allocator,
     total: provider.TokenUsage = .{},

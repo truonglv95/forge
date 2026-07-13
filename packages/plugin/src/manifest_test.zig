@@ -2,8 +2,8 @@ const std = @import("std");
 const manifest_mod = @import("manifest.zig");
 const wasm_mod = @import("wasm_runtime.zig");
 
-/// Comprehensive test suite for the extension manifest parser.
-/// Covers: basic parse, edge cases, error paths, WASM config, multi-entry.
+// Comprehensive test suite for the extension manifest parser.
+// Covers: basic parse, edge cases, error paths, WASM config, multi-entry.
 
 test "manifest rejects empty source" {
     const allocator = std.testing.allocator;

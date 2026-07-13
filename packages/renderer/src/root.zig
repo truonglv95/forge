@@ -4,8 +4,13 @@ const builtin = @import("builtin");
 
 const backend = blk: {
     switch (builtin.os.tag) {
-        .macos => break :blk @cImport({ @cInclude("shared/backend.h"); @cInclude("mac/mac_window.h"); }),
-        .linux, .windows => break :blk @cImport({ @cInclude("shared/backend.h"); }),
+        .macos => break :blk @cImport({
+            @cInclude("shared/backend.h");
+            @cInclude("mac/mac_window.h");
+        }),
+        .linux, .windows => break :blk @cImport({
+            @cInclude("shared/backend.h");
+        }),
         else => @compileError("unsupported OS"),
     }
 };

@@ -10,7 +10,6 @@ const std = @import("std");
 /// `poll_interval_ms`). This is portable across macOS/Linux/Windows
 /// without requiring platform-specific file-watcher APIs (inotify,
 /// FSEvents, ReadDirectoryChangesW).
-
 pub const WatchEvent = enum {
     manifest_added,
     manifest_changed,

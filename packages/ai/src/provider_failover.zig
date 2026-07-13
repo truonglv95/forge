@@ -13,7 +13,6 @@ const kernel = @import("forge-kernel");
 /// MVP: failover is triggered by `runWithFailover` which tries each provider
 /// in order until one succeeds. Future: track failure rate per provider and
 /// implement circuit breaker (fast-fail after N consecutive failures).
-
 pub const FailoverConfig = struct {
     /// Providers to try in order. The first available provider is primary;
     /// subsequent entries are fallbacks.

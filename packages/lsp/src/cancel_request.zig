@@ -11,7 +11,6 @@ const std = @import("std");
 /// - buildCancelNotification() to produce the JSON-RPC notification
 /// - Integration point: the LSP proxy can check isCancelled() before
 ///   delivering the response to a stale request.
-
 pub const CancelTracker = struct {
     allocator: std.mem.Allocator,
     /// Set of cancelled request IDs. When a response arrives, check

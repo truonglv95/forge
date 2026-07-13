@@ -2,7 +2,6 @@ const std = @import("std");
 
 /// Document highlight support (textDocument/documentHighlight).
 /// Highlights all occurrences of the symbol under the cursor.
-
 pub const HighlightKind = enum(u32) {
     text = 1,
     read = 2,

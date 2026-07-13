@@ -15,7 +15,6 @@ const buffer_mod = @import("buffer.zig");
 ///
 /// The editor UI is responsible for rendering fold markers and collapsed
 /// regions. This module only computes and stores fold ranges.
-
 pub const FoldRange = struct {
     /// 0-indexed start line (the line that stays visible when folded).
     start_line: u32,

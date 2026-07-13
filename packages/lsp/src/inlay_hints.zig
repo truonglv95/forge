@@ -3,7 +3,6 @@ const std = @import("std");
 /// Inlay hints support (textDocument/inlayHint).
 /// Provides inline type annotations, parameter names, and other hints
 /// directly in the editor.
-
 pub const InlayHintKind = enum(u32) {
     type_hint = 1,
     parameter = 2,

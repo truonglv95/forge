@@ -12,7 +12,6 @@ const edit = @import("forge-workspace").edit;
 /// Unlike `replace_file_content` which directly proposes the edit, `diff`
 /// only returns the preview — the model must still call
 /// `replace_file_content` to actually propose the change.
-
 pub const DiffError = error{
     FileNotFound,
     SearchNotFound,
