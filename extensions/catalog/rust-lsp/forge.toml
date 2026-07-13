@@ -1,0 +1,13 @@
+[extension]
+id = "forge.lsp.rust"
+name = "Rust Language Server"
+version = "0.1.0"
+api_version = 1
+publisher = "forge"
+description = "rust-analyzer for Rust files"
+
+[[languages]]
+id = "rust"
+server = "rust-analyzer"
+args = ""
+file_pattern = "*.rs"

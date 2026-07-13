@@ -1,0 +1,31 @@
+[extension]
+id = "forge.lsp.typescript"
+name = "TypeScript Language Server"
+version = "0.1.0"
+api_version = 1
+publisher = "forge"
+description = "TypeScript language server for JS/TS files"
+
+[[languages]]
+id = "typescript"
+server = "typescript-language-server"
+args = "--stdio"
+file_pattern = "*.ts"
+
+[[languages]]
+id = "typescript"
+server = "typescript-language-server"
+args = "--stdio"
+file_pattern = "*.tsx"
+
+[[languages]]
+id = "javascript"
+server = "typescript-language-server"
+args = "--stdio"
+file_pattern = "*.js"
+
+[[languages]]
+id = "javascript"
+server = "typescript-language-server"
+args = "--stdio"
+file_pattern = "*.jsx"

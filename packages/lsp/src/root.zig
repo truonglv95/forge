@@ -35,6 +35,11 @@ pub const workspace_symbol = @import("workspace_symbol.zig");
 pub const semantic_tokens = @import("semantic_tokens.zig");
 pub const dap_client = @import("dap_client.zig");
 pub const DapClient = dap_client.DapClient;
+pub const signature_help = @import("signature_help.zig");
+pub const SignatureHelp = signature_help.SignatureHelp;
+pub const document_highlight = @import("document_highlight.zig");
+pub const folding_range = @import("folding_range.zig");
+pub const inlay_hints = @import("inlay_hints.zig");
 
 pub fn acceptsRequests(state: ServerState) bool {
     return state == .ready;
@@ -44,4 +49,8 @@ test "only a ready language server accepts requests" {
     try std.testing.expect(acceptsRequests(.ready));
     try std.testing.expect(!acceptsRequests(.starting));
     try std.testing.expect(!acceptsRequests(.crashed));
+}
+
+test {
+    _ = @import("lsp_test.zig");
 }

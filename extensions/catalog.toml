@@ -18,6 +18,46 @@ publisher = "forge"
 source = "catalog/zig-lsp"
 
 [[entry]]
+id = "forge.lsp.python"
+name = "Python Language Server"
+version = "0.1.0"
+description = "Pyright language server for Python files"
+publisher = "forge"
+source = "catalog/python-lsp"
+
+[[entry]]
+id = "forge.lsp.typescript"
+name = "TypeScript Language Server"
+version = "0.1.0"
+description = "TypeScript language server for JS/TS files"
+publisher = "forge"
+source = "catalog/typescript-lsp"
+
+[[entry]]
+id = "forge.lsp.rust"
+name = "Rust Language Server"
+version = "0.1.0"
+description = "rust-analyzer for Rust files"
+publisher = "forge"
+source = "catalog/rust-lsp"
+
+[[entry]]
+id = "forge.lsp.go"
+name = "Go Language Server"
+version = "0.1.0"
+description = "gopls language server for Go files"
+publisher = "forge"
+source = "catalog/go-lsp"
+
+[[entry]]
+id = "forge.theme.dark-plus"
+name = "Dark+"
+version = "0.1.0"
+description = "VS Code Dark+ inspired theme"
+publisher = "forge"
+source = "catalog/dark-plus"
+
+[[entry]]
 id = "forge.samples.wasm-hello"
 name = "WASM Hello"
 version = "0.1.0"

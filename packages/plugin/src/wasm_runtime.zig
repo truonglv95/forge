@@ -24,6 +24,17 @@ pub const HostCallbacks = struct {
     set_status: *const fn (message: []const u8) void,
     lsp_language_for_file: ?*const fn (path: []const u8, out: []u8) ?usize = null,
     lsp_request: ?*const fn (language_id: []const u8, request_json: []const u8, response_out: []u8, limits: Limits) ?usize = null,
+    /// Read a workspace file. Returns bytes read, or null on failure.
+    /// Extensions use this to access workspace files without direct FS access.
+    read_file: ?*const fn (path: []const u8, out: []u8) ?usize = null,
+    /// Search workspace files for a pattern. Returns bytes written to out.
+    search: ?*const fn (pattern: []const u8, out: []u8) ?usize = null,
+    /// Show an informational message in the IDE status bar.
+    show_message: ?*const fn (message: []const u8) void = null,
+    /// Set diagnostics for a file. The IDE displays them in the problems panel.
+    set_diagnostics: ?*const fn (path: []const u8, diagnostics_json: []const u8) void = null,
+    /// Execute a workspace command (allowlisted). Returns exit code.
+    execute_command: ?*const fn (command: []const u8) i32 = null,
 };
 
 pub const RuntimeEnv = struct {

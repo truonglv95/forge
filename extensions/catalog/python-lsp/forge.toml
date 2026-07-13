@@ -1,0 +1,13 @@
+[extension]
+id = "forge.lsp.python"
+name = "Python Language Server"
+version = "0.1.0"
+api_version = 1
+publisher = "forge"
+description = "Pyright language server for Python files"
+
+[[languages]]
+id = "python"
+server = "pyright-langserver"
+args = "--stdio"
+file_pattern = "*.py"
