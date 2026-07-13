@@ -286,6 +286,16 @@ pub fn run(
                 try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, &guard, step_index, true);
                 step_index += 1;
             },
+            .tool_calls => |calls| {
+                // Parallel tool calls: execute sequentially in MVP (thread-safe
+                // provider handles are needed for true parallelism, tracked in
+                // RFC-0015). Each call still increments step_index and is
+                // checkpointed independently.
+                for (calls) |call| {
+                    try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, &guard, step_index, true);
+                    step_index += 1;
+                }
+            },
             .text => return .{
                 .conversation_json = conversation.toOwnedSlice(allocator) catch return error.ProviderFailed,
                 .next_step_index = step_index,

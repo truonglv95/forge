@@ -8,11 +8,21 @@ pub const ToolCall = tool_args.ToolCall;
 pub const Completion = union(enum) {
     text: []u8,
     tool_call: ToolCall,
+    /// Multiple tool calls returned in a single model turn. Providers that
+    /// support parallel function calling (Gemini 2.0, Claude 3.5, OpenAI
+    /// gpt-4o) return this variant so the agent loop can dispatch all calls
+    /// concurrently. The loop falls back to sequential execution when the
+    /// transport returns a single `tool_call`.
+    tool_calls: []ToolCall,
 
     pub fn deinit(self: *Completion, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .text => |text| allocator.free(text),
             .tool_call => |*call| call.deinit(allocator),
+            .tool_calls => |calls| {
+                for (calls) |*call| call.deinit(allocator);
+                allocator.free(calls);
+            },
         }
         self.* = undefined;
     }

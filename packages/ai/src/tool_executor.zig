@@ -30,6 +30,10 @@ pub const Context = struct {
     lsp_request_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 = null,
     lsp_context: ?*anyopaque = null,
     cache: ?*tool_cache_mod.Cache = null,
+    /// Project-specific extra commands allowed by `run_command`. Loaded from
+    /// `forge.toml [ai.allowed_commands]`. Each entry is an exact command
+    /// string (e.g. "just test"). Empty by default.
+    extra_allowed_commands: []const []const u8 = &.{},
 };
 
 pub const Outcome = struct {
@@ -590,7 +594,7 @@ fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome
     var checkout_argv: [4][]const u8 = undefined;
     const grep_args = parseGrepNCommand(command);
     var grep_argv: [4][]const u8 = undefined;
-    const argv = allowedCommandArgv(command) orelse blk: {
+    const argv = allowedCommandArgvWithExtra(command, ctx.extra_allowed_commands) orelse blk: {
         if (checkout_path) |path| {
             _ = workspace.WorkspacePath.parse(path) catch return error.NotAllowed;
             checkout_argv = .{ "git", "checkout", "--", path };
@@ -769,7 +773,52 @@ fn countLines(text: []const u8) usize {
 /// Maps a deliberately small set of read-only or validation commands to argv.
 /// Never pass model text through a shell: prefix checks do not prevent command
 /// separators, substitutions, redirects, or path traversal.
+///
+/// In addition to the hardcoded list, projects can declare extra allowlisted
+/// commands in `forge.toml` under `[ai.allowed_commands]` as a list of exact
+/// command strings. The `Context.extra_allowed_commands` field carries those
+/// project-specific entries so the agent can run `just test`, `pnpm dev`, etc.
+/// without modifying Forge source.
 pub fn allowedCommandArgv(command: []const u8) ?[]const []const u8 {
+    return allowedCommandArgvWithExtra(command, &.{});
+}
+
+/// Like `allowedCommandArgv` but also checks project-specific commands.
+/// Extra commands are matched by exact string equality; argv is built by
+/// splitting on whitespace (safe because we only accept exact matches).
+pub fn allowedCommandArgvWithExtra(command: []const u8, extra: []const []const u8) ?[]const []const u8 {
+    // Check hardcoded list first.
+    if (allowedCommandArgvBuiltin(command)) |argv| return argv;
+
+    // Check project-specific extras.
+    for (extra) |allowed| {
+        if (std.mem.eql(u8, command, allowed)) {
+            // Split on whitespace into argv. We allocate into a thread-local
+            // static buffer to avoid heap allocation per call.
+            return splitCommandToArgv(command);
+        }
+    }
+    return null;
+}
+
+/// Thread-local storage for split argv from extra-allowlist commands.
+/// `splitCommandToArgv` writes into this buffer and returns a slice into it.
+/// The buffer is overwritten on each call, so callers must use the returned
+/// slice immediately.
+threadlocal var tl_argv_buf: [16][]const u8 = undefined;
+
+fn splitCommandToArgv(command: []const u8) []const []const u8 {
+    var count: usize = 0;
+    var it = std.mem.tokenizeAny(u8, command, " \t");
+    while (it.next()) |part| {
+        if (count >= tl_argv_buf.len) break;
+        tl_argv_buf[count] = part;
+        count += 1;
+    }
+    return tl_argv_buf[0..count];
+}
+
+fn allowedCommandArgvBuiltin(command: []const u8) ?[]const []const u8 {
     // --- Zig ---
     if (std.mem.eql(u8, command, "zig build")) return &.{ "zig", "build" };
     if (std.mem.eql(u8, command, "zig build test")) return &.{ "zig", "build", "test" };
