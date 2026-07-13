@@ -32,6 +32,7 @@ const terminal_group_mod = @import("workbench/terminal_group.zig");
 const lsp_sync_mod = @import("workbench/lsp_sync.zig");
 const rename_preview_mod = @import("workbench/rename_preview.zig");
 const debug_lldb_session_mod = @import("workbench/debug_lldb_session.zig");
+const debug_dap_session_mod = @import("workbench/debug_dap_session.zig");
 const debug_stop_mod = @import("workbench/debug_stop.zig");
 const debug_variables_mod = @import("workbench/debug_variables.zig");
 const debug_callstack_mod = @import("workbench/debug_callstack.zig");
@@ -106,6 +107,7 @@ pub const Workbench = struct {
     breakpoints: breakpoints_mod.Store,
     debug_console: debug_console_mod.DebugConsole,
     debug_lldb: debug_lldb_session_mod.Session,
+    debug_dap: debug_dap_session_mod.Session,
     debug_stop_path: ?[]const u8 = null,
     debug_stop_line: ?usize = null,
     debug_variables: debug_variables_mod.Store,
@@ -296,6 +298,7 @@ pub const Workbench = struct {
             .debug_variables = debug_variables_mod.Store.init(allocator),
             .debug_callstack = debug_callstack_mod.Store.init(allocator),
             .debug_lldb = undefined,
+            .debug_dap = undefined,
             .find_bar = try editor_find_mod.FindBar.init(allocator),
             .goto_bar = try editor_find_mod.GotoBar.init(allocator),
             .rename_bar = try editor_find_mod.RenameBar.init(allocator),
@@ -355,7 +358,10 @@ pub const Workbench = struct {
             .model = self.user_settings.ghost_model,
             .ollama_url = self.user_settings.ghost_ollama_url,
             .enabled = self.user_settings.ghost_enabled,
+            .ai_provider = self.user_settings.ghost_ai_provider,
+            .ai_base_url = self.user_settings.ghost_ai_base_url,
         });
+        self.ghost.setEnvironMap(self.environ_map);
 
         if (loadAiConfig(allocator, io, root)) |cfg| {
             self.allocator.free(self.ai_provider);
@@ -421,6 +427,12 @@ pub const Workbench = struct {
             .on_finished = onDebugLldbFinished,
             .context = null,
         };
+        self.debug_dap = .{
+            .allocator = allocator,
+            .on_line = onDebugLine,
+            .on_finished = onDebugLldbFinished,
+            .context = null,
+        };
     }
 
     pub fn deinit(self: *Workbench) void {
@@ -453,6 +465,7 @@ pub const Workbench = struct {
         self.breakpoints.deinit();
         self.debug_console.deinit();
         self.debug_lldb.deinit();
+        self.debug_dap.deinit();
         self.terminals.deinit();
         self.lsp_sync.deinit();
         self.diagnostics.deinit();

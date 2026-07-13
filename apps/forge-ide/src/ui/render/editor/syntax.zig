@@ -32,7 +32,8 @@ pub fn segmentColor(line: []const u8, index: usize, theme: *const @import("forge
     return color(theme.colors.editor_fg);
 }
 
-fn tokenColor(token_type: u32, theme: *const @import("forge-workspace").Theme) renderer.Color {
+/// Returns the base color for a semantic token type (ignoring modifiers).
+fn baseTokenColor(token_type: u32, theme: *const @import("forge-workspace").Theme) renderer.Color {
     const types = lsp.semantic_tokens.SemanticTokenTypes;
     if (token_type == @intFromEnum(types.namespace)) return color(theme.colors.text_muted);
     if (token_type == @intFromEnum(types.type)) return color(theme.colors.type);
@@ -60,30 +61,61 @@ fn tokenColor(token_type: u32, theme: *const @import("forge-workspace").Theme) r
     return color(theme.colors.editor_fg);
 }
 
-const SemanticLineCache = struct {
-    tokens_ptr: usize = 0,
-    len: usize = 0,
-    line: usize = 0,
-    index: usize = 0,
-};
+/// Adjusts a base color according to LSP semantic-token modifier bits.
+///
+/// The renderer's TextSpan only carries color (no italic/bold/strikethrough
+/// flags), so we convey modifiers via color shifts:
+///
+/// - `deprecated`        — reduce alpha to 0.45 (faded, signals "going away")
+/// - `documentation`     — use comment color (documentation is often a comment)
+/// - `defaultLibrary`    — use type color (built-in types like String, Array)
+/// - `declaration` / `definition` — boost brightness by 12% (signals importance)
+/// - `static`            — slight cool tint (shift toward blue)
+/// - `readonly` / `modification` — no color shift (would need italics to convey)
+fn applyModifierAdjustments(base: renderer.Color, modifiers: u32, theme: *const @import("forge-workspace").Theme) renderer.Color {
+    var c = base;
 
-var semantic_line_cache: SemanticLineCache = .{};
-
-fn firstSemanticTokenForLine(tokens: []lsp.semantic_tokens.AbsoluteToken, line_idx: usize) usize {
-    if (tokens.len == 0) return 0;
-
-    const ptr = @intFromPtr(tokens.ptr);
-    if (semantic_line_cache.tokens_ptr == ptr and
-        semantic_line_cache.len == tokens.len and
-        semantic_line_cache.index <= tokens.len and
-        semantic_line_cache.line <= line_idx)
-    {
-        var i = semantic_line_cache.index;
-        while (i < tokens.len and tokens[i].line < line_idx) : (i += 1) {}
-        semantic_line_cache = .{ .tokens_ptr = ptr, .len = tokens.len, .line = line_idx, .index = i };
-        return i;
+    if (lsp.semantic_tokens.hasModifier(modifiers, .documentation)) {
+        // Documentation tokens are typically comments — use comment color.
+        c = color(theme.colors.comment);
+    } else if (lsp.semantic_tokens.hasModifier(modifiers, .default_library)) {
+        // Built-in / stdlib symbols — use type color.
+        c = color(theme.colors.type);
     }
 
+    if (lsp.semantic_tokens.hasModifier(modifiers, .declaration) or
+        lsp.semantic_tokens.hasModifier(modifiers, .definition))
+    {
+        // Declaration/definition is more important than a mere reference —
+        // boost brightness by ~12%, clamped to 1.0.
+        const boost: f32 = 1.12;
+        c.r = @min(1.0, c.r * boost);
+        c.g = @min(1.0, c.g * boost);
+        c.b = @min(1.0, c.b * boost);
+    }
+
+    if (lsp.semantic_tokens.hasModifier(modifiers, .static)) {
+        // Static members get a subtle cool tint (shift toward blue).
+        c.b = @min(1.0, c.b * 1.15 + 0.05);
+    }
+
+    if (lsp.semantic_tokens.hasModifier(modifiers, .deprecated)) {
+        // Deprecated — fade to 45% opacity so it visually recedes.
+        c.a = 0.45;
+    }
+
+    return c;
+}
+
+fn tokenColor(token_type: u32, modifiers: u32, theme: *const @import("forge-workspace").Theme) renderer.Color {
+    const base = baseTokenColor(token_type, theme);
+    return applyModifierAdjustments(base, modifiers, theme);
+}
+
+/// Binary search for the first semantic token at or after `line_idx`.
+/// Per-call (no caching) — safe across multiple files and split editor.
+fn firstSemanticTokenForLine(tokens: []lsp.semantic_tokens.AbsoluteToken, line_idx: usize) usize {
+    if (tokens.len == 0) return 0;
     var left: usize = 0;
     var right: usize = tokens.len;
     while (left < right) {
@@ -94,7 +126,6 @@ fn firstSemanticTokenForLine(tokens: []lsp.semantic_tokens.AbsoluteToken, line_i
             right = mid;
         }
     }
-    semantic_line_cache = .{ .tokens_ptr = ptr, .len = tokens.len, .line = line_idx, .index = left };
     return left;
 }
 
@@ -136,7 +167,7 @@ pub fn drawHighlightedLine(
                 span_count += 1;
             }
             if (span_count >= spans.len) break;
-            const c = tokenColor(tok.token_type, theme);
+            const c = tokenColor(tok.token_type, tok.modifiers, theme);
             spans[span_count] = .{ .offset = adj_start, .length = adj_len, .r = c.r, .g = c.g, .b = c.b, .a = c.a };
             span_count += 1;
             last_end = adj_start + adj_len;
