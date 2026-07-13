@@ -139,6 +139,34 @@ pub fn execute(
         defer allocator.free(out.summary);
         return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
     }
+    if (std.mem.eql(u8, call.name, "multi_edit")) {
+        const me_args = args.parseMultiEditArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer args.freeMultiEditArgs(allocator, me_args);
+        const out = tool_executor.multiEdit(tool_ctx, me_args) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
+    if (std.mem.eql(u8, call.name, "spawn_subagent")) {
+        const SubagentArgs = struct { role: ?[]const u8 = null, prompt: ?[]const u8 = null };
+        var parsed = std.json.parseFromSlice(SubagentArgs, allocator, args.cleanJson(call.args_json), .{ .ignore_unknown_fields = true }) catch return error.ParseFailed;
+        defer parsed.deinit();
+        const role = parsed.value.role orelse return error.ParseFailed;
+        const prompt = parsed.value.prompt orelse return error.ParseFailed;
+        const out = tool_executor.spawnSubagent(tool_ctx, role, prompt) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
+    if (std.mem.eql(u8, call.name, "diff_preview")) {
+        const DiffArgs = struct { path: ?[]const u8 = null, search: ?[]const u8 = null, replace: ?[]const u8 = null };
+        var parsed = std.json.parseFromSlice(DiffArgs, allocator, args.cleanJson(call.args_json), .{ .ignore_unknown_fields = true }) catch return error.ParseFailed;
+        defer parsed.deinit();
+        const path = parsed.value.path orelse return error.ParseFailed;
+        const search = parsed.value.search orelse return error.ParseFailed;
+        const replace = parsed.value.replace orelse return error.ParseFailed;
+        const out = tool_executor.diffPreview(tool_ctx, path, search, replace) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
     return error.UnknownTool;
 }
 

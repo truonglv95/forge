@@ -30,19 +30,22 @@ pub const ToolId = enum {
     run_task,
     run_command,
     propose_edit,
+    multi_edit,
     apply_proposal,
     undo,
     show_context,
+    spawn_subagent,
+    diff_preview,
 };
 
 pub fn isAllowed(profile: CapabilityProfile, tool: ToolId) bool {
     return switch (profile) {
         .read_only => switch (tool) {
-            .read_file, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .find_files, .fetch_url, .list_tree, .show_context => true,
+            .read_file, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .find_files, .fetch_url, .list_tree, .show_context, .diff_preview => true,
             else => false,
         },
         .propose => switch (tool) {
-            .read_file, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .find_files, .fetch_url, .list_tree, .show_context, .propose_edit, .remember, .run_command => true,
+            .read_file, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .find_files, .fetch_url, .list_tree, .show_context, .propose_edit, .multi_edit, .remember, .run_command, .diff_preview => true,
             else => false,
         },
         .propose_and_task => switch (tool) {
@@ -67,9 +70,12 @@ pub fn name(tool: ToolId) []const u8 {
         .run_task => "run_task",
         .run_command => "run_command",
         .propose_edit => "propose_edit",
+        .multi_edit => "multi_edit",
         .apply_proposal => "apply_proposal",
         .undo => "undo",
         .show_context => "show_context",
+        .spawn_subagent => "spawn_subagent",
+        .diff_preview => "diff_preview",
     };
 }
 
@@ -77,12 +83,18 @@ pub fn name(tool: ToolId) []const u8 {
 pub fn wireName(tool: ToolId) []const u8 {
     return switch (tool) {
         .propose_edit => "replace_file_content",
+        .multi_edit => "multi_edit",
+        .spawn_subagent => "spawn_subagent",
+        .diff_preview => "diff_preview",
         else => name(tool),
     };
 }
 
 pub fn idFromWire(wire_name: []const u8) ?ToolId {
     if (std.mem.eql(u8, wire_name, "replace_file_content")) return .propose_edit;
+    if (std.mem.eql(u8, wire_name, "multi_edit")) return .multi_edit;
+    if (std.mem.eql(u8, wire_name, "spawn_subagent")) return .spawn_subagent;
+    if (std.mem.eql(u8, wire_name, "diff_preview")) return .diff_preview;
     inline for (@typeInfo(ToolId).@"enum".fields) |field| {
         const id: ToolId = @enumFromInt(@intFromEnum(@field(ToolId, field.name)));
         if (std.mem.eql(u8, wire_name, name(id))) return id;

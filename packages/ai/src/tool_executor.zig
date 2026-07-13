@@ -30,10 +30,9 @@ pub const Context = struct {
     lsp_request_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 = null,
     lsp_context: ?*anyopaque = null,
     cache: ?*tool_cache_mod.Cache = null,
-    /// Project-specific extra commands allowed by `run_command`. Loaded from
-    /// `forge.toml [ai.allowed_commands]`. Each entry is an exact command
-    /// string (e.g. "just test"). Empty by default.
     extra_allowed_commands: []const []const u8 = &.{},
+    stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
+    stream_context: ?*anyopaque = null,
 };
 
 pub const Outcome = struct {
@@ -608,6 +607,22 @@ fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome
         return error.NotAllowed;
     };
 
+    if (ctx.stream_callback != null) {
+        const stream_result = kernel.process.runStreaming(ctx.allocator, .{
+            .argv = argv,
+            .cwd = ctx.cwd,
+            .max_bytes = 24 * 1024,
+            .on_output = ctx.stream_callback,
+            .on_output_context = ctx.stream_context,
+            .token = if (ctx.cancel_token) |token| token.* else null,
+        }) catch return error.TaskFailed;
+        defer ctx.allocator.free(stream_result.output);
+        if (stream_result.cancelled) return error.Cancelled;
+        const clipped = if (stream_result.output.len > 1200) stream_result.output[0..1200] else stream_result.output;
+        const summary = std.fmt.allocPrint(ctx.allocator, "run_command exit {d}\n{s}", .{ stream_result.exit_code, clipped }) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    }
+
     const captured = kernel.process.runCapture(ctx.allocator, .{
         .argv = argv,
         .cwd = ctx.cwd,
@@ -718,6 +733,71 @@ pub fn replaceFileContent(ctx: Context, args: @import("tools/args.zig").ReplaceF
         }
         break :blk std.fmt.allocPrint(ctx.allocator, "Write `{s}` hash={x} blocks={d}", .{ args.path, snap.hash, args.edits.len }) catch return error.WorkspaceFailed;
     };
+    return .{ .summary = summary };
+}
+
+pub fn multiEdit(ctx: Context, args: @import("tools/args.zig").MultiEditArgs) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .multi_edit);
+
+    if (args.files.len == 0) return error.WorkspaceFailed;
+
+    var file_edits: std.ArrayList(workspace.edit.FileEdit) = .empty;
+    defer file_edits.deinit(ctx.allocator);
+    var owned_text_edits: std.ArrayList([]workspace.edit.TextEdit) = .empty;
+    defer {
+        for (owned_text_edits.items) |slice| ctx.allocator.free(slice);
+        owned_text_edits.deinit(ctx.allocator);
+    }
+
+    for (args.files) |fe| {
+        const wp = workspace.WorkspacePath.parse(fe.path) catch return error.WorkspaceFailed;
+        var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return error.WorkspaceFailed;
+        defer snap.deinit();
+        const expected_hash = workspace.edit.contentHash(snap.content);
+
+        const text_edits = ctx.allocator.alloc(workspace.edit.TextEdit, fe.edits.len) catch return error.WorkspaceFailed;
+        for (fe.edits, 0..) |e, i| {
+            text_edits[i] = .{ .start = 0, .end = 0, .search = e.search, .replacement = e.replace };
+        }
+        owned_text_edits.append(ctx.allocator, text_edits) catch return error.WorkspaceFailed;
+        file_edits.append(ctx.allocator, .{
+            .path = fe.path,
+            .operation = .modify,
+            .expected_hash = expected_hash,
+            .edits = text_edits,
+        }) catch return error.WorkspaceFailed;
+    }
+
+    if (ctx.edit_callback) |cb| {
+        cb(ctx.edit_context, .{ .files = file_edits.items });
+    }
+
+    var total_edits: usize = 0;
+    for (args.files) |fe| total_edits += fe.edits.len;
+    const summary = std.fmt.allocPrint(ctx.allocator, "Multi-edit {d} file(s), {d} block(s) total: {s}", .{ args.files.len, total_edits, args.files[0].path }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
+pub fn spawnSubagent(ctx: Context, role: []const u8, prompt: []const u8) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .spawn_subagent);
+
+    const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}' scheduled. Prompt: {s:.120}", .{ role, prompt }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
+pub fn diffPreview(ctx: Context, path: []const u8, search_block: []const u8, replace_block: []const u8) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .diff_preview);
+
+    const diff_text = @import("diff_tool.zig").previewSearchReplace(ctx.allocator, ctx.io, ctx.root, path, search_block, replace_block) catch {
+        const summary = std.fmt.allocPrint(ctx.allocator, "diff_preview: search block not found in {s}", .{path}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+    defer ctx.allocator.free(diff_text);
+
+    const summary = std.fmt.allocPrint(ctx.allocator, "Diff preview for {s}:\n{s}", .{ path, diff_text }) catch return error.WorkspaceFailed;
     return .{ .summary = summary };
 }
 

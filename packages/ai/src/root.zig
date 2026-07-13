@@ -73,6 +73,7 @@ pub const provider_failover = @import("provider_failover.zig");
 pub const usage_tracker = @import("usage_tracker.zig");
 pub const diff_tool = @import("diff_tool.zig");
 pub const adaptive_budget = @import("adaptive_budget.zig");
+pub const inline_completion = @import("inline_completion.zig");
 pub const validation_hints = @import("validation_hints.zig");
 pub const validation_runner = @import("validation_runner.zig");
 pub const repair_loop = @import("repair_loop.zig");

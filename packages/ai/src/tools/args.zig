@@ -1,6 +1,6 @@
 const std = @import("std");
 
-fn cleanJson(input: []const u8) []const u8 {
+pub fn cleanJson(input: []const u8) []const u8 {
     var s = std.mem.trim(u8, input, " \n\r\t");
     if (std.mem.startsWith(u8, s, "```json")) {
         s = s[7..];
@@ -37,6 +37,90 @@ pub const ReplaceFileContentArgs = struct {
         replace: []const u8,
     };
 };
+
+pub const MultiEditArgs = struct {
+    files: []const FileEdit,
+
+    pub const FileEdit = struct {
+        path: []const u8,
+        edits: []const ReplaceFileContentArgs.Edit,
+    };
+};
+
+pub fn parseMultiEditArgs(allocator: std.mem.Allocator, args_json: []const u8) !MultiEditArgs {
+    const JsonEdit = struct {
+        search: ?[]const u8 = null,
+        replace: ?[]const u8 = null,
+    };
+    const JsonFile = struct {
+        path: ?[]const u8 = null,
+        edits: ?[]const JsonEdit = null,
+    };
+    const Args = struct {
+        files: ?[]const JsonFile = null,
+    };
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const json_files = parsed.value.files orelse return error.MissingArg;
+    if (json_files.len == 0) return error.MissingArg;
+    if (json_files.len > 32) return error.InvalidRange;
+
+    const files = try allocator.alloc(MultiEditArgs.FileEdit, json_files.len);
+    errdefer {
+        for (files) |f| {
+            allocator.free(f.path);
+            for (f.edits) |e| {
+                allocator.free(e.search);
+                allocator.free(e.replace);
+            }
+            allocator.free(f.edits);
+        }
+        allocator.free(files);
+    }
+
+    for (json_files, 0..) |jf, fi| {
+        const path = jf.path orelse return error.MissingArg;
+        const json_edits = jf.edits orelse return error.MissingArg;
+        if (json_edits.len == 0) return error.MissingArg;
+        if (json_edits.len > 64) return error.InvalidRange;
+
+        const edits = try allocator.alloc(ReplaceFileContentArgs.Edit, json_edits.len);
+        errdefer {
+            for (edits) |e| {
+                allocator.free(e.search);
+                allocator.free(e.replace);
+            }
+            allocator.free(edits);
+        }
+
+        for (json_edits, 0..) |je, ei| {
+            edits[ei] = .{
+                .search = try allocator.dupe(u8, je.search orelse return error.MissingArg),
+                .replace = try allocator.dupe(u8, je.replace orelse return error.MissingArg),
+            };
+        }
+
+        files[fi] = .{
+            .path = try allocator.dupe(u8, path),
+            .edits = edits,
+        };
+    }
+
+    return .{ .files = files };
+}
+
+pub fn freeMultiEditArgs(allocator: std.mem.Allocator, args: MultiEditArgs) void {
+    for (args.files) |f| {
+        allocator.free(f.path);
+        for (f.edits) |e| {
+            allocator.free(e.search);
+            allocator.free(e.replace);
+        }
+        allocator.free(f.edits);
+    }
+    allocator.free(args.files);
+}
 
 pub const ReadFileArgs = struct {
     path: []const u8,
