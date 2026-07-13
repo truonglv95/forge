@@ -23,6 +23,7 @@ const parsers_cmd = @import("parsers_cmd.zig");
 const ext_cmd = @import("ext_cmd.zig");
 const eval_cmd = @import("eval_cmd.zig");
 const ecosystem_cmd = @import("ecosystem_cmd.zig");
+const spec_cmd = @import("spec_cmd.zig");
 
 const Io = std.Io;
 
@@ -128,6 +129,9 @@ fn run(
             }
             return ext_cmd.run(allocator, io, &parsed, writer) catch 2;
         },
+        .spec => {
+            return spec_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
         .help => {
             try printHelp(writer);
             return 0;
@@ -169,6 +173,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  eval       Run evaluation suites (ai-flow)
         \\  ecosystem  Manage AI tools, context sources, skill packs, eval packs, providers
         \\  ext        Manage extensions (list|install|uninstall)
+        \\  spec       Spec-driven workflow (create|list|show|edit|approve|reject|implement|trace)
         \\  help       Show this help
         \\
         \\Options:
