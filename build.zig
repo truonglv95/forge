@@ -159,48 +159,12 @@ pub fn build(b: *std.Build) void {
         });
         break :blk p;
     } else blk: {
-        const stub_source =
-            \\pub const ApiVersion = struct { major: u32 = 0, minor: u32 = 0 };
-            \\pub const LoadedExtension = struct { id: []const u8 = "", name: []const u8 = "" };
-            \\pub const MarketplaceEntry = struct { id: []const u8 = "", version: []const u8 = "", name: []const u8 = "", source: []const u8 = "" };
-            \\pub const MarketplaceCatalog = struct {
-            \\    entries: []const MarketplaceEntry = &.{},
-            \\    pub fn deinit(_: *MarketplaceCatalog, _: anytype) void {}
-            \\};
-            \\pub const marketplace = struct {
-            \\    pub const CatalogEntry = MarketplaceEntry;
-            \\    pub const Catalog = MarketplaceCatalog;
-            \\    pub fn loadCatalog(_: anytype, _: anytype, _: anytype) !Catalog { return error.PluginUnavailable; }
-            \\    pub fn isInstalled(_: anytype, _: anytype, _: anytype, _: anytype) !bool { return false; }
-            \\    pub fn findEntry(_: *const Catalog, _: []const u8) ?CatalogEntry { return null; }
-            \\    pub fn install(_: anytype, _: anytype, _: anytype, _: CatalogEntry) ![]const u8 { return error.PluginUnavailable; }
-            \\    pub fn uninstall(_: anytype, _: anytype, _: anytype, _: []const u8) !void { return error.PluginUnavailable; }
-            \\};
-            \\pub const Host = struct {
-            \\    pub fn init(_: anytype, _: anytype) Host { return .{}; }
-            \\    pub fn deinit(_: *Host) void {}
-            \\};
-            \\pub const BuiltinExtension = struct {};
-            \\pub const CommandEntry = struct { id: []const u8 = "", title: []const u8 = "" };
-            \\pub const ActivationContext = struct {};
-            \\pub const Manifest = struct {};
-            \\pub const Contributions = struct {};
-            \\pub const WasmRuntime = struct {};
-            \\pub const WasmHostCallbacks = struct {};
-            \\pub const WasmLimits = struct {};
-            \\pub fn limitsFromManifest(_: anytype) WasmLimits { return .{}; }
-            \\pub const wasm_runtime = struct { pub const HostCallbacks = WasmHostCallbacks; };
-            \\pub const vscode_shim = struct {};
-            \\pub const theme_contrib = struct {};
-            \\pub const manifest = struct {};
-            \\pub const host = struct {};
-            \\pub const contributions = struct {};
-        ;
-        const stub_file = b.addWriteFiles();
-        const stub_path = stub_file.add("plugin_stub.zig", stub_source);
         const p = b.addModule("forge-plugin", .{
-            .root_source_file = stub_path,
+            .root_source_file = b.path("packages/plugin/src/stub.zig"),
             .target = target,
+            .imports = &.{
+                .{ .name = "forge-workspace", .module = workspace },
+            },
         });
         break :blk p;
     };
@@ -231,12 +195,12 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the Forge CLI");
     run_step.dependOn(&run_cmd.step);
 
-    // Forge IDE requires the macOS Metal renderer (Linux/Windows renderer
-    // backends exist but the IDE shell code still calls macOS-specific APIs
-    // in workbench.zig). Skip on non-macOS until the IDE shell is ported.
+    // Forge IDE builds on macOS (full) and Linux (with X11 renderer).
+    // When with_plugin=false, a stub plugin module is used so the IDE can
+    // compile without zware (which requires the LLVM backend).
     var ide: ?*std.Build.Step.Compile = null;
     var run_ide_cmd: ?*std.Build.Step.Run = null;
-    if (target.result.os.tag == .macos and with_plugin) {
+    if (target.result.os.tag == .macos or target.result.os.tag == .linux) {
         const ide_exe = b.addExecutable(.{
             .name = "forge-ide",
             .root_module = b.createModule(.{
