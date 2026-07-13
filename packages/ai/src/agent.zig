@@ -31,6 +31,7 @@ const context_manifest = @import("context_manifest.zig");
 const context_budget = @import("context_budget.zig");
 const agent_event = @import("agent_event.zig");
 const task_ledger = @import("task_ledger.zig");
+const adaptive_budget = @import("adaptive_budget.zig");
 
 pub const Config = struct {
     max_steps: u32 = 128,
@@ -268,6 +269,27 @@ pub fn run(
     // caller pinned one explicitly. On resume we keep the persisted profile.
     if (effective_config.auto_capability and config.resume_session_id == null) {
         effective_config.capability_profile = route.capability_profile;
+    }
+
+    // Adaptive step budget: when max_steps was not explicitly set by the
+    // caller (still at default 128), compute an intent-aware budget.
+    // This prevents both premature StepLimitReached on complex tasks and
+    // wasted tokens on simple questions.
+    if (effective_config.max_steps == 128 and config.resume_session_id == null) {
+        const budget = adaptive_budget.computeAdaptiveBudget(.{
+            .intent = route.intent,
+            .is_resume = false,
+            .explicit_max_steps = null,
+            .context_window = provider_handle.metadata().context_window,
+        });
+        effective_config.max_steps = budget.max_steps;
+        event_logger.telemetry(.{
+            .phase = "adaptive_budget",
+            .duration_ms = 0,
+            .bytes = 0,
+            .items = budget.max_steps,
+            .detail = budget.rationale,
+        }) catch {};
     }
 
     var ctx_builder = &resolved_context.builder;

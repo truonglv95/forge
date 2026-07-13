@@ -40,6 +40,8 @@ pub const SignatureHelp = signature_help.SignatureHelp;
 pub const document_highlight = @import("document_highlight.zig");
 pub const folding_range = @import("folding_range.zig");
 pub const inlay_hints = @import("inlay_hints.zig");
+pub const cancel_request = @import("cancel_request.zig");
+pub const snippet = @import("snippet.zig");
 
 pub fn acceptsRequests(state: ServerState) bool {
     return state == .ready;
