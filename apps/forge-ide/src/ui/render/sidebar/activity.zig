@@ -45,6 +45,7 @@ pub fn drawActivityBar(wb: *Workbench, w: f32, alloc: std.mem.Allocator) void {
             .run => renderer.icons.gear,
             .extensions => renderer.icons.plus,
             .ai => renderer.icons.sparkle,
+            .outline => renderer.icons.kebab_horizontal,
         };
 
         var child_node = alloc.create(renderer.layout.Node) catch return;

@@ -18,7 +18,6 @@ const workspace = @import("forge-workspace");
 ///
 /// The merged settings are passed to the extension at activation time
 /// via the ActivationContext.
-
 pub const SettingsError = error{
     OutOfMemory,
     ParseError,
@@ -110,13 +109,15 @@ pub fn loadWorkspaceSettings(
     var settings = Settings.init(allocator);
     errdefer settings.deinit();
 
-    // Read forge.toml from workspace root.
-    const forge_toml = workspace.global_store.readAbsoluteFile(
-        allocator,
-        io,
-        "forge.toml",
-    ) catch return settings;
+    // Read forge.toml from the workspace root directory.
+    var file = root.dir.openFile(io, "forge.toml", .{}) catch return settings;
+    defer file.close(io);
+    const stat = file.stat(io) catch return settings;
+    const size: usize = @intCast(stat.size);
+    const forge_toml = allocator.alloc(u8, size) catch return settings;
     defer allocator.free(forge_toml);
+    const read_len = file.readPositionalAll(io, forge_toml, 0) catch return settings;
+    if (read_len != size) return settings;
 
     // Look for [extension_settings.<extension_id>] section.
     const section_header = std.fmt.allocPrint(allocator, "[extension_settings.{s}]", .{extension_id}) catch return settings;

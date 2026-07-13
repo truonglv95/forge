@@ -16,7 +16,6 @@ const kernel = @import("forge-kernel");
 ///   - Sending requests (initialize, launch, setBreakpoints, etc.)
 ///   - Receiving responses and events
 ///   - Sequence management (request IDs)
-
 pub const DapError = error{
     SpawnFailed,
     ProtocolError,

@@ -11,6 +11,8 @@ const editor_render = @import("editor.zig");
 const sidebar_render = @import("sidebar.zig");
 const status_bar_render = @import("status_bar.zig");
 const task_panel_render = @import("task_panel.zig");
+const outline_panel = @import("../sidebar/outline_panel.zig");
+const notifications_render = @import("notifications.zig");
 
 const dialogs = @import("dialogs.zig");
 
@@ -103,6 +105,7 @@ pub fn onRenderFrame() void {
                     .git => sidebar_render.drawGitPanel(wb, geo.explorer_x, geo.explorer_w, h),
                     .run => sidebar_render.drawDebugPanel(wb, geo.explorer_x, geo.explorer_w, h),
                     .extensions => sidebar_render.drawExtensionsPanel(wb, geo.explorer_x, geo.explorer_w, h),
+                    .outline => outline_panel.drawOutline(wb, geo.explorer_x, geo.explorer_w, h),
                     .ai => {},
                 }
                 const sidebar_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
@@ -128,6 +131,8 @@ pub fn onRenderFrame() void {
             state.perf_agent_ms = @floatFromInt(agent_end_ms - agent_start_ms);
         }
         status_bar_render.drawStatusBar(wb, w, h, geo.shell_mode);
+        // P1-4: Toast notifications (bottom-right corner, on top of everything).
+        notifications_render.drawNotifications(wb, w, h);
         header_toolbar.drawHoverTooltip(w, wb.headerToolbarState(), state.header_hover_action);
 
         if (wb.palette.open) dialogs.drawPalette(wb, w, h);

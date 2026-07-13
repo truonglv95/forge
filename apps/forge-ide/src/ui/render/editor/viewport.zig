@@ -12,6 +12,7 @@ const bracket = @import("bracket.zig");
 const review_overlay = @import("review_overlay.zig");
 const decorations = @import("decorations.zig");
 const overlays = @import("overlays.zig");
+const inlay_hints_render = @import("inlay_hints.zig");
 
 pub fn drawEditorViewport(
     wb: *Workbench,
@@ -281,6 +282,10 @@ pub fn drawEditorViewport(
 
                 syntax.drawHighlightedLine(slice, seg.buf_line, seg.start_col, seg_text_x, line_num_y, theme, semantic_tokens_for_file);
 
+                // P0-6: Inlay hints.
+                const hints_for_file = wb.inlay_hints.get(file_path);
+                inlay_hints_render.drawLineHints(hints_for_file, seg.buf_line, slice, seg_text_x, line_num_y, font_size, theme);
+
                 if (bracket_pair) |pair| {
                     bracket.drawBracketHighlight(editor_buf, pair, seg.buf_line, seg.start_col, seg.end_col, seg_text_x, line_num_y, line_h, font_size, theme);
                 }
@@ -345,6 +350,10 @@ pub fn drawEditorViewport(
     } else {
         if (ghost_row != null and ghost_row.? < start_idx) line_num_y += ghost_newlines * line_h;
         for (start_idx..line_count) |idx| {
+            // P0-4: Skip lines hidden by code folding.
+            if (wb.fold_controller.isLineHidden(@intCast(idx))) {
+                continue;
+            }
             if (line_num_y > 65 + editor_view_h) break;
             if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
                 const debug_here = blk: {
@@ -364,6 +373,10 @@ pub fn drawEditorViewport(
                 overlays.drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
 
                 syntax.drawHighlightedLine(editor_buf.lineAt(idx), idx, 0, text_x, line_num_y, theme, semantic_tokens_for_file);
+
+                // P0-6: Inlay hints.
+                const hints_for_file = wb.inlay_hints.get(file_path);
+                inlay_hints_render.drawLineHints(hints_for_file, idx, editor_buf.lineAt(idx), text_x, line_num_y, font_size, theme);
 
                 if (bracket_pair) |pair| {
                     bracket.drawBracketHighlight(editor_buf, pair, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, theme);

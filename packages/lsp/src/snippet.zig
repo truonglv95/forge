@@ -12,7 +12,6 @@ const std = @import("std");
 ///
 /// This module parses snippet syntax and produces the plain text to insert
 /// plus a list of tab-stop positions for the editor.
-
 pub const TabStop = struct {
     /// 0-indexed position in the inserted text where this tab-stop starts.
     start: usize,

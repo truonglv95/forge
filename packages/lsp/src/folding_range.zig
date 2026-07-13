@@ -2,7 +2,6 @@ const std = @import("std");
 
 /// Folding range support (textDocument/foldingRange).
 /// Returns foldable ranges for code folding in the editor.
-
 pub const FoldingRange = struct {
     start_line: u32,
     end_line: u32,

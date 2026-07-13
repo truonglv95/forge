@@ -307,7 +307,8 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     } else if (event.chars.len > 0) {
         const char_val = event.chars[0];
         if (wb.focused_panel == .agent and char_val == '@' and !wb.agent.show_review and !wb.agent.worker_running) {
-            wb.dispatch(.agent_scope_picker_open) catch {};
+            // P0-3: Open mention picker when user types @ in agent panel.
+            wb.mention_picker.open();
             return;
         }
         if (wb.focused_panel == .agent and wb.agent.worker_running) {
@@ -315,6 +316,13 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         }
         if (char_val >= 32 or char_val == '\t') {
             active_buffer.insertString(event.chars) catch {};
+            // P0-4: Mark fold ranges dirty so they recompute on next tick.
+            wb.fold_dirty = true;
+            // P0-2: If inline edit prompt is active, append to it instead
+            // of the editor buffer.
+            if (wb.inline_edit.active) {
+                wb.inline_edit.appendSlice(event.chars) catch {};
+            }
         }
     }
 

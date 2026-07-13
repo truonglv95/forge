@@ -4,11 +4,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-typedef struct {
-    size_t offset;
-    size_t length;
-    float r, g, b, a;
-} ForgeTextSpan;
+// ForgeTextSpan and the callback typedefs (ForgeRenderCallback,
+// ForgeKeyCallback, ForgeMouseCallback) are defined in shared/backend.h.
+// We include it here so consumers of mac_window.h get the same types,
+// avoiding typedef redefinition errors when both headers are pulled in
+// via @cImport in root.zig.
+#include "backend.h"
 
 // Window Management
 void forge_mac_init(void);
@@ -17,10 +18,6 @@ void forge_mac_create_window(const char* title, int width, int height);
 void forge_mac_request_redraw(void);
 void forge_mac_set_continuous_rendering(bool enabled);
 void forge_mac_get_render_stats(unsigned long long *redraw_requests, unsigned long long *frames);
-
-typedef void (*ForgeRenderCallback)(void);
-typedef void (*ForgeKeyCallback)(int keycode, const char* chars, bool isDown, int modifiers);
-typedef void (*ForgeMouseCallback)(float x, float y, int button, int action, int modifiers);
 
 void forge_mac_set_render_callback(ForgeRenderCallback callback);
 void forge_mac_set_key_callback(ForgeKeyCallback callback);

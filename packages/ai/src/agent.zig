@@ -550,7 +550,13 @@ pub fn run(
             .final_run_id = null,
             .proposal_rel = null,
             .usage = provider_handle.usage(),
-            .estimated_cost_usd = blk: { var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator); defer tracker.deinit(); const m2 = provider_handle.metadata(); tracker.record(m2.provider_name, m2.model_name, provider_handle.usage(), 0) catch {}; break :blk tracker.estimatedCostUsd(m2.provider_name, m2.model_name); },
+            .estimated_cost_usd = blk: {
+                var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator);
+                defer tracker.deinit();
+                const m2 = provider_handle.metadata();
+                tracker.record(m2.provider_name, m2.model_name, provider_handle.usage(), 0) catch {};
+                break :blk tracker.estimatedCostUsd(m2.provider_name, m2.model_name);
+            },
             .response_text = owned_response,
         };
     }
@@ -568,7 +574,13 @@ pub fn run(
             .final_run_id = null,
             .proposal_rel = null,
             .usage = provider_handle.usage(),
-            .estimated_cost_usd = blk: { var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator); defer tracker.deinit(); const m2 = provider_handle.metadata(); tracker.record(m2.provider_name, m2.model_name, provider_handle.usage(), 0) catch {}; break :blk tracker.estimatedCostUsd(m2.provider_name, m2.model_name); },
+            .estimated_cost_usd = blk: {
+                var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator);
+                defer tracker.deinit();
+                const m2 = provider_handle.metadata();
+                tracker.record(m2.provider_name, m2.model_name, provider_handle.usage(), 0) catch {};
+                break :blk tracker.estimatedCostUsd(m2.provider_name, m2.model_name);
+            },
             .response_text = owned_response,
         };
     }
@@ -882,7 +894,13 @@ pub fn run(
         .proposal_rel = owned_proposal,
         .repair_attempts = repair_attempt,
         .usage = llm.usage(),
-        .estimated_cost_usd = blk: { var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator); defer tracker.deinit(); const m2 = llm.metadata(); tracker.record(m2.provider_name, m2.model_name, llm.usage(), 0) catch {}; break :blk tracker.estimatedCostUsd(m2.provider_name, m2.model_name); },
+        .estimated_cost_usd = blk: {
+            var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator);
+            defer tracker.deinit();
+            const m2 = llm.metadata();
+            tracker.record(m2.provider_name, m2.model_name, llm.usage(), 0) catch {};
+            break :blk tracker.estimatedCostUsd(m2.provider_name, m2.model_name);
+        },
     };
 }
 

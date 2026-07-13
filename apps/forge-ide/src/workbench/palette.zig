@@ -91,6 +91,30 @@ pub const Palette = struct {
             .{ .id = "editor.accept_inline_edit", .title = "Accept Inline Edit", .category = "Edit", .command = .editor_accept_inline_edit },
             .{ .id = "editor.reject_inline_edit", .title = "Reject Inline Edit", .category = "Edit", .command = .editor_reject_inline_edit },
             .{ .id = "problem.quick_fix", .title = "Problem: Quick Fix at Cursor", .category = "Edit", .command = .problem_quick_fix },
+            // P0-4: Multi-cursor
+            .{ .id = "editor.add_cursor_next", .title = "Add Cursor to Next Occurrence (Cmd+D)", .category = "Edit", .command = .editor_add_cursor_next },
+            .{ .id = "editor.add_cursor_all", .title = "Add Cursor to All Occurrences (Cmd+Shift+L)", .category = "Edit", .command = .editor_add_cursor_all },
+            .{ .id = "editor.clear_cursors", .title = "Clear Multi-Cursors", .category = "Edit", .command = .editor_clear_cursors },
+            // P0-4: Folding
+            .{ .id = "editor.fold_toggle", .title = "Fold/Unfold at Cursor", .category = "Edit", .command = .editor_fold_toggle },
+            .{ .id = "editor.fold_all", .title = "Fold All", .category = "Edit", .command = .editor_fold_all },
+            .{ .id = "editor.unfold_all", .title = "Unfold All", .category = "Edit", .command = .editor_unfold_all },
+            // P0-5: Context menu
+            .{ .id = "editor.show_quick_fixes", .title = "Show Quick Fixes (Shift+F10)", .category = "Edit", .command = .editor_show_quick_fixes },
+            .{ .id = "editor.context_menu", .title = "Open Context Menu", .category = "Edit", .command = .editor_open_context_menu },
+            // P0-2: Inline edit
+            .{ .id = "inline_edit.submit", .title = "Inline Edit: Submit Prompt", .category = "AI", .command = .inline_edit_submit },
+            .{ .id = "inline_edit.accept", .title = "Inline Edit: Accept", .category = "AI", .command = .inline_edit_accept },
+            .{ .id = "inline_edit.reject", .title = "Inline Edit: Reject", .category = "AI", .command = .inline_edit_reject },
+            .{ .id = "inline_edit.cancel", .title = "Inline Edit: Cancel", .category = "AI", .command = .inline_edit_cancel },
+            // P0-3: Mentions
+            .{ .id = "chat.mention_file", .title = "Chat: Mention @file", .category = "AI", .command = .chat_mention_file },
+            .{ .id = "chat.mention_symbol", .title = "Chat: Mention @symbol", .category = "AI", .command = .chat_mention_symbol },
+            .{ .id = "chat.mention_folder", .title = "Chat: Mention @folder", .category = "AI", .command = .chat_mention_folder },
+            .{ .id = "chat.mention_web", .title = "Chat: Mention @web", .category = "AI", .command = .chat_mention_web },
+            // P1.5-3: Watch expressions
+            .{ .id = "debug.watch_clear", .title = "Debug: Clear Watch Expressions", .category = "Debug", .command = .debug_watch_clear },
+            .{ .id = "debug.watch_refresh", .title = "Debug: Refresh Watch Expressions", .category = "Debug", .command = .debug_watch_refresh },
             .{ .id = "editor.split", .title = "Split Editor Right", .category = "Edit", .command = .editor_split_right },
             .{ .id = "editor.close_split", .title = "Close Editor Split", .category = "Edit", .command = .editor_close_split },
             .{ .id = "rename.accept", .title = "Rename: Accept Preview", .category = "Edit", .command = .rename_accept },
@@ -108,6 +132,7 @@ pub const Palette = struct {
             .{ .id = "view.git", .title = "View: Show Source Control", .category = "View", .command = .{ .set_sidebar_view = .git } },
             .{ .id = "view.run", .title = "View: Show Run and Debug", .category = "View", .command = .{ .set_sidebar_view = .run } },
             .{ .id = "view.extensions", .title = "View: Show Extensions", .category = "View", .command = .{ .set_sidebar_view = .extensions } },
+            .{ .id = "view.outline", .title = "View: Show Outline", .category = "View", .command = .{ .set_sidebar_view = .outline } },
             .{ .id = "view.settings", .title = "View: Settings", .category = "View", .command = .open_settings_modal },
             .{ .id = "view.toggle_sidebar", .title = "View: Toggle Primary Sidebar", .category = "View", .command = .toggle_sidebar },
             .{ .id = "view.toggle_panel", .title = "View: Toggle Bottom Panel", .category = "View", .command = .toggle_bottom_panel },

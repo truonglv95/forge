@@ -14,7 +14,6 @@ const task_ledger = @import("task_ledger.zig");
 /// The adaptive budget prevents both:
 ///   - Premature StepLimitReached for complex debugging tasks
 ///   - Wasted tokens on simple questions that don't need 128 steps
-
 pub const StepBudgetInput = struct {
     intent: routing.TaskIntent,
     /// Current task ledger phase (if available).

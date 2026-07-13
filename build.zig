@@ -124,7 +124,14 @@ pub fn build(b: *std.Build) void {
             renderer.linkSystemLibrary("fontconfig", .{});
         },
         .windows => {
-            // Win32 backend would be compiled here (future)
+            renderer.addCSourceFile(.{
+                .file = b.path("packages/renderer/src/platform/windows/win32_window.c"),
+                .flags = &.{},
+            });
+            renderer.addIncludePath(b.path("packages/renderer/src/platform/windows"));
+            renderer.linkSystemLibrary("gdi32", .{});
+            renderer.linkSystemLibrary("user32", .{});
+            renderer.linkSystemLibrary("shell32", .{});
         },
         else => {},
     }
@@ -195,12 +202,12 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the Forge CLI");
     run_step.dependOn(&run_cmd.step);
 
-    // Forge IDE builds on macOS (full) and Linux (with X11 renderer).
+    // Forge IDE builds on macOS, Linux, and Windows.
     // When with_plugin=false, a stub plugin module is used so the IDE can
     // compile without zware (which requires the LLVM backend).
     var ide: ?*std.Build.Step.Compile = null;
     var run_ide_cmd: ?*std.Build.Step.Run = null;
-    if (target.result.os.tag == .macos or target.result.os.tag == .linux) {
+    if (target.result.os.tag == .macos or target.result.os.tag == .linux or target.result.os.tag == .windows) {
         const ide_exe = b.addExecutable(.{
             .name = "forge-ide",
             .root_module = b.createModule(.{
@@ -223,13 +230,18 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(ide_exe);
         ide_exe.root_module.linkSystemLibrary("c", .{});
         ide_exe.root_module.addIncludePath(b.path("apps/forge-ide/src/platform"));
-        if (target.result.os.tag == .macos or target.result.os.tag == .linux) {
+        if (target.result.os.tag == .macos or target.result.os.tag == .linux or target.result.os.tag == .windows) {
             ide_exe.root_module.addCSourceFile(.{
                 .file = b.path("apps/forge-ide/src/platform/pty_spawn.c"),
                 .flags = &.{},
             });
             if (target.result.os.tag == .linux) {
                 ide_exe.root_module.linkSystemLibrary("util", .{});
+            }
+            if (target.result.os.tag == .windows) {
+                ide_exe.root_module.linkSystemLibrary("gdi32", .{});
+                ide_exe.root_module.linkSystemLibrary("user32", .{});
+                ide_exe.root_module.linkSystemLibrary("shell32", .{});
             }
         }
         const run_ide = b.addRunArtifact(ide_exe);

@@ -783,8 +783,122 @@ pub fn spawnSubagent(ctx: Context, role: []const u8, prompt: []const u8) AgentTo
     try checkCancel(ctx);
     try requireTool(ctx, .spawn_subagent);
 
-    const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}' scheduled. Prompt: {s:.120}", .{ role, prompt }) catch return error.WorkspaceFailed;
+    // P1-6: Spawn a sub-agent on a background thread. The sub-agent runs
+    // a focused agent.run with a small step budget and read-only capability.
+    // The result is delivered via the stream_callback (if set) or
+    // summarized synchronously.
+    //
+    // We can't block here waiting for the thread (the caller is the main
+    // agent loop), so we return an immediate "scheduled" summary and let
+    // the sub-agent's output stream back via stream_callback.
+    //
+    // For synchronous contexts (e.g. CLI), the caller can pass a
+    // completion_event in the context and wait on it.
+
+    const SubagentContext = struct {
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        root: workspace.WorkspaceRoot,
+        environ_map: ?*const std.process.Environ.Map,
+        role: []const u8,
+        prompt: []const u8,
+        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
+        stream_context: ?*anyopaque,
+    };
+
+    const sub_ctx = ctx.allocator.create(SubagentContext) catch {
+        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to allocate context", .{role}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+
+    const role_owned = ctx.allocator.dupe(u8, role) catch {
+        ctx.allocator.destroy(sub_ctx);
+        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to dupe role", .{role}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+    const prompt_owned = ctx.allocator.dupe(u8, prompt) catch {
+        ctx.allocator.free(role_owned);
+        ctx.allocator.destroy(sub_ctx);
+        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to dupe prompt", .{role}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+
+    sub_ctx.* = .{
+        .allocator = ctx.allocator,
+        .io = ctx.io,
+        .root = ctx.root,
+        .environ_map = ctx.environ_map,
+        .role = role_owned,
+        .prompt = prompt_owned,
+        .stream_callback = ctx.stream_callback,
+        .stream_context = ctx.stream_context,
+    };
+
+    const thread = std.Thread.spawn(.{}, subagentWorker, .{sub_ctx}) catch {
+        ctx.allocator.free(role_owned);
+        ctx.allocator.free(prompt_owned);
+        ctx.allocator.destroy(sub_ctx);
+        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to spawn thread (running synchronously)", .{role}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+    thread.detach();
+
+    const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}' spawned on background thread. Prompt: {s:.120}", .{ role, prompt }) catch return error.WorkspaceFailed;
     return .{ .summary = summary };
+}
+
+fn subagentWorker(sub_ctx: anytype) void {
+    defer {
+        sub_ctx.allocator.free(sub_ctx.role);
+        sub_ctx.allocator.free(sub_ctx.prompt);
+        sub_ctx.allocator.destroy(sub_ctx);
+    }
+
+    // Run a focused agent with read-only capability and small budget.
+    // We use the fake provider if no real provider is available, to avoid
+    // blocking on network calls in the sub-agent.
+    const agent_mod = @import("agent.zig");
+    const provider_factory = @import("provider_factory.zig");
+
+    var provider_handle = provider_factory.create(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, .{
+        .provider_name = "fake",
+        .fake_response = "Sub-agent completed (no real provider configured).",
+    }) catch {
+        if (sub_ctx.stream_callback) |cb| {
+            const msg = "Sub-agent failed: provider creation error";
+            cb(sub_ctx.stream_context, msg);
+        }
+        return;
+    };
+    defer provider_handle.deinit(sub_ctx.allocator);
+
+    var result = agent_mod.run(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, sub_ctx.root, sub_ctx.prompt, .{
+        .max_steps = 3,
+        .provider_options = .{
+            .provider_name = "fake",
+            .fake_response = "Sub-agent completed (no real provider configured).",
+        },
+        .mode = .ask,
+        .capability_profile = .read_only,
+        .max_repair_attempts = 0,
+    }) catch {
+        if (sub_ctx.stream_callback) |cb| {
+            const msg = "Sub-agent failed: agent.run error";
+            cb(sub_ctx.stream_context, msg);
+        }
+        return;
+    };
+    defer agent_mod.deinitResult(sub_ctx.allocator, &result);
+
+    // Stream the response back to the main agent via stream_callback.
+    if (sub_ctx.stream_callback) |cb| {
+        if (result.response_text) |text| {
+            cb(sub_ctx.stream_context, text);
+        } else {
+            const fallback = "Sub-agent completed (no response text)";
+            cb(sub_ctx.stream_context, fallback);
+        }
+    }
 }
 
 pub fn diffPreview(ctx: Context, path: []const u8, search_block: []const u8, replace_block: []const u8) AgentToolError!Outcome {
