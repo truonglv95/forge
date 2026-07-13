@@ -6,7 +6,28 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
-#include <util.h>
+
+#if defined(__APPLE__)
+  #include <util.h>
+#elif defined(__linux__)
+  #include <pty.h>
+#else
+  static int openpty(int* master, int* slave, char* name, const void* termp, const void* winp) {
+    (void)name; (void)termp;
+    int m = posix_openpt(O_RDWR | O_NOCTTY);
+    if (m < 0) return -1;
+    if (grantpt(m) < 0) { close(m); return -1; }
+    if (unlockpt(m) < 0) { close(m); return -1; }
+    char* sname = ptsname(m);
+    if (!sname) { close(m); return -1; }
+    int s = open(sname, O_RDWR | O_NOCTTY);
+    if (s < 0) { close(m); return -1; }
+    *master = m;
+    *slave = s;
+    if (winp) ioctl(m, TIOCSWINSZ, winp);
+    return 0;
+  }
+#endif
 
 extern char **environ;
 
