@@ -24,8 +24,28 @@ pub fn policyFor(wire_name: []const u8) Policy {
     }
     if (std.mem.eql(u8, wire_name, "spawn_subagent")) return .{ .risk = .medium, .approval = .automatic };
     if (capabilities.idFromWire(wire_name) != null) return .{ .risk = .low, .approval = .automatic };
-    // MCP tools do not yet carry a trusted local policy declaration.
+    // MCP tools: check annotations for readOnly hint via mcp_capability.
     return .{ .risk = .high, .approval = .every_time };
+}
+
+/// Like policyFor but checks MCP tool annotations for capability hints.
+/// When annotations indicate readOnly=true, returns low/automatic instead
+/// of high/every_time. This reduces approval noise for read-only MCP tools.
+pub fn policyForMcp(wire_name: []const u8, annotations_json: ?[]const u8) Policy {
+    // Check native tools first.
+    const native = policyFor(wire_name);
+    if (capabilities.idFromWire(wire_name) != null) return native;
+
+    // For MCP tools, check annotations.
+    if (annotations_json) |annotations| {
+        const mcp_policy = @import("../mcp_capability.zig").inferPolicy(annotations);
+        return switch (mcp_policy.capability) {
+            .read_only => .{ .risk = .low, .approval = .automatic },
+            .mutate => .{ .risk = .high, .approval = .every_time },
+            .unknown => native,
+        };
+    }
+    return native;
 }
 
 /// Canonical JSON array of native tool declarations (Gemini functionDeclarations shape).

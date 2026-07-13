@@ -108,6 +108,8 @@ pub const Result = struct {
     repair_attempts: u8 = 0,
     usage: provider_mod.TokenUsage = .{},
     response_text: ?[]const u8 = null,
+    /// Estimated cost in USD for this run (0.0 when provider is local/free).
+    estimated_cost_usd: f64 = 0.0,
 };
 
 fn conversationBytes(turns: []const conversation.Turn) usize {
@@ -526,6 +528,7 @@ pub fn run(
             .final_run_id = null,
             .proposal_rel = null,
             .usage = provider_handle.usage(),
+            .estimated_cost_usd = blk: { var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator); defer tracker.deinit(); const m2 = provider_handle.metadata(); tracker.record(m2.provider_name, m2.model_name, provider_handle.usage(), 0) catch {}; break :blk tracker.estimatedCostUsd(m2.provider_name, m2.model_name); },
             .response_text = owned_response,
         };
     }
@@ -543,6 +546,7 @@ pub fn run(
             .final_run_id = null,
             .proposal_rel = null,
             .usage = provider_handle.usage(),
+            .estimated_cost_usd = blk: { var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator); defer tracker.deinit(); const m2 = provider_handle.metadata(); tracker.record(m2.provider_name, m2.model_name, provider_handle.usage(), 0) catch {}; break :blk tracker.estimatedCostUsd(m2.provider_name, m2.model_name); },
             .response_text = owned_response,
         };
     }
@@ -856,6 +860,7 @@ pub fn run(
         .proposal_rel = owned_proposal,
         .repair_attempts = repair_attempt,
         .usage = llm.usage(),
+        .estimated_cost_usd = blk: { var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator); defer tracker.deinit(); const m2 = llm.metadata(); tracker.record(m2.provider_name, m2.model_name, llm.usage(), 0) catch {}; break :blk tracker.estimatedCostUsd(m2.provider_name, m2.model_name); },
     };
 }
 
