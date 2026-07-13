@@ -36,6 +36,7 @@ pub const limitsFromManifest = wasm_runtime.limitsFromManifest;
 pub const theme_contrib = @import("theme_contrib.zig");
 pub const extension_settings = @import("extension_settings.zig");
 pub const ExtensionSettings = extension_settings.Settings;
+pub const hot_reload = @import("hot_reload.zig");
 
 test {
     std.testing.refAllDecls(@This());
