@@ -1,0 +1,16 @@
+[extension]
+id = "forge.theme.dark-plus"
+name = "Dark+"
+version = "0.1.0"
+api_version = 1
+publisher = "forge"
+description = "VS Code Dark+ inspired theme"
+
+[[themes]]
+id = "dark-plus"
+label = "Dark+"
+path = "themes/dark-plus.toml"
+
+[[keybindings]]
+key = "cmd+shift+t"
+command = "theme.forge.theme.dark-plus.dark-plus"

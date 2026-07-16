@@ -117,6 +117,8 @@ pub fn tickGhostCompletion(wb: anytype, delta_s: f32) void {
 
     // Sync cursor position — dismiss if moved.
     wb.ghost.onCursorMoved(doc.buffer.cursor.row, doc.buffer.cursor.col);
+    // Sync file path — needed by the `ai` provider for language detection.
+    wb.ghost.setFilePath(doc.path);
 
     if (!wb.ghost.tick(delta_s * 1000.0)) return;
 

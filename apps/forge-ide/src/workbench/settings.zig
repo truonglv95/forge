@@ -5,15 +5,22 @@ pub const Settings = struct {
     tab_width: u8 = 4,
     font_size: f32 = 14,
     word_wrap: bool = false,
+    format_on_save: bool = false,
     terminal_shell: ?[]const u8 = null,
     // Ghost text / inline AI completion settings ([ghost_completion] section)
     ghost_provider: []const u8 = "ollama",
     ghost_model: []const u8 = "qwen2.5-coder:7b",
     ghost_ollama_url: []const u8 = "http://127.0.0.1:11434",
     ghost_enabled: bool = true,
+    /// When ghost_provider == "ai", which forge-ai provider to use
+    /// (e.g. "gemini", "openai", "openrouter", "nvidia", "ollama", "auto").
+    ghost_ai_provider: []const u8 = "auto",
+    /// Optional base URL override for the AI provider.
+    ghost_ai_base_url: ?[]const u8 = null,
 
     pub fn deinit(self: *Settings, allocator: std.mem.Allocator) void {
         if (self.terminal_shell) |shell| allocator.free(shell);
+        if (self.ghost_ai_base_url) |url| allocator.free(url);
         self.* = undefined;
     }
 };
@@ -55,6 +62,8 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceR
                 if (parsed >= 8 and parsed <= 48) settings.font_size = parsed;
             } else if (std.mem.eql(u8, key, "word_wrap")) {
                 settings.word_wrap = std.mem.eql(u8, value, "true");
+            } else if (std.mem.eql(u8, key, "format_on_save")) {
+                settings.format_on_save = std.mem.eql(u8, value, "true");
             }
         } else if (std.mem.eql(u8, section, "terminal")) {
             if (std.mem.eql(u8, key, "shell")) {
@@ -64,7 +73,7 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceR
         } else if (std.mem.eql(u8, section, "ghost_completion")) {
             if (std.mem.eql(u8, key, "provider")) {
                 const unquoted = parseQuoted(value) orelse value;
-                if (std.mem.eql(u8, unquoted, "ollama") or std.mem.eql(u8, unquoted, "gemini")) {
+                if (std.mem.eql(u8, unquoted, "ollama") or std.mem.eql(u8, unquoted, "gemini") or std.mem.eql(u8, unquoted, "ai")) {
                     settings.ghost_provider = unquoted;
                 }
             } else if (std.mem.eql(u8, key, "model")) {
@@ -73,6 +82,12 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceR
             } else if (std.mem.eql(u8, key, "ollama_url")) {
                 const unquoted = parseQuoted(value) orelse value;
                 settings.ghost_ollama_url = unquoted;
+            } else if (std.mem.eql(u8, key, "ai_provider")) {
+                const unquoted = parseQuoted(value) orelse value;
+                settings.ghost_ai_provider = unquoted;
+            } else if (std.mem.eql(u8, key, "ai_base_url")) {
+                const unquoted = parseQuoted(value) orelse value;
+                settings.ghost_ai_base_url = try allocator.dupe(u8, unquoted);
             } else if (std.mem.eql(u8, key, "enabled")) {
                 settings.ghost_enabled = std.mem.eql(u8, value, "true");
             }

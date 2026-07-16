@@ -34,11 +34,15 @@ pub const WasmHostCallbacks = wasm_runtime.HostCallbacks;
 pub const WasmLimits = wasm_runtime.Limits;
 pub const limitsFromManifest = wasm_runtime.limitsFromManifest;
 pub const theme_contrib = @import("theme_contrib.zig");
+pub const extension_settings = @import("extension_settings.zig");
+pub const ExtensionSettings = extension_settings.Settings;
+pub const hot_reload = @import("hot_reload.zig");
 
 test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(manifest);
     std.testing.refAllDecls(host);
+    _ = @import("manifest_test.zig");
 }
 
 test "plugin API compatibility requires matching major versions" {

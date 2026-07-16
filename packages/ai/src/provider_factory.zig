@@ -5,6 +5,7 @@ const gemini_provider = @import("providers/gemini/provider.zig");
 const ollama_provider = @import("providers/ollama/provider.zig");
 const openrouter_provider = @import("providers/openrouter/provider.zig");
 const nvidia_provider = @import("providers/nvidia/provider.zig");
+const openai_provider = @import("providers/openai/provider.zig");
 const credentials = @import("credentials.zig");
 
 pub const FactoryError = error{
@@ -79,8 +80,20 @@ fn wrapCreateNvidia(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*con
     return nvidia_provider.NvidiaProvider.create(allocator, io, environ_map, options);
 }
 
+fn wrapCreateOpenAI(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return openai_provider.OpenAIProvider.create(allocator, io, environ_map, options);
+}
+
 const registry = [_]ProviderDef{
     .{ .name = "ollama", .create = wrapCreateOllama, .availability = .ollama_probe },
+    .{
+        .name = "openai",
+        .create = wrapCreateOpenAI,
+        .availability = .{ .credentials = .{
+            .env_vars = &[_][]const u8{"OPENAI_API_KEY"},
+            .keychain_service = "forge-openai",
+        } },
+    },
     .{
         .name = "nvidia",
         .create = wrapCreateNvidia,

@@ -146,6 +146,36 @@ pub const Command = union(enum) {
     ghost_completion_accept: void,
     ghost_completion_dismiss: void,
     ghost_completion_toggle: void,
+    // Multi-cursor (P0-4)
+    editor_add_cursor_next: void,
+    editor_add_cursor_all: void,
+    editor_clear_cursors: void,
+    // Code folding (P0-4)
+    editor_fold_toggle: void,
+    editor_fold_all: void,
+    editor_unfold_all: void,
+    // Context menu + quick fix lightbulb (P0-5)
+    editor_open_context_menu: void,
+    editor_apply_quick_fix: usize,
+    editor_show_quick_fixes: void,
+    // Cmd+K inline edit (P0-2)
+    inline_edit_open: void,
+    inline_edit_submit: void,
+    inline_edit_accept: void,
+    inline_edit_reject: void,
+    inline_edit_cancel: void,
+    // @mentions (P0-3)
+    chat_mention_file: void,
+    chat_mention_symbol: void,
+    chat_mention_folder: void,
+    chat_mention_web: void,
+    chat_mention_select: usize,
+    chat_mention_dismiss: void,
+    // P1.5-3: Watch expressions
+    debug_watch_add: []const u8,
+    debug_watch_remove: usize,
+    debug_watch_clear: void,
+    debug_watch_refresh: void,
 };
 
 pub const Event = union(enum) {
@@ -161,7 +191,7 @@ pub const Event = union(enum) {
 pub fn freeCommand(allocator: std.mem.Allocator, command: Command) void {
     switch (command) {
         .open_file, .explorer_toggle, .explorer_select => |path| allocator.free(path),
-        .explorer_create_file, .explorer_create_folder, .run_task, .run_extension_command, .open_extensions_dir, .install_marketplace_extension, .apply_extension_theme, .uninstall_extension => |owned| allocator.free(owned),
+        .explorer_create_file, .explorer_create_folder, .run_task, .run_extension_command, .open_extensions_dir, .install_marketplace_extension, .apply_extension_theme, .uninstall_extension, .debug_watch_add => |owned| allocator.free(owned),
         .explorer_rename => |payload| allocator.free(payload.new_name),
         else => {},
     }

@@ -10,6 +10,7 @@ const Buffer = @import("forge-editor").Buffer;
 const syntax = @import("syntax.zig");
 const viewport = @import("viewport.zig");
 const overlays = @import("overlays.zig");
+const breadcrumbs = @import("breadcrumbs.zig");
 
 pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, editor_w: f32, editor_h: f32, _: f32) void {
     if (wb.proposal_review_open) {
@@ -127,6 +128,10 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
         }
     } else if (editor_buf) |buf| {
         const path = wb.activeFilePath() orelse "";
+        // P1-1: Breadcrumbs above the editor.
+        if (path.len > 0) {
+            breadcrumbs.drawBreadcrumbs(wb, editor_x, editor_w, path);
+        }
         viewport.drawEditorViewport(wb, buf, editor_x, editor_w, editor_h, wb.editor_scroll_y, wb.editor_scroll_x, path, true);
     }
 

@@ -26,6 +26,9 @@ pub const GlobalFlags = struct {
     min_success_rate: f64 = 0.0,
     baseline: ?[]const u8 = null,
     max_success_regression: f64 = 0.0,
+    body: ?[]const u8 = null,
+    section: ?[]const u8 = null,
+    intent: ?[]const u8 = null,
 };
 
 pub const Command = enum {
@@ -52,6 +55,7 @@ pub const Command = enum {
     ecosystem,
     unknown,
     ext,
+    spec,
 };
 
 pub const CliArgs = struct {
@@ -144,6 +148,21 @@ pub const CliArgs = struct {
                     if (i < args.len) flags.conversation = args[i];
                 } else if (std.mem.startsWith(u8, arg, "--conversation=")) {
                     flags.conversation = arg["--conversation=".len..];
+                } else if (std.mem.eql(u8, arg, "--body")) {
+                    i += 1;
+                    if (i < args.len) flags.body = args[i];
+                } else if (std.mem.startsWith(u8, arg, "--body=")) {
+                    flags.body = arg["--body=".len..];
+                } else if (std.mem.eql(u8, arg, "--section")) {
+                    i += 1;
+                    if (i < args.len) flags.section = args[i];
+                } else if (std.mem.startsWith(u8, arg, "--section=")) {
+                    flags.section = arg["--section=".len..];
+                } else if (std.mem.eql(u8, arg, "--intent")) {
+                    i += 1;
+                    if (i < args.len) flags.intent = args[i];
+                } else if (std.mem.startsWith(u8, arg, "--intent=")) {
+                    flags.intent = arg["--intent=".len..];
                 } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
                     command = .help;
                     cmd_found = true;
@@ -152,7 +171,7 @@ pub const CliArgs = struct {
                     cmd_found = true;
                 }
             } else if (!cmd_found) {
-                if (std.mem.eql(u8, arg, "doctor")) command = .doctor else if (std.mem.eql(u8, arg, "inspect")) command = .inspect else if (std.mem.eql(u8, arg, "search")) command = .search else if (std.mem.eql(u8, arg, "watch")) command = .watch else if (std.mem.eql(u8, arg, "diff")) command = .diff else if (std.mem.eql(u8, arg, "apply")) command = .apply else if (std.mem.eql(u8, arg, "undo")) command = .undo else if (std.mem.eql(u8, arg, "history")) command = .history else if (std.mem.eql(u8, arg, "task")) command = .task else if (std.mem.eql(u8, arg, "check")) command = .check else if (std.mem.eql(u8, arg, "index")) command = .index else if (std.mem.eql(u8, arg, "context")) command = .context else if (std.mem.eql(u8, arg, "ask")) command = .ask else if (std.mem.eql(u8, arg, "run")) command = .run else if (std.mem.eql(u8, arg, "agent")) command = .agent else if (std.mem.eql(u8, arg, "plan")) command = .plan else if (std.mem.eql(u8, arg, "parsers")) command = .parsers else if (std.mem.eql(u8, arg, "eval")) command = .eval else if (std.mem.eql(u8, arg, "ecosystem")) command = .ecosystem else if (std.mem.eql(u8, arg, "ext")) command = .ext else if (std.mem.eql(u8, arg, "help")) command = .help else if (std.mem.eql(u8, arg, "version")) command = .version else command = .unknown;
+                if (std.mem.eql(u8, arg, "doctor")) command = .doctor else if (std.mem.eql(u8, arg, "inspect")) command = .inspect else if (std.mem.eql(u8, arg, "search")) command = .search else if (std.mem.eql(u8, arg, "watch")) command = .watch else if (std.mem.eql(u8, arg, "diff")) command = .diff else if (std.mem.eql(u8, arg, "apply")) command = .apply else if (std.mem.eql(u8, arg, "undo")) command = .undo else if (std.mem.eql(u8, arg, "history")) command = .history else if (std.mem.eql(u8, arg, "task")) command = .task else if (std.mem.eql(u8, arg, "check")) command = .check else if (std.mem.eql(u8, arg, "index")) command = .index else if (std.mem.eql(u8, arg, "context")) command = .context else if (std.mem.eql(u8, arg, "ask")) command = .ask else if (std.mem.eql(u8, arg, "run")) command = .run else if (std.mem.eql(u8, arg, "agent")) command = .agent else if (std.mem.eql(u8, arg, "plan")) command = .plan else if (std.mem.eql(u8, arg, "parsers")) command = .parsers else if (std.mem.eql(u8, arg, "eval")) command = .eval else if (std.mem.eql(u8, arg, "ecosystem")) command = .ecosystem else if (std.mem.eql(u8, arg, "ext")) command = .ext else if (std.mem.eql(u8, arg, "spec")) command = .spec else if (std.mem.eql(u8, arg, "help")) command = .help else if (std.mem.eql(u8, arg, "version")) command = .version else command = .unknown;
                 cmd_found = true;
             } else {
                 try positional.append(allocator, arg);

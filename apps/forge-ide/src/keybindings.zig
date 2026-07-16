@@ -51,6 +51,7 @@ pub const Registry = struct {
             .{ .key = "cmd+shift+g", .palette_id = "view.git" },
             .{ .key = "cmd+shift+d", .palette_id = "view.run" },
             .{ .key = "cmd+shift+x", .palette_id = "view.extensions" },
+            .{ .key = "cmd+shift+o", .palette_id = "view.outline" },
             .{ .key = "ctrl+`", .palette_id = "view.terminal" },
             .{ .key = "cmd+s", .palette_id = "file.save" },
             .{ .key = "cmd+f", .palette_id = "editor.find" },
@@ -74,6 +75,20 @@ pub const Registry = struct {
             .{ .key = "cmd+j", .palette_id = "view.toggle_panel" },
             .{ .key = "cmd+l", .palette_id = "view.focus_agent" },
             .{ .key = "cmd+.", .palette_id = "problem.quick_fix" },
+            // P0-4: Multi-cursor + folding
+            .{ .key = "cmd+d", .palette_id = "editor.add_cursor_next" },
+            .{ .key = "cmd+shift+l", .palette_id = "editor.add_cursor_all" },
+            .{ .key = "escape", .palette_id = "editor.clear_cursors" },
+            .{ .key = "alt+[", .palette_id = "editor.fold_toggle" },
+            .{ .key = "alt+shift+[", .palette_id = "editor.fold_all" },
+            .{ .key = "alt+shift+]", .palette_id = "editor.unfold_all" },
+            // P0-2: Inline edit (Cmd+K already maps to agent.edit_selection,
+            // which opens the inline_edit state when a selection is active).
+            .{ .key = "enter", .palette_id = "inline_edit.submit" },
+            .{ .key = "tab", .palette_id = "inline_edit.accept" },
+            .{ .key = "escape", .palette_id = "inline_edit.cancel" },
+            // P0-5: Context menu (right-click handled by mouse, this is keyboard)
+            .{ .key = "shift+f10", .palette_id = "editor.show_quick_fixes" },
         };
 
         for (builtins) |builtin| {

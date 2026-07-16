@@ -100,9 +100,247 @@ pub fn extractImports(
         try extractJsImports(allocator, io, root, file_path, content, &out);
     } else if (endsWithAny(file_path, &.{ ".c", ".h", ".cc", ".cpp", ".hpp" })) {
         try extractCIncludes(allocator, io, root, file_path, content, &out);
+    } else if (std.mem.endsWith(u8, file_path, ".py")) {
+        try extractPythonImports(allocator, io, root, file_path, content, &out);
+    } else if (std.mem.endsWith(u8, file_path, ".rs")) {
+        try extractRustImports(allocator, io, root, file_path, content, &out);
+    } else if (std.mem.endsWith(u8, file_path, ".go")) {
+        try extractGoImports(allocator, io, root, file_path, content, &out);
+    } else if (std.mem.endsWith(u8, file_path, ".java")) {
+        try extractJavaImports(allocator, io, root, file_path, content, &out);
     }
 
     return try out.toOwnedSlice(allocator);
+}
+
+/// Extract Python imports: `import X`, `from X import Y`, `from . import Y`.
+/// Resolves relative imports against the file's directory. Standard library
+/// and site-packages modules are NOT resolved to files (they don't live in
+/// the workspace).
+fn extractPythonImports(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    file_path: []const u8,
+    content: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    _ = io;
+    _ = root;
+    const base_dir = std.fs.path.dirname(file_path) orelse ".";
+
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "#")) continue;
+
+        // `from X import Y` or `from .X import Y`
+        if (std.mem.startsWith(u8, trimmed, "from ")) {
+            const rest = std.mem.trim(u8, trimmed[5..], " \t");
+            const space_idx = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
+            const module = rest[0..space_idx];
+            if (module.len == 0) continue;
+            if (try resolvePythonModule(allocator, base_dir, module)) |path| {
+                try out.append(allocator, path);
+            }
+            continue;
+        }
+
+        // `import X` or `import X.Y`
+        if (std.mem.startsWith(u8, trimmed, "import ")) {
+            const rest = std.mem.trim(u8, trimmed[7..], " \t");
+            // `import X as Y` or `import X, Y`
+            var module_part = rest;
+            if (std.mem.indexOf(u8, rest, " as ")) |idx| module_part = rest[0..idx];
+            if (std.mem.indexOf(u8, module_part, ",")) |idx| module_part = module_part[0..idx];
+            module_part = std.mem.trim(u8, module_part, " \t");
+            if (module_part.len == 0) continue;
+            if (try resolvePythonModule(allocator, base_dir, module_part)) |path| {
+                try out.append(allocator, path);
+            }
+            continue;
+        }
+    }
+}
+
+/// Resolve a Python module name to a workspace-relative file path.
+/// `foo.bar` → `foo/bar.py` or `foo/bar/__init__.py`.
+/// `.foo` (relative) → `<base_dir>/foo.py`.
+fn resolvePythonModule(allocator: std.mem.Allocator, base_dir: []const u8, module: []const u8) !?[]const u8 {
+    // Skip stdlib/site-packages (no dots in first segment typically means
+    // stdlib like `os`, `sys`; but `foo.bar` is likely local). We resolve
+    // all and let the caller filter non-existent paths.
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
+    var mit = std.mem.splitScalar(u8, module, '.');
+    while (mit.next()) |part| {
+        if (part.len == 0) continue; // relative import dot
+        try parts.append(allocator, part);
+    }
+    if (parts.items.len == 0) return null;
+
+    // Try `dir/parts.../last.py`
+    const joined = try std.fs.path.join(allocator, &.{ base_dir, try std.mem.join(allocator, "/", parts.items) });
+    defer allocator.free(joined);
+
+    const py_path = try std.fmt.allocPrint(allocator, "{s}.py", .{joined});
+    // Caller will check existence; we return the candidate.
+    // Avoid duplicate if base_dir is "."
+    if (std.mem.eql(u8, base_dir, ".")) {
+        const rel = try std.mem.join(allocator, "/", parts.items);
+        defer allocator.free(rel);
+        allocator.free(py_path);
+        return try std.fmt.allocPrint(allocator, "{s}.py", .{rel});
+    }
+    return py_path;
+}
+
+/// Extract Rust imports: `use foo::bar;`, `use crate::baz;`, `mod foo;`.
+fn extractRustImports(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    file_path: []const u8,
+    content: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    _ = io;
+    _ = root;
+    const base_dir = std.fs.path.dirname(file_path) orelse ".";
+
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "//")) continue;
+
+        if (std.mem.startsWith(u8, trimmed, "use ")) {
+            const rest = std.mem.trim(u8, trimmed[4..], " \t");
+            const semi = std.mem.indexOfScalar(u8, rest, ';') orelse continue;
+            const path = rest[0..semi];
+            // `use foo::bar::Baz` → `foo/bar.rs` or `foo/bar/mod.rs`
+            var parts: std.ArrayList([]const u8) = .empty;
+            defer parts.deinit(allocator);
+            var pit = std.mem.splitScalar(u8, path, ':');
+            while (pit.next()) |part| {
+                if (part.len == 0) continue; // skip `::` empty
+                try parts.append(allocator, part);
+            }
+            if (parts.items.len == 0) continue;
+            // Skip `crate`, `self`, `super` roots — resolve relative to src/
+            if (std.mem.eql(u8, parts.items[0], "crate") or std.mem.eql(u8, parts.items[0], "self") or std.mem.eql(u8, parts.items[0], "super")) {
+                // Try src/<rest...>.rs
+                const rel = try std.mem.join(allocator, "/", parts.items[1..]);
+                defer allocator.free(rel);
+                const candidate = try std.fmt.allocPrint(allocator, "src/{s}.rs", .{rel});
+                try out.append(allocator, candidate);
+            } else {
+                const rel = try std.mem.join(allocator, "/", parts.items);
+                defer allocator.free(rel);
+                const candidate = try std.fmt.allocPrint(allocator, "{s}/{s}.rs", .{ base_dir, rel });
+                try out.append(allocator, candidate);
+            }
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, trimmed, "mod ")) {
+            const rest = std.mem.trim(u8, trimmed[4..], " \t");
+            const semi = std.mem.indexOfScalar(u8, rest, ';') orelse continue;
+            const name = rest[0..semi];
+            if (name.len == 0) continue;
+            const candidate1 = try std.fmt.allocPrint(allocator, "{s}/{s}.rs", .{ base_dir, name });
+            try out.append(allocator, candidate1);
+            const candidate2 = try std.fmt.allocPrint(allocator, "{s}/{s}/mod.rs", .{ base_dir, name });
+            try out.append(allocator, candidate2);
+            continue;
+        }
+    }
+}
+
+/// Extract Go imports: `import "path"`, `import ( ... )`.
+fn extractGoImports(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    file_path: []const u8,
+    content: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    _ = io;
+    _ = root;
+    _ = file_path;
+
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "//")) continue;
+
+        // `import "path"` or `import alias "path"`
+        if (std.mem.startsWith(u8, trimmed, "import ")) {
+            const rest = std.mem.trim(u8, trimmed[7..], " \t");
+            if (std.mem.startsWith(u8, rest, "(")) continue; // block import
+            const quote_idx = std.mem.indexOfScalar(u8, rest, '"') orelse continue;
+            const end_quote = std.mem.indexOfScalarPos(u8, rest, quote_idx + 1, '"') orelse continue;
+            const path = rest[quote_idx + 1 .. end_quote];
+            if (path.len > 0) {
+                try out.append(allocator, try allocator.dupe(u8, path));
+            }
+            continue;
+        }
+
+        // Inside import block: `"path"` or `alias "path"`
+        if (std.mem.startsWith(u8, trimmed, "\"")) {
+            const end_quote = std.mem.indexOfScalarPos(u8, trimmed, 1, '"') orelse continue;
+            const path = trimmed[1..end_quote];
+            if (path.len > 0) {
+                try out.append(allocator, try allocator.dupe(u8, path));
+            }
+            continue;
+        }
+    }
+}
+
+/// Extract Java imports: `import com.foo.Bar;`, `import static com.foo.Bar.baz;`.
+fn extractJavaImports(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    file_path: []const u8,
+    content: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    _ = io;
+    _ = root;
+    _ = file_path;
+
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "//")) continue;
+
+        if (std.mem.startsWith(u8, trimmed, "import ")) {
+            const rest = std.mem.trim(u8, trimmed[7..], " \t");
+            // Skip `static`
+            const after = if (std.mem.startsWith(u8, rest, "static ")) rest[7..] else rest;
+            const semi = std.mem.indexOfScalar(u8, after, ';') orelse continue;
+            const path = after[0..semi];
+            // `com.foo.Bar` → `com/foo/Bar.java`
+            var parts: std.ArrayList([]const u8) = .empty;
+            defer parts.deinit(allocator);
+            var pit = std.mem.splitScalar(u8, path, '.');
+            while (pit.next()) |part| {
+                if (part.len == 0) continue;
+                try parts.append(allocator, part);
+            }
+            if (parts.items.len == 0) continue;
+            // Skip if last part is `*` (wildcard import)
+            if (std.mem.eql(u8, parts.items[parts.items.len - 1], "*")) continue;
+            const rel = try std.mem.join(allocator, "/", parts.items);
+            defer allocator.free(rel);
+            const candidate = try std.fmt.allocPrint(allocator, "{s}.java", .{rel});
+            try out.append(allocator, candidate);
+            continue;
+        }
+    }
 }
 
 fn extractCIncludes(

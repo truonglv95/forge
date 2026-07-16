@@ -32,6 +32,7 @@ const terminal_group_mod = @import("workbench/terminal_group.zig");
 const lsp_sync_mod = @import("workbench/lsp_sync.zig");
 const rename_preview_mod = @import("workbench/rename_preview.zig");
 const debug_lldb_session_mod = @import("workbench/debug_lldb_session.zig");
+const debug_dap_session_mod = @import("workbench/debug_dap_session.zig");
 const debug_stop_mod = @import("workbench/debug_stop.zig");
 const debug_variables_mod = @import("workbench/debug_variables.zig");
 const debug_callstack_mod = @import("workbench/debug_callstack.zig");
@@ -47,6 +48,16 @@ const session_restore_mod = @import("workbench/session_restore.zig");
 const chat_persistence_mod = @import("workbench/chat_persistence.zig");
 const agent_ui_queue_mod = @import("workbench/agent_ui_queue.zig");
 const ghost_completion_mod = @import("workbench/ghost_completion.zig");
+const fold_controller_mod = @import("forge-editor").folding;
+const multi_cursor_mod = @import("forge-editor").multi_cursor;
+const inline_edit_mod = @import("workbench/inline_edit.zig");
+const mention_picker_mod = @import("workbench/mention_picker.zig");
+const mention_resolver_mod = @import("workbench/mention_resolver.zig");
+const context_menu_mod = @import("workbench/context_menu.zig");
+const inlay_hints_store_mod = @import("workbench/inlay_hints_store.zig");
+const launch_config_mod = @import("workbench/launch_config.zig");
+const notifications_mod = @import("workbench/notifications.zig");
+const watch_expressions_mod = @import("workbench/watch_expressions.zig");
 const sync_mod = @import("forge-util").sync;
 
 pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, settings_modal, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename };
@@ -106,6 +117,7 @@ pub const Workbench = struct {
     breakpoints: breakpoints_mod.Store,
     debug_console: debug_console_mod.DebugConsole,
     debug_lldb: debug_lldb_session_mod.Session,
+    debug_dap: debug_dap_session_mod.Session,
     debug_stop_path: ?[]const u8 = null,
     debug_stop_line: ?usize = null,
     debug_variables: debug_variables_mod.Store,
@@ -131,6 +143,35 @@ pub const Workbench = struct {
     rename_buffer: editor.Buffer,
     // Ghost text / inline AI completion
     ghost: ghost_completion_mod.Store,
+    // Code folding controller (P0-4) — keyed per file path hash
+    fold_controller: fold_controller_mod.FoldController,
+    fold_dirty: bool = true,
+    // Multi-cursor (P0-4)
+    multi_cursor: multi_cursor_mod.MultiCursor,
+    // Inlay hints store (P0-6)
+    inlay_hints: inlay_hints_store_mod.Store,
+    // Inline edit (Cmd+K) state (P0-2)
+    inline_edit: inline_edit_mod.State,
+    // Mention picker (@file/@symbol/@folder/@web) (P0-3)
+    mention_picker: mention_picker_mod.Picker,
+    // Context menu state (P0-5)
+    context_menu: context_menu_mod.Menu,
+    // Launch configurations (P0-7)
+    launch_configs: []launch_config_mod.Config,
+    // P1-1: Document symbols for active file (owned, refreshed on file change).
+    outline_symbols: []lsp.document_symbol.Symbol = &.{},
+    outline_scroll_y: f32 = 0,
+    outline_hover_index: ?usize = null,
+    outline_refresh_cooldown: f32 = 0,
+    outline_last_path: ?[]const u8 = null,
+    outline_last_revision: u64 = 0,
+    // P1-4: Toast notifications
+    notifications: notifications_mod.Store,
+    // P1.5-2: Status bar clickable items (reused buffer per frame).
+    status_bar_items: [16]@import("ui/render/status_bar.zig").Item = undefined,
+    status_bar_item_count: usize = 0,
+    // P1.5-3: Watch expressions for debugger
+    watch_expressions: watch_expressions_mod.Store,
     chat_history: std.ArrayList(ChatMessage),
     focused_panel: PanelFocus = .editor,
     previous_focus: PanelFocus = .editor,
@@ -296,6 +337,7 @@ pub const Workbench = struct {
             .debug_variables = debug_variables_mod.Store.init(allocator),
             .debug_callstack = debug_callstack_mod.Store.init(allocator),
             .debug_lldb = undefined,
+            .debug_dap = undefined,
             .find_bar = try editor_find_mod.FindBar.init(allocator),
             .goto_bar = try editor_find_mod.GotoBar.init(allocator),
             .rename_bar = try editor_find_mod.RenameBar.init(allocator),
@@ -320,6 +362,16 @@ pub const Workbench = struct {
             .max_line_len_cache = std.AutoHashMap(u64, MaxLineLenCache).init(allocator),
             // Ghost completion: will be fully initialized after settings load below.
             .ghost = ghost_completion_mod.Store.init(allocator, io, .{}),
+            .fold_controller = fold_controller_mod.FoldController.init(allocator),
+            .fold_dirty = true,
+            .multi_cursor = multi_cursor_mod.MultiCursor.init(allocator),
+            .inlay_hints = inlay_hints_store_mod.Store.init(allocator),
+            .inline_edit = inline_edit_mod.State.init(allocator, io),
+            .mention_picker = mention_picker_mod.Picker.init(allocator),
+            .context_menu = context_menu_mod.Menu.init(allocator),
+            .launch_configs = &.{},
+            .notifications = notifications_mod.Store.init(allocator),
+            .watch_expressions = watch_expressions_mod.Store.init(allocator),
         };
         errdefer self.deinit();
 
@@ -355,7 +407,10 @@ pub const Workbench = struct {
             .model = self.user_settings.ghost_model,
             .ollama_url = self.user_settings.ghost_ollama_url,
             .enabled = self.user_settings.ghost_enabled,
+            .ai_provider = self.user_settings.ghost_ai_provider,
+            .ai_base_url = self.user_settings.ghost_ai_base_url,
         });
+        self.ghost.setEnvironMap(self.environ_map);
 
         if (loadAiConfig(allocator, io, root)) |cfg| {
             self.allocator.free(self.ai_provider);
@@ -421,6 +476,12 @@ pub const Workbench = struct {
             .on_finished = onDebugLldbFinished,
             .context = null,
         };
+        self.debug_dap = .{
+            .allocator = allocator,
+            .on_line = onDebugLine,
+            .on_finished = onDebugLldbFinished,
+            .context = null,
+        };
     }
 
     pub fn deinit(self: *Workbench) void {
@@ -453,11 +514,24 @@ pub const Workbench = struct {
         self.breakpoints.deinit();
         self.debug_console.deinit();
         self.debug_lldb.deinit();
+        self.debug_dap.deinit();
         self.terminals.deinit();
         self.lsp_sync.deinit();
         self.diagnostics.deinit();
         self.completions.deinit();
         self.ghost.deinit();
+        self.fold_controller.deinit();
+        self.multi_cursor.deinit();
+        self.inlay_hints.deinit();
+        self.inline_edit.deinit();
+        self.mention_picker.deinit();
+        self.context_menu.deinit();
+        launch_config_mod.freeConfigs(self.allocator, self.launch_configs);
+        self.notifications.deinit();
+        self.watch_expressions.deinit();
+        // P1-1: Free document symbols.
+        for (self.outline_symbols) |*sym| sym.deinit(self.allocator);
+        if (self.outline_symbols.len > 0) self.allocator.free(self.outline_symbols);
         self.code_scroll_x.deinit();
         self.rendered_code_blocks.deinit(self.allocator);
 
@@ -1122,6 +1196,71 @@ pub const Workbench = struct {
         try self.setStatus("Opened workspace in new Forge window");
     }
 
+    /// P1-1: Refresh document symbols for the active file from the LSP.
+    /// Skipped if the file hasn't changed since the last fetch.
+    pub fn refreshOutlineSymbols(self: *Workbench) !void {
+        const doc = self.tabs.activeDoc() orelse return;
+
+        // Skip if same path + same revision as last fetch.
+        const path_changed = (self.outline_last_path == null or
+            !std.mem.eql(u8, self.outline_last_path.?, doc.path));
+        const revision_changed = (self.outline_last_revision != doc.buffer.revision);
+        if (!path_changed and !revision_changed) return;
+
+        // Update tracking.
+        if (self.outline_last_path) |old| self.allocator.free(old);
+        self.outline_last_path = try self.allocator.dupe(u8, doc.path);
+        self.outline_last_revision = doc.buffer.revision;
+
+        // Free existing symbols.
+        for (self.outline_symbols) |*sym| sym.deinit(self.allocator);
+        if (self.outline_symbols.len > 0) self.allocator.free(self.outline_symbols);
+        self.outline_symbols = &.{};
+
+        // Skip if no LSP for this file.
+        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
+        const config = owned orelse return;
+        defer lsp.Registry.freeConfig(self.allocator, config);
+
+        // Ensure doc is synced with LSP.
+        const uri = self.lsp_sync.ensureSyncedBlocking(doc) catch return;
+        defer self.allocator.free(uri);
+
+        // Build and send documentSymbol request.
+        const req = try lsp.document_symbol.buildDocumentSymbolRequest(self.allocator, 99, uri);
+        defer self.allocator.free(req);
+
+        var response_buf: [65536]u8 = undefined;
+        const len = self.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch return;
+        if (len == 0) return;
+
+        var list = lsp.document_symbol.parseDocumentSymbolResponse(self.allocator, response_buf[0..len]) catch return;
+        defer list.deinit(self.allocator);
+
+        // Steal the items array — we'll own it.
+        const items = list.items;
+        list.items = &.{};
+        self.outline_symbols = items;
+    }
+
+    /// P1.5-3: Evaluate all watch expressions via the DAP session.
+    pub fn refreshWatchExpressions(self: *Workbench) !void {
+        if (!self.debug_dap.isActive()) return;
+        if (self.watch_expressions.count() == 0) return;
+        // Evaluate each expression with frame_id 0 (no frame context).
+        // A future improvement would be to use the top frame from the
+        // last stackTrace response.
+        for (0..self.watch_expressions.count()) |i| {
+            const entry = self.watch_expressions.get(i) orelse continue;
+            const result = self.debug_dap.evaluate(entry.expression, 0) catch {
+                self.watch_expressions.setResult(i, "evaluation failed", false);
+                continue;
+            };
+            defer self.allocator.free(result);
+            self.watch_expressions.setResult(i, result, true);
+        }
+    }
+
     pub fn quickFixAtCursor(self: *Workbench) !void {
         const doc = self.tabs.activeDoc() orelse {
             try self.setStatus("No file open for quick fix");
@@ -1768,6 +1907,32 @@ pub const Workbench = struct {
         }
 
         self.lsp_sync.tick(dt, &self.tabs);
+
+        // P0-4: Recompute fold ranges when active buffer changes.
+        if (self.fold_dirty) {
+            if (self.tabs.activeDoc()) |doc| {
+                self.fold_controller.computeRanges(&doc.buffer) catch {};
+                self.fold_dirty = false;
+            }
+        }
+
+        // P0-7: Lazy-load launch configs on first tick.
+        if (self.launch_configs.len == 0) {
+            if (launch_config_mod.loadFromWorkspace(self.allocator, self.io, self.workspace_path)) |configs| {
+                self.launch_configs = configs;
+            } else |_| {}
+        }
+
+        // P1-4: Tick notifications (auto-expire after their duration).
+        self.notifications.tick(dt);
+
+        // P1-1: Refresh document symbols for active file when it changes.
+        // We do this at most every ~0.5s to avoid hammering the LSP.
+        self.outline_refresh_cooldown -= dt;
+        if (self.outline_refresh_cooldown <= 0) {
+            self.outline_refresh_cooldown = 0.5;
+            self.refreshOutlineSymbols() catch {};
+        }
     }
 
     pub fn syncTerminalSize(self: *Workbench) void {

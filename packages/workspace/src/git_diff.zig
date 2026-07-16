@@ -82,7 +82,12 @@ pub fn captureWorkingDiff(
     if (!std.mem.startsWith(u8, std.mem.trim(u8, repo_check.output, " \t\r\n"), "true")) return null;
 
     var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
+    // Use `defer` (not `errdefer`) so we free `out` on every return path —
+    // including the early `return null` below when the diff is empty.
+    // When we return `out.toOwnedSlice(allocator)`, the slice is detached
+    // from `out` first, so `out.deinit()` becomes a no-op (items = null,
+    // capacity = 0) — safe to defer.
+    defer out.deinit(allocator);
     try out.appendSlice(allocator, "=== Git working tree (uncommitted) ===\n");
 
     const branch_out = process_spawn.runCapture(allocator, &.{

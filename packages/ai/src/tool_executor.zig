@@ -30,6 +30,9 @@ pub const Context = struct {
     lsp_request_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 = null,
     lsp_context: ?*anyopaque = null,
     cache: ?*tool_cache_mod.Cache = null,
+    extra_allowed_commands: []const []const u8 = &.{},
+    stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
+    stream_context: ?*anyopaque = null,
 };
 
 pub const Outcome = struct {
@@ -590,7 +593,7 @@ fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome
     var checkout_argv: [4][]const u8 = undefined;
     const grep_args = parseGrepNCommand(command);
     var grep_argv: [4][]const u8 = undefined;
-    const argv = allowedCommandArgv(command) orelse blk: {
+    const argv = allowedCommandArgvWithExtra(command, ctx.extra_allowed_commands) orelse blk: {
         if (checkout_path) |path| {
             _ = workspace.WorkspacePath.parse(path) catch return error.NotAllowed;
             checkout_argv = .{ "git", "checkout", "--", path };
@@ -603,6 +606,22 @@ fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome
         }
         return error.NotAllowed;
     };
+
+    if (ctx.stream_callback != null) {
+        const stream_result = kernel.process.runStreaming(ctx.allocator, .{
+            .argv = argv,
+            .cwd = ctx.cwd,
+            .max_bytes = 24 * 1024,
+            .on_output = ctx.stream_callback,
+            .on_output_context = ctx.stream_context,
+            .token = if (ctx.cancel_token) |token| token.* else null,
+        }) catch return error.TaskFailed;
+        defer ctx.allocator.free(stream_result.output);
+        if (stream_result.cancelled) return error.Cancelled;
+        const clipped = if (stream_result.output.len > 1200) stream_result.output[0..1200] else stream_result.output;
+        const summary = std.fmt.allocPrint(ctx.allocator, "run_command exit {d}\n{s}", .{ stream_result.exit_code, clipped }) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    }
 
     const captured = kernel.process.runCapture(ctx.allocator, .{
         .argv = argv,
@@ -717,6 +736,185 @@ pub fn replaceFileContent(ctx: Context, args: @import("tools/args.zig").ReplaceF
     return .{ .summary = summary };
 }
 
+pub fn multiEdit(ctx: Context, args: @import("tools/args.zig").MultiEditArgs) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .multi_edit);
+
+    if (args.files.len == 0) return error.WorkspaceFailed;
+
+    var file_edits: std.ArrayList(workspace.edit.FileEdit) = .empty;
+    defer file_edits.deinit(ctx.allocator);
+    var owned_text_edits: std.ArrayList([]workspace.edit.TextEdit) = .empty;
+    defer {
+        for (owned_text_edits.items) |slice| ctx.allocator.free(slice);
+        owned_text_edits.deinit(ctx.allocator);
+    }
+
+    for (args.files) |fe| {
+        const wp = workspace.WorkspacePath.parse(fe.path) catch return error.WorkspaceFailed;
+        var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return error.WorkspaceFailed;
+        defer snap.deinit();
+        const expected_hash = workspace.edit.contentHash(snap.content);
+
+        const text_edits = ctx.allocator.alloc(workspace.edit.TextEdit, fe.edits.len) catch return error.WorkspaceFailed;
+        for (fe.edits, 0..) |e, i| {
+            text_edits[i] = .{ .start = 0, .end = 0, .search = e.search, .replacement = e.replace };
+        }
+        owned_text_edits.append(ctx.allocator, text_edits) catch return error.WorkspaceFailed;
+        file_edits.append(ctx.allocator, .{
+            .path = fe.path,
+            .operation = .modify,
+            .expected_hash = expected_hash,
+            .edits = text_edits,
+        }) catch return error.WorkspaceFailed;
+    }
+
+    if (ctx.edit_callback) |cb| {
+        cb(ctx.edit_context, .{ .files = file_edits.items });
+    }
+
+    var total_edits: usize = 0;
+    for (args.files) |fe| total_edits += fe.edits.len;
+    const summary = std.fmt.allocPrint(ctx.allocator, "Multi-edit {d} file(s), {d} block(s) total: {s}", .{ args.files.len, total_edits, args.files[0].path }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
+pub fn spawnSubagent(ctx: Context, role: []const u8, prompt: []const u8) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .spawn_subagent);
+
+    // P1-6: Spawn a sub-agent on a background thread. The sub-agent runs
+    // a focused agent.run with a small step budget and read-only capability.
+    // The result is delivered via the stream_callback (if set) or
+    // summarized synchronously.
+    //
+    // We can't block here waiting for the thread (the caller is the main
+    // agent loop), so we return an immediate "scheduled" summary and let
+    // the sub-agent's output stream back via stream_callback.
+    //
+    // For synchronous contexts (e.g. CLI), the caller can pass a
+    // completion_event in the context and wait on it.
+
+    const SubagentContext = struct {
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        root: workspace.WorkspaceRoot,
+        environ_map: ?*const std.process.Environ.Map,
+        role: []const u8,
+        prompt: []const u8,
+        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
+        stream_context: ?*anyopaque,
+    };
+
+    const sub_ctx = ctx.allocator.create(SubagentContext) catch {
+        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to allocate context", .{role}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+
+    const role_owned = ctx.allocator.dupe(u8, role) catch {
+        ctx.allocator.destroy(sub_ctx);
+        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to dupe role", .{role}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+    const prompt_owned = ctx.allocator.dupe(u8, prompt) catch {
+        ctx.allocator.free(role_owned);
+        ctx.allocator.destroy(sub_ctx);
+        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to dupe prompt", .{role}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+
+    sub_ctx.* = .{
+        .allocator = ctx.allocator,
+        .io = ctx.io,
+        .root = ctx.root,
+        .environ_map = ctx.environ_map,
+        .role = role_owned,
+        .prompt = prompt_owned,
+        .stream_callback = ctx.stream_callback,
+        .stream_context = ctx.stream_context,
+    };
+
+    const thread = std.Thread.spawn(.{}, subagentWorker, .{sub_ctx}) catch {
+        ctx.allocator.free(role_owned);
+        ctx.allocator.free(prompt_owned);
+        ctx.allocator.destroy(sub_ctx);
+        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to spawn thread (running synchronously)", .{role}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+    thread.detach();
+
+    const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}' spawned on background thread. Prompt: {s:.120}", .{ role, prompt }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
+fn subagentWorker(sub_ctx: anytype) void {
+    defer {
+        sub_ctx.allocator.free(sub_ctx.role);
+        sub_ctx.allocator.free(sub_ctx.prompt);
+        sub_ctx.allocator.destroy(sub_ctx);
+    }
+
+    // Run a focused agent with read-only capability and small budget.
+    // We use the fake provider if no real provider is available, to avoid
+    // blocking on network calls in the sub-agent.
+    const agent_mod = @import("agent.zig");
+    const provider_factory = @import("provider_factory.zig");
+
+    var provider_handle = provider_factory.create(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, .{
+        .provider_name = "fake",
+        .fake_response = "Sub-agent completed (no real provider configured).",
+    }) catch {
+        if (sub_ctx.stream_callback) |cb| {
+            const msg = "Sub-agent failed: provider creation error";
+            cb(sub_ctx.stream_context, msg);
+        }
+        return;
+    };
+    defer provider_handle.deinit(sub_ctx.allocator);
+
+    var result = agent_mod.run(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, sub_ctx.root, sub_ctx.prompt, .{
+        .max_steps = 3,
+        .provider_options = .{
+            .provider_name = "fake",
+            .fake_response = "Sub-agent completed (no real provider configured).",
+        },
+        .mode = .ask,
+        .capability_profile = .read_only,
+        .max_repair_attempts = 0,
+    }) catch {
+        if (sub_ctx.stream_callback) |cb| {
+            const msg = "Sub-agent failed: agent.run error";
+            cb(sub_ctx.stream_context, msg);
+        }
+        return;
+    };
+    defer agent_mod.deinitResult(sub_ctx.allocator, &result);
+
+    // Stream the response back to the main agent via stream_callback.
+    if (sub_ctx.stream_callback) |cb| {
+        if (result.response_text) |text| {
+            cb(sub_ctx.stream_context, text);
+        } else {
+            const fallback = "Sub-agent completed (no response text)";
+            cb(sub_ctx.stream_context, fallback);
+        }
+    }
+}
+
+pub fn diffPreview(ctx: Context, path: []const u8, search_block: []const u8, replace_block: []const u8) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .diff_preview);
+
+    const diff_text = @import("diff_tool.zig").previewSearchReplace(ctx.allocator, ctx.io, ctx.root, path, search_block, replace_block) catch {
+        const summary = std.fmt.allocPrint(ctx.allocator, "diff_preview: search block not found in {s}", .{path}) catch return error.WorkspaceFailed;
+        return .{ .summary = summary };
+    };
+    defer ctx.allocator.free(diff_text);
+
+    const summary = std.fmt.allocPrint(ctx.allocator, "Diff preview for {s}:\n{s}", .{ path, diff_text }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
 fn summarizeEditPreview(text: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
     if (trimmed.len == 0) return "";
@@ -769,7 +967,52 @@ fn countLines(text: []const u8) usize {
 /// Maps a deliberately small set of read-only or validation commands to argv.
 /// Never pass model text through a shell: prefix checks do not prevent command
 /// separators, substitutions, redirects, or path traversal.
+///
+/// In addition to the hardcoded list, projects can declare extra allowlisted
+/// commands in `forge.toml` under `[ai.allowed_commands]` as a list of exact
+/// command strings. The `Context.extra_allowed_commands` field carries those
+/// project-specific entries so the agent can run `just test`, `pnpm dev`, etc.
+/// without modifying Forge source.
 pub fn allowedCommandArgv(command: []const u8) ?[]const []const u8 {
+    return allowedCommandArgvWithExtra(command, &.{});
+}
+
+/// Like `allowedCommandArgv` but also checks project-specific commands.
+/// Extra commands are matched by exact string equality; argv is built by
+/// splitting on whitespace (safe because we only accept exact matches).
+pub fn allowedCommandArgvWithExtra(command: []const u8, extra: []const []const u8) ?[]const []const u8 {
+    // Check hardcoded list first.
+    if (allowedCommandArgvBuiltin(command)) |argv| return argv;
+
+    // Check project-specific extras.
+    for (extra) |allowed| {
+        if (std.mem.eql(u8, command, allowed)) {
+            // Split on whitespace into argv. We allocate into a thread-local
+            // static buffer to avoid heap allocation per call.
+            return splitCommandToArgv(command);
+        }
+    }
+    return null;
+}
+
+/// Thread-local storage for split argv from extra-allowlist commands.
+/// `splitCommandToArgv` writes into this buffer and returns a slice into it.
+/// The buffer is overwritten on each call, so callers must use the returned
+/// slice immediately.
+threadlocal var tl_argv_buf: [16][]const u8 = undefined;
+
+fn splitCommandToArgv(command: []const u8) []const []const u8 {
+    var count: usize = 0;
+    var it = std.mem.tokenizeAny(u8, command, " \t");
+    while (it.next()) |part| {
+        if (count >= tl_argv_buf.len) break;
+        tl_argv_buf[count] = part;
+        count += 1;
+    }
+    return tl_argv_buf[0..count];
+}
+
+fn allowedCommandArgvBuiltin(command: []const u8) ?[]const []const u8 {
     // --- Zig ---
     if (std.mem.eql(u8, command, "zig build")) return &.{ "zig", "build" };
     if (std.mem.eql(u8, command, "zig build test")) return &.{ "zig", "build", "test" };

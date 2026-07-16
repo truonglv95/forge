@@ -1,0 +1,13 @@
+[extension]
+id = "forge.lsp.go"
+name = "Go Language Server"
+version = "0.1.0"
+api_version = 1
+publisher = "forge"
+description = "gopls language server for Go files"
+
+[[languages]]
+id = "go"
+server = "gopls"
+args = ""
+file_pattern = "*.go"

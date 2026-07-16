@@ -52,6 +52,96 @@ pub fn runCapture(allocator: std.mem.Allocator, options: CaptureOptions) !Captur
     return .{ .output = output, .exit_code = result.exit_code };
 }
 
+pub const StreamOptions = struct {
+    argv: []const []const u8,
+    cwd: ?[]const u8 = null,
+    max_bytes: usize = 32 * 1024,
+    on_output: ?*const fn (?*anyopaque, []const u8) void = null,
+    on_output_context: ?*anyopaque = null,
+    token: ?cancellation.CancellationToken = null,
+};
+
+pub const StreamResult = struct {
+    output: []const u8,
+    exit_code: i32,
+    cancelled: bool = false,
+};
+
+pub fn runStreaming(allocator: std.mem.Allocator, options: StreamOptions) !StreamResult {
+    const spawn_opts = process_spawn.SpawnOptions{
+        .cwd = options.cwd,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    };
+    var child = try process_spawn.spawn(allocator, options.argv, spawn_opts);
+    defer child.deinit();
+
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+
+    var chunk: [8192]u8 = undefined;
+    var cancelled = false;
+
+    while (output.items.len < options.max_bytes) {
+        if (options.token) |tok| {
+            if (tok.isCancelled()) {
+                child.kill();
+                cancelled = true;
+                break;
+            }
+        }
+
+        const stdout_open = child.stdout_fd >= 0;
+        const stderr_open = child.stderr_fd >= 0;
+        if (!stdout_open and !stderr_open) break;
+
+        const room = options.max_bytes - output.items.len;
+        const to_read = @min(chunk.len, room);
+
+        if (stdout_open) {
+            const n = std.posix.read(child.stdout_fd, chunk[0..to_read]) catch 0;
+            if (n == 0) {
+                closeFd(&child.stdout_fd);
+            } else {
+                try output.appendSlice(allocator, chunk[0..n]);
+                if (options.on_output) |cb| cb(options.on_output_context, chunk[0..n]);
+                continue;
+            }
+        }
+
+        if (stderr_open) {
+            const n = std.posix.read(child.stderr_fd, chunk[0..to_read]) catch 0;
+            if (n == 0) {
+                closeFd(&child.stderr_fd);
+            } else {
+                try output.appendSlice(allocator, chunk[0..n]);
+                if (options.on_output) |cb| cb(options.on_output_context, chunk[0..n]);
+                continue;
+            }
+        }
+
+        if (!stdout_open and !stderr_open) break;
+    }
+
+    closeFd(&child.stdout_fd);
+    closeFd(&child.stderr_fd);
+    const exit_code = child.wait();
+
+    return .{
+        .output = try output.toOwnedSlice(allocator),
+        .exit_code = exit_code,
+        .cancelled = cancelled,
+    };
+}
+
+fn closeFd(fd: *c_int) void {
+    if (fd.* >= 0) {
+        _ = std.c.close(fd.*);
+        fd.* = -1;
+    }
+}
+
 test "Process runner struct compiles" {
     // Tests deferred to integration due to environment isolation
 }

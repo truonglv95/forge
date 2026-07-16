@@ -77,6 +77,25 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.hover.clear();
         }
     } else if (event.action == .down) {
+        // P1.5-2: Status bar click — dispatch item action.
+        if (event.y >= h - 22) {
+            const status_bar = @import("../render/status_bar.zig");
+            const action = status_bar.hitTest(wb, event.x, event.y);
+            if (action != .none) {
+                status_bar.dispatchAction(wb, action);
+                return;
+            }
+        }
+        // P0-5: Right-click (button == 1) opens the context menu.
+        if (event.button == 1) {
+            // If the click is inside the editor area, open the editor
+            // context menu at the click position.
+            if (event.x >= geo.editor_x and event.x < geo.agent_splitter_x and event.y >= layout.header_height and event.y < geo.task_panel_y) {
+                wb.context_menu.openEditor(event.x, event.y) catch {};
+                return;
+            }
+            // Otherwise (e.g. in agent panel), fall through to normal handling.
+        }
         if (wb.palette.open) return;
         if (wb.settings_modal_open) {
             wb.focused_panel = .settings_modal;
@@ -585,6 +604,10 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 .explorer => {
                     wb.explorer_scroll_y += scroll_delta_y;
                     wb.clampExplorerScroll(h);
+                },
+                .outline => {
+                    wb.outline_scroll_y += scroll_delta_y;
+                    if (wb.outline_scroll_y < 0) wb.outline_scroll_y = 0;
                 },
             }
         } else if (mx >= geo.agent_x) {

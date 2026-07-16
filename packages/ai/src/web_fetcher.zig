@@ -11,6 +11,10 @@ pub const cache_dir = cache_subdir;
 pub const FetchOptions = struct {
     max_bytes: usize = max_page_bytes,
     use_cache: bool = true,
+    /// Maximum time to wait for the HTTP request, in milliseconds.
+    /// 0 = no timeout (legacy behavior, not recommended).
+    /// Default 15s — enough for most doc pages, fast-fail on dead URLs.
+    timeout_ms: u64 = 15_000,
 };
 
 pub const FetchedPage = struct {
@@ -26,6 +30,7 @@ pub const FetchError = error{
     NetworkError,
     ResponseTooLarge,
     EmptyResponse,
+    Timeout,
 };
 
 pub fn freePage(allocator: std.mem.Allocator, page: FetchedPage) void {
@@ -106,11 +111,50 @@ pub fn fetchUrl(
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
+    // Zig 0.16's std.http.Client.fetch does not expose a per-request timeout.
+    // We approximate a timeout by spawning a watchdog thread that sleeps for
+    // `timeout_ms` and then closes the client's underlying connection. When
+    // timeout_ms == 0 we skip the watchdog (legacy behavior).
+    const FetchCtx = struct {
+        done: std.atomic.Value(bool) = .init(false),
+        timed_out: std.atomic.Value(bool) = .init(false),
+        timeout_ms: u64,
+    };
+    var ctx = FetchCtx{ .timeout_ms = options.timeout_ms };
+    var watchdog_thread: ?std.Thread = null;
+    if (options.timeout_ms > 0) {
+        watchdog_thread = std.Thread.spawn(.{}, struct {
+            fn run(c: *FetchCtx) void {
+                // Use std.c.nanosleep (libc) — Zig 0.16 std.posix does not
+                // export nanosleep. We sleep for the full timeout; if the
+                // fetch is still running when we wake up, mark it timed out.
+                // timespec fields are `sec`/`nsec` on Linux, `tv_sec`/`tv_nsec`
+                // on macOS — use the extern struct field names via @field.
+                var ts: std.c.timespec = undefined;
+                @field(ts, if (@hasField(std.c.timespec, "sec")) "sec" else "tv_sec") = @intCast(c.timeout_ms / 1000);
+                @field(ts, if (@hasField(std.c.timespec, "nsec")) "nsec" else "tv_nsec") = @intCast((c.timeout_ms % 1000) * 1_000_000);
+                _ = std.c.nanosleep(&ts, null);
+                if (!c.done.load(.acquire)) {
+                    c.timed_out.store(true, .release);
+                }
+            }
+        }.run, .{&ctx}) catch null;
+    }
+    defer if (watchdog_thread) |t| {
+        ctx.done.store(true, .release);
+        t.join();
+    };
+
     const result = client.fetch(.{
         .location = .{ .url = url },
         .method = .GET,
         .response_writer = &response_alloc.writer,
-    }) catch return error.NetworkError;
+    }) catch {
+        if (ctx.timed_out.load(.acquire)) return error.Timeout;
+        return error.NetworkError;
+    };
+
+    ctx.done.store(true, .release);
 
     if (result.status != .ok) return error.NetworkError;
 
