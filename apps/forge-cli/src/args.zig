@@ -8,6 +8,7 @@ pub const GlobalFlags = struct {
     non_interactive: bool = false,
     dry_run: bool = false,
     yes: bool = false,
+    auto_approve: bool = false,
     once: bool = false,
     max_polls: u32 = 0,
     max_steps: u32 = 0,
@@ -89,6 +90,8 @@ pub const CliArgs = struct {
                     flags.dry_run = true;
                 } else if (std.mem.eql(u8, arg, "--yes")) {
                     flags.yes = true;
+                } else if (std.mem.eql(u8, arg, "--auto-approve")) {
+                    flags.auto_approve = true;
                 } else if (std.mem.eql(u8, arg, "--once")) {
                     flags.once = true;
                 } else if (std.mem.eql(u8, arg, "--file")) {

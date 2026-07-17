@@ -269,6 +269,7 @@ fn runAgent(
         .progress_json = parsed.flags.json,
         .max_repair_attempts = if (std.mem.eql(u8, provider_opts.options.provider_name, "fake")) 0 else 2,
         .approve_every_time_tools = workspace_cmd.approved(parsed),
+        .approval_callback = if (parsed.flags.auto_approve) cliApprovalCallback else null,
         .turn_callback = if (event_stream) AgentEventWriter.onTurn else null,
         .turn_context = &event_writer,
         .compaction_callback = if (event_stream) AgentEventWriter.onCompaction else null,
@@ -732,4 +733,12 @@ test "agent events renders a timeline from the session log" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "session_started") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "tool_call") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "run_completed") != null);
+}
+
+fn cliApprovalCallback(context: ?*anyopaque, tool_name: []const u8, args_json: []const u8, policy: ai.tool_registry.Policy) bool {
+    _ = context;
+    _ = tool_name;
+    _ = args_json;
+    _ = policy;
+    return true;
 }

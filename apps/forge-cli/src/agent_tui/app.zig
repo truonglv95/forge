@@ -60,6 +60,7 @@ const ApprovalGate = struct {
     pending: bool = false,
     decided: bool = false,
     approved: bool = false,
+    session_grant: bool = false,
     tool_name: [96]u8 = undefined,
     tool_name_len: usize = 0,
     args_preview: [384]u8 = undefined,
@@ -130,6 +131,7 @@ pub const App = struct {
     last_tool_review: ?[]u8 = null,
     last_tool_review_kind: ?[]u8 = null,
     command_index: usize = 0,
+    session_grants: ai.session_grant.SessionGrants,
 
     const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/help", "/quit", "/exit" };
 
@@ -165,6 +167,7 @@ pub const App = struct {
             .folder_label = folder,
             .branch_label = try allocator.dupe(u8, "no branch"),
             .frame = term.FrameBuffer.init(allocator),
+            .session_grants = ai.session_grant.SessionGrants.init(allocator, parsed.flags.auto_approve),
         };
         if (parsed.flags.mode) |mode_name| {
             if (commands.parseModeName(mode_name)) |mode| app.agent_mode = mode;
@@ -205,6 +208,7 @@ pub const App = struct {
         self.approval.cond.deinit();
         self.approval.mutex.deinit();
         self.mutex.deinit();
+        self.session_grants.deinit();
     }
 
     pub fn run(self: *App) !u8 {
@@ -625,19 +629,21 @@ pub const App = struct {
         const key = self.term.readKey() catch return;
         switch (key) {
             .char => |ch| {
-                if (ch == 'y' or ch == 'Y') self.resolveApproval(true);
-                if (ch == 'n' or ch == 'N') self.resolveApproval(false);
+                if (ch == 'y' or ch == 'Y') self.resolveApproval(true, false);
+                if (ch == 'n' or ch == 'N') self.resolveApproval(false, false);
+                if (ch == 's' or ch == 'S') self.resolveApproval(true, true);
             },
-            .enter => self.resolveApproval(true),
-            .escape => self.resolveApproval(false),
+            .enter => self.resolveApproval(true, false),
+            .escape => self.resolveApproval(false, false),
             else => {},
         }
     }
 
-    fn resolveApproval(self: *App, approved: bool) void {
+    fn resolveApproval(self: *App, approved: bool, session: bool) void {
         self.approval.mutex.lock();
         if (self.approval.pending) {
             self.approval.approved = approved;
+            self.approval.session_grant = session;
             self.approval.decided = true;
             self.approval.pending = false;
             self.approval.cond.signal();
@@ -1524,11 +1530,13 @@ pub const App = struct {
 
     fn waitForApproval(self: *App, tool_name: []const u8, args_json: []const u8, policy: ai.tool_registry.Policy) bool {
         if (self.shouldAutoApprove(policy)) return true;
+        if (self.session_grants.isGranted(tool_name, policy)) return true;
 
         self.approval.mutex.lock();
         self.approval.pending = true;
         self.approval.decided = false;
         self.approval.approved = false;
+        self.approval.session_grant = false;
         self.approval.risk = policy.risk;
         const tool_len = @min(tool_name.len, self.approval.tool_name.len);
         @memcpy(self.approval.tool_name[0..tool_len], tool_name[0..tool_len]);
@@ -1548,7 +1556,16 @@ pub const App = struct {
         self.approval.mutex.lock();
         while (!self.approval.decided) self.approval.cond.wait(&self.approval.mutex);
         const approved = self.approval.approved;
+        const session = self.approval.session_grant;
         self.approval.mutex.unlock();
+
+        if (approved and session) {
+            self.session_grants.grant(tool_name, .session) catch {};
+            var grant_buf: [128]u8 = undefined;
+            const grant_msg = std.fmt.bufPrint(&grant_buf, "Granted session auto-approval for {s}", .{tool_name}) catch return approved;
+            self.pushLine(.system, self.allocator.dupe(u8, grant_msg) catch return approved) catch {};
+        }
+
         return approved;
     }
 
@@ -1796,11 +1813,20 @@ pub const App = struct {
         const approve_line = if (pending) blk: {
             const tool = self.approval.tool_name[0..self.approval.tool_name_len];
             const preview = self.approval.args_preview[0..@min(self.approval.args_preview_len, 120)];
-            break :blk std.fmt.bufPrint(
-                &approve_buf,
-                "Allow {s}? [y/N] {s}",
-                .{ tool, preview },
-            ) catch "Allow tool? [y/N]";
+            const can_session = if (self.approval.risk == .high and !self.parsed.flags.auto_approve) false else true;
+            if (can_session) {
+                break :blk std.fmt.bufPrint(
+                    &approve_buf,
+                    "Allow {s}? [y/N/s(ession)] {s}",
+                    .{ tool, preview },
+                ) catch "Allow tool? [y/N/s]";
+            } else {
+                break :blk std.fmt.bufPrint(
+                    &approve_buf,
+                    "Allow {s}? [y/N] {s}",
+                    .{ tool, preview },
+                ) catch "Allow tool? [y/N]";
+            }
         } else "";
         self.approval.mutex.unlock();
 

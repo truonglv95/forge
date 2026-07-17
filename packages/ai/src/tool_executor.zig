@@ -33,6 +33,8 @@ pub const Context = struct {
     extra_allowed_commands: []const []const u8 = &.{},
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
+    wasm_run_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, wasm_file: []const u8, args: [][]const u8) AgentToolError![]const u8 = null,
+    wasm_run_context: ?*anyopaque = null,
 };
 
 pub const Outcome = struct {
@@ -589,6 +591,30 @@ pub fn runCommand(ctx: Context, command: []const u8) AgentToolError!Outcome {
 }
 
 fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome {
+    if (std.mem.startsWith(u8, command, "wasm-run ")) {
+        if (ctx.wasm_run_callback) |cb| {
+            const rest = std.mem.trim(u8, command["wasm-run ".len..], &std.ascii.whitespace);
+            var iter = std.mem.splitScalar(u8, rest, ' ');
+            const wasm_file = iter.next() orelse return error.NotAllowed;
+
+            var args_list: std.ArrayList([]const u8) = .empty;
+            defer args_list.deinit(ctx.allocator);
+            args_list.append(ctx.allocator, wasm_file) catch return error.WorkspaceFailed;
+            while (iter.next()) |arg| {
+                if (arg.len == 0) continue;
+                args_list.append(ctx.allocator, arg) catch return error.WorkspaceFailed;
+            }
+
+            const out_str = cb(ctx.wasm_run_context, ctx.allocator, wasm_file, args_list.items) catch return error.TaskFailed;
+            defer ctx.allocator.free(out_str);
+            const summary = std.fmt.allocPrint(ctx.allocator, "wasm-run exit 0\n{s}", .{out_str}) catch return error.WorkspaceFailed;
+            return .{ .summary = summary };
+        } else {
+            const summary = ctx.allocator.dupe(u8, "wasm-run not supported in this context.") catch return error.WorkspaceFailed;
+            return .{ .summary = summary };
+        }
+    }
+
     const checkout_path = parseGitCheckoutPath(command);
     var checkout_argv: [4][]const u8 = undefined;
     const grep_args = parseGrepNCommand(command);

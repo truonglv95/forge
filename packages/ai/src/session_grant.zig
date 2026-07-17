@@ -59,9 +59,10 @@ pub const SessionGrants = struct {
     allocator: std.mem.Allocator,
     entries: std.ArrayListUnmanaged(GrantEntry) = .empty,
     call_count: u32 = 0,
+    allow_high_risk: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator) SessionGrants {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: std.mem.Allocator, allow_high_risk: bool) SessionGrants {
+        return .{ .allocator = allocator, .allow_high_risk = allow_high_risk };
     }
 
     pub fn deinit(self: *SessionGrants) void {
@@ -78,8 +79,8 @@ pub const SessionGrants = struct {
     /// session-granted to prevent privilege escalation.
     pub fn grant(self: *SessionGrants, tool_name: []const u8, scope: GrantScope) !void {
         const policy = tool_registry.policyFor(tool_name);
-        // Never grant session approval for high-risk tools.
-        if (policy.risk == .high) return;
+        // Only grant session approval for high-risk tools if explicitly allowed.
+        if (policy.risk == .high and !self.allow_high_risk) return;
 
         // Avoid duplicate entries: update scope if already granted.
         for (self.entries.items) |*entry| {
@@ -122,8 +123,8 @@ pub const SessionGrants = struct {
     /// Returns true if the tool is covered by an active session grant.
     /// High-risk tools always return false regardless of entries.
     pub fn isGranted(self: *const SessionGrants, tool_name: []const u8, policy: tool_registry.Policy) bool {
-        // High-risk tools are never session-grantable.
-        if (policy.risk == .high) return false;
+        // High-risk tools are session-grantable only if explicitly allowed.
+        if (policy.risk == .high and !self.allow_high_risk) return false;
         // Automatic tools never need a grant check.
         if (policy.approval == .automatic) return true;
 
@@ -174,7 +175,7 @@ pub const SessionGrants = struct {
 // ---------------------------------------------------------------------------
 
 test "session grants approve medium-risk tool after explicit grant" {
-    var grants = SessionGrants.init(std.testing.allocator);
+    var grants = SessionGrants.init(std.testing.allocator, false);
     defer grants.deinit();
 
     const policy = tool_registry.Policy{ .risk = .medium, .approval = .every_time };
@@ -186,7 +187,7 @@ test "session grants approve medium-risk tool after explicit grant" {
 }
 
 test "session grants never approve high-risk tools" {
-    var grants = SessionGrants.init(std.testing.allocator);
+    var grants = SessionGrants.init(std.testing.allocator, false);
     defer grants.deinit();
 
     const policy = tool_registry.Policy{ .risk = .high, .approval = .every_time };
@@ -199,7 +200,7 @@ test "session grants never approve high-risk tools" {
 }
 
 test "session grants revoke removes the entry" {
-    var grants = SessionGrants.init(std.testing.allocator);
+    var grants = SessionGrants.init(std.testing.allocator, false);
     defer grants.deinit();
 
     try grants.grant("fetch_url", .session);
@@ -211,7 +212,7 @@ test "session grants revoke removes the entry" {
 }
 
 test "revokeAll clears all grants" {
-    var grants = SessionGrants.init(std.testing.allocator);
+    var grants = SessionGrants.init(std.testing.allocator, false);
     defer grants.deinit();
 
     try grants.grant("fetch_url", .session);
@@ -223,7 +224,7 @@ test "revokeAll clears all grants" {
 }
 
 test "duplicate grant updates scope without creating a duplicate entry" {
-    var grants = SessionGrants.init(std.testing.allocator);
+    var grants = SessionGrants.init(std.testing.allocator, false);
     defer grants.deinit();
 
     try grants.grant("fetch_url", .once);
@@ -234,7 +235,7 @@ test "duplicate grant updates scope without creating a duplicate entry" {
 }
 
 test "approvalCallback returns true for granted medium-risk tool" {
-    var grants = SessionGrants.init(std.testing.allocator);
+    var grants = SessionGrants.init(std.testing.allocator, false);
     defer grants.deinit();
 
     try grants.grant("fetch_url", .session);
@@ -245,7 +246,7 @@ test "approvalCallback returns true for granted medium-risk tool" {
 }
 
 test "approvalCallback returns false for ungranted tool" {
-    var grants = SessionGrants.init(std.testing.allocator);
+    var grants = SessionGrants.init(std.testing.allocator, false);
     defer grants.deinit();
 
     const policy = tool_registry.Policy{ .risk = .medium, .approval = .every_time };
