@@ -11,6 +11,7 @@ const renderer = @import("forge-renderer");
 const lsp = @import("forge-lsp");
 const theme_mod = @import("../theme.zig");
 const editor_scroll = @import("../../editor/editor_scroll.zig");
+const tabs_ui = @import("../../editor/tabs.zig");
 const Workbench = @import("../../../workbench.zig").Workbench;
 
 pub const height: f32 = 22;
@@ -57,7 +58,7 @@ pub fn drawBreadcrumbs(
 ) void {
     const theme = &wb.theme;
     const font_size = 11.0;
-    const y: f32 = 43; // just below the tab bar
+    const y: f32 = tabs_ui.tab_bar_top + tabs_ui.tab_bar_height;
 
     // Background strip.
     renderer.Renderer.drawRect(editor_x, y, editor_w, height, theme_mod.color(theme.colors.tab_bar_bg));
@@ -110,7 +111,8 @@ pub fn hitTest(
     click_x: f32,
     click_y: f32,
 ) ?usize {
-    if (click_y < 43 or click_y > 43 + height) return null;
+    const y: f32 = tabs_ui.tab_bar_top + tabs_ui.tab_bar_height;
+    if (click_y < y or click_y > y + height) return null;
     if (click_x < editor_x or click_x > editor_x + editor_w) return null;
 
     const buf = wb.activeBuffer() orelse return null;

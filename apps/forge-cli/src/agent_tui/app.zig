@@ -133,7 +133,7 @@ pub const App = struct {
     command_index: usize = 0,
     session_grants: ai.session_grant.SessionGrants,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/tools trust-all", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -169,6 +169,9 @@ pub const App = struct {
             .frame = term.FrameBuffer.init(allocator),
             .session_grants = ai.session_grant.SessionGrants.init(allocator, parsed.flags.auto_approve),
         };
+        if (parsed.flags.auto_approve or parsed.flags.trust_all) {
+            app.tool_policy = .run_everything;
+        }
         if (parsed.flags.mode) |mode_name| {
             if (commands.parseModeName(mode_name)) |mode| app.agent_mode = mode;
         }
@@ -697,6 +700,13 @@ pub const App = struct {
                 var buf: [96]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Tool policy: {s}", .{label}) catch return;
                 try self.pushSystem(msg);
+            },
+            .tools_trust_all => {
+                self.mutex.lock();
+                self.tool_policy = .run_everything;
+                self.markDirty();
+                self.mutex.unlock();
+                try self.pushSystem("All tools trusted for this session. Edit tools auto-apply through transactions; checkpoints and undo remain enabled.");
             },
             .mode => |mode| try self.setAgentMode(mode),
             .mode_cycle => try self.setAgentMode(commands.nextMode(self.agent_mode)),
@@ -2234,6 +2244,7 @@ fn workerMain(ctx: *WorkerCtx) void {
         .approve_every_time_tools = false,
         .approval_callback = approvalBridge,
         .approval_context = app,
+        .use_inline_edits = app.agent_mode == .agent and app.tool_policy == .run_everything,
         .step_begin_callback = stepBeginBridge,
         .step_begin_context = app,
         .step_callback = stepBridge,

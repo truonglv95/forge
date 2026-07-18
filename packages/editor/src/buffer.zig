@@ -298,7 +298,40 @@ pub const Buffer = struct {
         self.redo_stack.clearRetainingCapacity();
     }
 
+    fn getCharClass(c: u8) u2 {
+        return switch (c) {
+            'a'...'z', 'A'...'Z', '0'...'9', '_' => 0,
+            ' ', '\t' => 1,
+            else => 2,
+        };
+    }
+
     fn pushUndoInsert(self: *Buffer, row: usize, col: usize, text: []const u8) !void {
+        if (text.len == 0) return;
+
+        if (self.undo_stack.items.len > 0) {
+            var last_op = &self.undo_stack.items[self.undo_stack.items.len - 1];
+            if (last_op.* == .insert_text) {
+                const prev = &last_op.insert_text;
+                if (prev.row == row and prev.col + prev.text.len == col) {
+                    const last_char = prev.text[prev.text.len - 1];
+                    const first_char = text[0];
+                    if (getCharClass(last_char) == getCharClass(first_char)) {
+                        const merged = try self.allocator.alloc(u8, prev.text.len + text.len);
+                        errdefer self.allocator.free(merged);
+                        @memcpy(merged[0..prev.text.len], prev.text);
+                        @memcpy(merged[prev.text.len..], text);
+
+                        self.allocator.free(prev.text);
+                        prev.text = merged;
+                        self.clearRedo();
+                        self.revision += 1;
+                        return;
+                    }
+                }
+            }
+        }
+
         const owned = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(owned);
         try self.undo_stack.append(self.allocator, .{ .insert_text = .{ .row = row, .col = col, .text = owned } });
@@ -307,6 +340,40 @@ pub const Buffer = struct {
     }
 
     fn pushUndoDelete(self: *Buffer, row: usize, col: usize, deleted: []const u8) !void {
+        if (deleted.len == 0) return;
+
+        if (self.undo_stack.items.len > 0) {
+            var last_op = &self.undo_stack.items[self.undo_stack.items.len - 1];
+            if (last_op.* == .delete_range) {
+                const prev = &last_op.delete_range;
+                if (prev.row == row and prev.col == col + deleted.len) {
+                    const merged = try self.allocator.alloc(u8, deleted.len + prev.deleted.len);
+                    errdefer self.allocator.free(merged);
+                    @memcpy(merged[0..deleted.len], deleted);
+                    @memcpy(merged[deleted.len..], prev.deleted);
+
+                    self.allocator.free(prev.deleted);
+                    prev.deleted = merged;
+                    prev.col = col;
+                    self.clearRedo();
+                    self.revision += 1;
+                    return;
+                }
+                if (prev.row == row and prev.col == col) {
+                    const merged = try self.allocator.alloc(u8, prev.deleted.len + deleted.len);
+                    errdefer self.allocator.free(merged);
+                    @memcpy(merged[0..prev.deleted.len], prev.deleted);
+                    @memcpy(merged[prev.deleted.len..], deleted);
+
+                    self.allocator.free(prev.deleted);
+                    prev.deleted = merged;
+                    self.clearRedo();
+                    self.revision += 1;
+                    return;
+                }
+            }
+        }
+
         const owned = try self.allocator.dupe(u8, deleted);
         errdefer self.allocator.free(owned);
         try self.undo_stack.append(self.allocator, .{ .delete_range = .{ .row = row, .col = col, .deleted = owned } });
@@ -666,4 +733,41 @@ test "buffer handles CRLF and many lines" {
     }
     try std.testing.expect(buffer.lineCount() >= 501);
     try std.testing.expect(buffer.canUndo());
+}
+
+test "buffer undo grouping" {
+    const allocator = std.testing.allocator;
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    // Type "hello" character by character
+    try buffer.insertString("h");
+    try buffer.insertString("e");
+    try buffer.insertString("l");
+    try buffer.insertString("l");
+    try buffer.insertString("o");
+
+    // Type " "
+    try buffer.insertString(" ");
+
+    // Type "world"
+    try buffer.insertString("w");
+    try buffer.insertString("o");
+    try buffer.insertString("r");
+    try buffer.insertString("l");
+    try buffer.insertString("d");
+
+    try std.testing.expectEqualStrings("hello world", buffer.lineAt(0));
+
+    // Undo "world" (grouped)
+    try buffer.undo();
+    try std.testing.expectEqualStrings("hello ", buffer.lineAt(0));
+
+    // Undo " "
+    try buffer.undo();
+    try std.testing.expectEqualStrings("hello", buffer.lineAt(0));
+
+    // Undo "hello"
+    try buffer.undo();
+    try std.testing.expectEqualStrings("", buffer.lineAt(0));
 }

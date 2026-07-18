@@ -5,6 +5,8 @@ const Workbench = @import("../../workbench.zig").Workbench;
 
 pub const cmd_mask: i32 = 0x08;
 pub const shift_mask: i32 = 0x02;
+pub const alt_mask: i32 = 0x20;
+pub const ctrl_mask: i32 = 0x01;
 
 pub fn canUninstallExtensionIndex(ext_index: usize) bool {
     const wb = state.wb orelse return false;

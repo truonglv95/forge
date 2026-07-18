@@ -30,3 +30,28 @@ pub fn applyApproved(
     try history.persistApplied(allocator, io, root, &record, proposal_path);
     return tx_id;
 }
+
+pub fn applyApprovedContent(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+    workspace_edit: edit.WorkspaceEdit,
+    proposal_path: []const u8,
+    proposal_content: []const u8,
+) !u64 {
+    try workspace_edit.validate();
+
+    var service = transaction.TransactionService.init(allocator, io, root);
+    const tx_id = try history.nextTransactionId(allocator, io, root);
+    var record = transaction.TransactionRecord{
+        .id = tx_id,
+        .state = .approved,
+        .workspace_edit = workspace_edit,
+        .timestamp_ms = std.Io.Timestamp.now(io, .real).toMilliseconds(),
+    };
+    defer service.freeRecord(&record);
+
+    try service.apply(&record);
+    try history.persistAppliedContent(allocator, io, root, &record, proposal_path, proposal_content);
+    return tx_id;
+}

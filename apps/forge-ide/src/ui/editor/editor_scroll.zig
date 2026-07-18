@@ -3,8 +3,10 @@ const editor = @import("forge-editor");
 const workspace = @import("forge-workspace");
 const renderer = @import("forge-renderer");
 
-pub const editor_chrome_height: f32 = 35;
-pub const content_top: f32 = 65;
+pub const tab_bar_height: f32 = 35;
+pub const breadcrumbs_height: f32 = 22;
+pub const editor_chrome_height: f32 = tab_bar_height + breadcrumbs_height;
+pub const content_top: f32 = 87;
 pub const text_inset_y: f32 = 5;
 
 pub fn firstLineY(_: *const workspace.Theme) f32 {

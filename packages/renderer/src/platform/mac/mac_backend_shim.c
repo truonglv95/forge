@@ -31,6 +31,8 @@ void forge_mac_flush_batch(void);
 void forge_mac_set_clipboard_text(const char* text, size_t len);
 size_t forge_mac_get_clipboard_text(char* out, size_t cap);
 int forge_mac_save_clipboard_png(const char* path);
+void forge_mac_set_ime_composition_callback(ForgeImeCompositionCallback cb);
+void forge_mac_set_ime_cursor_rect(float x, float y, float w, float h);
 
 void forge_backend_init(void) { forge_mac_init(); }
 void forge_backend_run(void) { forge_mac_run(); }
@@ -59,3 +61,5 @@ void forge_backend_flush_batch(void) { forge_mac_flush_batch(); }
 void forge_backend_set_clipboard_text(const char* t, size_t l) { forge_mac_set_clipboard_text(t, l); }
 size_t forge_backend_get_clipboard_text(char* out, size_t cap) { return forge_mac_get_clipboard_text(out, cap); }
 int forge_backend_save_clipboard_png(const char* p) { return forge_mac_save_clipboard_png(p); }
+void forge_backend_set_ime_composition_callback(ForgeImeCompositionCallback cb) { forge_mac_set_ime_composition_callback(cb); }
+void forge_backend_set_ime_cursor_rect(float x, float y, float w, float h) { forge_mac_set_ime_cursor_rect(x, y, w, h); }

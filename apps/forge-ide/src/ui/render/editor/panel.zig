@@ -11,6 +11,7 @@ const syntax = @import("syntax.zig");
 const viewport = @import("viewport.zig");
 const overlays = @import("overlays.zig");
 const breadcrumbs = @import("breadcrumbs.zig");
+const welcome = @import("welcome.zig");
 
 pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, editor_w: f32, editor_h: f32, _: f32) void {
     if (wb.proposal_review_open) {
@@ -26,7 +27,6 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
     renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top, editor_w, tabs_ui.tab_bar_height, syntax.color(theme.colors.tab_bar_bg));
     renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top + tabs_ui.tab_bar_height - 1, editor_w, 1, border);
     const visible_tab_w = @max(10, editor_w - 60);
-    renderer.Renderer.setClipRect(editor_x, tabs_ui.tab_bar_top, visible_tab_w, tabs_ui.tab_bar_height);
 
     var tab_layouts: std.ArrayList(tabs_ui.TabLayout) = .empty;
     defer tab_layouts.deinit(state.gpa);
@@ -51,22 +51,33 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
 
         // Draw icon
         const res = @import("../icon_resolver.zig").resolveIcon(label);
-        renderer.Renderer.drawSvg(res.svg, tab_layout.x + 12, 33, 14, 14, res.color);
+        renderer.Renderer.drawSvg(res.svg, tab_layout.x + 12, tabs_ui.centeredY(tabs_ui.file_icon_size), tabs_ui.file_icon_size, tabs_ui.file_icon_size, res.color);
 
+        const label_available = if (tab_layout.width > tabs_ui.label_x_offset + tabs_ui.label_right_pad)
+            tab_layout.width - tabs_ui.label_x_offset - tabs_ui.label_right_pad
+        else
+            0;
+        const max_fit_chars: usize = @intFromFloat(@max(0, label_available / tabs_ui.label_char_width));
         var tab_label_buf: [128:0]u8 = undefined;
-        const max_label_chars = @min(label.len, tab_label_buf.len - 1);
+        const max_label_chars = @min(@min(label.len, max_fit_chars), tab_label_buf.len - 1);
         @memcpy(tab_label_buf[0..max_label_chars], label[0..max_label_chars]);
         tab_label_buf[max_label_chars] = 0;
         const color = if (is_active) syntax.color(theme.colors.text_primary) else syntax.color(theme.colors.text_muted);
-        renderer.Renderer.drawText(@ptrCast(&tab_label_buf), tab_layout.x + 32, 43, ui_size, color);
+        renderer.Renderer.drawText(@ptrCast(&tab_label_buf), tab_layout.x + tabs_ui.label_x_offset, tabs_ui.centeredY(ui_size), ui_size, color);
 
         if (doc.external_conflict) {
-            renderer.Renderer.drawText("!", tab_layout.x + tab_layout.width - tabs_ui.close_button_width - 10, 43, ui_size, syntax.color(theme.colors.warning));
+            renderer.Renderer.drawText("!", tab_layout.x + tab_layout.width - tabs_ui.close_button_width - 10, tabs_ui.centeredY(ui_size), ui_size, syntax.color(theme.colors.warning));
         }
 
-        const close_x = tab_layout.x + tab_layout.width - tabs_ui.close_button_width + 4;
-        const close_color = if (is_active) syntax.color(theme.colors.text_secondary) else syntax.color(theme.colors.text_muted);
-        renderer.Renderer.drawText("x", close_x, 43, ui_size, close_color);
+        const close_button_x = tabs_ui.closeButtonX(tab_layout);
+        const close_button_y = tabs_ui.centeredY(tabs_ui.close_button_size);
+        const hovered_close = state.last_mouse_x >= close_button_x and state.last_mouse_x < close_button_x + tabs_ui.close_button_width and
+            state.last_mouse_y >= tabs_ui.tab_y and state.last_mouse_y < tabs_ui.tab_y + tabs_ui.tab_height;
+        if (hovered_close) {
+            renderer.Renderer.drawRoundedRect(close_button_x + 1, close_button_y, tabs_ui.close_button_size, tabs_ui.close_button_size, 4, syntax.color(theme.colors.selection));
+        }
+        const close_color = if (is_active or hovered_close) syntax.color(theme.colors.text_secondary) else syntax.color(theme.colors.text_muted);
+        renderer.Renderer.drawSvg(renderer.icons.x, tabs_ui.closeIconX(tab_layout), tabs_ui.centeredY(tabs_ui.close_icon_size), tabs_ui.close_icon_size, tabs_ui.close_icon_size, close_color);
     }
 
     const max_tab_scroll = tabs_ui.maxScroll(wb, visible_tab_w);
@@ -94,7 +105,10 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
     }
     renderer.Renderer.drawSvg(renderer.icons.repo, rx, layout.header_height + 7, 16, 16, icon_c);
 
-    renderer.Renderer.clearClipRect();
+    if (wb.welcome_visible and wb.tabs.tabs.items.len == 0) {
+        welcome.draw(wb, editor_x, editor_w, editor_h);
+        return;
+    }
 
     const pane_w = wb.paneWidth(editor_w);
     if (wb.editor_split) {
@@ -112,7 +126,7 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
             );
         }
         const divider_x = editor_x + pane_w;
-        renderer.Renderer.drawRect(divider_x, 65, 4, editor_scroll.viewportHeight(editor_h), syntax.color(theme.colors.tab_bar_bg));
+        renderer.Renderer.drawRect(divider_x, editor_scroll.content_top, 4, editor_scroll.viewportHeight(editor_h), syntax.color(theme.colors.tab_bar_bg));
         if (wb.docForPane(.secondary)) |doc| {
             viewport.drawEditorViewport(
                 wb,

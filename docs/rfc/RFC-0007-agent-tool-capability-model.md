@@ -6,7 +6,9 @@
 ## Summary
 
 Agent sessions invoke **tools** through a capability-scoped registry. Tools may
-read workspace state or propose edits; only explicit approval can apply changes.
+read workspace state or edit files. By default edits are review-gated; when the
+user explicitly trusts tools, edit tools apply immediately through the
+transaction service rather than bypassing workspace safety.
 
 ## Capability profiles
 
@@ -17,7 +19,9 @@ read workspace state or propose edits; only explicit approval can apply changes.
 | `propose_and_task` | propose tools + `run_task` (never `apply_proposal`) |
 
 `apply_proposal` and `undo` require a separate human or CLI approval gate
-(`--yes`, IDE button). Agents never auto-apply unless explicitly approved.
+(`--yes`, IDE button). Agent edit tools can auto-apply only after an explicit
+trust grant (`/tools trust-all`, `--trust-all`, or equivalent UI policy), and
+still use transaction history, stale-write checks, checkpoints, and undo.
 
 Mode mapping is fixed: Ask and Plan use `read_only`; Agent uses
 `propose_and_task`. Tool declarations are filtered before being sent to the
@@ -84,7 +88,9 @@ forge agent list --workspace . --json
 ```
 
 `forge agent run --yes` applies the resulting proposal through the transaction
-service after the approval gate passes.
+service after the approval gate passes. `forge agent run --trust-all` trusts all
+tools for the current session; edit tools directly apply via transactions and
+therefore may return no proposal path.
 
 ## Safety rules
 
@@ -115,7 +121,8 @@ service after the approval gate passes.
 - [x] Tool registry + capability profiles
 - [x] `forge agent run` multi-step loop
 - [x] Session persistence + resume
-- [x] `--yes` apply gate (no silent apply)
+- [x] `--yes` apply gate for proposal mode
+- [x] Explicit trust mode for direct transaction-backed agent edits
 - [x] SIGINT → cancel (macOS/Linux via `cancel_scope`)
 - [x] IDE Agents window wiring
 - [x] Structured read/search/tree observations

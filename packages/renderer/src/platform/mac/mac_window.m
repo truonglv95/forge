@@ -65,10 +65,17 @@ typedef struct {
 } ForgeGlyphInfo;
 
 @interface ForgeLineCacheEntry : NSObject
-@property (assign) CTLineRef line;
+@property (nonatomic) CTLineRef line;
 @end
 
 @implementation ForgeLineCacheEntry
+- (void)setLine:(CTLineRef)line {
+    if (_line == line) return;
+    if (line) CFRetain(line);
+    if (_line) CFRelease(_line);
+    _line = line;
+}
+
 - (void)dealloc {
     if (_line) CFRelease(_line);
 }
@@ -77,33 +84,12 @@ typedef struct {
 static NSMutableDictionary<NSValue *, NSCache<NSString *, ForgeLineCacheEntry *> *> *g_fontToCache = nil;
 
 static CTLineRef ForgeGetCachedCTLine(NSString *text, CTFontRef font) {
-    if (!g_fontToCache) {
-        g_fontToCache = [NSMutableDictionary new];
-    }
-    
-    NSValue *fontKey = [NSValue valueWithPointer:font];
-    NSCache<NSString *, ForgeLineCacheEntry *> *cache = g_fontToCache[fontKey];
-    if (!cache) {
-        cache = [NSCache new];
-        cache.countLimit = 2000;
-        g_fontToCache[fontKey] = cache;
-    }
-    
-    ForgeLineCacheEntry *entry = [cache objectForKey:text];
-    if (entry) {
-        return entry.line;
-    }
-    
     NSDictionary *attributes = @{
         (id)kCTFontAttributeName: (__bridge id)font,
         (id)kCTForegroundColorAttributeName: (__bridge id)[NSColor whiteColor].CGColor
     };
     NSAttributedString *attrString = [[NSAttributedString alloc] initWithString:text attributes:attributes];
     CTLineRef line = CTLineCreateWithAttributedString((CFAttributedStringRef)attrString);
-    
-    entry = [ForgeLineCacheEntry new];
-    entry.line = line;
-    [cache setObject:entry forKey:text];
     
     return line;
 }
@@ -557,9 +543,22 @@ static ForgeRenderer *g_renderer = nil;
 
 static ForgeKeyCallback g_keyCallback = NULL;
 static ForgeMouseCallback g_mouseCallback = NULL;
+static ForgeImeCompositionCallback g_imeCompositionCallback = NULL;
+static CGRect g_imeCursorRect = {{0, 0}, {0, 0}};
 
-@interface ForgeMTKView : MTKView
+@interface ForgeMTKView : MTKView <NSTextInputClient>
+{
+    NSRange _markedRange;
+}
 @end
+
+void forge_mac_set_ime_composition_callback(ForgeImeCompositionCallback callback) {
+    g_imeCompositionCallback = callback;
+}
+
+void forge_mac_set_ime_cursor_rect(float x, float y, float w, float h) {
+    g_imeCursorRect = CGRectMake(x, y, w, h);
+}
 
 @implementation ForgeMTKView
 - (BOOL)acceptsFirstResponder { return YES; }
@@ -575,18 +574,109 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
 
 - (void)keyDown:(NSEvent *)event {
     if (g_keyCallback) {
-        NSString *chars = nil;
+        // Only forward standard keys to IME if there are no modifiers like Cmd/Ctrl
         const NSEventModifierFlags flags = event.modifierFlags;
         if ((flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) == 0) {
-            chars = [event charactersIgnoringModifiers];
+            // Let the input manager handle potential IME character sequences
+            if (![[self inputContext] handleEvent:event]) {
+                // If not handled by IME (e.g., standard alphabet without composition), 
+                // we extract the characters and pass to our handler.
+                NSString *chars = [event characters];
+                const char *cChars = chars ? [chars UTF8String] : "";
+                g_keyCallback(event.keyCode, cChars, true, ForgeMapModifiers(event.modifierFlags));
+                [self setNeedsDisplay:YES];
+            }
+        } else {
+            // Command/Ctrl modifier pressed, pass directly to keyCallback
+            NSString *chars = [event charactersIgnoringModifiers];
+            const char *cChars = chars ? [chars UTF8String] : "";
+            g_keyCallback(event.keyCode, cChars, true, ForgeMapModifiers(event.modifierFlags));
+            [self setNeedsDisplay:YES];
         }
-        if (chars == nil || chars.length == 0) {
-            chars = [event characters];
-        }
-        const char *cChars = chars ? [chars UTF8String] : "";
-        g_keyCallback(event.keyCode, cChars, true, ForgeMapModifiers(event.modifierFlags));
-        [self setNeedsDisplay:YES];
     }
+}
+
+// MARK: - NSTextInputClient
+
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+    NSString *text = nil;
+    if ([string isKindOfClass:[NSString class]]) {
+        text = (NSString *)string;
+    } else if ([string isKindOfClass:[NSAttributedString class]]) {
+        text = [(NSAttributedString *)string string];
+    }
+    
+    _markedRange = NSMakeRange(NSNotFound, 0);
+    if (g_imeCompositionCallback && text) {
+        const char *utf8Text = [text UTF8String];
+        // Commit text (cursor_pos = -1 means committed)
+        g_imeCompositionCallback(utf8Text, strlen(utf8Text), -1);
+    }
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
+    NSString *text = nil;
+    if ([string isKindOfClass:[NSString class]]) {
+        text = (NSString *)string;
+    } else if ([string isKindOfClass:[NSAttributedString class]]) {
+        text = [(NSAttributedString *)string string];
+    }
+    
+    if (text.length == 0) {
+        [self unmarkText];
+        return;
+    }
+    
+    _markedRange = NSMakeRange(0, text.length);
+    if (g_imeCompositionCallback) {
+        const char *utf8Text = [text UTF8String];
+        // Ongoing composition text
+        g_imeCompositionCallback(utf8Text, strlen(utf8Text), (int)selectedRange.location);
+    }
+    [self setNeedsDisplay:YES];
+}
+
+- (void)unmarkText {
+    _markedRange = NSMakeRange(NSNotFound, 0);
+    if (g_imeCompositionCallback) {
+        // Clear composition
+        g_imeCompositionCallback("", 0, -1);
+    }
+    [self setNeedsDisplay:YES];
+}
+
+- (NSRange)selectedRange {
+    return _markedRange;
+}
+
+- (NSRange)markedRange {
+    return _markedRange;
+}
+
+- (BOOL)hasMarkedText {
+    return _markedRange.location != NSNotFound && _markedRange.length > 0;
+}
+
+- (nullable NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range actualRange:(nullable NSRangePointer)actualRange {
+    return nil;
+}
+
+- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText {
+    return @[];
+}
+
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(nullable NSRangePointer)actualRange {
+    if (actualRange) {
+        *actualRange = range;
+    }
+    NSRect windowRect = NSMakeRect(g_imeCursorRect.origin.x, self.bounds.size.height - g_imeCursorRect.origin.y - g_imeCursorRect.size.height, g_imeCursorRect.size.width, g_imeCursorRect.size.height);
+    NSRect screenRect = [self.window convertRectToScreen:windowRect];
+    return screenRect;
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+    return NSNotFound;
 }
 
 - (void)keyUp:(NSEvent *)event {
@@ -600,7 +690,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
     [self.window makeFirstResponder:self];
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
-        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 0, ForgeMapModifiers(event.modifierFlags));
+        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 0, ForgeMapModifiers(event.modifierFlags), (int)event.clickCount);
         [self setNeedsDisplay:YES];
     }
 }
@@ -608,7 +698,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
 - (void)mouseUp:(NSEvent *)event {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
-        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 1, ForgeMapModifiers(event.modifierFlags));
+        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 1, ForgeMapModifiers(event.modifierFlags), (int)event.clickCount);
         [self setNeedsDisplay:YES];
     }
 }
@@ -616,7 +706,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
 - (void)mouseMoved:(NSEvent *)event {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
-        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 2, ForgeMapModifiers(event.modifierFlags));
+        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 2, ForgeMapModifiers(event.modifierFlags), 0);
         [self setNeedsDisplay:YES];
     }
 }
@@ -624,7 +714,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
 - (void)mouseDragged:(NSEvent *)event {
     if (g_mouseCallback) {
         NSPoint location = [self convertPoint:[event locationInWindow] fromView:nil];
-        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 3, ForgeMapModifiers(event.modifierFlags));
+        g_mouseCallback(location.x, self.bounds.size.height - location.y, 0, 3, ForgeMapModifiers(event.modifierFlags), 0);
         [self setNeedsDisplay:YES];
     }
 }
@@ -639,7 +729,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
             dx *= 15.0;
             dy *= 15.0;
         }
-        g_mouseCallback(dx, dy, 0, 4, ForgeMapModifiers(event.modifierFlags));
+        g_mouseCallback(dx, dy, 0, 4, ForgeMapModifiers(event.modifierFlags), 0);
         [self setNeedsDisplay:YES];
     }
 }
@@ -849,6 +939,7 @@ static CGFloat g_fontCacheSizes[12];
 static int g_fontCacheCount = 0;
 
 static void ForgeInvalidateFontCache(void) {
+    [g_fontToCache removeAllObjects];
     for (int i = 0; i < g_fontCacheCount; i++) {
         if (g_fontCache[i]) CFRelease(g_fontCache[i]);
         g_fontCache[i] = NULL;
@@ -1051,6 +1142,7 @@ void forge_mac_set_cursor(int type) {
             case 1: [[NSCursor IBeamCursor] set]; break;
             case 2: [[NSCursor resizeLeftRightCursor] set]; break;
             case 3: [[NSCursor resizeUpDownCursor] set]; break;
+            case 4: [[NSCursor pointingHandCursor] set]; break;
             default: [[NSCursor arrowCursor] set]; break;
         }
     });
@@ -1278,6 +1370,7 @@ float forge_mac_measure_text_width(const char* text, size_t len, float fontSize)
         
         CTLineRef line = ForgeGetCachedCTLine(nsText, font);
         double width = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
+        CFRelease(line);
         return (float)(width / scale);
     }
 }
@@ -1316,6 +1409,7 @@ void forge_mac_draw_text_len(const char* text, size_t len, float x, float y, flo
 
             CTLineRef line = ForgeGetCachedCTLine(lineStr, font);
             ForgeDrawGlyphsFromCTLine(line, font, x, currentY, scale, color);
+            CFRelease(line);
             currentY += lineHeight;
         }
     }
@@ -1349,50 +1443,29 @@ void forge_mac_draw_styled_text(const char* text, size_t len, float x, float y, 
         CTFontRef font = ForgeGetFont(fontSize * scale);
         if (!font) return;
 
-        uint64_t hash = hash_styled_text(text, len, spans, span_count);
-        NSString *key = [NSString stringWithFormat:@"styled_%llu_%p", hash, font];
+        NSMutableAttributedString *attrString = [[NSMutableAttributedString alloc] init];
+        for (size_t i = 0; i < span_count; i++) {
+            ForgeTextSpan span = spans[i];
+            if (span.length == 0 || span.offset >= len) continue;
+            if (span.offset + span.length > len) continue;
 
-        static NSCache<NSString *, ForgeLineCacheEntry *> *g_styledLineCache = nil;
-        if (!g_styledLineCache) {
-            g_styledLineCache = [NSCache new];
-            g_styledLineCache.countLimit = 2000;
+            NSString *piece = [[NSString alloc] initWithBytes:(text + span.offset)
+                                                       length:span.length
+                                                     encoding:NSUTF8StringEncoding];
+            if (!piece || piece.length == 0) continue;
+
+            CGColorRef cgColor = CGColorCreateGenericRGB(span.r, span.g, span.b, span.a);
+            NSDictionary *pieceAttrs = @{
+                (id)kCTFontAttributeName: (__bridge id)font,
+                (id)kCTForegroundColorAttributeName: (__bridge id)cgColor,
+            };
+            NSAttributedString *attrPiece = [[NSAttributedString alloc] initWithString:piece attributes:pieceAttrs];
+            [attrString appendAttributedString:attrPiece];
+            CGColorRelease(cgColor);
         }
 
-        CTLineRef line = NULL;
-        ForgeLineCacheEntry *entry = [g_styledLineCache objectForKey:key];
-        if (entry) {
-            line = entry.line;
-            CFRetain(line);
-        } else {
-            NSMutableAttributedString *attrString = [[NSMutableAttributedString alloc] init];
-            for (size_t i = 0; i < span_count; i++) {
-                ForgeTextSpan span = spans[i];
-                if (span.length == 0 || span.offset >= len) continue;
-                if (span.offset + span.length > len) continue;
-
-                NSString *piece = [[NSString alloc] initWithBytes:(text + span.offset)
-                                                           length:span.length
-                                                         encoding:NSUTF8StringEncoding];
-                if (!piece || piece.length == 0) continue;
-
-                CGColorRef cgColor = CGColorCreateGenericRGB(span.r, span.g, span.b, span.a);
-                NSDictionary *pieceAttrs = @{
-                    (id)kCTFontAttributeName: (__bridge id)font,
-                    (id)kCTForegroundColorAttributeName: (__bridge id)cgColor,
-                };
-                NSAttributedString *attrPiece = [[NSAttributedString alloc] initWithString:piece attributes:pieceAttrs];
-                [attrString appendAttributedString:attrPiece];
-                CGColorRelease(cgColor);
-            }
-
-            if (attrString.length == 0) return;
-            line = CTLineCreateWithAttributedString((CFAttributedStringRef)attrString);
-
-            ForgeLineCacheEntry *newEntry = [ForgeLineCacheEntry new];
-            newEntry.line = line;
-            CFRetain(line); // Keep one ref for the cache
-            [g_styledLineCache setObject:newEntry forKey:key];
-        }
+        if (attrString.length == 0) return;
+        CTLineRef line = CTLineCreateWithAttributedString((CFAttributedStringRef)attrString);
 
         vector_float4 fallback = {1, 1, 1, 1};
         ForgeDrawGlyphsFromCTLine(line, font, x, y, scale, fallback);

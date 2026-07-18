@@ -304,9 +304,9 @@ static void handle_event(XEvent* ev) {
         }
         case KeyPress: { if (g_key_cb) { char buf[32]={0}; KeySym ks=0; Xutf8LookupString(NULL,&ev->xkey,buf,sizeof(buf)-1,&ks,NULL); int mods=0; if(ev->xkey.state&ShiftMask)mods|=1; if(ev->xkey.state&ControlMask)mods|=2; if(ev->xkey.state&Mod1Mask)mods|=4; g_key_cb(ev->xkey.keycode,buf,true,mods); } break; }
         case KeyRelease: { if (g_key_cb) g_key_cb(ev->xkey.keycode,"",false,0); break; }
-        case ButtonPress: { if (g_mouse_cb) { int b=ev->xbutton.button; int a=(b==4||b==5)?4:0; g_mouse_cb((float)ev->xbutton.x,(float)ev->xbutton.y,b,a,0); } break; }
-        case ButtonRelease: { if (g_mouse_cb) g_mouse_cb((float)ev->xbutton.x,(float)ev->xbutton.y,ev->xbutton.button,1,0); break; }
-        case MotionNotify: { if (g_mouse_cb) { int a=((ev->xmotion.state&(Button1Mask|Button2Mask|Button3Mask))!=0)?3:2; g_mouse_cb((float)ev->xmotion.x,(float)ev->xmotion.y,0,a,0); } break; }
+        case ButtonPress: { if (g_mouse_cb) { int b=ev->xbutton.button; int a=(b==4||b==5)?4:0; g_mouse_cb((float)ev->xbutton.x,(float)ev->xbutton.y,b,a,0,a==0?1:0); } break; }
+        case ButtonRelease: { if (g_mouse_cb) g_mouse_cb((float)ev->xbutton.x,(float)ev->xbutton.y,ev->xbutton.button,1,0,0); break; }
+        case MotionNotify: { if (g_mouse_cb) { int a=((ev->xmotion.state&(Button1Mask|Button2Mask|Button3Mask))!=0)?3:2; g_mouse_cb((float)ev->xmotion.x,(float)ev->xmotion.y,0,a,0,0); } break; }
         case ClientMessage: {
             if (ev->xclient.format == 32 && (Atom)ev->xclient.data.l[0] == XInternAtom(g_display, "WM_DELETE_WINDOW", False)) exit(0);
             break;

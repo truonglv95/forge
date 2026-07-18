@@ -179,11 +179,13 @@ test "manifest parses language with file_pattern alias" {
         \\server = "pyright-langserver"
         \\args = "--stdio"
         \\pattern = "*.py"
+        \\resolver = ""
     );
     defer manifest.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), manifest.languages.len);
     try std.testing.expectEqualStrings("*.py", manifest.languages[0].file_pattern);
     try std.testing.expectEqualStrings("--stdio", manifest.languages[0].args);
+    try std.testing.expectEqualStrings("", manifest.languages[0].server_resolver);
 }
 
 test "manifest deinit frees all allocations" {

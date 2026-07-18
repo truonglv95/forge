@@ -8,8 +8,14 @@ pub const tab_bar_height: f32 = 35;
 pub const tab_y: f32 = 30;
 pub const tab_height: f32 = 35;
 pub const close_button_width: f32 = 20;
+pub const close_button_size: f32 = 18;
+pub const close_icon_size: f32 = 14;
+pub const file_icon_size: f32 = 14;
 pub const label_char_width: f32 = 8;
-pub const label_pad: f32 = 24;
+pub const label_x_offset: f32 = 32;
+pub const label_right_pad: f32 = 28;
+pub const label_pad: f32 = label_x_offset + label_right_pad;
+pub const min_tab_width: f32 = 96;
 pub const max_tab_width: f32 = 200;
 
 pub const TabLayout = struct {
@@ -20,7 +26,19 @@ pub const TabLayout = struct {
 
 pub fn tabWidth(label_len: usize) f32 {
     const raw = @as(f32, @floatFromInt(label_len)) * label_char_width + label_pad + close_button_width;
-    return @min(raw, max_tab_width);
+    return @max(min_tab_width, @min(raw, max_tab_width));
+}
+
+pub fn closeButtonX(layout: TabLayout) f32 {
+    return layout.x + layout.width - close_button_width - 1;
+}
+
+pub fn closeIconX(layout: TabLayout) f32 {
+    return closeButtonX(layout) + (close_button_width - close_icon_size) * 0.5;
+}
+
+pub fn centeredY(size: f32) f32 {
+    return tab_y + (tab_height - size) * 0.5;
 }
 
 pub fn collectLayouts(wb: *const Workbench, editor_x: f32, editor_w: f32, out: *std.ArrayList(TabLayout)) !void {
@@ -99,7 +117,7 @@ pub fn hitTest(layouts: []const TabLayout, x: f32, y: f32) Hit {
     if (y < tab_bar_top or y >= tab_bar_top + tab_bar_height) return .none;
     for (layouts) |layout| {
         if (x < layout.x or x >= layout.x + layout.width) continue;
-        const close_x = layout.x + layout.width - close_button_width;
+        const close_x = closeButtonX(layout);
         if (x >= close_x) return .{ .close = layout.index };
         return .{ .activate = layout.index };
     }

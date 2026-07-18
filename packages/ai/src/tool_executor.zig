@@ -27,6 +27,7 @@ pub const Context = struct {
     environ_map: ?*const std.process.Environ.Map = null,
     edit_callback: ?*const fn (?*anyopaque, edit: workspace.edit.WorkspaceEdit) void = null,
     edit_context: ?*anyopaque = null,
+    direct_apply_edits: bool = false,
     lsp_request_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 = null,
     lsp_context: ?*anyopaque = null,
     cache: ?*tool_cache_mod.Cache = null,
@@ -713,43 +714,50 @@ pub fn replaceFileContent(ctx: Context, args: @import("tools/args.zig").ReplaceF
     try checkCancel(ctx);
     try requireTool(ctx, .propose_edit);
 
-    if (ctx.edit_callback) |cb| {
-        const wp = workspace.WorkspacePath.parse(args.path) catch return error.WorkspaceFailed;
-        var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return error.WorkspaceFailed;
-        defer snap.deinit();
+    const wp = workspace.WorkspacePath.parse(args.path) catch return error.WorkspaceFailed;
+    var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return error.WorkspaceFailed;
+    defer snap.deinit();
 
-        const expected_hash = workspace.edit.contentHash(snap.content);
+    var text_edits: std.ArrayList(workspace.edit.TextEdit) = .empty;
+    defer text_edits.deinit(ctx.allocator);
+    for (args.edits) |e| {
+        text_edits.append(ctx.allocator, .{
+            .start = 0,
+            .end = 0,
+            .search = e.search,
+            .replacement = e.replace,
+        }) catch return error.WorkspaceFailed;
+    }
 
-        var text_edits: std.ArrayList(workspace.edit.TextEdit) = .empty;
-        defer text_edits.deinit(ctx.allocator);
-        for (args.edits) |e| {
-            text_edits.append(ctx.allocator, .{
-                .start = 0,
-                .end = 0,
-                .search = e.search,
-                .replacement = e.replace,
-            }) catch return error.WorkspaceFailed;
-        }
+    const file_edit = workspace.edit.FileEdit{
+        .path = args.path,
+        .operation = .modify,
+        .expected_hash = workspace.edit.contentHash(snap.content),
+        .edits = text_edits.items,
+    };
 
-        const file_edit = workspace.edit.FileEdit{
-            .path = args.path,
-            .operation = .modify,
-            .expected_hash = expected_hash,
-            .edits = text_edits.items,
-        };
+    const ws_edit = workspace.edit.WorkspaceEdit{
+        .files = &.{file_edit},
+    };
 
-        const ws_edit = workspace.edit.WorkspaceEdit{
-            .files = &.{file_edit},
-        };
-
+    var applied_tx: ?u64 = null;
+    if (ctx.direct_apply_edits) {
+        const proposal_json = formatInlineProposalJson(ctx.allocator, ws_edit) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(proposal_json);
+        applied_tx = workspace.execution.applyApprovedContent(ctx.allocator, ctx.io, ctx.root, ws_edit, "agent-inline", proposal_json) catch return error.WorkspaceFailed;
+    } else if (ctx.edit_callback) |cb| {
         cb(ctx.edit_context, ws_edit);
     }
 
     const summary = blk: {
-        const wp = workspace.WorkspacePath.parse(args.path) catch break :blk std.fmt.allocPrint(ctx.allocator, "Write `{s}` ({d} blocks)", .{ args.path, args.edits.len }) catch return error.WorkspaceFailed;
-        var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch break :blk std.fmt.allocPrint(ctx.allocator, "Write `{s}` ({d} blocks)", .{ args.path, args.edits.len }) catch return error.WorkspaceFailed;
-        defer snap.deinit();
         const first = if (args.edits.len > 0) summarizeEditPreview(args.edits[0].replace) else "";
+        if (applied_tx) |tx_id| {
+            break :blk std.fmt.allocPrint(
+                ctx.allocator,
+                "Applied edit `{s}` tx={d} blocks={d}: {s}",
+                .{ args.path, tx_id, args.edits.len, first },
+            ) catch return error.WorkspaceFailed;
+        }
         if (first.len > 0) {
             break :blk std.fmt.allocPrint(
                 ctx.allocator,
@@ -795,14 +803,68 @@ pub fn multiEdit(ctx: Context, args: @import("tools/args.zig").MultiEditArgs) Ag
         }) catch return error.WorkspaceFailed;
     }
 
-    if (ctx.edit_callback) |cb| {
+    var applied_tx: ?u64 = null;
+    if (ctx.direct_apply_edits) {
+        const ws_edit = workspace.edit.WorkspaceEdit{ .files = file_edits.items };
+        const proposal_json = formatInlineProposalJson(ctx.allocator, ws_edit) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(proposal_json);
+        applied_tx = workspace.execution.applyApprovedContent(ctx.allocator, ctx.io, ctx.root, ws_edit, "agent-inline", proposal_json) catch return error.WorkspaceFailed;
+    } else if (ctx.edit_callback) |cb| {
         cb(ctx.edit_context, .{ .files = file_edits.items });
     }
 
     var total_edits: usize = 0;
     for (args.files) |fe| total_edits += fe.edits.len;
-    const summary = std.fmt.allocPrint(ctx.allocator, "Multi-edit {d} file(s), {d} block(s) total: {s}", .{ args.files.len, total_edits, args.files[0].path }) catch return error.WorkspaceFailed;
+    const summary = if (applied_tx) |tx_id|
+        std.fmt.allocPrint(ctx.allocator, "Applied multi-edit tx={d}: {d} file(s), {d} block(s) total: {s}", .{ tx_id, args.files.len, total_edits, args.files[0].path }) catch return error.WorkspaceFailed
+    else
+        std.fmt.allocPrint(ctx.allocator, "Multi-edit {d} file(s), {d} block(s) total: {s}", .{ args.files.len, total_edits, args.files[0].path }) catch return error.WorkspaceFailed;
     return .{ .summary = summary };
+}
+
+fn formatInlineProposalJson(allocator: std.mem.Allocator, ws_edit: workspace.edit.WorkspaceEdit) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"schema_version\":1,\"summary\":\"agent inline edit\",\"files\":[");
+    for (ws_edit.files, 0..) |file, file_index| {
+        if (file_index > 0) try out.append(allocator, ',');
+        try out.appendSlice(allocator, "{\"path\":");
+        try appendJsonString(allocator, &out, file.path);
+        try out.appendSlice(allocator, ",\"operation\":");
+        try appendJsonString(allocator, &out, @tagName(file.operation));
+        if (file.expected_hash) |hash| {
+            const hash_text = try std.fmt.allocPrint(allocator, ",\"expected_hash\":{d}", .{hash});
+            defer allocator.free(hash_text);
+            try out.appendSlice(allocator, hash_text);
+        } else {
+            try out.appendSlice(allocator, ",\"expected_hash\":null");
+        }
+        try out.appendSlice(allocator, ",\"edits\":[");
+        for (file.edits, 0..) |edit, edit_index| {
+            if (edit_index > 0) try out.append(allocator, ',');
+            try out.appendSlice(allocator, "{\"start\":");
+            const range_text = try std.fmt.allocPrint(allocator, "{d},\"end\":{d},", .{ edit.start, edit.end });
+            defer allocator.free(range_text);
+            try out.appendSlice(allocator, range_text);
+            if (edit.search) |search_text| {
+                try out.appendSlice(allocator, "\"search\":");
+                try appendJsonString(allocator, &out, search_text);
+                try out.append(allocator, ',');
+            }
+            try out.appendSlice(allocator, "\"replacement\":");
+            try appendJsonString(allocator, &out, edit.replacement);
+            try out.append(allocator, '}');
+        }
+        try out.appendSlice(allocator, "]}");
+    }
+    try out.appendSlice(allocator, "]}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
+    const encoded = try std.json.Stringify.valueAlloc(allocator, text, .{});
+    defer allocator.free(encoded);
+    try out.appendSlice(allocator, encoded);
 }
 
 pub fn spawnSubagent(ctx: Context, role: []const u8, prompt: []const u8) AgentToolError!Outcome {
@@ -1239,6 +1301,36 @@ test "tool executor codebase_search returns semantic hits" {
 
     try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "reranked hits") != null);
     try std.testing.expect(outcome.formatted != null);
+}
+
+test "replace_file_content can direct-apply through transaction history" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("sample.txt"), "hello forge\n");
+
+    const EditArg = @import("tools/args.zig").ReplaceFileContentArgs.Edit;
+    const edits = [_]EditArg{.{ .search = "hello", .replace = "hi" }};
+    const outcome = try replaceFileContent(.{
+        .allocator = allocator,
+        .io = io,
+        .root = root,
+        .cwd = ".",
+        .profile = .propose_and_task,
+        .direct_apply_edits = true,
+    }, .{
+        .path = "sample.txt",
+        .edits = &edits,
+    });
+    defer allocator.free(outcome.summary);
+
+    var snap = try workspace.FileSnapshot.read(allocator, io, root, try workspace.WorkspacePath.parse("sample.txt"));
+    defer snap.deinit();
+    try std.testing.expectEqualStrings("hi forge\n", snap.content);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "Applied edit") != null);
 }
 
 test "run command allowlist produces argv without a shell" {

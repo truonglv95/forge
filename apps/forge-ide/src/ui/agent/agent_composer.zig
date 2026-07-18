@@ -14,9 +14,10 @@ pub const prompt_line_h: f32 = tokens.font.body_line;
 pub const scroll_bar_w: f32 = scrollbar.track_w;
 
 pub const composer_pad: f32 = tokens.space.lg;
-pub const input_min_h: f32 = 56;
+pub const input_min_h: f32 = 72;
 pub const input_max_h: f32 = 220;
-pub const composer_chrome_h: f32 = toolbar_h + 44;
+pub const toolbar_gap: f32 = 10;
+pub const composer_chrome_h: f32 = toolbar_h + toolbar_gap;
 pub const composer_base_h: f32 = composer_chrome_h + input_min_h;
 pub const composer_max_h: f32 = composer_chrome_h + input_max_h;
 pub const attachment_row_h: f32 = 26;
@@ -31,7 +32,7 @@ pub const ModelOption = struct {
     provider: []const u8,
 };
 
-pub const default_models_str = "qwen3.5:35b|Qwen 3.5 35B (Ollama)|ollama,qwen2.5-coder:7b|Qwen 2.5 Coder 7B (Ollama)|ollama,gemini-2.5-flash|Gemini 2.5 Flash|gemini,gemini-2.5-pro|Gemini 2.5 Pro|gemini,gemini-2.0-flash|Gemini 2.0 Flash|gemini,openai/gpt-4o-mini|GPT-4o Mini (OpenRouter)|openrouter,anthropic/claude-sonnet-4|Claude Sonnet 4 (OpenRouter)|openrouter,z-ai/glm-5.2|GLM-5.2 (OpenRouter)|openrouter,cohere/north-mini-code:free|Cohere North Mini Code Free (OpenRouter)|openrouter,z-ai/glm-5.2|GLM-5.2 (NVIDIA)|nvidia,meta/llama-3.1-70b-instruct|Llama 3.1 70B (NVIDIA)|nvidia";
+pub const default_models_str = "qwen3.5:35b|Qwen 3.5 35B (Ollama)|ollama,qwen2.5-coder:7b|Qwen 2.5 Coder 7B (Ollama)|ollama,gemini-2.5-flash|Gemini 2.5 Flash|gemini,gemini-2.5-pro|Gemini 2.5 Pro|gemini,gemini-2.0-flash|Gemini 2.0 Flash|gemini,openai/gpt-4o-mini|GPT-4o Mini (OpenRouter)|openrouter,anthropic/claude-sonnet-4|Claude Sonnet 4 (OpenRouter)|openrouter,nvidia/nemotron-3-super-120b-a12b:free|NVIDIA Nemotron 3 Super 120B A12B Free (OpenRouter)|openrouter,qwen/qwen3-coder:free|Qwen3 Coder Free (OpenRouter)|openrouter,z-ai/glm-5.2|GLM-5.2 (OpenRouter)|openrouter,cohere/north-mini-code:free|Cohere North Mini Code Free (OpenRouter)|openrouter,z-ai/glm-5.2|GLM-5.2 (NVIDIA)|nvidia,meta/llama-3.1-70b-instruct|Llama 3.1 70B (NVIDIA)|nvidia";
 
 pub fn parseCustomModels(allocator: std.mem.Allocator, custom_str: []const u8) ![]ModelOption {
     var list: std.ArrayList(ModelOption) = .empty;
@@ -399,11 +400,9 @@ pub fn draw(
     worker_running: bool,
     show_review: bool,
 ) void {
-    const disabled = worker_running or show_review;
-    const bg = if (disabled)
-        renderer.Color{ .r = 0.17, .g = 0.17, .b = 0.17, .a = 1.0 }
-    else
-        renderer.Color{ .r = 0.22, .g = 0.22, .b = 0.22, .a = 1.0 };
+    const controls_disabled = worker_running;
+    _ = show_review;
+    const bg = renderer.Color{ .r = 0.22, .g = 0.22, .b = 0.22, .a = 1.0 };
     const outline_color = renderer.Color{ .r = 0.38, .g = 0.44, .b = 0.52, .a = 0.9 };
 
     const input_box_h = layout_info.composer_h - composer_chrome_h;
@@ -447,28 +446,48 @@ pub fn draw(
     const text_color = renderer.Color{ .r = 0.94, .g = 0.94, .b = 0.96, .a = 1.0 };
     const scroll_y = clampPromptScroll(prompt_scroll_y, layout_info.visual_lines, layout_info.input_h);
 
-    renderer.Renderer.setClipRect(text_x, layout_info.input_y, max_w + scroll_bar_w, layout_info.input_h);
+    {
+        renderer.Renderer.pushClipRect(text_x, layout_info.input_y, max_w + scroll_bar_w, layout_info.input_h);
+        defer renderer.Renderer.popClipRect();
 
-    if (promptIsEmpty(prompt) and !disabled) {
-        renderer.Renderer.drawText("Type a message...", text_x, text_y, 13.0, .{
-            .r = 0.62,
-            .g = 0.64,
-            .b = 0.68,
-            .a = 1.0,
-        });
-    } else {
-        drawWrappedPrompt(prompt, text_x, text_y, max_w, visible_h, scroll_y, text_color);
-    }
+        if (promptIsEmpty(prompt)) {
+            renderer.Renderer.drawText("Type a message...", text_x, text_y, 13.0, .{
+                .r = 0.62,
+                .g = 0.64,
+                .b = 0.68,
+                .a = 1.0,
+            });
+        } else {
+            drawWrappedPrompt(prompt, text_x, text_y, max_w, visible_h, scroll_y, text_color);
+        }
 
-    if (show_cursor) {
-        const caret = caretPosition(prompt, max_w);
-        const caret_y = caret.y - scroll_y;
-        if (caret_y >= 0 and caret_y + prompt_line_h <= visible_h + 4) {
-            renderer.Renderer.drawRect(text_x + caret.x, text_y + caret_y, 1.5, 16, .{ .r = 0.9, .g = 0.9, .b = 0.95, .a = 1.0 });
+        if (state.wb) |wb| {
+            if (wb.ime_text) |ime_text| {
+                const caret = caretPosition(prompt, max_w);
+                const caret_y = caret.y - scroll_y;
+                if (caret_y >= 0 and caret_y + prompt_line_h <= visible_h + 4) {
+                    renderer.Renderer.drawText(ime_text, text_x + caret.x, text_y + caret_y, 13.0, text_color);
+                    const ime_w = renderer.Renderer.measureText(ime_text, 13.0);
+                    renderer.Renderer.drawRect(text_x + caret.x, text_y + caret_y + prompt_line_h - 2, ime_w, 2, text_color);
+                    if (wb.ime_cursor >= 0 and wb.ime_cursor <= ime_text.len) {
+                        const sub_w = renderer.Renderer.measureText(ime_text[0..@intCast(wb.ime_cursor)], 13.0);
+                        renderer.Renderer.drawRect(text_x + caret.x + sub_w, text_y + caret_y, 1.5, 16, .{ .r = 0.9, .g = 0.9, .b = 0.95, .a = 1.0 });
+                        renderer.Renderer.setImeCursorRect(text_x + caret.x + sub_w, text_y + caret_y, 0, 16);
+                    } else {
+                        renderer.Renderer.setImeCursorRect(text_x + caret.x, text_y + caret_y, ime_w, 16);
+                    }
+                }
+            } else if (show_cursor) {
+                const caret = caretPosition(prompt, max_w);
+                const caret_y = caret.y - scroll_y;
+                if (caret_y >= 0 and caret_y + prompt_line_h <= visible_h + 4) {
+                    renderer.Renderer.drawRect(text_x + caret.x, text_y + caret_y, 1.5, 16, .{ .r = 0.9, .g = 0.9, .b = 0.95, .a = 1.0 });
+                    renderer.Renderer.setImeCursorRect(text_x + caret.x, text_y + caret_y, 0, 16);
+                }
+            }
         }
     }
 
-    renderer.Renderer.clearClipRect();
     const show_scroll = scrollbar.hovered(
         state.last_mouse_x,
         state.last_mouse_y,
@@ -479,24 +498,24 @@ pub fn draw(
     );
     drawPromptScrollbar(layout_info, scroll_y, layout_info.box_x + layout_info.box_w - scroll_bar_w - 4, show_scroll);
     // Render Attach (Scope) button
-    const scope_hover = if (disabled) false else state.last_mouse_x >= layout_info.scope_btn.x and state.last_mouse_x < layout_info.scope_btn.x + layout_info.scope_btn.w and state.last_mouse_y >= layout_info.scope_btn.y and state.last_mouse_y < layout_info.scope_btn.y + layout_info.scope_btn.h;
+    const scope_hover = if (controls_disabled) false else state.last_mouse_x >= layout_info.scope_btn.x and state.last_mouse_x < layout_info.scope_btn.x + layout_info.scope_btn.w and state.last_mouse_y >= layout_info.scope_btn.y and state.last_mouse_y < layout_info.scope_btn.y + layout_info.scope_btn.h;
     if (scope_hover) {
         renderer.Renderer.drawRoundedRect(layout_info.scope_btn.x, layout_info.scope_btn.y, layout_info.scope_btn.w, layout_info.scope_btn.h, 4, .{ .r = 0.25, .g = 0.25, .b = 0.3, .a = 1.0 });
     }
     renderer.Renderer.drawSvg(renderer.icons.paperclip, layout_info.scope_btn.x + 2, layout_info.scope_btn.y + 2, 20, 20, .{ .r = 0.68, .g = 0.72, .b = 0.78, .a = 1.0 });
 
     // Render Send button
-    const send_hover = if (disabled) false else state.last_mouse_x >= layout_info.send_btn.x and state.last_mouse_x < layout_info.send_btn.x + layout_info.send_btn.w and state.last_mouse_y >= layout_info.send_btn.y and state.last_mouse_y < layout_info.send_btn.y + layout_info.send_btn.h;
+    const send_hover = if (controls_disabled) false else state.last_mouse_x >= layout_info.send_btn.x and state.last_mouse_x < layout_info.send_btn.x + layout_info.send_btn.w and state.last_mouse_y >= layout_info.send_btn.y and state.last_mouse_y < layout_info.send_btn.y + layout_info.send_btn.h;
     if (send_hover) {
         renderer.Renderer.drawRoundedRect(layout_info.send_btn.x, layout_info.send_btn.y, layout_info.send_btn.w, layout_info.send_btn.h, 4, .{ .r = 0.25, .g = 0.25, .b = 0.3, .a = 1.0 });
     }
-    const send_c = if (disabled) renderer.Color{ .r = 0.4, .g = 0.4, .b = 0.4, .a = 1.0 } else renderer.Color{ .r = 0.72, .g = 0.76, .b = 0.84, .a = 1.0 };
+    const send_c = if (controls_disabled) renderer.Color{ .r = 0.4, .g = 0.4, .b = 0.4, .a = 1.0 } else renderer.Color{ .r = 0.72, .g = 0.76, .b = 0.84, .a = 1.0 };
     renderer.Renderer.drawSvg(renderer.icons.send, layout_info.send_btn.x + 2, layout_info.send_btn.y + 2, 20, 20, send_c);
 
-    drawDropdownButton(layout_info.mode_btn, modeLabel(mode), mode_menu_open, !disabled, "", null);
-    drawDropdownButton(layout_info.model_btn, modelLabel(models, model_id), model_menu_open, !disabled, "", null);
+    drawDropdownButton(layout_info.mode_btn, modeLabel(mode), mode_menu_open, !controls_disabled, "", null);
+    drawDropdownButton(layout_info.model_btn, modelLabel(models, model_id), model_menu_open, !controls_disabled, "", null);
 
-    if (mode_menu_open and !disabled) {
+    if (mode_menu_open and !controls_disabled) {
         var labels: [modes.len][]const u8 = undefined;
         for (modes, 0..) |entry, i| labels[i] = entry.label;
         var selected: usize = 0;
@@ -506,7 +525,7 @@ pub fn draw(
         drawMenu(layout_info.mode_btn, &labels, selected);
     }
 
-    if (model_menu_open and !disabled) {
+    if (model_menu_open and !controls_disabled) {
         var labels_buf: [200][]const u8 = undefined;
         const len = if (models.len > labels_buf.len) labels_buf.len else models.len;
         for (models[0..len], 0..) |entry, i| labels_buf[i] = entry.label;

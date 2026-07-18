@@ -40,12 +40,14 @@ pub fn drawEditorViewport(
     const text_x = editor_x + gutter - effective_scroll_x;
     const viewport_w = editor_scroll.viewportWidth(editor_w, theme);
 
+    const content_top = editor_scroll.content_top;
+
     if (pane_focused and wb.editor_split) {
-        renderer.Renderer.drawRect(editor_x, 65, editor_w, 2, syntax.color(theme.colors.tab_active_bg));
+        renderer.Renderer.drawRect(editor_x, content_top, editor_w, 2, syntax.color(theme.colors.tab_active_bg));
     }
 
-    renderer.Renderer.drawRect(editor_x, 65, gutter, editor_view_h, syntax.color(theme.colors.sidebar_bg));
-    renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
+    renderer.Renderer.drawRect(editor_x, content_top, gutter, editor_view_h, syntax.color(theme.colors.sidebar_bg));
+    renderer.Renderer.setClipRect(editor_x, content_top, editor_w, editor_view_h);
     const show_cursor = @mod(state.time, 1.0) < 0.5;
     const show_editor_cursor = show_cursor and wb.focused_panel == .editor and pane_focused;
     const bracket_pair = if (show_editor_cursor and !wb.agent.worker_running) blk: {
@@ -165,8 +167,8 @@ pub fn drawEditorViewport(
         const cursor_visual = wrap_cache_opt.?.cachedVisualIndexForCursor(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col, viewport_w, font_size);
         if (cursor_visual < start_idx) line_num_y += ghost_newlines * line_h;
         for (start_idx..visual_count) |visual_idx| {
-            if (line_num_y > 65 + editor_view_h) break;
-            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+            if (line_num_y > content_top + editor_view_h) break;
+            if (line_num_y + line_h >= content_top and line_num_y < content_top + editor_view_h) {
                 const seg = wrap_cache_opt.?.cachedSegmentAt(editor_buf, visual_idx, viewport_w, font_size);
                 if (seg.start_col == 0) {
                     if (wb.breakpoints.hasAt(file_path, seg.buf_line)) {
@@ -208,8 +210,8 @@ pub fn drawEditorViewport(
     } else {
         if (ghost_row != null and ghost_row.? < start_idx) line_num_y += ghost_newlines * line_h;
         for (start_idx..line_count) |idx| {
-            if (line_num_y > 65 + editor_view_h) break;
-            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+            if (line_num_y > content_top + editor_view_h) break;
+            if (line_num_y + line_h >= content_top and line_num_y < content_top + editor_view_h) {
                 if (wb.breakpoints.hasAt(file_path, idx)) {
                     renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, syntax.color(theme.colors.warning));
                 }
@@ -250,7 +252,7 @@ pub fn drawEditorViewport(
         }
     }
 
-    renderer.Renderer.setClipRect(editor_x + gutter, 65, editor_w - gutter, editor_view_h);
+    renderer.Renderer.setClipRect(editor_x + gutter, content_top, editor_w - gutter, editor_view_h);
     line_num_y = initial_line_num_y;
 
     if (wrap_enabled) {
@@ -258,8 +260,8 @@ pub fn drawEditorViewport(
         const cursor_visual = wrap_cache_opt.?.cachedVisualIndexForCursor(editor_buf, editor_buf.cursor.row, editor_buf.cursor.col, viewport_w, font_size);
         if (cursor_visual < start_idx) line_num_y += ghost_newlines * line_h;
         for (start_idx..visual_count) |visual_idx| {
-            if (line_num_y > 65 + editor_view_h) break;
-            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+            if (line_num_y > content_top + editor_view_h) break;
+            if (line_num_y + line_h >= content_top and line_num_y < content_top + editor_view_h) {
                 const seg = wrap_cache_opt.?.cachedSegmentAt(editor_buf, visual_idx, viewport_w, font_size);
                 const slice = editor_buf.lineAt(seg.buf_line)[seg.start_col..seg.end_col];
                 const seg_text_x = text_x + editor_scroll.cursorX(editor_buf.lineAt(seg.buf_line), seg.start_col, font_size);
@@ -280,7 +282,7 @@ pub fn drawEditorViewport(
                 review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
                 overlays.drawFindHighlights(wb, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
 
-                syntax.drawHighlightedLine(slice, seg.buf_line, seg.start_col, seg_text_x, line_num_y, theme, semantic_tokens_for_file);
+                syntax.drawHighlightedLine(file_path, slice, seg.buf_line, seg.start_col, seg_text_x, line_num_y, theme, semantic_tokens_for_file);
 
                 // P0-6: Inlay hints.
                 const hints_for_file = wb.inlay_hints.get(file_path);
@@ -354,8 +356,8 @@ pub fn drawEditorViewport(
             if (wb.fold_controller.isLineHidden(@intCast(idx))) {
                 continue;
             }
-            if (line_num_y > 65 + editor_view_h) break;
-            if (line_num_y + line_h >= 65 and line_num_y < 65 + editor_view_h) {
+            if (line_num_y > content_top + editor_view_h) break;
+            if (line_num_y + line_h >= content_top and line_num_y < content_top + editor_view_h) {
                 const debug_here = blk: {
                     if (wb.debug_stop_path) |stop_path| {
                         if (wb.debug_stop_line) |stop_line| {
@@ -372,7 +374,7 @@ pub fn drawEditorViewport(
                 review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, idx, text_x, line_num_y, line_h, font_size);
                 overlays.drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
 
-                syntax.drawHighlightedLine(editor_buf.lineAt(idx), idx, 0, text_x, line_num_y, theme, semantic_tokens_for_file);
+                syntax.drawHighlightedLine(file_path, editor_buf.lineAt(idx), idx, 0, text_x, line_num_y, theme, semantic_tokens_for_file);
 
                 // P0-6: Inlay hints.
                 const hints_for_file = wb.inlay_hints.get(file_path);
@@ -401,8 +403,20 @@ pub fn drawEditorViewport(
                 if (idx == editor_buf.cursor.row) {
                     const line = editor_buf.lineAt(idx);
                     const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
-                    if (show_editor_cursor) {
+                    if (wb.ime_text) |ime_text| {
+                        renderer.Renderer.drawText(ime_text, cursor_x, line_num_y, font_size, syntax.color(theme.colors.text_primary));
+                        const ime_w = renderer.Renderer.measureText(ime_text, font_size);
+                        renderer.Renderer.drawRect(cursor_x, line_num_y + line_h - 2, ime_w, 2, syntax.color(theme.colors.text_primary));
+                        if (wb.ime_cursor >= 0 and wb.ime_cursor <= ime_text.len) {
+                            const sub_w = renderer.Renderer.measureText(ime_text[0..@intCast(wb.ime_cursor)], font_size);
+                            renderer.Renderer.drawText("|", cursor_x + sub_w, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                            renderer.Renderer.setImeCursorRect(cursor_x + sub_w, line_num_y, 0, line_h);
+                        } else {
+                            renderer.Renderer.setImeCursorRect(cursor_x, line_num_y, ime_w, line_h);
+                        }
+                    } else if (show_editor_cursor) {
                         renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                        renderer.Renderer.setImeCursorRect(cursor_x, line_num_y, 0, line_h);
                     }
                     wb.ghost.mutex.lock();
                     if (wb.ghost.ghost_text) |gt| {
@@ -441,11 +455,11 @@ pub fn drawEditorViewport(
         }
     }
 
-    renderer.Renderer.setClipRect(editor_x, 65, editor_w, editor_view_h);
-    const show_editor_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, editor_x, 65, editor_w, editor_view_h);
+    renderer.Renderer.setClipRect(editor_x, content_top, editor_w, editor_view_h);
+    const show_editor_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, editor_x, content_top, editor_w, editor_view_h);
     scrollbar.drawVertical(
         editor_x + editor_w - scrollbar.track_w - 4,
-        65,
+        content_top,
         editor_view_h,
         scroll_y,
         max_scroll_y,
@@ -455,7 +469,7 @@ pub fn drawEditorViewport(
     );
     scrollbar.drawHorizontal(
         editor_x + gutter,
-        65 + editor_view_h - scrollbar.track_w - 2,
+        content_top + editor_view_h - scrollbar.track_w - 2,
         viewport_w,
         scroll_x,
         max_scroll_x,

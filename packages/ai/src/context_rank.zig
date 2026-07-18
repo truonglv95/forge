@@ -11,7 +11,7 @@ pub const Tier = enum(u8) {
 pub fn blockTier(btype: context.BlockType) Tier {
     return switch (btype) {
         .rules, .intent, .memory => .critical,
-        .file, .attachment, .diagnostic, .lsp, .git_diff => .high,
+        .file, .attachment, .diagnostic, .lsp, .git_diff, .expansion => .high,
         .semantic, .retrieval, .fused, .web => .medium,
         .recent, .imports, .docs => .low,
     };

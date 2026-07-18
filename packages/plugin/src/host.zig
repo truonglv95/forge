@@ -10,11 +10,35 @@ pub const ActivationContext = struct {
     allocator: std.mem.Allocator,
     extension_id: []const u8,
     host: *Host,
+
+    pub fn registerCommand(self: *ActivationContext, id: []const u8, title: []const u8) !void {
+        try self.host.registerCommand(self.extension_id, id, title);
+    }
+
+    pub fn registerTheme(self: *ActivationContext, id: []const u8, label: []const u8, path: []const u8) !void {
+        try self.host.registerTheme(self.extension_id, id, label, path);
+    }
+
+    pub fn registerKeybinding(self: *ActivationContext, key: []const u8, command: []const u8) !void {
+        try self.host.registerKeybinding(self.extension_id, key, command);
+    }
+
+    pub fn registerLanguage(self: *ActivationContext, language: LanguageRegistration) !void {
+        try self.host.registerLanguage(self.extension_id, language);
+    }
 };
 
 pub const CommandEntry = struct {
     id: []const u8,
     title: []const u8,
+};
+
+pub const LanguageRegistration = struct {
+    id: []const u8,
+    server: []const u8,
+    args: []const u8 = "",
+    file_pattern: []const u8,
+    server_resolver: []const u8 = "",
 };
 
 pub const BuiltinExtension = struct {
@@ -37,6 +61,7 @@ pub const LoadedExtension = struct {
     wasm: ?*wasm_mod.WasmInstance = null,
     active: bool = false,
     commands: std.ArrayList(CommandRegistration),
+    dynamic_contributions: contributions_mod.Registry,
 
     pub const CommandRegistration = struct {
         id: []const u8,
@@ -60,6 +85,7 @@ pub const LoadedExtension = struct {
             allocator.free(cmd.extension_id);
         }
         self.commands.deinit(allocator);
+        self.dynamic_contributions.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -103,6 +129,7 @@ pub const Host = struct {
             .root_path = try self.allocator.dupe(u8, "(builtin)"),
             .builtin = ext,
             .commands = .empty,
+            .dynamic_contributions = contributions_mod.Registry.init(self.allocator),
         };
         errdefer loaded.deinit(self.allocator);
 
@@ -251,6 +278,7 @@ pub const Host = struct {
             .root_path = try self.allocator.dupe(u8, entry_path),
             .manifest = parsed,
             .commands = .empty,
+            .dynamic_contributions = contributions_mod.Registry.init(self.allocator),
         };
         errdefer loaded.deinit(self.allocator);
 
@@ -272,6 +300,7 @@ pub const Host = struct {
             if (ext.manifest) |*manifest| {
                 try self.contributions.registerManifest(self.allocator, ext.id, ext.root_path, manifest);
             }
+            try self.contributions.addRegistry(self.allocator, &ext.dynamic_contributions);
         }
     }
 
@@ -358,6 +387,50 @@ pub const Host = struct {
             }
         }
         return error.CommandNotFound;
+    }
+
+    pub fn registerCommand(self: *Host, extension_id: []const u8, id: []const u8, title: []const u8) !void {
+        const ext = self.findExtension(extension_id) orelse return error.ExtensionNotFound;
+        for (ext.commands.items) |cmd| {
+            if (std.mem.eql(u8, cmd.id, id)) return;
+        }
+        try ext.commands.append(self.allocator, .{
+            .id = try self.allocator.dupe(u8, id),
+            .title = try self.allocator.dupe(u8, title),
+            .extension_id = try self.allocator.dupe(u8, extension_id),
+        });
+    }
+
+    pub fn registerTheme(self: *Host, extension_id: []const u8, id: []const u8, label: []const u8, path: []const u8) !void {
+        const ext = self.findExtension(extension_id) orelse return error.ExtensionNotFound;
+        try ext.dynamic_contributions.addTheme(self.allocator, .{
+            .id = id,
+            .label = label,
+            .path = path,
+            .extension_id = extension_id,
+            .extension_root = ext.root_path,
+        });
+    }
+
+    pub fn registerKeybinding(self: *Host, extension_id: []const u8, key: []const u8, command: []const u8) !void {
+        const ext = self.findExtension(extension_id) orelse return error.ExtensionNotFound;
+        try ext.dynamic_contributions.addKeybinding(self.allocator, .{
+            .key = key,
+            .command = command,
+            .extension_id = extension_id,
+        });
+    }
+
+    pub fn registerLanguage(self: *Host, extension_id: []const u8, language: LanguageRegistration) !void {
+        const ext = self.findExtension(extension_id) orelse return error.ExtensionNotFound;
+        try ext.dynamic_contributions.addLanguage(self.allocator, .{
+            .id = language.id,
+            .server = language.server,
+            .args = language.args,
+            .file_pattern = language.file_pattern,
+            .server_resolver = language.server_resolver,
+            .extension_id = extension_id,
+        });
     }
 
     pub fn extensionCount(self: *const Host) usize {

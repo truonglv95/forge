@@ -57,6 +57,7 @@ pub const MouseEvent = struct {
     button: i32,
     action: MouseAction,
     modifiers: i32 = 0,
+    click_count: i32 = 0,
 };
 
 var app_render_callback: ?*const fn () void = null;
@@ -133,7 +134,7 @@ export fn internal_key_callback(keycode: c_int, chars: [*c]const u8, is_down: bo
     }
 }
 
-export fn internal_mouse_callback(x: f32, y: f32, button: c_int, action: c_int, modifiers: c_int) void {
+export fn internal_mouse_callback(x: f32, y: f32, button: c_int, action: c_int, modifiers: c_int, click_count: c_int) void {
     if (app_mouse_callback) |cb| {
         cb(.{
             .x = x,
@@ -141,6 +142,23 @@ export fn internal_mouse_callback(x: f32, y: f32, button: c_int, action: c_int, 
             .button = @as(i32, @intCast(button)),
             .action = @as(MouseAction, @enumFromInt(action)),
             .modifiers = @as(i32, @intCast(modifiers)),
+            .click_count = @as(i32, @intCast(click_count)),
+        });
+    }
+}
+
+pub const ImeCompositionEvent = struct {
+    text: []const u8,
+    cursor_pos: i32, // -1 means committed
+};
+
+var app_ime_composition_callback: ?*const fn (ImeCompositionEvent) void = null;
+
+export fn internal_ime_composition_callback(text: [*c]const u8, len: usize, cursor_pos: c_int) void {
+    if (app_ime_composition_callback) |cb| {
+        cb(.{
+            .text = text[0..len],
+            .cursor_pos = @as(i32, @intCast(cursor_pos)),
         });
     }
 }
@@ -151,6 +169,7 @@ pub const Renderer = struct {
         backend.forge_backend_set_render_callback(internal_render_callback);
         backend.forge_backend_set_key_callback(internal_key_callback);
         backend.forge_backend_set_mouse_callback(internal_mouse_callback);
+        backend.forge_backend_set_ime_composition_callback(internal_ime_composition_callback);
     }
 
     pub fn createWindow(title: []const u8, width: i32, height: i32) void {
@@ -187,6 +206,14 @@ pub const Renderer = struct {
 
     pub fn setMouseCallback(callback: *const fn (event: MouseEvent) void) void {
         app_mouse_callback = callback;
+    }
+
+    pub fn setImeCompositionCallback(callback: *const fn (event: ImeCompositionEvent) void) void {
+        app_ime_composition_callback = callback;
+    }
+
+    pub fn setImeCursorRect(x: f32, y: f32, w: f32, h: f32) void {
+        backend.forge_backend_set_ime_cursor_rect(x, y, w, h);
     }
 
     pub fn getWindowSize(width: *f32, height: *f32) void {

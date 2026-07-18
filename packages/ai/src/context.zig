@@ -15,6 +15,7 @@ pub const BlockType = enum {
     lsp,
     docs,
     fused,
+    expansion,
     memory,
     web,
 };

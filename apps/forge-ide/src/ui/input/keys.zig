@@ -11,6 +11,13 @@ const keys_overlays = @import("keys_overlays.zig");
 const keys_agent = @import("keys_agent.zig");
 const keys_sidebar = @import("keys_sidebar.zig");
 
+fn isPlainPrintableText(event: renderer.KeyEvent) bool {
+    if (event.chars.len == 0) return false;
+    const command_modifiers = shared.cmd_mask | shared.ctrl_mask | shared.alt_mask;
+    if (event.modifiers & command_modifiers != 0) return false;
+    return event.chars[0] >= 32;
+}
+
 pub fn onKeyEvent(event: renderer.KeyEvent) void {
     if (!event.is_down) return;
     const wb = state.wb orelse return;
@@ -171,7 +178,8 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
-    if (keybindings_mod.Registry.dispatch(&wb.keybindings, &wb.palette, event, shared.dispatchWorkbenchCommand)) {
+    const text_focus = wb.focused_panel == .editor or wb.focused_panel == .agent or wb.focused_panel == .git;
+    if (!(text_focus and isPlainPrintableText(event)) and keybindings_mod.Registry.dispatch(&wb.keybindings, &wb.palette, event, shared.dispatchWorkbenchCommand)) {
         return;
     }
 
@@ -311,9 +319,6 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             wb.mention_picker.open();
             return;
         }
-        if (wb.focused_panel == .agent and wb.agent.worker_running) {
-            return;
-        }
         if (char_val >= 32 or char_val == '\t') {
             active_buffer.insertString(event.chars) catch {};
             // P0-4: Mark fold ranges dirty so they recompute on next tick.
@@ -324,6 +329,51 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
                 wb.inline_edit.appendSlice(event.chars) catch {};
             }
         }
+    }
+
+    if (wb.focused_panel == .agent) {
+        wb.ensurePromptCursorVisible();
+    }
+}
+
+pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
+    const wb = state.wb orelse return;
+    state.markAllDirty();
+
+    var active_buffer = if (wb.focused_panel == .editor)
+        wb.activeBuffer() orelse return
+    else if (wb.focused_panel == .agent)
+        &wb.prompt_buffer
+    else if (wb.focused_panel == .git)
+        &wb.git_commit_msg
+    else
+        return;
+
+    if (event.cursor_pos == -1) {
+        // Committed text
+        if (wb.ime_text) |t| {
+            wb.allocator.free(t);
+            wb.ime_text = null;
+        }
+        wb.ime_cursor = -1;
+        if (event.text.len > 0) {
+            active_buffer.insertString(event.text) catch {};
+            wb.fold_dirty = true;
+            if (wb.inline_edit.active and wb.focused_panel == .editor) {
+                wb.inline_edit.appendSlice(event.text) catch {};
+            }
+        }
+    } else {
+        // Composing text
+        if (wb.ime_text) |t| {
+            wb.allocator.free(t);
+        }
+        if (event.text.len > 0) {
+            wb.ime_text = wb.allocator.dupe(u8, event.text) catch null;
+        } else {
+            wb.ime_text = null;
+        }
+        wb.ime_cursor = event.cursor_pos;
     }
 
     if (wb.focused_panel == .agent) {

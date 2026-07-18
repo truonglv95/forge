@@ -9,6 +9,7 @@ pub const GlobalFlags = struct {
     dry_run: bool = false,
     yes: bool = false,
     auto_approve: bool = false,
+    trust_all: bool = false,
     once: bool = false,
     max_polls: u32 = 0,
     max_steps: u32 = 0,
@@ -91,6 +92,9 @@ pub const CliArgs = struct {
                 } else if (std.mem.eql(u8, arg, "--yes")) {
                     flags.yes = true;
                 } else if (std.mem.eql(u8, arg, "--auto-approve")) {
+                    flags.auto_approve = true;
+                } else if (std.mem.eql(u8, arg, "--trust-all")) {
+                    flags.trust_all = true;
                     flags.auto_approve = true;
                 } else if (std.mem.eql(u8, arg, "--once")) {
                     flags.once = true;
@@ -237,6 +241,18 @@ test "CliArgs parses event stream flag" {
 
     try std.testing.expect(parsed.command == .agent);
     try std.testing.expectEqualStrings("ndjson", parsed.flags.events.?);
+}
+
+test "CliArgs parses trust-all as auto approval" {
+    const allocator = std.testing.allocator;
+    const args_list = &[_][]const u8{ "forge", "agent", "run", "fix it", "--trust-all" };
+
+    const parsed = try CliArgs.parse(allocator, args_list);
+    defer allocator.free(parsed.positional);
+    defer allocator.free(parsed.flags.files);
+
+    try std.testing.expect(parsed.flags.trust_all);
+    try std.testing.expect(parsed.flags.auto_approve);
 }
 
 test "CliArgs parses ecosystem command" {

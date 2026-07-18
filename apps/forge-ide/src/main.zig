@@ -18,14 +18,17 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(allocator);
     var owned_workspace_path: ?[]u8 = null;
     defer if (owned_workspace_path) |path| allocator.free(path);
-    const workspace_path = try resolveWorkspacePath(allocator, io, args, &owned_workspace_path);
+    const launch = try resolveWorkspacePath(allocator, io, args, &owned_workspace_path);
 
-    std.debug.print("Forge IDE starting for workspace: {s}\n", .{workspace_path});
+    std.debug.print("Forge IDE starting for workspace: {s}\n", .{launch.path});
 
     const launcher: []const u8 = if (args.len > 0) args[0] else "forge-ide";
     const wb = try allocator.create(Workbench.Workbench);
     std.debug.print("Forge IDE: loading workbench…\n", .{});
-    try Workbench.Workbench.init(wb, allocator, io, workspace_path, launcher, init.environ_map);
+    try Workbench.Workbench.initWithOptions(wb, allocator, io, launch.path, launcher, init.environ_map, .{
+        .show_welcome = launch.show_welcome,
+        .record_workspace = launch.record_workspace,
+    });
     std.debug.print("Forge IDE ready — opening window (close window or Ctrl+C to exit)\n", .{});
     defer {
         wb.deinit();
@@ -37,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
     state.prompt_buffer = &wb.prompt_buffer;
     state.chat_history = &wb.chat_history;
 
-    const kernel_thread = try std.Thread.spawn(.{}, backgroundKernelTask, .{workspace_path});
+    const kernel_thread = try std.Thread.spawn(.{}, backgroundKernelTask, .{launch.path});
     _ = kernel_thread;
 
     try shell.initShell(allocator);
@@ -55,31 +58,37 @@ fn backgroundKernelTask(workspace_path: []const u8) void {
     std.debug.print("[Kernel] Ready and listening for events.\n", .{});
 }
 
+const LaunchWorkspace = struct {
+    path: []const u8,
+    show_welcome: bool = false,
+    record_workspace: bool = true,
+};
+
 fn resolveWorkspacePath(
     allocator: std.mem.Allocator,
     io: std.Io,
     args: []const []const u8,
     owned_workspace_path: *?[]u8,
-) ![]const u8 {
+) !LaunchWorkspace {
     if (args.len > 1 and !std.mem.startsWith(u8, args[1], "-psn_")) {
-        return args[1];
+        return .{ .path = args[1] };
     }
 
     if (!shouldUseAppLaunchFallback(io)) {
-        return ".";
+        return .{ .path = "." };
     }
 
     if (try latestUsableRecentWorkspace(allocator, io)) |recent| {
         owned_workspace_path.* = recent;
-        return recent;
+        return .{ .path = recent };
     }
 
     if (homeWorkspace(allocator, io)) |home| {
         owned_workspace_path.* = home;
-        return home;
+        return .{ .path = home, .show_welcome = true, .record_workspace = false };
     }
 
-    return ".";
+    return .{ .path = ".", .show_welcome = true, .record_workspace = false };
 }
 
 fn shouldUseAppLaunchFallback(io: std.Io) bool {

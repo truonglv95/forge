@@ -337,6 +337,7 @@ pub fn run(
         .environ_map = environ_map,
         .edit_callback = effective_config.edit_callback,
         .edit_context = effective_config.edit_context,
+        .direct_apply_edits = effective_config.use_inline_edits and effective_config.edit_callback == null,
         .lsp_request_callback = effective_config.lsp_request_callback,
         .lsp_context = effective_config.lsp_context,
         .cache = &tool_cache,

@@ -6,6 +6,7 @@ const codebase_search = @import("codebase_search.zig");
 const context_rank = @import("context_rank.zig");
 const context_rerank = @import("context_rerank.zig");
 const context_query = @import("context_query.zig");
+const context_expander = @import("context_expander.zig");
 const docs_loader = @import("docs_loader.zig");
 const scope_resolver = @import("scope_resolver.zig");
 const web_fetcher = @import("web_fetcher.zig");
@@ -38,6 +39,7 @@ pub const LoadOptions = struct {
     include_import_graph: bool = true,
     include_diagnostics: bool = true,
     include_lsp_context: bool = true,
+    include_context_expansion: bool = true,
     import_max_files: usize = 12,
     import_preview_bytes: usize = 2048,
     supplement: context_supplement.Supplement = .{},
@@ -226,6 +228,14 @@ pub fn build(
 
     if (options.include_lsp_context) {
         try loadLspBlock(allocator, options, &builder);
+    }
+
+    if (options.include_context_expansion and options.intent != null) {
+        if (!shouldSkipOptionalBlock(&builder, .expansion)) {
+            try loadExpansionBlock(allocator, io, root, &builder, options.intent.?, seed_paths);
+        } else {
+            try noteSkippedBlock(allocator, &builder, .expansion, "context:expansion-plan");
+        }
     }
 
     for (resolved.files) |file_path| {
@@ -945,6 +955,29 @@ fn loadLspBlock(allocator: std.mem.Allocator, options: LoadOptions, builder: *co
         const detail = if (options.supplement.hover_text) |hover| hover else "LSP cursor context";
         try builder.addBlockWithDetail(.lsp, "lsp:cursor-context", text, detail);
     }
+}
+
+fn loadExpansionBlock(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    builder: *context.ContextBuilder,
+    intent: []const u8,
+    seed_paths: []const []const u8,
+) !void {
+    var plan = context_expander.buildPlan(allocator, io, root, builder, intent, seed_paths, .{}) catch return;
+    defer plan.deinit();
+    for (plan.paths) |item| {
+        try builder.addManifestExtra(.expansion, item.path, item.reason, 0);
+    }
+    for (plan.gaps) |gap| {
+        try builder.addManifestExtra(.expansion, "gap", gap, 0);
+    }
+    const block = context_expander.formatPlan(allocator, plan) catch return;
+    defer allocator.free(block);
+    var detail_buf: [64]u8 = undefined;
+    const detail = std.fmt.bufPrint(&detail_buf, "confidence {d}/100", .{plan.confidence}) catch "context expansion";
+    try builder.addBlockWithDetail(.expansion, "context:expansion-plan", block, detail);
 }
 
 fn loadImportGraphBlock(

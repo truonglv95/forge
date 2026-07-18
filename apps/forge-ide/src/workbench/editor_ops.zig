@@ -1,6 +1,7 @@
 const std = @import("std");
 const editor = @import("forge-editor");
 const lsp = @import("forge-lsp");
+const workspace = @import("forge-workspace");
 const references_store_mod = @import("references_store.zig");
 
 pub fn lspSyncDocument(wb: anytype, doc: *editor.Document) ![]const u8 {
@@ -42,6 +43,206 @@ pub fn wordAtCursor(buf: *editor.Buffer) []const u8 {
 
 fn isIdentByte(ch: u8) bool {
     return std.ascii.isAlphanumeric(ch) or ch == '_';
+}
+
+const IndexedDefinition = struct {
+    path: []const u8,
+    line: u32,
+    character: u32,
+    kind: []const u8,
+
+    fn deinit(self: *IndexedDefinition, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        allocator.free(self.kind);
+        self.* = undefined;
+    }
+};
+
+fn definitionKindRank(kind: []const u8) u8 {
+    if (std.mem.eql(u8, kind, "function") or std.mem.eql(u8, kind, "method")) return 6;
+    if (std.mem.eql(u8, kind, "class") or std.mem.eql(u8, kind, "struct") or std.mem.eql(u8, kind, "interface")) return 5;
+    if (std.mem.eql(u8, kind, "enum") or std.mem.eql(u8, kind, "trait") or std.mem.eql(u8, kind, "type")) return 4;
+    if (std.mem.eql(u8, kind, "module") or std.mem.eql(u8, kind, "namespace")) return 3;
+    if (std.mem.eql(u8, kind, "const") or std.mem.eql(u8, kind, "variable")) return 2;
+    return 1;
+}
+
+fn indexedDefinitionScore(symbol: []const u8, active_path: []const u8, active_line: u32, path: []const u8, line: u32, kind: []const u8) i32 {
+    var score: i32 = @as(i32, definitionKindRank(kind)) * 10;
+    if (std.mem.eql(u8, path, active_path)) score += 4;
+    if (std.mem.eql(u8, path, active_path) and line == active_line) score -= 100;
+    if (symbol.len > 0 and symbol[0] >= 'A' and symbol[0] <= 'Z') score += 1;
+    return score;
+}
+
+fn firstSymbolColumn(line: []const u8, symbol: []const u8) u32 {
+    if (symbol.len == 0) return 0;
+    if (std.mem.indexOf(u8, line, symbol)) |idx| return @intCast(idx);
+    return 0;
+}
+
+fn isIdentBoundary(text: []const u8, start: usize, end: usize) bool {
+    const before_ok = start == 0 or !isIdentByte(text[start - 1]);
+    const after_ok = end >= text.len or !isIdentByte(text[end]);
+    return before_ok and after_ok;
+}
+
+fn declarationLineRank(line: []const u8, symbol: []const u8) ?u8 {
+    const sym_pos = std.mem.indexOf(u8, line, symbol) orelse return null;
+    if (!isIdentBoundary(line, sym_pos, sym_pos + symbol.len)) return null;
+    const prefix = std.mem.trim(u8, line[0..sym_pos], " \t");
+
+    if (std.mem.endsWith(u8, prefix, "fn") or std.mem.endsWith(u8, prefix, "function") or std.mem.endsWith(u8, prefix, "def")) return 8;
+    if (std.mem.indexOf(u8, prefix, "class") != null) return 7;
+    if (std.mem.indexOf(u8, prefix, "struct") != null or std.mem.indexOf(u8, prefix, "interface") != null) return 6;
+    if (std.mem.indexOf(u8, prefix, "enum") != null or std.mem.indexOf(u8, prefix, "type") != null) return 5;
+    if (std.mem.indexOf(u8, prefix, "const") != null or std.mem.indexOf(u8, prefix, "let") != null or std.mem.indexOf(u8, prefix, "var") != null) return 4;
+
+    return null;
+}
+
+fn findDefinitionInText(
+    allocator: std.mem.Allocator,
+    symbol: []const u8,
+    active_path: []const u8,
+    active_line: u32,
+    path: []const u8,
+    content: []const u8,
+) !?IndexedDefinition {
+    var best: ?IndexedDefinition = null;
+    var best_score: i32 = std.math.minInt(i32);
+    var line_no: u32 = 1;
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |line| : (line_no += 1) {
+        const rank = declarationLineRank(line, symbol) orelse continue;
+        const score: i32 = @as(i32, rank) * 10 + if (std.mem.eql(u8, path, active_path)) @as(i32, 4) else 0;
+        if (std.mem.eql(u8, path, active_path) and line_no == active_line) continue;
+        if (score <= best_score) continue;
+        if (best) |*existing| existing.deinit(allocator);
+        best = .{
+            .path = try allocator.dupe(u8, path),
+            .line = line_no,
+            .character = firstSymbolColumn(line, symbol),
+            .kind = try allocator.dupe(u8, "text"),
+        };
+        best_score = score;
+    }
+    return best;
+}
+
+fn findScannedDefinition(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    symbol: []const u8,
+    active_path: []const u8,
+    active_line: u32,
+) !?IndexedDefinition {
+    var summary = workspace.tree.scan(allocator, io, root, ".") catch return null;
+    defer summary.deinit();
+
+    var best: ?IndexedDefinition = null;
+    var best_score: i32 = std.math.minInt(i32);
+    var checked: u32 = 0;
+    for (summary.entries) |entry| {
+        if (entry.kind != .file) continue;
+        if (checked >= workspace.codebase_index.max_files) break;
+        if (std.mem.endsWith(u8, entry.path, ".proposal.json")) continue;
+
+        var skip = false;
+        var components = std.mem.splitScalar(u8, entry.path, std.fs.path.sep);
+        while (components.next()) |component| {
+            if (workspace.IgnoreRules.isIgnored(component)) {
+                skip = true;
+                break;
+            }
+        }
+        if (skip) continue;
+        checked += 1;
+
+        const wp = workspace.WorkspacePath.parse(entry.path) catch continue;
+        var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch continue;
+        defer snap.deinit();
+        if (snap.content.len > workspace.Limits.max_file_size) continue;
+        if (!std.unicode.utf8ValidateSlice(snap.content)) continue;
+
+        var candidate = (try findDefinitionInText(allocator, symbol, active_path, active_line, entry.path, snap.content)) orelse continue;
+        const score = indexedDefinitionScore(symbol, active_path, active_line, candidate.path, candidate.line, candidate.kind);
+        if (score <= best_score) {
+            candidate.deinit(allocator);
+            continue;
+        }
+        if (best) |*existing| existing.deinit(allocator);
+        best = candidate;
+        best_score = score;
+    }
+    return best;
+}
+
+fn findIndexedDefinition(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    symbol: []const u8,
+    active_path: []const u8,
+    active_line: u32,
+) !?IndexedDefinition {
+    if (symbol.len == 0) return null;
+
+    const chunks_path = workspace.codebase_index.getChunksFile(allocator, io, root) catch return null;
+    defer allocator.free(chunks_path);
+    const chunks_bytes = workspace.global_store.readAbsoluteFile(allocator, io, chunks_path) catch return null;
+    defer allocator.free(chunks_bytes);
+
+    const Row = struct {
+        path: []const u8,
+        line_start: u32,
+        text: []const u8,
+        symbol: []const u8 = "",
+        kind: []const u8 = "",
+    };
+
+    var best: ?IndexedDefinition = null;
+    var best_score: i32 = std.math.minInt(i32);
+    var lines = std.mem.splitScalar(u8, chunks_bytes, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var parsed = std.json.parseFromSlice(Row, allocator, line, .{ .ignore_unknown_fields = true }) catch continue;
+        defer parsed.deinit();
+        if (!std.mem.eql(u8, parsed.value.symbol, symbol)) continue;
+
+        const score = indexedDefinitionScore(symbol, active_path, active_line, parsed.value.path, parsed.value.line_start, parsed.value.kind);
+        if (score <= best_score) continue;
+        if (best) |*existing| existing.deinit(allocator);
+
+        best = .{
+            .path = try allocator.dupe(u8, parsed.value.path),
+            .line = parsed.value.line_start,
+            .character = firstSymbolColumn(parsed.value.text, symbol),
+            .kind = try allocator.dupe(u8, parsed.value.kind),
+        };
+        best_score = score;
+    }
+    return best;
+}
+
+pub fn gotoIndexedDefinition(wb: anytype, symbol: []const u8) !bool {
+    const doc = wb.tabs.activeDoc() orelse return false;
+    const active_line: u32 = @intCast(doc.buffer.cursor.row + 1);
+    var definition = (try findIndexedDefinition(wb.allocator, wb.io, wb.workspace_root, symbol, doc.path, active_line)) orelse
+        (try findScannedDefinition(wb.allocator, wb.io, wb.workspace_root, symbol, doc.path, active_line)) orelse
+        return false;
+    defer definition.deinit(wb.allocator);
+
+    try wb.openFile(definition.path);
+    if (wb.activeBuffer()) |buf| {
+        const target_line: usize = if (definition.line > 0) @intCast(definition.line) else 1;
+        buf.goToLine(target_line);
+        const line = buf.lineAt(buf.cursor.row);
+        buf.cursor.col = @min(@as(usize, @intCast(definition.character)), line.len);
+        wb.scrollEditorToCursor();
+    }
+    return true;
 }
 
 pub fn scrollEditorToCursor(wb: anytype) void {
@@ -407,4 +608,14 @@ pub fn gotoProblem(wb: anytype, index: usize) !void {
         wb.scrollEditorToCursor();
         wb.focused_panel = .editor;
     }
+}
+
+test "indexed definition scoring prefers active file but skips current line" {
+    const symbol = "render";
+    const same_file = indexedDefinitionScore(symbol, "src/a.zig", 10, "src/a.zig", 20, "function");
+    const other_file = indexedDefinitionScore(symbol, "src/a.zig", 10, "src/b.zig", 20, "function");
+    const current_line = indexedDefinitionScore(symbol, "src/a.zig", 10, "src/a.zig", 10, "function");
+
+    try std.testing.expect(same_file > other_file);
+    try std.testing.expect(current_line < other_file);
 }

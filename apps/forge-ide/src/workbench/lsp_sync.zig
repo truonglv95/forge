@@ -162,71 +162,93 @@ pub const Store = struct {
         path: []const u8,
         revision: u64,
     ) !void {
+        const SyncAction = enum { none, open, change };
         const hash = workspace.edit.contentHash(content);
-        const gop = try self.entries.getOrPut(path);
-        if (!gop.found_existing) gop.value_ptr.* = .{};
+        var action: SyncAction = .none;
+        var version_copy: u32 = 0;
 
-        const state = gop.value_ptr;
-        var notify_buf: [65536]u8 = undefined;
+        {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            const gop = try self.entries.getOrPut(path);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
 
-        if (!state.opened) {
-            state.version = 1;
-            const msg = try lsp.sync.buildDidOpenNotification(
-                self.allocator,
-                uri,
-                language_id,
-                state.version,
-                content,
-            );
-            defer self.allocator.free(msg);
-            _ = self.proxy.request(language_id, msg, &notify_buf, notify_buf.len) catch {};
-            state.opened = true;
-        } else if (hash != state.last_hash) {
-            state.version += 1;
-            const msg = try lsp.sync.buildDidChangeNotification(
-                self.allocator,
-                uri,
-                state.version,
-                content,
-            );
-            defer self.allocator.free(msg);
-            _ = self.proxy.request(language_id, msg, &notify_buf, notify_buf.len) catch {};
+            const state = gop.value_ptr;
+            if (!state.opened) {
+                state.version = 1;
+                state.opened = true;
+                action = .open;
+            } else if (hash != state.last_hash) {
+                state.version += 1;
+                action = .change;
+            }
+
+            state.last_hash = hash;
+            state.last_revision = revision;
+            version_copy = state.version;
         }
 
-        state.last_hash = hash;
-        state.last_revision = revision;
-        const version_copy = state.version;
-        self.mutex.unlock(); // Unlock before semantic tokens
+        var notify_buf: [65536]u8 = undefined;
+        switch (action) {
+            .none => {},
+            .open => {
+                const msg = try lsp.sync.buildDidOpenNotification(
+                    self.allocator,
+                    uri,
+                    language_id,
+                    version_copy,
+                    content,
+                );
+                defer self.allocator.free(msg);
+                _ = self.proxy.request(language_id, msg, &notify_buf, notify_buf.len) catch {};
+            },
+            .change => {
+                const msg = try lsp.sync.buildDidChangeNotification(
+                    self.allocator,
+                    uri,
+                    version_copy,
+                    content,
+                );
+                defer self.allocator.free(msg);
+                _ = self.proxy.request(language_id, msg, &notify_buf, notify_buf.len) catch {};
+            },
+        }
 
         // Fetch Semantic Tokens async
-        const req_id = @as(i32, @intCast(version_copy)) + 10000;
-        const sem_msg = lsp.sync.buildSemanticTokensFullRequest(self.allocator, req_id, uri) catch null;
-        if (sem_msg != null) {
-            const path_copy = self.allocator.dupe(u8, path) catch return;
-            const lang_copy = self.allocator.dupe(u8, language_id) catch {
-                self.allocator.free(path_copy);
-                return;
-            };
-            const FetchContext = struct {
-                store: *Store,
-                path: []const u8,
-                language_id: []const u8,
-                sem_msg: []const u8,
-            };
-            const ctx = FetchContext{
-                .store = self,
-                .path = path_copy,
-                .language_id = lang_copy,
-                .sem_msg = sem_msg.?,
-            };
+        if (content.len <= 1_000_000) {
+            const req_id = @as(i32, @intCast(version_copy)) + 10000;
+            const sem_msg = lsp.sync.buildSemanticTokensFullRequest(self.allocator, req_id, uri) catch null;
+            if (sem_msg != null) {
+                const path_copy = self.allocator.dupe(u8, path) catch return;
+                const lang_copy = self.allocator.dupe(u8, language_id) catch {
+                    self.allocator.free(path_copy);
+                    return;
+                };
+                const FetchContext = struct {
+                    store: *Store,
+                    path: []const u8,
+                    language_id: []const u8,
+                    sem_msg: []const u8,
+                    version: u32,
+                    revision: u64,
+                };
+                const ctx = FetchContext{
+                    .store = self,
+                    .path = path_copy,
+                    .language_id = lang_copy,
+                    .sem_msg = sem_msg.?,
+                    .version = version_copy,
+                    .revision = revision,
+                };
 
-            const thread = std.Thread.spawn(.{}, fetchSemanticWorker, .{ctx}) catch {
-                self.allocator.free(path_copy);
-                self.allocator.free(lang_copy);
-                self.allocator.free(sem_msg.?);
-                return;
-            };
-            thread.detach();
+                const thread = std.Thread.spawn(.{}, fetchSemanticWorker, .{ctx}) catch {
+                    self.allocator.free(path_copy);
+                    self.allocator.free(lang_copy);
+                    self.allocator.free(sem_msg.?);
+                    return;
+                };
+                thread.detach();
+            }
         }
     }
 
@@ -282,6 +304,10 @@ pub const Store = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.entries.getPtr(ctx.path)) |state| {
+            if (state.version != ctx.version or state.last_revision != ctx.revision) {
+                self.allocator.free(data_arr);
+                return;
+            }
             if (state.semantic_tokens) |st| self.allocator.free(st);
             state.semantic_tokens = data_arr;
         } else {

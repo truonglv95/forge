@@ -20,6 +20,7 @@ pub const LanguageContribution = struct {
     server: []const u8,
     args: []const u8,
     file_pattern: []const u8,
+    server_resolver: []const u8,
     extension_id: []const u8,
 };
 
@@ -58,6 +59,7 @@ pub const Registry = struct {
             allocator.free(item.server);
             allocator.free(item.args);
             allocator.free(item.file_pattern);
+            allocator.free(item.server_resolver);
             allocator.free(item.extension_id);
         }
         self.languages.deinit(allocator);
@@ -68,6 +70,41 @@ pub const Registry = struct {
         self.* = init(allocator);
     }
 
+    pub fn addTheme(self: *Registry, allocator: std.mem.Allocator, theme: ThemeContribution) !void {
+        try self.themes.append(allocator, .{
+            .id = try allocator.dupe(u8, theme.id),
+            .label = try allocator.dupe(u8, theme.label),
+            .path = try allocator.dupe(u8, theme.path),
+            .extension_id = try allocator.dupe(u8, theme.extension_id),
+            .extension_root = try allocator.dupe(u8, theme.extension_root),
+        });
+    }
+
+    pub fn addKeybinding(self: *Registry, allocator: std.mem.Allocator, binding: KeybindingContribution) !void {
+        try self.keybindings.append(allocator, .{
+            .key = try allocator.dupe(u8, binding.key),
+            .command = try allocator.dupe(u8, binding.command),
+            .extension_id = try allocator.dupe(u8, binding.extension_id),
+        });
+    }
+
+    pub fn addLanguage(self: *Registry, allocator: std.mem.Allocator, lang: LanguageContribution) !void {
+        try self.languages.append(allocator, .{
+            .id = try allocator.dupe(u8, lang.id),
+            .server = try allocator.dupe(u8, lang.server),
+            .args = try allocator.dupe(u8, lang.args),
+            .file_pattern = try allocator.dupe(u8, lang.file_pattern),
+            .server_resolver = try allocator.dupe(u8, lang.server_resolver),
+            .extension_id = try allocator.dupe(u8, lang.extension_id),
+        });
+    }
+
+    pub fn addRegistry(self: *Registry, allocator: std.mem.Allocator, other: *const Registry) !void {
+        for (other.themes.items) |theme| try self.addTheme(allocator, theme);
+        for (other.keybindings.items) |binding| try self.addKeybinding(allocator, binding);
+        for (other.languages.items) |lang| try self.addLanguage(allocator, lang);
+    }
+
     pub fn registerManifest(
         self: *Registry,
         allocator: std.mem.Allocator,
@@ -76,30 +113,31 @@ pub const Registry = struct {
         manifest: *const manifest_mod.Manifest,
     ) !void {
         for (manifest.themes) |theme| {
-            try self.themes.append(allocator, .{
-                .id = try allocator.dupe(u8, theme.id),
-                .label = try allocator.dupe(u8, theme.label),
-                .path = try allocator.dupe(u8, theme.path),
-                .extension_id = try allocator.dupe(u8, extension_id),
-                .extension_root = try allocator.dupe(u8, extension_root),
+            try self.addTheme(allocator, .{
+                .id = theme.id,
+                .label = theme.label,
+                .path = theme.path,
+                .extension_id = extension_id,
+                .extension_root = extension_root,
             });
         }
 
         for (manifest.keybindings) |binding| {
-            try self.keybindings.append(allocator, .{
-                .key = try allocator.dupe(u8, binding.key),
-                .command = try allocator.dupe(u8, binding.command),
-                .extension_id = try allocator.dupe(u8, extension_id),
+            try self.addKeybinding(allocator, .{
+                .key = binding.key,
+                .command = binding.command,
+                .extension_id = extension_id,
             });
         }
 
         for (manifest.languages) |lang| {
-            try self.languages.append(allocator, .{
-                .id = try allocator.dupe(u8, lang.id),
-                .server = try allocator.dupe(u8, lang.server),
-                .args = try allocator.dupe(u8, lang.args),
-                .file_pattern = try allocator.dupe(u8, lang.file_pattern),
-                .extension_id = try allocator.dupe(u8, extension_id),
+            try self.addLanguage(allocator, .{
+                .id = lang.id,
+                .server = lang.server,
+                .args = lang.args,
+                .file_pattern = lang.file_pattern,
+                .server_resolver = lang.server_resolver,
+                .extension_id = extension_id,
             });
         }
     }

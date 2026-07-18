@@ -189,6 +189,7 @@ pub fn handleSettingsModalClick(wb: anytype, hit: @import("../ui/settings_modal.
         .switch_tab => |tab| {
             wb.settings_modal_tab = tab;
         },
+        .toggle_word_wrap => try wb.dispatch(.settings_toggle_word_wrap),
         .none => {},
     }
 }

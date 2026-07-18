@@ -267,6 +267,7 @@ fn fetchChatInto(
     var client = std.http.Client{ .allocator = allocator, .io = self.io };
     defer client.deinit();
 
+    logRequest("chat", endpoint, self.model_name);
     const result = client.fetch(.{
         .location = .{ .url = endpoint },
         .method = .POST,
@@ -277,6 +278,7 @@ fn fetchChatInto(
     }) catch return provider.ProviderError.NetworkError;
 
     parser.releaseWriter();
+    logResponse("chat", result.status, self.model_name);
 
     return switch (result.status) {
         .ok => {},
@@ -286,6 +288,14 @@ fn fetchChatInto(
         .request_timeout, .service_unavailable, .bad_gateway, .gateway_timeout => provider.ProviderError.NetworkError,
         else => provider.ProviderError.ProviderInternalError,
     };
+}
+
+pub fn logRequest(kind: []const u8, endpoint: []const u8, model_name: []const u8) void {
+    std.debug.print("[forge-ai] OpenRouter {s} request endpoint={s} model={s}\n", .{ kind, endpoint, model_name });
+}
+
+pub fn logResponse(kind: []const u8, status: std.http.Status, model_name: []const u8) void {
+    std.debug.print("[forge-ai] OpenRouter {s} response status={} model={s}\n", .{ kind, status, model_name });
 }
 
 pub fn buildChatEndpoint(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {

@@ -10,6 +10,12 @@ pub const bubble_pad_x: f32 = tokens.space.lg;
 pub const bubble_pad_y: f32 = tokens.space.md + 2.0;
 pub const title_h: f32 = 16.0;
 pub const bubble_gap: f32 = tokens.space.xl;
+pub const agent_icon_size: f32 = 20.0;
+pub const agent_header_h: f32 = agent_icon_size + tokens.space.sm;
+
+pub fn agentTextWidth(content_w: f32) f32 {
+    return @max(40.0, content_w);
+}
 
 pub const BubbleStyle = struct {
     bg: renderer.Color,
@@ -178,9 +184,8 @@ pub fn plainMessageHeight(text: []const u8, content_w: f32) f32 {
 
 pub fn agentMessageHeight(text: []const u8, content_w: f32) f32 {
     if (text.len == 0) return 0;
-    const text_h = chat_markdown.contentHeight(text, content_w - 28);
-    const min_h: f32 = 24.0;
-    return @max(text_h, min_h) + bubble_gap;
+    const text_h = chat_markdown.contentHeight(text, agentTextWidth(content_w));
+    return agent_header_h + text_h + bubble_gap;
 }
 
 pub fn drawPlainMessage(
@@ -232,6 +237,7 @@ pub fn drawPlainMessageWithCache(
 
 pub fn drawAgentMessageWithCache(
     allocator: std.mem.Allocator,
+    agent_x: f32,
     inner_x: f32,
     content_w: f32,
     y: f32,
@@ -243,35 +249,34 @@ pub fn drawAgentMessageWithCache(
 ) f32 {
     if (text.len == 0) return 0;
 
-    renderer.Renderer.drawRoundedRect(inner_x, y, 20, 20, 4, .{ .r = 0.02, .g = 0.43, .b = 1.0, .a = 1.0 });
-    renderer.Renderer.drawSvg(renderer.icons.gear, inner_x + 3, y + 3, 14, 14, .{ .r = 0.92, .g = 0.96, .b = 1.0, .a = 1.0 });
+    const icon_x = @max(agent_x + tokens.space.sm, inner_x);
+    renderer.Renderer.drawRoundedRect(icon_x, y, agent_icon_size, agent_icon_size, 4, .{ .r = 0.02, .g = 0.43, .b = 1.0, .a = 1.0 });
+    renderer.Renderer.drawSvg(renderer.icons.gear, icon_x + 3, y + 3, 14, 14, .{ .r = 0.92, .g = 0.96, .b = 1.0, .a = 1.0 });
 
-    const text_x = inner_x + 28;
-    const text_w = content_w - 28;
+    const text_x = inner_x;
+    const text_y = y + agent_header_h;
+    const text_w = agentTextWidth(content_w);
 
     const body_h = if (line_cache) |cache| cache.height else chat_markdown.contentHeight(text, text_w);
 
-    const min_h: f32 = 24.0;
-    const final_h = @max(body_h, min_h);
-
     if (line_cache) |cache| {
         if (cacheIsDrawable(cache)) {
-            renderer.Renderer.pushClipRect(text_x, y, text_w, body_h + 8.0);
-            drawCachedBody(text, cache, text_x, y, text_w, style);
+            renderer.Renderer.pushClipRect(text_x, text_y, text_w, body_h + 8.0);
+            drawCachedBody(text, cache, text_x, text_y, text_w, style);
             renderer.Renderer.popClipRect();
-            return final_h + bubble_gap + 8.0;
+            return agent_header_h + body_h + bubble_gap + 8.0;
         }
     }
 
-    renderer.Renderer.pushClipRect(text_x, y, text_w, body_h + 8.0);
+    renderer.Renderer.pushClipRect(text_x, text_y, text_w, body_h + 8.0);
     const use_markdown = chat_markdown.usesMarkdown(text);
     _ = if (use_markdown)
-        chat_markdown.drawContent(allocator, text, text_x, y, text_w, style, wb, base_hash) catch
-            chat_markdown.drawSimpleContent(text, text_x, y, text_w, style.fg)
+        chat_markdown.drawContent(allocator, text, text_x, text_y, text_w, style, wb, base_hash) catch
+            chat_markdown.drawSimpleContent(text, text_x, text_y, text_w, style.fg)
     else
-        chat_markdown.drawSimpleContent(text, text_x, y, text_w, style.fg);
+        chat_markdown.drawSimpleContent(text, text_x, text_y, text_w, style.fg);
     renderer.Renderer.popClipRect();
-    return final_h + bubble_gap + 8.0;
+    return agent_header_h + body_h + bubble_gap + 8.0;
 }
 
 pub fn hitTestAgentOpen(inner_x: f32, content_w: f32, y: f32, event_x: f32, event_y: f32) bool {
@@ -301,9 +306,7 @@ pub fn hitTestMessageContent(
     event_x: f32,
     event_y: f32,
 ) ?usize {
-    const text_x = inner_x + 28;
-    const text_w = content_w - 28;
-    return chat_markdown.hitTestContent(allocator, text, text_x, y, text_w, event_x, event_y);
+    return chat_markdown.hitTestContent(allocator, text, inner_x, y + agent_header_h, agentTextWidth(content_w), event_x, event_y);
 }
 
 pub const agent_text_style = chat_markdown.Style{
@@ -311,6 +314,11 @@ pub const agent_text_style = chat_markdown.Style{
     .bold_fg = .{ .r = 0.95, .g = 0.96, .b = 0.98, .a = 1.0 },
     .inline_code_fg = .{ .r = 0.82, .g = 0.9, .b = 0.98, .a = 1.0 },
     .code_block_fg = .{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 },
+    .code_block_bg = .{ .r = 0.085, .g = 0.095, .b = 0.12, .a = 1.0 },
+    .code_block_border = .{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 },
+    .quote_bg = .{ .r = 0.11, .g = 0.13, .b = 0.16, .a = 0.72 },
+    .quote_bar = .{ .r = 0.38, .g = 0.64, .b = 0.98, .a = 0.78 },
+    .list_marker = .{ .r = 0.38, .g = 0.78, .b = 0.82, .a = 0.9 },
 };
 
 pub const thinking_text_style = chat_markdown.Style{

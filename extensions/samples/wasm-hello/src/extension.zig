@@ -1,15 +1,4 @@
-extern "forge_host" fn forge_host_log(ptr: u32, len: u32) void;
-extern "forge_host" fn forge_host_set_status(ptr: u32, len: u32) void;
-extern "forge_host" fn forge_host_read_file(path_ptr: u32, path_len: u32, buf_ptr: u32, buf_cap: u32) i32;
-extern "forge_host" fn forge_host_lsp_for_file(path_ptr: u32, path_len: u32, buf_ptr: u32, buf_cap: u32) i32;
-extern "forge_host" fn forge_host_lsp_request(
-    lang_ptr: u32,
-    lang_len: u32,
-    req_ptr: u32,
-    req_len: u32,
-    resp_ptr: u32,
-    resp_cap: u32,
-) i32;
+const forge = @import("forge-plugin").sdk;
 
 export var memory: [65536]u8 = blk: {
     var mem: [65536]u8 = [_]u8{0} ** 65536;
@@ -27,25 +16,22 @@ const buf_lsp: u32 = 8448;
 const buf_lsp_resp: u32 = 16384;
 
 export fn forge_activate() void {
-    forge_host_set_status(0, 24);
+    forge.guest.setStatus(memory[0..24]);
 }
 
 export fn forge_execute_command(cmd_ptr: u32, cmd_len: u32) void {
-    forge_host_log(cmd_ptr, cmd_len);
+    forge.guest.log(memory[cmd_ptr..][0..cmd_len]);
 
-    const read_len = forge_host_read_file(32, 9, buf_read, 256);
-    if (read_len > 0) {
-        forge_host_log(buf_read, @intCast(read_len));
+    if (forge.guest.readFile(memory[32..][0..9], memory[buf_read..][0..256])) |content| {
+        forge.guest.log(content);
     }
 
-    const lsp_len = forge_host_lsp_for_file(64, 27, buf_lsp, 32);
-    if (lsp_len > 0) {
-        forge_host_log(buf_lsp, @intCast(lsp_len));
+    if (forge.guest.languageForFile(memory[64..][0..27], memory[buf_lsp..][0..32])) |language| {
+        forge.guest.log(language);
     }
 
-    const req_len = forge_host_lsp_request(96, 3, 128, 44, buf_lsp_resp, 512);
-    if (req_len > 0) {
-        forge_host_log(buf_lsp_resp, @intCast(req_len));
+    if (forge.guest.lspRequest(memory[96..][0..3], memory[128..][0..44], memory[buf_lsp_resp..][0..512])) |response| {
+        forge.guest.log(response);
     }
 }
 

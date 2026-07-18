@@ -142,7 +142,7 @@ pub const Registry = struct {
         if (!event.is_down) return false;
         for (self.bindings) |binding| {
             if (binding.keycode != event.keycode) continue;
-            if ((event.modifiers & binding.modifiers) != binding.modifiers) continue;
+            if (!modifiersMatch(binding.modifiers, event.modifiers)) continue;
 
             for (palette.entries) |entry| {
                 if (std.mem.eql(u8, entry.id, binding.palette_id)) {
@@ -168,6 +168,11 @@ pub const Registry = struct {
         return false;
     }
 };
+
+fn modifiersMatch(binding_modifiers: i32, event_modifiers: i32) bool {
+    const known_modifiers = cmd_mask | shift_mask | alt_mask | ctrl_mask;
+    return (event_modifiers & known_modifiers) == (binding_modifiers & known_modifiers);
+}
 
 const ParsedKey = struct {
     modifiers: i32,
@@ -255,4 +260,11 @@ test "parse cmd+shift+p" {
     const parsed = parseKey("cmd+shift+p").?;
     try std.testing.expectEqual(@as(i32, cmd_mask | shift_mask), parsed.modifiers);
     try std.testing.expectEqual(@as(i32, 35), parsed.keycode);
+}
+
+test "keybinding modifiers match exactly" {
+    try std.testing.expect(modifiersMatch(cmd_mask | shift_mask, cmd_mask | shift_mask));
+    try std.testing.expect(!modifiersMatch(cmd_mask | shift_mask, 0));
+    try std.testing.expect(!modifiersMatch(cmd_mask, cmd_mask | shift_mask));
+    try std.testing.expect(!modifiersMatch(0, cmd_mask));
 }

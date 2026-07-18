@@ -248,7 +248,7 @@ pub fn layoutHeight(entry: Entry, is_user: bool, text: []const u8, content_w: f3
     _ = content_w;
     if (text.len == 0 or entry.height == 0) return 0;
     if (is_user) return entry.height + bubble_pad_y * 2 + bubble_gap + layout_safety_pad;
-    return entry.height + bubble_gap + layout_safety_pad;
+    return @import("chat_bubble.zig").agent_header_h + entry.height + bubble_gap + layout_safety_pad;
 }
 
 pub fn drawPlain(text: []const u8, entry: *const Entry, x: f32, y: f32, fg: renderer.Color) f32 {
@@ -287,7 +287,9 @@ pub fn drawCached(
                     const h = chat_markdown.code_pad * 2 +
                         @as(f32, @floatFromInt(@max(1, lines.len))) * chat_markdown.code_line_h +
                         chat_markdown.code_gap;
-                    renderer.Renderer.drawRoundedRect(x, line_y, content_w, h - chat_markdown.code_gap, 6, style.code_block_bg);
+                    const block_h = h - chat_markdown.code_gap;
+                    renderer.Renderer.drawRoundedRect(x, line_y, content_w, block_h, 6, style.code_block_border);
+                    renderer.Renderer.drawRoundedRect(x + 1, line_y + 1, @max(1.0, content_w - 2), @max(1.0, block_h - 2), 5, style.code_block_bg);
                     var code_y = line_y + chat_markdown.code_pad;
                     for (lines) |range| {
                         const slice = if (range.start < range.end) text[range.start..range.end] else "";
@@ -295,10 +297,10 @@ pub fn drawCached(
                         const default_fg = style.code_block_fg;
                         const fg = diff_line_style.foreground(kind, slice, true, default_fg);
                         if (diff_line_style.background(kind, true)) |bg| {
-                            renderer.Renderer.drawRect(x, code_y - 1, content_w, chat_markdown.code_line_h, bg);
+                            renderer.Renderer.drawRect(x + 1, code_y - 1, @max(1.0, content_w - 2), chat_markdown.code_line_h, bg);
                         }
                         if (slice.len > 0) {
-                            renderer.Renderer.drawText(slice, x + chat_markdown.code_pad, code_y, chat_markdown.code_font_size, fg);
+                            renderer.Renderer.drawText(slice, x + 1 + chat_markdown.code_pad, code_y, chat_markdown.code_font_size, fg);
                         }
                         code_y += chat_markdown.code_line_h;
                     }

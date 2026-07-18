@@ -165,6 +165,7 @@ fn fetchStreamChatInto(
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
+    openrouter_provider.logRequest("tool-stream", endpoint, openrouter.model_name);
     const result = client.fetch(.{
         .location = .{ .url = endpoint },
         .method = .POST,
@@ -175,6 +176,7 @@ fn fetchStreamChatInto(
     }) catch return error.NetworkError;
 
     parser.releaseWriter();
+    openrouter_provider.logResponse("tool-stream", result.status, openrouter.model_name);
 
     return switch (result.status) {
         .ok => {},

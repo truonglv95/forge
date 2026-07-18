@@ -30,6 +30,7 @@ const references_store_mod = @import("workbench/references_store.zig");
 const terminal_session_mod = @import("workbench/terminal_session.zig");
 const terminal_group_mod = @import("workbench/terminal_group.zig");
 const lsp_sync_mod = @import("workbench/lsp_sync.zig");
+const lsp_config_mod = @import("workbench/lsp_config.zig");
 const rename_preview_mod = @import("workbench/rename_preview.zig");
 const debug_lldb_session_mod = @import("workbench/debug_lldb_session.zig");
 const debug_dap_session_mod = @import("workbench/debug_dap_session.zig");
@@ -79,6 +80,11 @@ fn freeChatMessage(allocator: std.mem.Allocator, msg: ChatMessage) void {
 }
 pub const Command = commands_mod.Command;
 pub const Event = commands_mod.Event;
+
+pub const InitOptions = struct {
+    show_welcome: bool = false,
+    record_workspace: bool = true,
+};
 
 pub const Workbench = struct {
     allocator: std.mem.Allocator,
@@ -182,6 +188,7 @@ pub const Workbench = struct {
     sidebar_visible: bool = true,
     bottom_panel_visible: bool = true,
     agent_panel_visible: bool = true,
+    welcome_visible: bool = false,
     nav_history: navigation_history_mod.History = undefined,
     terminal_selection: ?@import("ui/panel/terminal_panel.zig").Selection = null,
     shell_mode: @import("ui/core/layout.zig").ShellMode = .ide,
@@ -240,6 +247,9 @@ pub const Workbench = struct {
     ai_mcp_enabled: bool = true,
     ai_models: []const @import("ui/agent/agent_composer.zig").ModelOption = &.{},
 
+    ime_text: ?[]const u8 = null,
+    ime_cursor: i32 = -1,
+
     git_commit_msg: editor.Buffer,
     git_staged_collapsed: bool = false,
     git_changes_collapsed: bool = false,
@@ -285,19 +295,19 @@ pub const Workbench = struct {
     pub const WrapCache = @import("ui/editor/word_wrap.zig").WrapCache;
 
     pub fn init(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8, ide_launcher: []const u8, environ_map: ?*const std.process.Environ.Map) !void {
+        return initWithOptions(self, allocator, io, workspace_path, ide_launcher, environ_map, .{});
+    }
+
+    pub fn initWithOptions(self: *Workbench, allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8, ide_launcher: []const u8, environ_map: ?*const std.process.Environ.Map, options: InitOptions) !void {
         var root = try workspace.WorkspaceRoot.open(io, workspace_path);
         errdefer root.close(io);
-        ai.index_warm.scheduleBackground(allocator, io, environ_map, root, workspace_path);
 
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        var final_path: []const u8 = workspace_path;
-        if (std.mem.eql(u8, workspace_path, ".")) {
-            if (std.process.currentPath(io, &buf)) |len| {
-                final_path = buf[0..len];
-            } else |_| {}
-        }
+        const canonical_workspace_path = workspace.global_store.canonicalWorkspacePathFromRoot(allocator, io, root) catch
+            try workspace.global_store.canonicalWorkspacePath(allocator, io, workspace_path);
+        errdefer allocator.free(canonical_workspace_path);
+        ai.index_warm.scheduleBackground(allocator, io, environ_map, root, canonical_workspace_path);
 
-        var normalized_path = final_path;
+        var normalized_path: []const u8 = canonical_workspace_path;
         while (normalized_path.len > 1 and (normalized_path[normalized_path.len - 1] == '/' or normalized_path[normalized_path.len - 1] == '\\')) {
             normalized_path = normalized_path[0 .. normalized_path.len - 1];
         }
@@ -306,20 +316,22 @@ pub const Workbench = struct {
             name = "WORKSPACE";
         }
         const workspace_name = try allocator.dupe(u8, name);
+        errdefer allocator.free(workspace_name);
 
         self.* = .{
             .allocator = allocator,
             .io = io,
-            .workspace_path = try allocator.dupe(u8, workspace_path),
+            .workspace_path = canonical_workspace_path,
             .workspace_name = workspace_name,
             .workspace_root = root,
+            .welcome_visible = options.show_welcome,
             .tabs = editor.TabGroup.init(allocator),
             .explorer = explorer_tree.Tree.init(allocator),
             .extension_host = plugin.Host.init(allocator, io),
             .keybindings = keybindings_mod.Registry.init(allocator),
             .nav_history = navigation_history_mod.History.init(allocator),
             .lsp_registry = lsp.Registry.init(allocator),
-            .lsp_proxy = try lsp.Proxy.init(allocator, io, workspace_path),
+            .lsp_proxy = try lsp.Proxy.init(allocator, io, canonical_workspace_path),
             .events = kernel.EventBus(Event).init(allocator),
             .palette = try palette_mod.Palette.init(allocator),
             .workspace_symbol_picker = try workspace_symbol_picker_mod.Picker.init(allocator, &self.lsp_proxy),
@@ -392,7 +404,9 @@ pub const Workbench = struct {
         try self.extension_host.activateAll();
         try self.syncContributions();
         try self.palette.addExtensionCommands(&self.extension_host);
-        try recent_workspaces_mod.record(allocator, io, final_path);
+        if (options.record_workspace) {
+            try recent_workspaces_mod.record(allocator, io, self.workspace_path);
+        }
         try self.refreshRecentWorkspaces();
 
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
@@ -1113,16 +1127,18 @@ pub const Workbench = struct {
     pub fn syncContributions(self: *Workbench) !void {
         try self.keybindings.rebuild(&self.extension_host);
         self.lsp_registry.clear(self.allocator);
+        try lsp_config_mod.loadBundledExtensions(self.allocator, self.io, &self.lsp_registry);
         for (self.extension_host.contributions.languages.items) |lang| {
-            try self.lsp_registry.add(self.allocator, .{
+            try lsp_config_mod.addContribution(self.allocator, self.io, &self.lsp_registry, .{
                 .language_id = lang.id,
                 .server = lang.server,
                 .args = lang.args,
                 .file_pattern = lang.file_pattern,
+                .server_resolver = lang.server_resolver,
                 .extension_id = lang.extension_id,
-                .state = .configured,
             });
         }
+        try lsp_config_mod.loadGlobalAndWorkspace(self.allocator, self.io, self.workspace_root, &self.lsp_registry);
         try self.lsp_proxy.syncRegistry(&self.lsp_registry);
         try self.palette.addExtensionCommands(&self.extension_host);
         try self.palette.addContributionCommands(&self.extension_host);
@@ -1960,40 +1976,60 @@ pub const Workbench = struct {
 
     pub fn goToDefinition(self: *Workbench) !void {
         const doc = self.tabs.activeDoc() orelse return;
-        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
-        const config = owned orelse {
-            try self.setStatus("No language server for this file");
-            return;
-        };
-        defer lsp.Registry.freeConfig(self.allocator, config);
-
-        const uri = try @import("workbench/editor_ops.zig").lspSyncDocument(self, doc);
-        defer self.allocator.free(uri);
-
-        const line: u32 = @intCast(doc.buffer.cursor.row);
-        const character: u32 = @intCast(doc.buffer.cursor.col);
-        const def_req = try lsp.navigation.buildDefinitionRequest(
-            self.allocator,
-            88,
-            uri,
-            line,
-            character,
-        );
-        defer self.allocator.free(def_req);
-
-        var response_buf: [65536]u8 = undefined;
-        const len = self.lsp_proxy.request(config.language_id, def_req, &response_buf, response_buf.len) catch {
-            try self.setStatus("Go to definition failed");
-            return;
-        };
-
-        var location = try lsp.navigation.parseDefinitionResponse(self.allocator, response_buf[0..len]);
-        if (location) |*loc| {
-            defer loc.deinit(self.allocator);
-            try self.gotoLocation(loc.*);
-            try self.setStatus("Go to definition");
+        const symbol = @import("workbench/editor_ops.zig").wordAtCursor(&doc.buffer);
+        if (symbol.len == 0) {
+            std.debug.print("[ide][definition] no symbol at cursor path={s} row={d} col={d}\n", .{ doc.path, doc.buffer.cursor.row, doc.buffer.cursor.col });
+            try self.setStatus("No symbol at cursor");
             return;
         }
+        const symbol_owned = try self.allocator.dupe(u8, symbol);
+        defer self.allocator.free(symbol_owned);
+        std.debug.print("[ide][definition] path={s} symbol={s} row={d} col={d}\n", .{ doc.path, symbol_owned, doc.buffer.cursor.row, doc.buffer.cursor.col });
+
+        const owned = try self.lsp_registry.copyMatchForPath(self.allocator, doc.path);
+        if (owned) |config| {
+            defer lsp.Registry.freeConfig(self.allocator, config);
+            std.debug.print("[ide][definition] lsp language={s} server={s} args={s}\n", .{ config.language_id, config.server, config.args });
+
+            const uri = try @import("workbench/editor_ops.zig").lspSyncDocument(self, doc);
+            defer self.allocator.free(uri);
+
+            const line: u32 = @intCast(doc.buffer.cursor.row);
+            const character: u32 = @intCast(doc.buffer.cursor.col);
+            const def_req = try lsp.navigation.buildDefinitionRequest(
+                self.allocator,
+                88,
+                uri,
+                line,
+                character,
+            );
+            defer self.allocator.free(def_req);
+
+            var response_buf: [65536]u8 = undefined;
+            if (self.lsp_proxy.request(config.language_id, def_req, &response_buf, response_buf.len)) |len| {
+                std.debug.print("[ide][definition] lsp response bytes={d}\n", .{len});
+                var location = try lsp.navigation.parseDefinitionResponse(self.allocator, response_buf[0..len]);
+                if (location) |*loc| {
+                    defer loc.deinit(self.allocator);
+                    std.debug.print("[ide][definition] lsp hit uri={s} line={d} char={d}\n", .{ loc.uri, loc.line, loc.character });
+                    try self.gotoLocation(loc.*);
+                    try self.setStatus("Go to definition");
+                    return;
+                }
+                std.debug.print("[ide][definition] lsp no location response={s}\n", .{response_buf[0..@min(len, 512)]});
+            } else |err| {
+                std.debug.print("[ide][definition] lsp request failed error={}\n", .{err});
+            }
+        } else {
+            std.debug.print("[ide][definition] no lsp config for path={s}\n", .{doc.path});
+        }
+
+        if (try @import("workbench/editor_ops.zig").gotoIndexedDefinition(self, symbol_owned)) {
+            std.debug.print("[ide][definition] index hit symbol={s}\n", .{symbol_owned});
+            try self.setStatus("Go to definition (index)");
+            return;
+        }
+        std.debug.print("[ide][definition] index miss symbol={s}\n", .{symbol_owned});
         try self.setStatus("No definition found");
     }
 

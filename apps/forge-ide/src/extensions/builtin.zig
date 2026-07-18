@@ -36,31 +36,61 @@ pub const hello_extension = plugin.BuiltinExtension{
 };
 
 fn lspActivate(ctx: *plugin.ActivationContext) !void {
-    const langs = &ctx.host.contributions.languages;
-    const allocator = ctx.allocator;
-
-    try langs.append(allocator, .{
-        .id = try allocator.dupe(u8, "zig"),
-        .server = try allocator.dupe(u8, "zls"),
-        .args = try allocator.dupe(u8, ""),
-        .file_pattern = try allocator.dupe(u8, "*.zig"),
-        .extension_id = try allocator.dupe(u8, ctx.extension_id),
+    try ctx.registerLanguage(.{
+        .id = "zig",
+        .server = "zls",
+        .args = "",
+        .file_pattern = "*.zig",
+        .server_resolver = "vscode-zig-zls",
     });
 
-    try langs.append(allocator, .{
-        .id = try allocator.dupe(u8, "python"),
-        .server = try allocator.dupe(u8, "pyright-langserver"),
-        .args = try allocator.dupe(u8, "--stdio"),
-        .file_pattern = try allocator.dupe(u8, "*.py"),
-        .extension_id = try allocator.dupe(u8, ctx.extension_id),
+    try ctx.registerLanguage(.{
+        .id = "typescript",
+        .server = "typescript-language-server",
+        .args = "--stdio",
+        .file_pattern = "*.ts",
     });
 
-    try langs.append(allocator, .{
-        .id = try allocator.dupe(u8, "go"),
-        .server = try allocator.dupe(u8, "gopls"),
-        .args = try allocator.dupe(u8, ""),
-        .file_pattern = try allocator.dupe(u8, "*.go"),
-        .extension_id = try allocator.dupe(u8, ctx.extension_id),
+    try ctx.registerLanguage(.{
+        .id = "typescriptreact",
+        .server = "typescript-language-server",
+        .args = "--stdio",
+        .file_pattern = "*.tsx",
+    });
+
+    try ctx.registerLanguage(.{
+        .id = "javascript",
+        .server = "typescript-language-server",
+        .args = "--stdio",
+        .file_pattern = "*.js",
+    });
+
+    try ctx.registerLanguage(.{
+        .id = "javascriptreact",
+        .server = "typescript-language-server",
+        .args = "--stdio",
+        .file_pattern = "*.jsx",
+    });
+
+    try ctx.registerLanguage(.{
+        .id = "python",
+        .server = "pyright-langserver",
+        .args = "--stdio",
+        .file_pattern = "*.py",
+    });
+
+    try ctx.registerLanguage(.{
+        .id = "go",
+        .server = "gopls",
+        .args = "",
+        .file_pattern = "*.go",
+    });
+
+    try ctx.registerLanguage(.{
+        .id = "rust",
+        .server = "rust-analyzer",
+        .args = "",
+        .file_pattern = "*.rs",
     });
 }
 

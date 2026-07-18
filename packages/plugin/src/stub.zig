@@ -1,6 +1,8 @@
 const std = @import("std");
 const workspace = @import("forge-workspace");
 
+pub const sdk = @import("sdk.zig");
+
 pub const ApiVersion = struct { major: u32 = 0, minor: u32 = 0 };
 
 pub const CommandEntry = struct {
@@ -67,6 +69,7 @@ pub const LanguageContribution = struct {
     server: []const u8 = "",
     args: []const u8 = "",
     file_pattern: []const u8 = "",
+    server_resolver: []const u8 = "",
     extension_id: []const u8 = "",
 };
 
@@ -101,6 +104,19 @@ pub const ActivationContext = struct {
     host: *Host = undefined,
     allocator: std.mem.Allocator = undefined,
     extension_id: []const u8 = "",
+
+    pub fn registerCommand(_: *ActivationContext, _: []const u8, _: []const u8) !void {}
+    pub fn registerTheme(_: *ActivationContext, _: []const u8, _: []const u8, _: []const u8) !void {}
+    pub fn registerKeybinding(_: *ActivationContext, _: []const u8, _: []const u8) !void {}
+    pub fn registerLanguage(_: *ActivationContext, _: LanguageRegistration) !void {}
+};
+
+pub const LanguageRegistration = struct {
+    id: []const u8,
+    server: []const u8,
+    args: []const u8 = "",
+    file_pattern: []const u8,
+    server_resolver: []const u8 = "",
 };
 
 pub const Host = struct {

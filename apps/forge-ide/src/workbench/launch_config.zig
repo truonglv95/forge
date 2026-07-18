@@ -218,11 +218,22 @@ pub fn freeConfigs(allocator: std.mem.Allocator, configs: []Config) void {
     if (configs.len > 0) allocator.free(configs);
 }
 
+fn launchConfigPath(allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(workspace_path)) {
+        return try std.fs.path.join(allocator, &.{ workspace_path, ".forge", "launch.json" });
+    }
+
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.process.currentPath(io, &cwd_buf);
+    const cwd = cwd_buf[0..cwd_len];
+    return try std.fs.path.join(allocator, &.{ cwd, workspace_path, ".forge", "launch.json" });
+}
+
 /// Load `.forge/launch.json` from the workspace root. Returns an empty
 /// array (not an error) if the file does not exist.
 pub fn loadFromWorkspace(allocator: std.mem.Allocator, io: std.Io, workspace_path: []const u8) ![]Config {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/.forge/launch.json", .{workspace_path}) catch return &.{};
+    const path = launchConfigPath(allocator, io, workspace_path) catch return &.{};
+    defer allocator.free(path);
 
     var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return &.{};
     defer file.close(io);
@@ -293,6 +304,11 @@ test "parseLaunchJson handles empty configurations" {
     const configs = try parseLaunchJson(allocator, json);
     defer freeConfigs(allocator, configs);
     try std.testing.expectEqual(@as(usize, 0), configs.len);
+}
+
+test "loadFromWorkspace tolerates relative workspace path" {
+    const configs = try loadFromWorkspace(std.testing.allocator, std.testing.io, ".");
+    defer freeConfigs(std.testing.allocator, configs);
 }
 
 test "parseLaunchJson parses env object" {

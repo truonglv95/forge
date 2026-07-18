@@ -48,6 +48,7 @@ pub const context_query = @import("context_query.zig");
 pub const context_plan = @import("context_plan.zig");
 pub const context_supplement = @import("context_supplement.zig");
 pub const context_retrieval = @import("context_retrieval.zig");
+pub const context_expander = @import("context_expander.zig");
 pub const import_graph = @import("import_graph.zig");
 pub const gemini_embedder = providers.gemini_embedder;
 pub const codebase_search = @import("codebase_search.zig");

@@ -556,7 +556,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
                 else if (msg == WM_MOUSEMOVE) {
                     action = (wparam & MK_LBUTTON) ? FORGE_MOUSE_DRAG : FORGE_MOUSE_MOVE;
                 }
-                g_mouse_cb(x, y, button, action, get_modifiers());
+                g_mouse_cb(x, y, button, action, get_modifiers(), action == FORGE_MOUSE_DOWN ? 1 : 0);
             }
             return 0;
         }
@@ -565,7 +565,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
                 float x = (float)(short)LOWORD(lparam);
                 float y = (float)(short)HIWORD(lparam);
                 short delta = HIWORD(wparam);
-                g_mouse_cb(x, y, 0, FORGE_MOUSE_SCROLL, delta > 0 ? 1 : -1);
+                g_mouse_cb(x, y, 0, FORGE_MOUSE_SCROLL, delta > 0 ? 1 : -1, 0);
             }
             return 0;
         }

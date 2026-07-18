@@ -17,24 +17,55 @@ pub const Settings = struct {
     ghost_ai_provider: []const u8 = "auto",
     /// Optional base URL override for the AI provider.
     ghost_ai_base_url: ?[]const u8 = null,
+    owns_ghost_provider: bool = false,
+    owns_ghost_model: bool = false,
+    owns_ghost_ollama_url: bool = false,
+    owns_ghost_ai_provider: bool = false,
 
     pub fn deinit(self: *Settings, allocator: std.mem.Allocator) void {
         if (self.terminal_shell) |shell| allocator.free(shell);
+        if (self.owns_ghost_provider) allocator.free(self.ghost_provider);
+        if (self.owns_ghost_model) allocator.free(self.ghost_model);
+        if (self.owns_ghost_ollama_url) allocator.free(self.ghost_ollama_url);
+        if (self.owns_ghost_ai_provider) allocator.free(self.ghost_ai_provider);
         if (self.ghost_ai_base_url) |url| allocator.free(url);
         self.* = undefined;
     }
 };
 
 pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) !Settings {
-    _ = root;
     var settings: Settings = .{};
     errdefer settings.deinit(allocator);
 
     const home_settings = workspace.global_store.joinHome(allocator, "settings.toml") catch return settings;
     defer allocator.free(home_settings);
-    const content = workspace.global_store.readAbsoluteFile(allocator, io, home_settings) catch return settings;
-    defer allocator.free(content);
+    if (workspace.global_store.readAbsoluteFile(allocator, io, home_settings)) |content| {
+        defer allocator.free(content);
+        try parseSettingsContent(&settings, allocator, content);
+    } else |_| {}
 
+    if (readWorkspaceSettings(allocator, io, root)) |content| {
+        defer allocator.free(content);
+        try parseSettingsContent(&settings, allocator, content);
+    } else |_| {}
+
+    return settings;
+}
+
+fn readWorkspaceSettings(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot) ![]u8 {
+    var file = try root.dir.openFile(io, ".forge/settings.toml", .{});
+    defer file.close(io);
+
+    const stat = try file.stat(io);
+    const size: usize = @intCast(stat.size);
+    const content = try allocator.alloc(u8, size);
+    errdefer allocator.free(content);
+    const read_len = try file.readPositionalAll(io, content, 0);
+    if (read_len != size) return error.UnexpectedEof;
+    return content;
+}
+
+fn parseSettingsContent(settings: *Settings, allocator: std.mem.Allocator, content: []const u8) !void {
     var section: []const u8 = "";
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw_line| {
@@ -68,33 +99,39 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceR
         } else if (std.mem.eql(u8, section, "terminal")) {
             if (std.mem.eql(u8, key, "shell")) {
                 const unquoted = parseQuoted(value) orelse value;
+                if (settings.terminal_shell) |old| allocator.free(old);
                 settings.terminal_shell = try allocator.dupe(u8, unquoted);
             }
         } else if (std.mem.eql(u8, section, "ghost_completion")) {
             if (std.mem.eql(u8, key, "provider")) {
                 const unquoted = parseQuoted(value) orelse value;
                 if (std.mem.eql(u8, unquoted, "ollama") or std.mem.eql(u8, unquoted, "gemini") or std.mem.eql(u8, unquoted, "ai")) {
-                    settings.ghost_provider = unquoted;
+                    try replaceStringSetting(allocator, &settings.ghost_provider, &settings.owns_ghost_provider, unquoted);
                 }
             } else if (std.mem.eql(u8, key, "model")) {
                 const unquoted = parseQuoted(value) orelse value;
-                settings.ghost_model = unquoted;
+                try replaceStringSetting(allocator, &settings.ghost_model, &settings.owns_ghost_model, unquoted);
             } else if (std.mem.eql(u8, key, "ollama_url")) {
                 const unquoted = parseQuoted(value) orelse value;
-                settings.ghost_ollama_url = unquoted;
+                try replaceStringSetting(allocator, &settings.ghost_ollama_url, &settings.owns_ghost_ollama_url, unquoted);
             } else if (std.mem.eql(u8, key, "ai_provider")) {
                 const unquoted = parseQuoted(value) orelse value;
-                settings.ghost_ai_provider = unquoted;
+                try replaceStringSetting(allocator, &settings.ghost_ai_provider, &settings.owns_ghost_ai_provider, unquoted);
             } else if (std.mem.eql(u8, key, "ai_base_url")) {
                 const unquoted = parseQuoted(value) orelse value;
+                if (settings.ghost_ai_base_url) |old| allocator.free(old);
                 settings.ghost_ai_base_url = try allocator.dupe(u8, unquoted);
             } else if (std.mem.eql(u8, key, "enabled")) {
                 settings.ghost_enabled = std.mem.eql(u8, value, "true");
             }
         }
     }
+}
 
-    return settings;
+fn replaceStringSetting(allocator: std.mem.Allocator, field: *[]const u8, owned: *bool, value: []const u8) !void {
+    if (owned.*) allocator.free(field.*);
+    field.* = try allocator.dupe(u8, value);
+    owned.* = true;
 }
 
 pub fn applyToTheme(settings: Settings, theme: *workspace.Theme) void {

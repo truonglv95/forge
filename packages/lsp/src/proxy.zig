@@ -130,12 +130,18 @@ const Job = struct {
     }
 };
 
+const CrashState = struct {
+    count: u32 = 0,
+    last_crash_ms: i64 = 0,
+};
+
 const WorkerState = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     workspace_path: []const u8,
     registry: registry.Registry,
     sessions: std.StringHashMap(*session_mod.Session),
+    crash_states: std.StringHashMap(CrashState),
 };
 
 pub const Proxy = struct {
@@ -160,8 +166,10 @@ pub const Proxy = struct {
             .workspace_path = owned_path,
             .registry = registry.Registry.init(allocator),
             .sessions = std.StringHashMap(*session_mod.Session).init(allocator),
+            .crash_states = std.StringHashMap(CrashState).init(allocator),
         };
         errdefer {
+            state.crash_states.deinit();
             state.sessions.deinit();
             state.registry.deinit(allocator);
             allocator.free(state.workspace_path);
@@ -219,6 +227,11 @@ pub const Proxy = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.state.sessions.deinit();
+        var crash_it = self.state.crash_states.iterator();
+        while (crash_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.state.crash_states.deinit();
         self.state.registry.deinit(self.allocator);
         self.allocator.free(self.state.workspace_path);
         self.allocator.destroy(self.state);
@@ -341,7 +354,7 @@ pub const Proxy = struct {
             if (self.shutdown.load(.acquire) and self.queue.items.len == 0) return null;
         }
 
-        return self.queue.pop();
+        return self.queue.orderedRemove(0);
     }
 
     fn handleJob(self: *Proxy, job: *Job) void {
@@ -395,16 +408,46 @@ pub const Proxy = struct {
         const config = self.state.registry.findByLanguageId(job.language_id) orelse return error.LanguageNotConfigured;
         const session = try ensureSession(self.state, config);
         const result = session.sendRawRequest(job.request_json, job.response_out) catch |err| {
-            // Session failed — remove it and retry once with a fresh session.
             removeSession(self.state, job.language_id);
             if (err == error.OutOfMemory) return error.OutOfMemory;
-            // Auto-restart: try to create a new session and resend.
+
+            var crash_state = self.state.crash_states.get(job.language_id) orelse CrashState{};
+            const now = std.Io.Timestamp.now(self.state.io, .real).toMilliseconds();
+
+            if (now - crash_state.last_crash_ms > 10_000) {
+                crash_state.count = 0;
+            }
+
+            crash_state.count += 1;
+            crash_state.last_crash_ms = now;
+
+            if (!self.state.crash_states.contains(job.language_id)) {
+                const key = self.state.allocator.dupe(u8, job.language_id) catch return error.SessionFailed;
+                self.state.crash_states.put(key, crash_state) catch {
+                    self.state.allocator.free(key);
+                    return error.SessionFailed;
+                };
+            } else {
+                self.state.crash_states.put(job.language_id, crash_state) catch {};
+            }
+
+            if (crash_state.count > 5) {
+                return error.SessionFailed;
+            }
+
+            const shifts = @min(crash_state.count - 1, 6);
+            const backoff_ms = @min(@as(u64, 5000), @as(u64, 100) * (@as(u64, 1) << @intCast(shifts)));
+            std.Io.sleep(self.state.io, std.Io.Duration.fromMilliseconds(@intCast(backoff_ms)), .real) catch {};
+
             const retry_session = ensureSession(self.state, config) catch return error.SessionFailed;
             return retry_session.sendRawRequest(job.request_json, job.response_out) catch |retry_err| {
                 removeSession(self.state, job.language_id);
                 return if (retry_err == error.OutOfMemory) error.OutOfMemory else error.SessionFailed;
             };
         };
+        if (self.state.crash_states.fetchRemove(job.language_id)) |kv| {
+            self.state.allocator.free(kv.key);
+        }
         return result;
     }
 
@@ -494,4 +537,39 @@ test "request cleans up job on language-not-configured" {
     var response: [128]u8 = undefined;
     const result = proxy.request("zig", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}", &response, response.len);
     try std.testing.expectError(error.LanguageNotConfigured, result);
+}
+
+test "proxy queue preserves request order" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var proxy = try Proxy.init(allocator, io, ".");
+    defer proxy.deinit();
+
+    const first = try allocator.create(Job);
+    first.* = .{
+        .kind = .warm,
+        .language_id = try allocator.dupe(u8, "zig"),
+        .wait = false,
+    };
+    errdefer first.deinit(allocator);
+
+    const second = try allocator.create(Job);
+    second.* = .{
+        .kind = .warm,
+        .language_id = try allocator.dupe(u8, "typescript"),
+        .wait = false,
+    };
+    errdefer second.deinit(allocator);
+
+    try proxy.enqueue(first);
+    try proxy.enqueue(second);
+
+    const popped_first = proxy.popJob().?;
+    const popped_second = proxy.popJob().?;
+    try std.testing.expect(popped_first == first);
+    try std.testing.expect(popped_second == second);
+
+    popped_first.deinit(allocator);
+    popped_second.deinit(allocator);
 }

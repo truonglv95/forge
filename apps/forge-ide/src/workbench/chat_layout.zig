@@ -6,8 +6,8 @@ const tool_step_card_mod = @import("../ui/agent/tool_step_card.zig");
 const chat_message_lines_mod = @import("../ui/agent/chat_message_lines.zig");
 const agent_session_mod = @import("../agent/session.zig");
 
-const chat_composer_gap: f32 = 12.0;
-const chat_bottom_padding: f32 = 88.0;
+const chat_composer_gap: f32 = 6.0;
+const chat_bottom_padding: f32 = 32.0;
 
 fn phaseShowsLive(phase: anytype) bool {
     return switch (phase) {
@@ -113,7 +113,7 @@ fn appendMessageMetrics(cache: *Cache, wb: anytype, msg_h: f32, line_entry: chat
 
 fn messageTextWidth(content_w: f32, is_user: bool) f32 {
     if (is_user) return chat_bubble_mod.textMaxWidth(content_w);
-    return content_w - 28.0; // Agent message has 28px left margin for avatar
+    return chat_bubble_mod.agentTextWidth(content_w);
 }
 
 fn buildLineEntry(wb: anytype, msg: anytype, content_w: f32) chat_message_lines_mod.Entry {
@@ -370,8 +370,7 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
             wb.agent.lock();
             const stream_text = wb.agent.stream_text.items;
             wb.agent.unlock();
-            const stream_text_w = content_w - 28.0;
-            cache.stream_entry = chat_message_lines_mod.build(wb.allocator, stream_text, stream_text_w) catch .{};
+            cache.stream_entry = chat_message_lines_mod.build(wb.allocator, stream_text, chat_bubble_mod.agentTextWidth(content_w)) catch .{};
             cache.stream_built_len = stream_len;
         }
     }

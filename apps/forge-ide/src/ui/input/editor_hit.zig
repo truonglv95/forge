@@ -41,5 +41,5 @@ pub fn editorPosAt(
 }
 
 pub fn isEditorContentArea(geo: layout.Geometry, x: f32, y: f32) bool {
-    return x >= geo.editor_x and x < geo.agent_splitter_x and y > 65.0 and y < geo.task_panel_y - 35;
+    return x >= geo.editor_x and x < geo.agent_splitter_x and y > @import("../editor/editor_scroll.zig").content_top and y < geo.task_panel_y - 35;
 }

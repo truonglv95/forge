@@ -63,6 +63,7 @@ fn treeSitterChunk(
     file_hash: u64,
     content: []const u8,
 ) ![]codebase_index.Chunk {
+    if (content.len > 1_000_000) return error.FileTooLarge;
     const ext = std.fs.path.extension(path);
     const language: tree_sitter.Language = if (std.mem.eql(u8, ext, ".py"))
         .python

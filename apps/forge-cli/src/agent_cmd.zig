@@ -255,6 +255,7 @@ fn runAgent(
         try event_writer.runStarted(if (is_resume) "agent_resume" else "agent_run", provider_opts.options.provider_name, provider_opts.options.model, mode, capability, max_steps);
     }
 
+    const trust_all_tools = parsed.flags.auto_approve or parsed.flags.trust_all;
     const agent_config = ai.agent.Config{
         .max_steps = max_steps,
         .context_max_bytes = if (parsed.flags.budget_bytes > 0) parsed.flags.budget_bytes else default_context_budget_bytes,
@@ -268,8 +269,9 @@ fn runAgent(
         .progress_writer = progress_writer,
         .progress_json = parsed.flags.json,
         .max_repair_attempts = if (std.mem.eql(u8, provider_opts.options.provider_name, "fake")) 0 else 2,
-        .approve_every_time_tools = workspace_cmd.approved(parsed),
-        .approval_callback = if (parsed.flags.auto_approve) cliApprovalCallback else null,
+        .approve_every_time_tools = workspace_cmd.approved(parsed) or trust_all_tools,
+        .approval_callback = if (trust_all_tools) cliApprovalCallback else null,
+        .use_inline_edits = mode == .agent and trust_all_tools,
         .turn_callback = if (event_stream) AgentEventWriter.onTurn else null,
         .turn_context = &event_writer,
         .compaction_callback = if (event_stream) AgentEventWriter.onCompaction else null,

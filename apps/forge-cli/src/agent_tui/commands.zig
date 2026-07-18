@@ -4,6 +4,7 @@ const ai = @import("forge-ai");
 pub const Command = union(enum) {
     wipe_history,
     policy,
+    tools_trust_all,
     mode: ai.tools.Mode,
     mode_cycle,
     context,
@@ -29,6 +30,12 @@ pub fn parseSlashCommand(input: []const u8) Command {
 
     if (matchesSlash(input, "cls") or matchesSlash(input, "clear")) return .wipe_history;
     if (matchesSlash(input, "policy")) return .policy;
+    if (matchesSlash(input, "tools")) {
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .help;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        if (std.mem.eql(u8, args, "trust-all")) return .tools_trust_all;
+        return .help;
+    }
     if (matchesSlash(input, "context")) return .context;
     if (matchesSlash(input, "diff")) return .diff;
     if (matchesSlash(input, "timeline") or matchesSlash(input, "tl")) return .timeline;
@@ -94,7 +101,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear|/cls /policy /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /timeline /resume [id] /sessions /mock /help /quit|/exit
+    \\Commands: /clear|/cls /policy /tools trust-all /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /timeline /resume [id] /sessions /mock /help /quit|/exit
     \\Keys: Tab policy | Ctrl+M mode | Ctrl+R review tool output | Esc close events/timeline | PgUp/PgDn scroll | a/n proposal apply/dismiss | Ctrl+C cancel/quit
     ;
 }
@@ -111,6 +118,7 @@ test "parse slash commands" {
     try std.testing.expect(parseSlashCommand("/cls") == .wipe_history);
     try std.testing.expect(parseSlashCommand("/clear") == .wipe_history);
     try std.testing.expect(parseSlashCommand("/policy") == .policy);
+    try std.testing.expect(parseSlashCommand("/tools trust-all") == .tools_trust_all);
     try std.testing.expect(parseSlashCommand("/timeline") == .timeline);
     try std.testing.expect(parseSlashCommand("/tl") == .timeline);
     try std.testing.expect(parseSlashCommand("/mock") == .mock);

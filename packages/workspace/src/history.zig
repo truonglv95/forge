@@ -194,8 +194,6 @@ pub fn persistApplied(
     record: *const transaction.TransactionRecord,
     proposal_path: []const u8,
 ) !void {
-    try ensureLayout(allocator, io, root);
-
     const proposal_content = if (std.fs.path.isAbsolute(proposal_path)) blk: {
         break :blk try global_store.readAbsoluteFile(allocator, io, proposal_path);
     } else blk: {
@@ -204,7 +202,18 @@ pub fn persistApplied(
         break :blk try allocator.dupe(u8, snap.content);
     };
     defer allocator.free(proposal_content);
+    try persistAppliedContent(allocator, io, root, record, proposal_path, proposal_content);
+}
 
+pub fn persistAppliedContent(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: path_mod.WorkspaceRoot,
+    record: *const transaction.TransactionRecord,
+    proposal_path: []const u8,
+    proposal_content: []const u8,
+) !void {
+    try ensureLayout(allocator, io, root);
     const session_dir = try global_store.getSessionDir(allocator, io, root);
     defer allocator.free(session_dir);
     const proposal_abs = try std.fmt.allocPrint(allocator, "{s}/proposals/{d}.json", .{ session_dir, record.id });

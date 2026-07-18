@@ -22,6 +22,8 @@ void forge_mac_get_render_stats(unsigned long long *redraw_requests, unsigned lo
 void forge_mac_set_render_callback(ForgeRenderCallback callback);
 void forge_mac_set_key_callback(ForgeKeyCallback callback);
 void forge_mac_set_mouse_callback(ForgeMouseCallback callback);
+void forge_mac_set_ime_composition_callback(ForgeImeCompositionCallback callback);
+void forge_mac_set_ime_cursor_rect(float x, float y, float w, float h);
 void forge_mac_set_cursor(int type);
 
 void forge_mac_draw_rect(float x, float y, float w, float h, float r, float g, float b, float a);

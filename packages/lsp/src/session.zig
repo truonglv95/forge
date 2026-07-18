@@ -51,11 +51,30 @@ pub const Session = struct {
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .inherit,
-        }) catch return error.SpawnFailed;
+        }) catch |err| {
+            std.debug.print("[lsp][session] spawn failed language={s} server={s} args={s} cwd={s} error={}\n", .{
+                config.language_id,
+                config.server,
+                config.args,
+                workspace_path,
+                err,
+            });
+            return error.SpawnFailed;
+        };
         if (childExited(child.pid)) {
+            std.debug.print("[lsp][session] server exited immediately language={s} server={s} cwd={s}\n", .{
+                config.language_id,
+                config.server,
+                workspace_path,
+            });
             child.deinit();
             return error.SpawnFailed;
         }
+        std.debug.print("[lsp][session] started language={s} server={s} cwd={s}\n", .{
+            config.language_id,
+            config.server,
+            workspace_path,
+        });
 
         return .{
             .allocator = allocator,
@@ -80,11 +99,11 @@ pub const Session = struct {
             const root_uri = diagnostics.fileUri(self.allocator, self.workspace_path, "") catch return error.OutOfMemory;
             defer self.allocator.free(root_uri);
             const init_req = try std.fmt.allocPrint(self.allocator,
-                \\{{"jsonrpc":"2.0","id":{d},"method":"initialize","params":{{"processId":null,"rootUri":"{s}","capabilities":{{"workspace":{{"symbol":{{"dynamicRegistration":true}}}},"textDocument":{{"semanticTokens":{{"dynamicRegistration":true,"requests":{{"full":true}}}}}}}}}}}}
-            , .{ init_id, root_uri });
+                \\{{"jsonrpc":"2.0","id":{d},"method":"initialize","params":{{"processId":null,"clientInfo":{{"name":"Forge IDE","version":"0.1.0"}},"rootUri":"{s}","workspaceFolders":[{{"uri":"{s}","name":"workspace"}}],"capabilities":{{"workspace":{{"symbol":{{"dynamicRegistration":true}}}}}}}}}}
+            , .{ init_id, root_uri, root_uri });
             defer self.allocator.free(init_req);
             try self.writeMessage(init_req);
-            const init_resp = try self.readResponse(1024 * 1024);
+            const init_resp = try self.readResponseForId(init_id, 1024 * 1024);
             defer self.allocator.free(init_resp);
             if (init_resp.len == 0) return error.ReadFailed;
 
@@ -112,9 +131,9 @@ pub const Session = struct {
         }
 
         try self.writeMessage(request_json);
-        if (!expectsResponse(request_json)) return 0;
+        const expected_id = requestId(request_json) orelse return 0;
 
-        const response = try self.readResponse(response_out.len);
+        const response = try self.readResponseForId(expected_id, response_out.len);
         defer self.allocator.free(response);
         if (response.len > response_out.len) return error.ResponseTooLarge;
         @memcpy(response_out[0..response.len], response);
@@ -136,6 +155,16 @@ pub const Session = struct {
         };
     }
 
+    fn readResponseForId(self: *Session, id: i64, max_payload: usize) SessionError![]u8 {
+        var skipped: u8 = 0;
+        while (skipped < 32) : (skipped += 1) {
+            const response = try self.readResponse(max_payload);
+            if (responseMatchesId(self.allocator, response, id)) return response;
+            self.allocator.free(response);
+        }
+        return error.ReadFailed;
+    }
+
     fn childExited(pid: c.pid_t) bool {
         if (pid <= 0) return true;
         var status: c_int = 0;
@@ -143,7 +172,38 @@ pub const Session = struct {
         return waited != 0;
     }
 
-    fn expectsResponse(payload: []const u8) bool {
-        return std.mem.indexOf(u8, payload, "\"id\":") != null;
+    fn requestId(payload: []const u8) ?i64 {
+        var parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, payload, .{}) catch return null;
+        defer parsed.deinit();
+        const root = parsed.value;
+        if (root != .object) return null;
+        const id = root.object.get("id") orelse return null;
+        return switch (id) {
+            .integer => |value| value,
+            else => null,
+        };
+    }
+
+    fn responseMatchesId(allocator: std.mem.Allocator, payload: []const u8, expected_id: i64) bool {
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return false;
+        defer parsed.deinit();
+        const root = parsed.value;
+        if (root != .object) return false;
+        const id = root.object.get("id") orelse return false;
+        return switch (id) {
+            .integer => |value| value == expected_id,
+            else => false,
+        };
     }
 };
+
+test "session extracts json-rpc request ids" {
+    try std.testing.expectEqual(@as(?i64, 42), Session.requestId("{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"x\"}"));
+    try std.testing.expectEqual(@as(?i64, null), Session.requestId("{\"jsonrpc\":\"2.0\",\"method\":\"x\"}"));
+}
+
+test "session response id matching ignores notifications" {
+    try std.testing.expect(!Session.responseMatchesId(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"window/logMessage\",\"params\":{}}", 7));
+    try std.testing.expect(Session.responseMatchesId(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":null}", 7));
+    try std.testing.expect(!Session.responseMatchesId(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":8,\"result\":null}", 7));
+}

@@ -8,13 +8,15 @@ pub const body_font_size: f32 = tokens.font.body;
 pub const body_line_h: f32 = tokens.font.body_line;
 pub const code_font_size: f32 = tokens.font.code;
 pub const code_line_h: f32 = tokens.font.code_line;
-pub const code_pad: f32 = tokens.space.sm;
-pub const code_gap: f32 = tokens.space.xs;
+pub const code_pad: f32 = tokens.space.md + 2.0;
+pub const code_gap: f32 = tokens.space.md;
 pub const heading_font_size: f32 = tokens.font.heading;
 pub const heading_line_h: f32 = tokens.font.heading_line;
-pub const list_indent: f32 = 14.0;
-pub const quote_indent: f32 = 10.0;
-pub const markdown_block_gap: f32 = tokens.space.xs;
+pub const list_indent: f32 = 18.0;
+pub const quote_indent: f32 = 14.0;
+pub const markdown_block_gap: f32 = tokens.space.sm;
+pub const heading_gap_top: f32 = tokens.space.md;
+pub const heading_gap_bottom: f32 = tokens.space.sm;
 
 pub const Style = struct {
     fg: renderer.Color,
@@ -23,6 +25,10 @@ pub const Style = struct {
     inline_code_bg: renderer.Color = tokens.color.inline_code_bg,
     code_block_fg: renderer.Color = tokens.color.code_fg,
     code_block_bg: renderer.Color = tokens.color.surface_recessed,
+    code_block_border: renderer.Color = tokens.color.border,
+    quote_bg: renderer.Color = .{ .r = 0.12, .g = 0.13, .b = 0.16, .a = 0.62 },
+    quote_bar: renderer.Color = tokens.color.accent,
+    list_marker: renderer.Color = tokens.color.accent,
     top_square: bool = false,
 };
 
@@ -205,7 +211,7 @@ fn markdownLineHeight(line: []const u8, max_w: f32) f32 {
     if (line.len == 0) return body_line_h;
     if (headingBody(line)) |body| {
         const count = @max(1, word_wrap.segmentCount(body, max_w, heading_font_size));
-        return @as(f32, @floatFromInt(count)) * heading_line_h + markdown_block_gap;
+        return heading_gap_top + @as(f32, @floatFromInt(count)) * heading_line_h + heading_gap_bottom;
     }
     if (bulletBody(line)) |body| {
         const count = @max(1, word_wrap.segmentCount(body, @max(20.0, max_w - list_indent), body_font_size));
@@ -465,10 +471,18 @@ fn drawMarkdownLine(
 ) !f32 {
     const max_w = word_wrap.maxWidth(content_w);
     if (headingBody(line)) |body| {
-        return drawPlainWrappedLineWith(body, x, y, max_w, heading_font_size, heading_line_h, style.bold_fg) + markdown_block_gap;
+        const text_y = y + heading_gap_top;
+        const drawn = drawPlainWrappedLineWith(body, x, text_y, max_w, heading_font_size, heading_line_h, style.bold_fg);
+        const divider_y = text_y + drawn + 1.0;
+        if (current_render_context == null or current_render_context.?.hit_test == null) {
+            renderer.Renderer.drawRect(x, divider_y, @min(max_w, 220.0), 1.0, .{ .r = style.bold_fg.r, .g = style.bold_fg.g, .b = style.bold_fg.b, .a = 0.18 });
+        }
+        return heading_gap_top + drawn + heading_gap_bottom;
     }
     if (bulletBody(line)) |body| {
-        renderer.Renderer.drawText("-", x, y, body_font_size, style.bold_fg);
+        if (current_render_context == null or current_render_context.?.hit_test == null) {
+            renderer.Renderer.drawRoundedRect(x + 2.0, y + 7.0, 5.0, 5.0, 2.5, style.list_marker);
+        }
         return try drawInlineLine(allocator, body, x + list_indent, y, @max(20.0, max_w - list_indent), style);
     }
     if (numberedMarkerLen(line)) |marker_len| {
@@ -479,8 +493,13 @@ fn drawMarkdownLine(
         return try drawInlineLine(allocator, body, x + list_indent, y, @max(20.0, max_w - list_indent), style);
     }
     if (quoteBody(line)) |body| {
-        renderer.Renderer.drawRect(x, y + 1, 2, body_line_h - 2, style.inline_code_bg);
-        return try drawInlineLine(allocator, body, x + quote_indent, y, @max(20.0, max_w - quote_indent), style);
+        const quote_w = @max(20.0, max_w - quote_indent);
+        const h = markdownLineHeight(line, max_w);
+        if (current_render_context == null or current_render_context.?.hit_test == null) {
+            renderer.Renderer.drawRoundedRect(x, y, max_w, h, 5, style.quote_bg);
+            renderer.Renderer.drawRoundedRect(x, y + 2, 3, @max(4.0, h - 4), 2, style.quote_bar);
+        }
+        return try drawInlineLine(allocator, body, x + quote_indent, y, quote_w, style);
     }
     return try drawParagraph(allocator, line, x, y, content_w, style);
 }
@@ -608,19 +627,21 @@ fn drawCodeBlockLine(
 
 pub fn drawCodeBlock(code: []const u8, x: f32, y: f32, content_w: f32, style: Style, lang: []const u8, scroll_x: f32, out_max_w: *f32) f32 {
     const h = codeBlockHeight(code);
-    renderer.Renderer.drawRoundedRect(x, y, content_w, h - code_gap, 6, style.code_block_bg);
+    const block_h = h - code_gap;
+    renderer.Renderer.drawRoundedRect(x, y, content_w, block_h, 6, style.code_block_border);
+    renderer.Renderer.drawRoundedRect(x + 1, y + 1, @max(1.0, content_w - 2), @max(1.0, block_h - 2), 5, style.code_block_bg);
     if (style.top_square) {
-        renderer.Renderer.drawRect(x, y, content_w, 6, style.code_block_bg);
+        renderer.Renderer.drawRect(x + 1, y + 1, @max(1.0, content_w - 2), 6, style.code_block_bg);
     }
     const common_indent = getCommonIndent(code);
     var line_y = y + code_pad;
 
-    renderer.Renderer.pushClipRect(x, y, content_w, h - code_gap);
+    renderer.Renderer.pushClipRect(x + 1, y + 1, @max(1.0, content_w - 2), @max(1.0, block_h - 2));
     var lines = std.mem.splitScalar(u8, code, '\n');
     var max_w: f32 = 0;
     while (lines.next()) |line| {
         const display_line = if (line.len >= common_indent) line[common_indent..] else line;
-        const line_w = drawCodeBlockLine(display_line, x, line_y, content_w, scroll_x, style, lang);
+        const line_w = drawCodeBlockLine(display_line, x + 1, line_y, @max(1.0, content_w - 2), scroll_x, style, lang);
         if (line_w > max_w) max_w = line_w;
         line_y += code_line_h;
     }

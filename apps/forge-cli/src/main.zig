@@ -1,6 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const core = @import("forge-core");
 const workspace = @import("forge-workspace");
+const process_spawn = @import("forge-util").process_spawn;
 
 const args_mod = @import("args.zig");
 const inspect_cmd = @import("inspect.zig");
@@ -50,6 +52,10 @@ fn run(
     args: []const []const u8,
     writer: *Io.Writer,
 ) Io.Writer.Error!u8 {
+    if (try maybeLaunchIdeForPathArg(allocator, io, args, writer)) {
+        return 0;
+    }
+
     const parsed = args_mod.CliArgs.parse(allocator, args) catch |err| {
         try writer.print("error parsing arguments: {}\n", .{err});
         return 2;
@@ -150,6 +156,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\
         \\Usage:
         \\  forge <command> [options]
+        \\  forge <path>
         \\
         \\Commands:
         \\  version    Print the Forge version
@@ -182,6 +189,8 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --events <format>    Stream agent events: ndjson
         \\  --dry-run            Dry-run flag (used with apply)
         \\  --yes                Approve apply without interactive prompt
+        \\  --trust-all          Trust all agent tools for this session; edit tools auto-apply via transactions
+        \\  --auto-approve       Alias for trusting all agent tool approvals in this session
         \\  --file <path>        Include file in AI context (repeatable)
         \\  --provider <name>    AI provider: auto|fake|gemini|ollama|openrouter (default: from forge.toml or auto)
         \\  --model <name>       Model id (default: from forge.toml or provider default)
@@ -200,6 +209,100 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --max-success-regression <f> Fail if success rate regresses beyond delta
         \\
     );
+}
+
+fn maybeLaunchIdeForPathArg(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    writer: *Io.Writer,
+) Io.Writer.Error!bool {
+    if (args.len != 2) return false;
+    const target = args[1];
+    if (!isPathLaunchTarget(io, target)) return false;
+
+    const launcher = ideLauncherPath(allocator, args[0]) catch |err| {
+        try writer.print("error launching Forge IDE for '{s}': {}\n", .{ target, err });
+        return true;
+    };
+    defer if (!std.mem.eql(u8, launcher, ideExecutableName())) allocator.free(launcher);
+
+    var child = process_spawn.spawn(allocator, &.{ launcher, target }, .{
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch |err| {
+        try writer.print("error launching Forge IDE for '{s}': {}\n", .{ target, err });
+        return true;
+    };
+    child.stdin_fd = -1;
+    child.stdout_fd = -1;
+    child.stderr_fd = -1;
+    child.pid = -1;
+    child.deinit();
+    try writer.print("Opening Forge IDE: {s}\n", .{target});
+    return true;
+}
+
+fn isPathLaunchTarget(io: std.Io, arg: []const u8) bool {
+    if (arg.len == 0 or arg[0] == '-') return false;
+    if (isKnownCommandName(arg)) return false;
+    if (std.mem.eql(u8, arg, ".") or std.mem.eql(u8, arg, "..")) return true;
+    if (std.fs.path.isAbsolute(arg) or std.mem.indexOfScalar(u8, arg, '/') != null or std.mem.indexOfScalar(u8, arg, '\\') != null) {
+        return pathExists(io, arg);
+    }
+    return pathExists(io, arg);
+}
+
+fn isKnownCommandName(name: []const u8) bool {
+    const commands = [_][]const u8{
+        "version",
+        "doctor",
+        "inspect",
+        "search",
+        "watch",
+        "diff",
+        "apply",
+        "undo",
+        "history",
+        "task",
+        "check",
+        "index",
+        "context",
+        "ask",
+        "run",
+        "agent",
+        "plan",
+        "parsers",
+        "eval",
+        "ecosystem",
+        "ext",
+        "spec",
+        "help",
+    };
+    for (commands) |command| {
+        if (std.mem.eql(u8, name, command)) return true;
+    }
+    return false;
+}
+
+fn pathExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return false,
+    };
+    return true;
+}
+
+fn ideLauncherPath(allocator: std.mem.Allocator, forge_argv0: []const u8) ![]const u8 {
+    if (std.fs.path.dirname(forge_argv0)) |dir| {
+        return std.fs.path.join(allocator, &.{ dir, ideExecutableName() });
+    }
+    return ideExecutableName();
+}
+
+fn ideExecutableName() []const u8 {
+    return if (builtin.os.tag == .windows) "forge-ide.exe" else "forge-ide";
 }
 
 fn emptyEnvironMap(allocator: std.mem.Allocator) !*std.process.Environ.Map {
@@ -235,6 +338,14 @@ test "CLI returns error for unknown command" {
     var writer = Io.Writer.fixed(&buffer);
     try std.testing.expectEqual(@as(u8, 2), try run(allocator, std.testing.io, environ, &.{ "forge", "wat" }, &writer));
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "unknown command") != null);
+}
+
+test "CLI recognizes path launch targets" {
+    try std.testing.expect(isPathLaunchTarget(std.testing.io, "."));
+    try std.testing.expect(isPathLaunchTarget(std.testing.io, ".."));
+    try std.testing.expect(!isPathLaunchTarget(std.testing.io, "wat"));
+    try std.testing.expect(!isPathLaunchTarget(std.testing.io, "doctor"));
+    try std.testing.expect(!isPathLaunchTarget(std.testing.io, "--help"));
 }
 
 test "CLI workflow apply undo in temp workspace" {

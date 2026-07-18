@@ -20,6 +20,38 @@ const scroll_axis = @import("../core/scroll_axis.zig");
 const shared = @import("shared.zig");
 const editor_hit = @import("editor_hit.zig");
 const keys_agent = @import("keys_agent.zig");
+const editor_mod = @import("forge-editor");
+
+fn isDefinitionClick(modifiers: i32) bool {
+    return modifiers & (shared.cmd_mask | shared.ctrl_mask) != 0;
+}
+
+fn isIdentifierByte(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
+}
+
+fn selectWordAt(buf: *editor_mod.Buffer, row: usize, col: usize) bool {
+    if (row >= buf.lineCount()) return false;
+    const line = buf.lineAt(row);
+    if (line.len == 0) return false;
+
+    var pivot = @min(col, line.len);
+    if (pivot == line.len or !isIdentifierByte(line[pivot])) {
+        if (pivot == 0 or !isIdentifierByte(line[pivot - 1])) return false;
+        pivot -= 1;
+    }
+
+    var start = pivot;
+    while (start > 0 and isIdentifierByte(line[start - 1])) : (start -= 1) {}
+
+    var end = pivot + 1;
+    while (end < line.len and isIdentifierByte(line[end])) : (end += 1) {}
+
+    if (start >= end) return false;
+    buf.selection_anchor = .{ .row = row, .col = start };
+    buf.cursor = .{ .row = row, .col = end };
+    return true;
+}
 
 pub fn onMouseEvent(event: renderer.MouseEvent) void {
     const wb = state.wb orelse return;
@@ -52,6 +84,8 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             renderer.Renderer.setCursor(2);
         } else if (is_near_bottom_splitter) {
             renderer.Renderer.setCursor(3);
+        } else if (geo.shell_mode == .ide and isDefinitionClick(event.modifiers) and editor_hit.isEditorContentArea(geo, event.x, event.y)) {
+            renderer.Renderer.setCursor(4);
         } else {
             renderer.Renderer.setCursor(0);
         }
@@ -240,6 +274,29 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 state.chat_selection = null;
                 return;
             }
+
+            wb.agent.lock();
+            const ci_entry_count = wb.agent.context_entries.items.len;
+            const ci_expanded = wb.agent.context_inspector_expanded;
+            const ci_has_detail = wb.agent.context_selected_index != null and ci_expanded;
+            const ci_scroll_y = wb.agent.context_inspector_scroll_y;
+            wb.agent.unlock();
+
+            const context_inspector_mod = @import("../agent/context_inspector.zig");
+            if (context_inspector_mod.hitToggle(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.prompt_buffer, ci_has_detail, event.x, event.y)) {
+                wb.agent.toggleContextInspector();
+                return;
+            }
+
+            if (ci_expanded) {
+                if (context_inspector_mod.hitEntryRow(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.prompt_buffer, ci_scroll_y, event.x, event.y)) |index| {
+                    wb.agent.lock();
+                    wb.agent.context_selected_index = index;
+                    wb.agent.unlock();
+                    return;
+                }
+            }
+
             wb.agent.lock();
             const show_rollback = wb.agent.last_checkpoint_id != null;
             const show_approve_spec = wb.agent.spec_pending;
@@ -394,14 +451,24 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 const scroll_x = if (pane == .secondary) wb.split_scroll_x else wb.editor_scroll_x;
                 if (editor_hit.editorPosAt(wb, &doc.buffer, pane_x, pane_w, scroll_y, scroll_x, event.x, event.y)) |pos| {
                     state.chat_selection = null;
+                    if (isDefinitionClick(event.modifiers)) {
+                        doc.buffer.cursor.row = pos.row;
+                        doc.buffer.cursor.col = pos.col;
+                        doc.buffer.clearSelection();
+                        wb.scrollEditorToCursor();
+                        wb.goToDefinition() catch {};
+                        return;
+                    }
+                    if (event.click_count >= 2) {
+                        if (selectWordAt(&doc.buffer, pos.row, pos.col)) {
+                            state.is_dragging_editor_selection = false;
+                            wb.scrollEditorToCursor();
+                            return;
+                        }
+                    }
                     doc.buffer.beginSelection(pos.row, pos.col);
                     state.is_dragging_editor_selection = true;
                     wb.scrollEditorToCursor();
-                    if (event.modifiers & shared.cmd_mask != 0) {
-                        wb.goToDefinition() catch {};
-                        state.is_dragging_editor_selection = false;
-                        return;
-                    }
                 }
             }
         } else if (geo.shell_mode == .ide and event.y >= geo.task_panel_y) {
@@ -617,12 +684,35 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             } else {
                 wb.agent.lock();
                 const attachment_count = wb.agent.attachments.items.len;
+                const ci_entry_count = wb.agent.context_entries.items.len;
+                const ci_expanded = wb.agent.context_inspector_expanded;
+                const ci_has_detail = wb.agent.context_selected_index != null and ci_expanded;
+                const ci_has_routing = wb.agent.routing_task_intent.len > 0;
                 wb.agent.unlock();
+
                 const agent_panel = @import("../agent/agent_panel.zig");
+                const context_inspector_mod = @import("../agent/context_inspector.zig");
+
+                const ci_top = context_inspector_mod.stripTop(h, ci_expanded, ci_entry_count, attachment_count, geo.agent_w, &wb.prompt_buffer, ci_has_detail, ci_has_routing);
+                const ci_height = context_inspector_mod.stripHeight(ci_expanded, ci_entry_count, ci_has_detail, ci_has_routing);
+                const ci_bottom = ci_top + ci_height;
+
                 const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer);
                 if (composer_layout.scroll_max > 0 and agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, mx, my)) {
                     wb.prompt_scroll_y += scroll_delta_y;
                     wb.clampPromptScroll(geo.agent_w);
+                } else if (ci_expanded and my >= ci_top and my < ci_bottom) {
+                    wb.agent.lock();
+                    wb.agent.context_inspector_scroll_y += scroll_delta_y;
+                    // Clamp context scroll
+                    const visible_rows = context_inspector_mod.max_visible_rows;
+                    if (wb.agent.context_entries.items.len > visible_rows) {
+                        const max_scroll = @as(f32, @floatFromInt(wb.agent.context_entries.items.len - visible_rows)) * context_inspector_mod.row_h;
+                        wb.agent.context_inspector_scroll_y = @max(0, @min(max_scroll, wb.agent.context_inspector_scroll_y));
+                    } else {
+                        wb.agent.context_inspector_scroll_y = 0;
+                    }
+                    wb.agent.unlock();
                 } else {
                     var scrolled_code_block = false;
                     if (scroll_delta_x != 0) {
@@ -652,7 +742,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and my >= geo.task_panel_y and mx >= geo.editor_x and mx < geo.agent_splitter_x) {
             wb.task_scroll_y += scroll_delta_y;
             wb.clampBottomPanelScroll(geo.task_panel_h);
-        } else if (geo.shell_mode == .ide and mx >= geo.editor_x and mx < geo.agent_splitter_x and my > 65.0 and my < geo.task_panel_y - 35) {
+        } else if (geo.shell_mode == .ide and mx >= geo.editor_x and mx < geo.agent_splitter_x and my > @import("../editor/editor_scroll.zig").content_top and my < geo.task_panel_y - 35) {
             const pane = wb.paneAt(geo.editor_x, geo.editor_w, mx);
             if (pane == .secondary) {
                 wb.split_scroll_y += scroll_delta_y;
@@ -664,4 +754,23 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.clampEditorScroll(geo.editor_w, geo.editor_h);
         }
     }
+}
+
+test "definition click accepts command or control modifier" {
+    try std.testing.expect(isDefinitionClick(shared.cmd_mask));
+    try std.testing.expect(isDefinitionClick(shared.ctrl_mask));
+    try std.testing.expect(isDefinitionClick(shared.cmd_mask | shared.shift_mask));
+    try std.testing.expect(!isDefinitionClick(0));
+    try std.testing.expect(!isDefinitionClick(shared.shift_mask));
+}
+
+test "select word at identifier" {
+    var buf = try editor_mod.Buffer.init(std.testing.allocator);
+    defer buf.deinit();
+    try buf.loadFromSlice("const std = @import(\"std\");");
+
+    try std.testing.expect(selectWordAt(&buf, 0, 7));
+    const sel = buf.selectionOrdered();
+    try std.testing.expectEqual(@as(usize, 6), sel.start.col);
+    try std.testing.expectEqual(@as(usize, 9), sel.end.col);
 }

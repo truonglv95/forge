@@ -208,7 +208,7 @@ pub const WasmRuntime = struct {
 
         const result: i32 = blk: {
             const path = readGuestString(guest, path_ptr, path_len) orelse break :blk -1;
-            if (!isSafeWorkspacePath(path, guest.env.limits.max_path_len)) break :blk -1;
+            if (!WasmRuntime.isSafeWorkspacePath(path, guest.env.limits.max_path_len)) break :blk -1;
 
             const file_wp = workspace.WorkspacePath.parse(path) catch break :blk -1;
             var snap = workspace.FileSnapshot.read(guest.env.allocator, guest.env.io, guest.env.workspace_root, file_wp) catch break :blk -1;
@@ -231,7 +231,7 @@ pub const WasmRuntime = struct {
         const result: i32 = blk: {
             const lookup = guest.env.callbacks.lsp_language_for_file orelse break :blk -1;
             const path = readGuestString(guest, path_ptr, path_len) orelse break :blk -1;
-            if (!isSafeWorkspacePath(path, guest.env.limits.max_path_len)) break :blk -1;
+            if (!WasmRuntime.isSafeWorkspacePath(path, guest.env.limits.max_path_len)) break :blk -1;
 
             const mem = guest.instance.getMemory(guest.memory_idx) catch break :blk -1;
             const out_end = @as(usize, buf_ptr) + @as(usize, buf_cap);
@@ -317,6 +317,10 @@ pub fn parseRuntime(value: []const u8) ?RuntimeKind {
     if (std.mem.eql(u8, value, "builtin")) return .builtin;
     if (std.mem.eql(u8, value, "wasm")) return .wasm;
     return null;
+}
+
+pub fn isSafeWorkspacePath(path: []const u8, max_len: u32) bool {
+    return WasmRuntime.isSafeWorkspacePath(path, max_len);
 }
 
 pub fn limitsFromManifest(manifest: *const manifest_mod.Manifest) Limits {

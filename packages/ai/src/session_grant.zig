@@ -9,12 +9,13 @@
 //! ## Threat model
 //!
 //! A session grant does NOT replace the per-call approval gate for high-risk
-//! tools (risk == .high). Those tools (run_command, replace_file_content) are
-//! always re-evaluated. The grant cache only memoizes medium-risk tools
-//! (fetch_url, remember) that the user has already accepted.
+//! tools unless the caller explicitly opts into high-risk grants (for example
+//! `/tools trust-all` or `--trust-all`). Without that opt-in, tools such as
+//! run_command and replace_file_content are always re-evaluated.
 //!
 //! MCP tools default to high risk and therefore cannot be session-granted
-//! unless the user explicitly lowers their policy in the ecosystem manifest.
+//! unless the caller enabled high-risk grants or the tool policy is lowered by
+//! trusted metadata.
 //!
 //! ## Usage
 //!
@@ -154,10 +155,10 @@ pub const SessionGrants = struct {
     /// config.approval_context = &my_grants;
     /// ```
     ///
-    /// Returns true (approve) when the tool has an active session grant and
-    /// risk < high. Returns false otherwise — the caller should prompt the user
-    /// interactively and call `grants.grant(tool_name, .session)` if they choose
-    /// "approve for session".
+    /// Returns true (approve) when the tool has an active session grant. High-risk
+    /// grants require `allow_high_risk=true`. Returns false otherwise — the caller
+    /// should prompt the user interactively and call `grants.grant(tool_name,
+    /// .session)` if they choose "approve for session".
     pub fn approvalCallback(
         raw_context: ?*anyopaque,
         tool_name: []const u8,
@@ -197,6 +198,18 @@ test "session grants never approve high-risk tools" {
 
     try std.testing.expect(!grants.isGranted("run_command", policy));
     try std.testing.expectEqual(@as(usize, 0), grants.entries.items.len);
+}
+
+test "session grants can approve high-risk tools when explicitly allowed" {
+    var grants = SessionGrants.init(std.testing.allocator, true);
+    defer grants.deinit();
+
+    const policy = tool_registry.Policy{ .risk = .high, .approval = .review };
+
+    try grants.grant("replace_file_content", .session);
+
+    try std.testing.expect(grants.isGranted("replace_file_content", policy));
+    try std.testing.expectEqual(@as(usize, 1), grants.entries.items.len);
 }
 
 test "session grants revoke removes the entry" {

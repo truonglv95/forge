@@ -17,7 +17,7 @@ const Workbench = @import("../../workbench.zig").Workbench;
 const chat_layout = @import("../../workbench/chat_layout.zig");
 const chat_message_lines = @import("../agent/chat_message_lines.zig");
 
-const chat_composer_gap: f32 = tokens.space.lg;
+const chat_composer_gap: f32 = tokens.space.sm;
 
 fn phaseShowsLive(phase: anytype) bool {
     return switch (phase) {
@@ -123,7 +123,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                 @as(?*const chat_message_lines.Entry, null);
             switch (msg.role) {
                 .user => _ = chat_bubble.drawBubbleWithCache(wb.allocator, agent_x, inner_x, content_w, msg_y, null, msg.content, user_style, line_cache, wb, msg_i),
-                .agent => _ = chat_bubble.drawAgentMessageWithCache(wb.allocator, inner_x, content_w, msg_y, msg.content, chat_bubble.agent_text_style, line_cache, wb, msg_i),
+                .agent => _ = chat_bubble.drawAgentMessageWithCache(wb.allocator, agent_x, inner_x, content_w, msg_y, msg.content, chat_bubble.agent_text_style, line_cache, wb, msg_i),
                 .tool => {
                     var step = chat_layout.toolStepFromMessage(msg);
                     _ = tool_step_card.drawStep(
@@ -158,6 +158,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
             } else {
                 content_y += chat_bubble.drawAgentMessageWithCache(
                     wb.allocator,
+                    agent_x,
                     inner_x,
                     content_w,
                     content_y,
@@ -281,7 +282,22 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         );
     }
 
-    const show_prompt_cursor = @mod(state.time, 1.0) < 0.5 and wb.focused_panel == .agent and !snap.show_review and !snap.worker_running;
+    context_inspector.draw(
+        &wb.agent,
+        agent_x,
+        agent_w,
+        h,
+        snap.context_used_bytes,
+        snap.context_max_bytes,
+        snap.context_entry_count,
+        snap.context_inspector_expanded,
+        snap.attachment_count,
+        &wb.prompt_buffer,
+        wb.agent.context_inspector_scroll_y,
+        wb.agent.context_selected_index,
+    );
+
+    const show_prompt_cursor = @mod(state.time, 1.0) < 0.5 and wb.focused_panel == .agent;
     agent_composer.draw(
         &wb.agent,
         composer_layout,

@@ -24,6 +24,7 @@ pub const LanguageContribution = struct {
     server: []const u8,
     args: []const u8 = "",
     file_pattern: []const u8,
+    server_resolver: []const u8 = "",
 };
 
 pub const Manifest = struct {
@@ -70,6 +71,7 @@ pub const Manifest = struct {
             allocator.free(lang.server);
             allocator.free(lang.args);
             allocator.free(lang.file_pattern);
+            allocator.free(lang.server_resolver);
         }
         allocator.free(self.languages);
         self.* = undefined;
@@ -166,9 +168,11 @@ fn parseExtensionRow(allocator: std.mem.Allocator, key: []const u8, value: []con
     if (std.mem.eql(u8, key, "id")) {
         allocator.free(manifest.id);
         manifest.id = try parseString(allocator, value);
+        if (manifest.id.len == 0) return error.InvalidValue;
     } else if (std.mem.eql(u8, key, "name")) {
         allocator.free(manifest.name);
         manifest.name = try parseString(allocator, value);
+        if (manifest.name.len == 0) return error.InvalidValue;
     } else if (std.mem.eql(u8, key, "version")) {
         allocator.free(manifest.version);
         manifest.version = try parseString(allocator, value);
@@ -254,6 +258,7 @@ fn parseLanguagesRow(allocator: std.mem.Allocator, key: []const u8, value: []con
             .server = try allocator.dupe(u8, ""),
             .args = try allocator.dupe(u8, ""),
             .file_pattern = try allocator.dupe(u8, ""),
+            .server_resolver = try allocator.dupe(u8, ""),
         });
     } else if (std.mem.eql(u8, key, "server")) {
         if (languages.items.len == 0) return error.InvalidSyntax;
@@ -270,6 +275,11 @@ fn parseLanguagesRow(allocator: std.mem.Allocator, key: []const u8, value: []con
         const last = languages.items.len - 1;
         allocator.free(languages.items[last].file_pattern);
         languages.items[last].file_pattern = try parseString(allocator, value);
+    } else if (std.mem.eql(u8, key, "server_resolver") or std.mem.eql(u8, key, "resolver")) {
+        if (languages.items.len == 0) return error.InvalidSyntax;
+        const last = languages.items.len - 1;
+        allocator.free(languages.items[last].server_resolver);
+        languages.items[last].server_resolver = try parseString(allocator, value);
     } else {
         return error.UnknownKey;
     }
@@ -310,6 +320,7 @@ fn freePartialLists(
         allocator.free(lang.server);
         allocator.free(lang.args);
         allocator.free(lang.file_pattern);
+        allocator.free(lang.server_resolver);
     }
     languages.deinit(allocator);
 }
