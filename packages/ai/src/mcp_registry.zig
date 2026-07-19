@@ -154,6 +154,7 @@ pub const Registry = struct {
                     .description = if (tool.description) |d| try allocator.dupe(u8, d) else null,
                     .input_schema_json = try allocator.dupe(u8, tool.input_schema_json),
                     .session_index = session_index,
+                    .annotations_json = if (tool.annotations_json) |a| try allocator.dupe(u8, a) else null,
                 });
                 tool_count += 1;
             }

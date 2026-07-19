@@ -159,7 +159,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--forge", default=str(root / "zig-out/bin/forge"))
     parser.add_argument("--corpus", default=str(root / "fixtures/eval/agent_reliability.json"))
-    parser.add_argument("--provider", default="fake", choices=["fake", "gemini", "ollama"])
+    parser.add_argument("--provider", default="fake", choices=["fake", "gemini", "ollama", "openai"])
     parser.add_argument("--model")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=8)

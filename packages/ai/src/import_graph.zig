@@ -1,10 +1,12 @@
 const std = @import("std");
+const context_cache = @import("context_cache.zig");
 const workspace = @import("forge-workspace");
 
 pub const Options = struct {
     max_hops: u32 = 2,
     max_files: usize = 12,
     preview_bytes: usize = 2048,
+    cache: ?*context_cache.ContextCache = null,
 };
 
 pub fn collectNeighborPaths(
@@ -50,13 +52,73 @@ pub fn collectNeighborPaths(
 
         for (frontier.items) |path| {
             const wp = workspace.WorkspacePath.parse(path) catch continue;
-            var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch continue;
-            defer snap.deinit();
+            var mtime: i128 = 0;
+            if (root.dir.statFile(io, wp.raw, .{})) |stat| {
+                mtime = stat.mtime.nanoseconds;
+            } else |_| {}
 
-            const imports = extractImports(allocator, io, root, path, snap.content) catch continue;
-            defer freeImports(allocator, imports);
+            var cached_imports: ?[][]const u8 = null;
+            if (options.cache) |cache| {
+                cache.mutex.lock();
+                if (cache.entries.get(path)) |entry| {
+                    if (entry.mtime == mtime and entry.imports != null) {
+                        cached_imports = entry.imports.?;
+                    }
+                }
+                cache.mutex.unlock();
+            }
 
-            for (imports) |import_path| {
+            var owned_imports: []const []const u8 = undefined;
+
+            if (cached_imports) |imports| {
+                var mut_imports = allocator.alloc([]const u8, imports.len) catch continue;
+                for (imports, 0..) |imp, i| {
+                    mut_imports[i] = allocator.dupe(u8, imp) catch "";
+                }
+                owned_imports = mut_imports;
+            } else {
+                var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch continue;
+                defer snap.deinit();
+
+                owned_imports = extractImports(allocator, io, root, path, snap.content) catch continue;
+
+                if (options.cache) |cache| {
+                    cache.mutex.lock();
+
+                    var owned_path = path;
+                    var entry = cache.entries.get(path) orelse context_cache.ContextCache.Entry{ .mtime = mtime };
+                    if (entry.mtime != mtime) {
+                        if (entry.preview) |p| allocator.free(p);
+                        if (entry.imports) |arr| {
+                            for (arr) |p| allocator.free(p);
+                            allocator.free(arr);
+                        }
+                        entry = context_cache.ContextCache.Entry{ .mtime = mtime };
+                    }
+                    if (!cache.entries.contains(path)) {
+                        owned_path = allocator.dupe(u8, path) catch path;
+                    } else {
+                        if (entry.imports) |arr| {
+                            for (arr) |p| allocator.free(p);
+                            allocator.free(arr);
+                        }
+                    }
+
+                    if (allocator.alloc([]const u8, owned_imports.len)) |cache_array| {
+                        for (owned_imports, 0..) |imp, i| {
+                            cache_array[i] = allocator.dupe(u8, imp) catch "";
+                        }
+                        entry.imports = cache_array;
+                        cache.entries.put(owned_path, entry) catch {};
+                    } else |_| {}
+
+                    cache.mutex.unlock();
+                }
+            }
+
+            defer freeImports(allocator, owned_imports);
+
+            for (owned_imports) |import_path| {
                 if (seen.contains(import_path)) continue;
                 try markSeen(allocator, &seen, import_path);
 

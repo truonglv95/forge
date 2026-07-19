@@ -47,6 +47,8 @@ pub fn runCapture(allocator: std.mem.Allocator, options: CaptureOptions) !Captur
     const result = try process_spawn.runCapture(allocator, options.argv, .{
         .cwd = options.cwd,
         .stdin = .ignore,
+        .use_mac_sandbox = options.use_mac_sandbox,
+        .mac_sandbox_profile = options.mac_sandbox_profile,
     });
     const clipped_len = @min(result.output.len, options.max_bytes);
     const output = try allocator.dupe(u8, result.output[0..clipped_len]);

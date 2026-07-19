@@ -20,6 +20,7 @@ pub const Host = struct {
     ai_embedding_model: ?[]const u8,
     ai_embedding_url: ?[]const u8,
     ai_mcp_enabled: bool,
+    ai_enable_hyde: bool,
     workspace_root: workspace.WorkspaceRoot,
     workspace_path: []const u8,
     agent: *session_mod.Session,
@@ -893,6 +894,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .mcp_enabled = host.ai_mcp_enabled,
             .recent_files = recent_files,
             .embedding = host.embeddingOptions(),
+            .enable_hyde = host.ai_enable_hyde,
             .max_repair_attempts = if (capability_profile == .read_only or std.mem.eql(u8, provider_options.provider_name, "fake")) 0 else 2,
         },
     ) catch |err| switch (err) {
@@ -1348,6 +1350,7 @@ fn buildContext(
         .environ_map = host.environ_map,
         .embedding = host.embeddingOptions(),
         .excluded_entries = host.agent.excluded_entries.items,
+        .cache = &host.agent.context_cache,
     }).route;
     var context_opts = route.context;
     if (preview_only) {

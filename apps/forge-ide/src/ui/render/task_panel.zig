@@ -14,8 +14,8 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
         const tab_x = editor_x + tab.x_offset;
 
         var label_buf: [32:0]u8 = undefined;
-        if (tab.mode == .problems and wb.diagnostics.list.items.len > 0) {
-            const prob = std.fmt.bufPrint(&label_buf, "{s} {d}", .{ tab.label, wb.diagnostics.list.items.len }) catch tab.label;
+        if (tab.mode == .problems and wb.lsp.diagnostics.list.items.len > 0) {
+            const prob = std.fmt.bufPrint(&label_buf, "{s} {d}", .{ tab.label, wb.lsp.diagnostics.list.items.len }) catch tab.label;
             label_buf[prob.len] = 0;
         } else {
             @memcpy(label_buf[0..tab.label.len], tab.label);
@@ -56,17 +56,17 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             const content_h = panel_h - 34.0;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             var line_y = content_top - wb.task_scroll_y;
-            if (wb.rename_preview.active) {
+            if (wb.lsp.rename_preview.active) {
                 const line_h: f32 = 14.0;
                 const start_idx: usize = if (wb.task_scroll_y > 14.0) @as(usize, @intFromFloat((wb.task_scroll_y - 14.0) / line_h)) else 0;
                 const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
-                const end_idx = @min(wb.rename_preview.lines.len, start_idx + visual_count);
+                const end_idx = @min(wb.lsp.rename_preview.lines.len, start_idx + visual_count);
 
                 line_y = content_top - wb.task_scroll_y;
                 renderer.Renderer.drawText("Workspace Edit Preview — Enter=Accept  Esc=Reject", editor_x + 20, line_y, 12.0, .{ .r = 0.95, .g = 0.85, .b = 0.45, .a = 1.0 });
                 line_y += line_h;
                 line_y += @as(f32, @floatFromInt(start_idx)) * line_h;
-                for (wb.rename_preview.lines[start_idx..end_idx]) |item| {
+                for (wb.lsp.rename_preview.lines[start_idx..end_idx]) |item| {
                     var buf: [512:0]u8 = undefined;
                     const clipped = if (item.label.len > 511) item.label[0..511] else item.label;
                     @memcpy(buf[0..clipped.len], clipped);
@@ -74,14 +74,14 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                     renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.85, .g = 0.95, .b = 0.75, .a = 1.0 });
                     line_y += line_h;
                 }
-            } else if (wb.references.active) {
+            } else if (wb.lsp.references.active) {
                 const line_h: f32 = 14.0;
                 const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
                 const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
-                const end_idx = @min(wb.references.items.len, start_idx + visual_count);
+                const end_idx = @min(wb.lsp.references.items.len, start_idx + visual_count);
 
                 line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
-                for (wb.references.items[start_idx..end_idx]) |item| {
+                for (wb.lsp.references.items[start_idx..end_idx]) |item| {
                     var buf: [512:0]u8 = undefined;
                     const clipped = if (item.label.len > 511) item.label[0..511] else item.label;
                     @memcpy(buf[0..clipped.len], clipped);
@@ -140,10 +140,10 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             const line_h: f32 = 14.0;
             const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
             const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
-            const end_idx = @min(wb.diagnostics.list.items.len, start_idx + visual_count);
+            const end_idx = @min(wb.lsp.diagnostics.list.items.len, start_idx + visual_count);
 
             var line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
-            for (wb.diagnostics.list.items[start_idx..end_idx]) |item| {
+            for (wb.lsp.diagnostics.list.items[start_idx..end_idx]) |item| {
                 var buf: [512:0]u8 = undefined;
                 const line = std.fmt.bufPrint(&buf, "L{d}:{d}  {s}", .{ item.line + 1, item.character + 1, item.message }) catch item.message;
                 buf[line.len] = 0;
@@ -155,7 +155,7 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                 renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, color);
                 line_y += line_h;
             }
-            if (wb.diagnostics.list.items.len == 0) {
+            if (wb.lsp.diagnostics.list.items.len == 0) {
                 renderer.Renderer.drawText("No problems for active file.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
             }
         },
@@ -206,18 +206,18 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             }
         },
         .debug_console => {
-            wb.debug_console.lock();
-            defer wb.debug_console.unlock();
+            wb.debug.console.lock();
+            defer wb.debug.console.unlock();
             const content_top = panel_y + 34.0;
             const content_h = panel_h - 34.0;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             const line_h: f32 = 14.0;
             const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
             const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
-            const end_idx = @min(wb.debug_console.lines.items.len, start_idx + visual_count);
+            const end_idx = @min(wb.debug.console.lines.items.len, start_idx + visual_count);
 
             var line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
-            for (wb.debug_console.lines.items[start_idx..end_idx]) |line| {
+            for (wb.debug.console.lines.items[start_idx..end_idx]) |line| {
                 var buf: [512:0]u8 = undefined;
                 const clipped = if (line.len > 511) line[0..511] else line;
                 @memcpy(buf[0..clipped.len], clipped);
@@ -225,7 +225,7 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                 renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.75, .g = 0.85, .b = 1.0, .a = 1.0 });
                 line_y += line_h;
             }
-            if (wb.debug_console.lines.items.len == 0) {
+            if (wb.debug.console.lines.items.len == 0) {
                 renderer.Renderer.drawText("Debug console ready.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
             }
         },
@@ -241,10 +241,10 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             const line_h: f32 = 14.0;
             const start_idx: usize = if (wb.task_scroll_y > 16) @as(usize, @intFromFloat((wb.task_scroll_y - 16) / line_h)) else 0;
             const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
-            const end_idx = @min(wb.debug_variables.items.items.len, start_idx + visual_count);
+            const end_idx = @min(wb.debug.variables.items.items.len, start_idx + visual_count);
 
             line_y = content_top - wb.task_scroll_y + 16 + @as(f32, @floatFromInt(start_idx)) * line_h;
-            for (wb.debug_variables.items.items[start_idx..end_idx]) |entry| {
+            for (wb.debug.variables.items.items[start_idx..end_idx]) |entry| {
                 if (line_y + 14 < content_top or line_y >= content_top + content_h) {
                     line_y += 14;
                     continue;
@@ -255,7 +255,7 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                 renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.85, .g = 0.92, .b = 0.75, .a = 1.0 });
                 line_y += 14;
             }
-            if (wb.debug_variables.items.items.len == 0) {
+            if (wb.debug.variables.items.items.len == 0) {
                 renderer.Renderer.drawText("No variables — start debug session and step.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
             } else if (wb.task_scroll_y < 1) {
                 renderer.Renderer.drawText("Click a variable to copy its value.", editor_x + 20, panel_y + panel_h - 18, 11.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
@@ -273,10 +273,10 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             const line_h: f32 = 14.0;
             const start_idx: usize = if (wb.task_scroll_y > 16) @as(usize, @intFromFloat((wb.task_scroll_y - 16) / line_h)) else 0;
             const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
-            const end_idx = @min(wb.debug_callstack.items.items.len, start_idx + visual_count);
+            const end_idx = @min(wb.debug.callstack.items.items.len, start_idx + visual_count);
 
             line_y = content_top - wb.task_scroll_y + 16 + @as(f32, @floatFromInt(start_idx)) * line_h;
-            for (wb.debug_callstack.items.items[start_idx..end_idx]) |frame| {
+            for (wb.debug.callstack.items.items[start_idx..end_idx]) |frame| {
                 if (line_y + 14 < content_top or line_y >= content_top + content_h) {
                     line_y += 14;
                     continue;
@@ -287,7 +287,7 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                 renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, .{ .r = 0.75, .g = 0.85, .b = 1.0, .a = 1.0 });
                 line_y += 14;
             }
-            if (wb.debug_callstack.items.items.len == 0) {
+            if (wb.debug.callstack.items.items.len == 0) {
                 renderer.Renderer.drawText("No stack frames — start debug session and step.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
             } else if (wb.task_scroll_y < 1) {
                 renderer.Renderer.drawText("Click a frame to jump to source.", editor_x + 20, panel_y + panel_h - 18, 11.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });

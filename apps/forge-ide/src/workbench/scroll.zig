@@ -5,10 +5,10 @@ const terminal_group_mod = @import("terminal_group.zig");
 
 pub fn clampProposalReviewScroll(wb: anytype, editor_h: f32) void {
     if (!wb.proposal_review_open) return;
-    wb.agent.lock();
-    const hunks = wb.agent.review.hunks;
+    wb.agent_ui.session.lock();
+    const hunks = wb.agent_ui.session.review.hunks;
     const file_index = wb.proposal_review_file_index;
-    wb.agent.unlock();
+    wb.agent_ui.session.unlock();
     const panel = @import("../ui/editor/proposal_review_panel.zig");
     var files = panel.collectFiles(wb.allocator, hunks) catch return;
     defer files.deinit(wb.allocator);
@@ -23,7 +23,7 @@ pub fn clampProposalReviewScroll(wb: anytype, editor_h: f32) void {
 
 pub fn clampPromptScroll(wb: anytype, agent_w: f32) void {
     const ac = @import("../ui/agent/agent_composer.zig");
-    const visual_lines = ac.visualLineCount(&wb.prompt_buffer, agent_w);
+    const visual_lines = ac.visualLineCount(&wb.agent_ui.prompt_buffer, agent_w);
     const input_h = wb.composerInputHeight(agent_w);
     wb.prompt_scroll_y = ac.clampPromptScroll(wb.prompt_scroll_y, visual_lines, input_h);
 }
@@ -122,14 +122,13 @@ pub fn clampSearchScroll(wb: anytype, window_h: f32) void {
 
 pub fn clampGitScroll(wb: anytype, window_h: f32) void {
     const scroll = @import("../ui/sidebar/git_panel.zig");
-    const count = if (wb.git.status) |status| status.entries.len else 0;
-    wb.git_scroll_y = scroll.clampScrollY(wb.git_scroll_y, count, window_h);
+    wb.git.scroll_y = scroll.clampScrollY(wb.git.scroll_y, wb, window_h);
 }
 
 pub fn clampRunScroll(wb: anytype, window_h: f32) void {
     const scroll = @import("../ui/sidebar/debug_panel.zig");
-    const debug_active = wb.debug_lldb.isActive();
-    wb.run_scroll_y = scroll.clampScrollY(wb.run_scroll_y, wb.breakpoints.items.items.len, window_h, debug_active);
+    const debug_active = wb.debug.lldb.isActive();
+    wb.run_scroll_y = scroll.clampScrollY(wb.run_scroll_y, wb.debug.breakpoints.items.items.len, window_h, debug_active);
 }
 
 pub fn clampBottomPanelScroll(wb: anytype, panel_h: f32) void {
@@ -160,12 +159,12 @@ pub fn clampReviewScroll(wb: anytype, agent_h: f32) void {
     const panel_scroll = @import("../ui/core/panel_scroll.zig");
     const layout_mod = @import("../ui/core/layout.zig");
     const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
-    wb.agent.lock();
-    const content_h = agent_panel_mod.reviewContentHeight(&wb.agent);
-    wb.agent.unlock();
+    wb.agent_ui.session.lock();
+    const content_h = agent_panel_mod.reviewContentHeight(&wb.agent_ui.session);
+    wb.agent_ui.session.unlock();
     const viewport = @max(0, agent_h - layout_mod.status_height - 200);
-    wb.agent.review_scroll_y = panel_scroll.clampScrollY(
-        wb.agent.review_scroll_y,
+    wb.agent_ui.session.review_scroll_y = panel_scroll.clampScrollY(
+        wb.agent_ui.session.review_scroll_y,
         @intFromFloat(content_h),
         viewport,
         1.0,

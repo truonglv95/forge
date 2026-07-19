@@ -1,9 +1,16 @@
 const std = @import("std");
 const time = std.time;
 const c = @cImport({
+    @cInclude("sys/time.h");
     @cInclude("unistd.h");
     @cInclude("fcntl.h");
 });
+
+fn microTimestamp() i64 {
+    var tv: c.timeval = undefined;
+    _ = c.gettimeofday(&tv, null);
+    return @as(i64, tv.tv_sec) * 1000000 + @as(i64, tv.tv_usec);
+}
 
 pub const Span = struct {
     category: []const u8,
@@ -12,14 +19,14 @@ pub const Span = struct {
     end_ts: i64 = 0,
 
     pub fn end(self: *Span) void {
-        self.end_ts = time.microTimestamp();
+        self.end_ts = microTimestamp();
         recordSpan(self.*);
     }
 };
 
 var trace_fd: c_int = -1;
 var is_first_span: bool = true;
-var mutex = std.Thread.Mutex{};
+var mutex = @import("forge-util").sync.Mutex{};
 
 pub fn init(out_path: [:0]const u8) !void {
     const fd = c.open(out_path.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_int, 0o666));
@@ -40,7 +47,7 @@ pub fn startSpan(category: []const u8, name: []const u8) Span {
     return .{
         .category = category,
         .name = name,
-        .start_ts = time.microTimestamp(),
+        .start_ts = microTimestamp(),
     };
 }
 

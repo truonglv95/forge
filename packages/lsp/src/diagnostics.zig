@@ -1,4 +1,6 @@
 const std = @import("std");
+const core = @import("forge-core");
+const telemetry = core.telemetry;
 
 pub const Severity = enum(u8) {
     err = 1,
@@ -33,6 +35,8 @@ pub const List = struct {
 };
 
 pub fn parseDiagnosticResponse(allocator: std.mem.Allocator, response_json: []const u8) !List {
+    var span = telemetry.startSpan("lsp", "parse_diagnostics");
+    defer span.end();
     var list: std.ArrayList(Diagnostic) = .empty;
     errdefer {
         for (list.items) |*item| item.deinit(allocator);

@@ -142,6 +142,11 @@ pub const Command = union(enum) {
     ai_open_mcp_config: void,
     ai_toggle_mcp: void,
     ai_refresh_mcp: void,
+    ai_edit_provider: void,
+    ai_edit_model: void,
+    ai_edit_embedding_provider: void,
+    ai_edit_embedding_model: void,
+    ai_toggle_hyde: void,
     palette_open: void,
     palette_close: void,
     palette_git_switch_branch: void,
@@ -182,6 +187,10 @@ pub const Command = union(enum) {
     debug_watch_remove: usize,
     debug_watch_clear: void,
     debug_watch_refresh: void,
+    // Conflict resolution
+    conflict_accept_current: usize,
+    conflict_accept_incoming: usize,
+    conflict_accept_both: usize,
 };
 
 pub const Event = union(enum) {

@@ -4,14 +4,14 @@ const Workbench = @import("../../workbench.zig").Workbench;
 
 pub fn handleFindKeys(wb: *Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
-        wb.closeEditorOverlay();
+        @import("../../workbench/editor_ops.zig").closeEditorOverlay(wb);
         return;
     }
     if (event.keycode == 36) {
         if (wb.find_bar.replace_mode) {
             if (wb.activeBuffer()) |buf| {
                 wb.find_bar.replaceCurrent(buf) catch {};
-                wb.scrollEditorToCursor();
+                @import("../../workbench/editor_ops.zig").scrollEditorToCursor(wb);
             }
         } else {
             wb.dispatch(.editor_find_next) catch {};
@@ -51,11 +51,11 @@ pub fn handleFindKeys(wb: *Workbench, event: renderer.KeyEvent) void {
 
 pub fn handleGotoKeys(wb: *Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
-        wb.closeEditorOverlay();
+        @import("../../workbench/editor_ops.zig").closeEditorOverlay(wb);
         return;
     }
     if (event.keycode == 36) {
-        wb.commitGotoLine() catch {};
+        @import("../../workbench/editor_ops.zig").commitGotoLine(wb) catch {};
         return;
     }
     const input_buf = &wb.goto_bar.input;
@@ -70,11 +70,11 @@ pub fn handleGotoKeys(wb: *Workbench, event: renderer.KeyEvent) void {
 
 pub fn handleSymbolRenameKeys(wb: *Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
-        wb.closeEditorOverlay();
+        @import("../../workbench/editor_ops.zig").closeEditorOverlay(wb);
         return;
     }
     if (event.keycode == 36) {
-        wb.commitRenameSymbol() catch {};
+        @import("../../workbench/editor_ops.zig").commitRenameSymbol(wb) catch {};
         return;
     }
     const input_buf = &wb.rename_bar.input;

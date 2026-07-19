@@ -136,7 +136,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             if (!handled_cursor) renderer.Renderer.setCursor(0);
         }
 
-        if (geo.shell_mode == .ide and wb.sidebar_view == .explorer and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= explorer_scroll.list_top and event.y < h - layout.status_height) {
+        if (wb.sidebar_visible) {
             state.explorer_hover_row = explorer_scroll.rowAtPoint(wb.explorer_scroll_y, event.y);
         } else {
             state.explorer_hover_row = null;
@@ -154,7 +154,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 }
             }
         } else {
-            wb.hover.clear();
+            wb.lsp.hover.clear();
         }
     } else if (event.action == .down) {
         // P1.5-2: Status bar click — dispatch item action.
@@ -181,7 +181,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.focused_panel = .settings_modal;
             const settings_modal = @import("../settings_modal.zig");
             const hit = settings_modal.hitTestPoint(wb, w, h, event.x, event.y);
-            wb.handleSettingsModalClick(hit) catch {};
+            @import("../../workbench/agent_ops.zig").handleSettingsModalClick(wb, hit) catch {};
             return;
         }
         if (event.y < layout.header_height) {
@@ -216,7 +216,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.extensions_detail_index,
                 shared.canUninstallExtensionIndex,
             )) |hit| {
-                wb.handleExtensionsClick(hit) catch {};
+                @import("../../workbench/extensions_ops.zig").handleExtensionsClick(wb, hit) catch {};
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .search and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= search_panel.list_top - 40) {
             wb.focused_panel = .search;
@@ -228,7 +228,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 event.y,
                 wb.search.scroll_y,
             )) |hit| {
-                wb.handleSearchClick(hit) catch {};
+                @import("../../workbench/search_ops.zig").handleSearchClick(wb, hit) catch {};
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .git and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height) {
             wb.focused_panel = .git;
@@ -242,7 +242,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 event.y,
                 wb.git.scroll_y,
             )) |hit| {
-                wb.handleGitClick(hit.action) catch {};
+                @import("../../workbench/git_ops.zig").handleGitClick(wb, hit.action) catch {};
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .run and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= debug_panel.list_top - 40) {
             wb.focused_panel = .run;
@@ -252,10 +252,10 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 event.x,
                 event.y,
                 wb.run_scroll_y,
-                wb.breakpoints.items.items.len,
-                wb.debug_lldb.isActive(),
+                wb.debug.breakpoints.items.items.len,
+                wb.debug.lldb.isActive(),
             )) |hit| {
-                wb.handleDebugClick(hit) catch {};
+                @import("../../workbench/debug_ops.zig").handleDebugClick(wb, hit) catch {};
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .explorer and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height and event.y < explorer_scroll.list_top) {
             wb.focused_panel = .explorer;
@@ -273,15 +273,15 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.focused_panel = .agent;
             const agent_panel = @import("../agent/agent_panel.zig");
             const agent_composer_mod = @import("../agent/agent_composer.zig");
-            wb.agent.lock();
-            const attachment_count = wb.agent.attachments.items.len;
-            wb.agent.unlock();
-            const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer);
-            if (agent_composer_mod.hitAttachmentRemove(&wb.agent, composer_layout, event.x, event.y)) |index| {
+            wb.agent_ui.session.lock();
+            const attachment_count = wb.agent_ui.session.attachments.items.len;
+            wb.agent_ui.session.unlock();
+            const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.agent_ui.prompt_buffer);
+            if (agent_composer_mod.hitAttachmentRemove(&wb.agent_ui.session, composer_layout, event.x, event.y)) |index| {
                 wb.dispatch(.{ .agent_remove_attachment = index }) catch {};
                 return;
             }
-            const hit = agent_composer_mod.hitTest(&wb.agent, composer_layout, wb.ai_models, event.x, event.y);
+            const hit = agent_composer_mod.hitTest(&wb.agent_ui.session, composer_layout, wb.agent_ui.models, event.x, event.y);
             switch (hit) {
                 .mode_menu => {
                     wb.dispatch(.agent_toggle_mode_menu) catch {};
@@ -292,13 +292,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     return;
                 },
                 .mode_item => {
-                    if (agent_composer_mod.modeIndexAt(&wb.agent, composer_layout, event.x, event.y)) |index| {
+                    if (agent_composer_mod.modeIndexAt(&wb.agent_ui.session, composer_layout, event.x, event.y)) |index| {
                         wb.dispatch(.{ .agent_set_mode = agent_composer_mod.modes[index].mode }) catch {};
                     }
                     return;
                 },
                 .model_item => {
-                    if (agent_composer_mod.modelIndexAt(&wb.agent, composer_layout, wb.ai_models, event.x, event.y)) |index| {
+                    if (agent_composer_mod.modelIndexAt(&wb.agent_ui.session, composer_layout, wb.agent_ui.models, event.x, event.y)) |index| {
                         wb.dispatch(.{ .agent_set_model = index }) catch {};
                     }
                     return;
@@ -313,79 +313,79 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 },
                 .input => {},
                 else => {
-                    wb.agent.closeMenus();
+                    wb.agent_ui.session.closeMenus();
                 },
             }
-            if (agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, event.x, event.y)) {
+            if (agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.agent_ui.prompt_buffer, event.x, event.y)) {
                 state.chat_selection = null;
                 return;
             }
 
-            wb.agent.lock();
-            const ci_entry_count = wb.agent.context_entries.items.len;
-            const ci_expanded = wb.agent.context_inspector_expanded;
-            const ci_has_detail = wb.agent.context_selected_index != null and ci_expanded;
-            const ci_scroll_y = wb.agent.context_inspector_scroll_y;
-            wb.agent.unlock();
+            wb.agent_ui.session.lock();
+            const ci_entry_count = wb.agent_ui.session.context_entries.items.len;
+            const ci_expanded = wb.agent_ui.session.context_inspector_expanded;
+            const ci_has_detail = wb.agent_ui.session.context_selected_index != null and ci_expanded;
+            const ci_scroll_y = wb.agent_ui.session.context_inspector_scroll_y;
+            wb.agent_ui.session.unlock();
 
             const context_inspector_mod = @import("../agent/context_inspector.zig");
-            if (context_inspector_mod.hitToggle(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.prompt_buffer, ci_has_detail, event.x, event.y)) {
-                wb.agent.toggleContextInspector();
+            if (context_inspector_mod.hitToggle(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.agent_ui.prompt_buffer, ci_has_detail, event.x, event.y)) {
+                wb.agent_ui.session.toggleContextInspector();
                 return;
             }
 
             if (ci_expanded) {
-                if (context_inspector_mod.hitEntryAction(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.prompt_buffer, ci_scroll_y, event.x, event.y)) |index| {
-                    wb.agent.lock();
-                    if (index < wb.agent.context_entries.items.len) {
-                        const entry = wb.agent.context_entries.items[index];
+                if (context_inspector_mod.hitEntryAction(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.agent_ui.prompt_buffer, ci_scroll_y, event.x, event.y)) |index| {
+                    wb.agent_ui.session.lock();
+                    if (index < wb.agent_ui.session.context_entries.items.len) {
+                        const entry = wb.agent_ui.session.context_entries.items[index];
                         const is_file = std.mem.eql(u8, entry.kind, "file");
                         if (is_file) {
                             var pinned = false;
-                            for (wb.agent.scope_files.items) |existing| {
+                            for (wb.agent_ui.session.scope_files.items) |existing| {
                                 if (std.mem.eql(u8, existing, entry.name)) {
                                     pinned = true;
                                     break;
                                 }
                             }
                             if (pinned) {
-                                wb.agent.unlock();
-                                wb.agent.removeScopeFile(entry.name);
+                                wb.agent_ui.session.unlock();
+                                wb.agent_ui.session.removeScopeFile(entry.name);
                             } else {
-                                wb.agent.unlock();
-                                wb.agent.addScopeFile(entry.name) catch {};
+                                wb.agent_ui.session.unlock();
+                                wb.agent_ui.session.addScopeFile(entry.name) catch {};
                             }
                         } else {
                             const name_dup = wb.allocator.dupe(u8, entry.name) catch "";
-                            wb.agent.unlock();
+                            wb.agent_ui.session.unlock();
                             if (name_dup.len > 0) {
-                                wb.agent.addExcludedEntry(name_dup) catch {};
+                                wb.agent_ui.session.addExcludedEntry(name_dup) catch {};
                                 wb.allocator.free(name_dup);
                             }
                         }
                     } else {
-                        wb.agent.unlock();
+                        wb.agent_ui.session.unlock();
                     }
                     return;
                 }
 
-                if (context_inspector_mod.hitEntryRow(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.prompt_buffer, ci_scroll_y, event.x, event.y)) |index| {
-                    wb.agent.lock();
-                    wb.agent.context_selected_index = index;
-                    wb.agent.unlock();
+                if (context_inspector_mod.hitEntryRow(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.agent_ui.prompt_buffer, ci_scroll_y, event.x, event.y)) |index| {
+                    wb.agent_ui.session.lock();
+                    wb.agent_ui.session.context_selected_index = index;
+                    wb.agent_ui.session.unlock();
                     return;
                 }
             }
 
-            wb.agent.lock();
-            const show_rollback = wb.agent.last_checkpoint_id != null;
-            const show_approve_spec = wb.agent.spec_pending;
-            const show_review = wb.agent.show_review;
-            const approval_pending = wb.agent.approval_decision == .pending;
-            wb.agent.unlock();
+            wb.agent_ui.session.lock();
+            const show_rollback = wb.agent_ui.session.last_checkpoint_id != null;
+            const show_approve_spec = wb.agent_ui.session.spec_pending;
+            const show_review = wb.agent_ui.session.show_review;
+            const approval_pending = wb.agent_ui.session.approval_decision == .pending;
+            wb.agent_ui.session.unlock();
 
             if (approval_pending) {
-                if (agent_panel.hitApprovalAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, event.x, event.y)) |action| {
+                if (agent_panel.hitApprovalAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.agent_ui.prompt_buffer, event.x, event.y)) |action| {
                     switch (action) {
                         .approve => wb.dispatch(.agent_approve_tool) catch {},
                         .reject => wb.dispatch(.agent_reject_tool) catch {},
@@ -395,18 +395,18 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 }
             }
 
-            wb.agent.lock();
-            const post_apply = wb.agent.post_apply_visible;
-            const validation_failed = wb.agent.phase == .failed and post_apply;
-            const validation_count = wb.agent.validation_results.items.len;
-            const resume_offer = wb.agent.resume_offer_visible;
+            wb.agent_ui.session.lock();
+            const post_apply = wb.agent_ui.session.post_apply_visible;
+            const validation_failed = wb.agent_ui.session.phase == .failed and post_apply;
+            const validation_count = wb.agent_ui.session.validation_results.items.len;
+            const resume_offer = wb.agent_ui.session.resume_offer_visible;
             var intent: []const u8 = "previous run";
             var resume_state: []const u8 = "interrupted";
             if (resume_offer) {
-                if (wb.agent.resume_intent) |i| intent = i;
-                if (wb.agent.resume_state) |s| resume_state = s;
+                if (wb.agent_ui.session.resume_intent) |i| intent = i;
+                if (wb.agent_ui.session.resume_state) |s| resume_state = s;
             }
-            wb.agent.unlock();
+            wb.agent_ui.session.unlock();
 
             if (post_apply) {
                 const banner_y = agent_panel.chat_content_top + 8 - wb.chat_scroll_y;
@@ -434,7 +434,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
 
             if ((show_review and !wb.proposal_review_open) or show_approve_spec or show_rollback) {
-                if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, show_rollback, show_approve_spec, event.x, event.y)) |action| {
+                if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.agent_ui.prompt_buffer, show_rollback, show_approve_spec, event.x, event.y)) |action| {
                     switch (action) {
                         .apply => wb.dispatch(.agent_apply) catch {},
                         .reject => wb.dispatch(.agent_reject) catch {},
@@ -444,8 +444,8 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     return;
                 }
             }
-            wb.agent.lock();
-            wb.agent.unlock();
+            wb.agent_ui.session.lock();
+            wb.agent_ui.session.unlock();
 
             if (chat_layout.hitTestChatSelection(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |sel| {
                 state.is_dragging_chat_selection = true;
@@ -462,12 +462,12 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
 
             if (show_review and !wb.proposal_review_open) {
-                wb.agent.lock();
-                const has_summary = wb.agent.summary != null;
-                const review_scroll = wb.agent.review_scroll_y;
-                wb.agent.unlock();
+                wb.agent_ui.session.lock();
+                const has_summary = wb.agent_ui.session.summary != null;
+                const review_scroll = wb.agent_ui.session.review_scroll_y;
+                wb.agent_ui.session.unlock();
                 if (agent_panel.hitReviewHunk(
-                    &wb.agent,
+                    &wb.agent_ui.session,
                     wb.chat_scroll_y,
                     review_scroll,
                     has_summary,
@@ -476,9 +476,9 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     geo.agent_x,
                     20,
                 )) |hunk_index| {
-                    wb.agent.lock();
-                    wb.agent.review.toggle(hunk_index);
-                    wb.agent.unlock();
+                    wb.agent_ui.session.lock();
+                    wb.agent_ui.session.review.toggle(hunk_index);
+                    wb.agent_ui.session.unlock();
                     return;
                 }
             }
@@ -502,11 +502,17 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 }
             }
         } else if (geo.shell_mode == .ide and editor_hit.isEditorContentArea(geo, event.x, event.y)) {
+            for (wb.conflict_action_rects.items) |rect| {
+                if (event.x >= rect.x and event.x < rect.x + rect.w and event.y >= rect.y and event.y < rect.y + rect.h) {
+                    wb.dispatch(rect.cmd) catch {};
+                    return;
+                }
+            }
             if (wb.proposal_review_open) {
                 wb.focused_panel = .proposal_review;
-                wb.agent.lock();
-                const hunks = wb.agent.review.hunks;
-                wb.agent.unlock();
+                wb.agent_ui.session.lock();
+                const hunks = wb.agent_ui.session.review.hunks;
+                wb.agent_ui.session.unlock();
                 if (proposal_review_panel.hitTest(
                     wb.allocator,
                     geo.editor_x,
@@ -517,7 +523,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     event.x,
                     event.y,
                 ) catch null) |hit| {
-                    wb.handleProposalReviewClick(hit) catch {};
+                    @import("../../workbench/agent_ops.zig").handleProposalReviewClick(wb, hit) catch {};
                 }
                 return;
             }
@@ -535,20 +541,20 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         doc.buffer.cursor.row = pos.row;
                         doc.buffer.cursor.col = pos.col;
                         doc.buffer.clearSelection();
-                        wb.scrollEditorToCursor();
+                        @import("../../workbench/editor_ops.zig").scrollEditorToCursor(wb);
                         wb.goToDefinition() catch {};
                         return;
                     }
                     if (event.click_count >= 2) {
                         if (selectWordAt(&doc.buffer, pos.row, pos.col)) {
                             state.is_dragging_editor_selection = false;
-                            wb.scrollEditorToCursor();
+                            @import("../../workbench/editor_ops.zig").scrollEditorToCursor(wb);
                             return;
                         }
                     }
                     doc.buffer.beginSelection(pos.row, pos.col);
                     state.is_dragging_editor_selection = true;
-                    wb.scrollEditorToCursor();
+                    @import("../../workbench/editor_ops.zig").scrollEditorToCursor(wb);
                 }
             }
         } else if (geo.shell_mode == .ide and event.y >= geo.task_panel_y) {
@@ -601,7 +607,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     wb.terminal_selection = null;
                 }
             } else if (bottom_panel.inContentArea(geo.task_panel_y, event.y)) {
-                if (wb.bottom_panel_mode == .output and wb.references.active) {
+                if (wb.bottom_panel_mode == .output and wb.lsp.references.active) {
                     const references_panel = @import("../../workbench/references_store.zig");
                     if (references_panel.Store.hitTest(
                         geo.editor_x,
@@ -610,7 +616,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         event.x,
                         event.y,
                         wb.task_scroll_y,
-                        wb.references.items.len,
+                        wb.lsp.references.items.len,
                     )) |index| {
                         wb.dispatch(.{ .references_goto = index }) catch {};
                     }
@@ -623,7 +629,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         event.x,
                         event.y,
                         wb.task_scroll_y,
-                        wb.diagnostics.list.items.len,
+                        wb.lsp.diagnostics.list.items.len,
                     )) |index| {
                         wb.handleProblemsClick(index) catch {};
                     }
@@ -636,7 +642,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         event.x,
                         event.y,
                         wb.task_scroll_y,
-                        wb.debug_variables.items.items.len,
+                        wb.debug.variables.items.items.len,
                     )) |index| {
                         wb.dispatch(.{ .debug_copy_variable = index }) catch {};
                     }
@@ -649,7 +655,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         event.x,
                         event.y,
                         wb.task_scroll_y,
-                        wb.debug_callstack.items.items.len,
+                        wb.debug.callstack.items.items.len,
                     )) |index| {
                         wb.dispatch(.{ .debug_stack_goto = index }) catch {};
                     }
@@ -683,8 +689,8 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.agent_panel_width = w - event.x;
             wb.agent_panel_width = @max(200.0, @min(800.0, wb.agent_panel_width));
         } else if (state.is_dragging_explorer_splitter) {
-            wb.explorer_panel_width = event.x;
-            wb.explorer_panel_width = @max(100.0, @min(500.0, wb.explorer_panel_width));
+            wb.sidebar_width = event.x;
+            wb.sidebar_width = @max(100.0, @min(500.0, wb.sidebar_width));
         } else if (state.is_dragging_bottom_panel_splitter) {
             const new_editor_h = event.y - layout.header_height;
             wb.bottom_panel_height = std.math.clamp(
@@ -704,7 +710,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 if (editor_hit.editorPosAt(wb, &doc.buffer, pane_x, pane_w, scroll_y, scroll_x, event.x, event.y)) |pos| {
                     doc.buffer.cursor.row = pos.row;
                     doc.buffer.cursor.col = pos.col;
-                    wb.scrollEditorToCursor();
+                    @import("../../workbench/editor_ops.zig").scrollEditorToCursor(wb);
                 }
             }
         } else if (state.is_dragging_chat_selection) {
@@ -771,46 +777,46 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     wb.clampExplorerScroll(h);
                 },
                 .outline => {
-                    wb.outline_scroll_y += scroll_delta_y;
-                    if (wb.outline_scroll_y < 0) wb.outline_scroll_y = 0;
+                    wb.lsp.outline_scroll_y += scroll_delta_y;
+                    if (wb.lsp.outline_scroll_y < 0) wb.lsp.outline_scroll_y = 0;
                 },
             }
         } else if (mx >= geo.agent_x) {
-            if (wb.agent.show_review and !wb.proposal_review_open) {
-                wb.agent.review_scroll_y += scroll_delta_y;
+            if (wb.agent_ui.session.show_review and !wb.proposal_review_open) {
+                wb.agent_ui.session.review_scroll_y += scroll_delta_y;
                 wb.clampReviewScroll(h);
             } else {
-                wb.agent.lock();
-                const attachment_count = wb.agent.attachments.items.len;
-                const ci_entry_count = wb.agent.context_entries.items.len;
-                const ci_expanded = wb.agent.context_inspector_expanded;
-                const ci_has_detail = wb.agent.context_selected_index != null and ci_expanded;
-                const ci_has_routing = wb.agent.routing_task_intent.len > 0;
-                wb.agent.unlock();
+                wb.agent_ui.session.lock();
+                const attachment_count = wb.agent_ui.session.attachments.items.len;
+                const ci_entry_count = wb.agent_ui.session.context_entries.items.len;
+                const ci_expanded = wb.agent_ui.session.context_inspector_expanded;
+                const ci_has_detail = wb.agent_ui.session.context_selected_index != null and ci_expanded;
+                const ci_has_routing = wb.agent_ui.session.routing_task_intent.len > 0;
+                wb.agent_ui.session.unlock();
 
                 const agent_panel = @import("../agent/agent_panel.zig");
                 const context_inspector_mod = @import("../agent/context_inspector.zig");
 
-                const ci_top = context_inspector_mod.stripTop(h, ci_expanded, ci_entry_count, attachment_count, geo.agent_w, &wb.prompt_buffer, ci_has_detail, ci_has_routing);
+                const ci_top = context_inspector_mod.stripTop(h, ci_expanded, ci_entry_count, attachment_count, geo.agent_w, &wb.agent_ui.prompt_buffer, ci_has_detail, ci_has_routing);
                 const ci_height = context_inspector_mod.stripHeight(ci_expanded, ci_entry_count, ci_has_detail, ci_has_routing);
                 const ci_bottom = ci_top + ci_height;
 
-                const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer);
-                if (composer_layout.scroll_max > 0 and agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.prompt_buffer, mx, my)) {
+                const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.agent_ui.prompt_buffer);
+                if (composer_layout.scroll_max > 0 and agent_panel.hitPromptInput(geo.agent_x, geo.agent_w, h, attachment_count, &wb.agent_ui.prompt_buffer, mx, my)) {
                     wb.prompt_scroll_y += scroll_delta_y;
                     wb.clampPromptScroll(geo.agent_w);
                 } else if (ci_expanded and my >= ci_top and my < ci_bottom) {
-                    wb.agent.lock();
-                    wb.agent.context_inspector_scroll_y += scroll_delta_y;
+                    wb.agent_ui.session.lock();
+                    wb.agent_ui.session.context_inspector_scroll_y += scroll_delta_y;
                     // Clamp context scroll
                     const visible_rows = context_inspector_mod.max_visible_rows;
-                    if (wb.agent.context_entries.items.len > visible_rows) {
-                        const max_scroll = @as(f32, @floatFromInt(wb.agent.context_entries.items.len - visible_rows)) * context_inspector_mod.row_h;
-                        wb.agent.context_inspector_scroll_y = @max(0, @min(max_scroll, wb.agent.context_inspector_scroll_y));
+                    if (wb.agent_ui.session.context_entries.items.len > visible_rows) {
+                        const max_scroll = @as(f32, @floatFromInt(wb.agent_ui.session.context_entries.items.len - visible_rows)) * context_inspector_mod.row_h;
+                        wb.agent_ui.session.context_inspector_scroll_y = @max(0, @min(max_scroll, wb.agent_ui.session.context_inspector_scroll_y));
                     } else {
-                        wb.agent.context_inspector_scroll_y = 0;
+                        wb.agent_ui.session.context_inspector_scroll_y = 0;
                     }
-                    wb.agent.unlock();
+                    wb.agent_ui.session.unlock();
                 } else {
                     var scrolled_code_block = false;
                     if (scroll_delta_x != 0) {

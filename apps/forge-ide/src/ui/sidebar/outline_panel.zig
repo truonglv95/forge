@@ -47,7 +47,7 @@ pub fn hitTest(panel_x: f32, panel_w: f32, y: f32, scroll_y: f32, item_count: us
     return idx;
 }
 
-/// Draw the outline panel. Reads from `wb.outline_symbols`.
+/// Draw the outline panel. Reads from `wb.lsp.outline_symbols`.
 pub fn drawOutline(wb: *Workbench, panel_x: f32, panel_w: f32, panel_h: f32) void {
     const theme = &wb.theme;
     const font_size = theme.ui_font_size;
@@ -59,7 +59,7 @@ pub fn drawOutline(wb: *Workbench, panel_x: f32, panel_w: f32, panel_h: f32) voi
     renderer.Renderer.drawText("OUTLINE", panel_x + 16, layout.header_height + 8, 11.0, theme_mod.color(theme.colors.text_muted));
 
     // Empty state.
-    if (wb.outline_symbols.len == 0) {
+    if (wb.lsp.outline_symbols.len == 0) {
         const active_path = wb.activeFilePath() orelse {
             renderer.Renderer.drawText("No file open", panel_x + 16, list_top + 8, font_size, theme_mod.color(theme.colors.text_muted));
             return;
@@ -73,10 +73,10 @@ pub fn drawOutline(wb: *Workbench, panel_x: f32, panel_w: f32, panel_h: f32) voi
     // Set clip rect so symbols don't overflow into editor.
     renderer.Renderer.setClipRect(panel_x, list_top, panel_w, panel_h - list_top - layout.status_height);
 
-    const scroll_y = wb.outline_scroll_y;
+    const scroll_y = wb.lsp.outline_scroll_y;
     const max_visible = @as(usize, @intFromFloat(@floor((panel_h - list_top - layout.status_height) / row_h)));
 
-    for (wb.outline_symbols, 0..) |sym, i| {
+    for (wb.lsp.outline_symbols, 0..) |sym, i| {
         const y = list_top + @as(f32, @floatFromInt(i)) * row_h - scroll_y;
         if (y + row_h < list_top) continue;
         if (y > panel_h) break;
@@ -86,7 +86,7 @@ pub fn drawOutline(wb: *Workbench, panel_x: f32, panel_w: f32, panel_h: f32) voi
         const x = panel_x + 16 + indent;
 
         // Hover highlight.
-        const is_hover = (i == wb.outline_hover_index);
+        const is_hover = (i == wb.lsp.outline_hover_index);
         if (is_hover) {
             renderer.Renderer.drawRect(panel_x, y, panel_w, row_h, .{ .r = 0.18, .g = 0.20, .b = 0.24, .a = 1.0 });
         }
@@ -131,7 +131,7 @@ pub fn drawOutline(wb: *Workbench, panel_x: f32, panel_w: f32, panel_h: f32) voi
     renderer.Renderer.clearClipRect();
 
     // Scrollbar.
-    const total_h = @as(f32, @floatFromInt(wb.outline_symbols.len)) * row_h;
+    const total_h = @as(f32, @floatFromInt(wb.lsp.outline_symbols.len)) * row_h;
     const view_h = panel_h - list_top - layout.status_height;
     if (total_h > view_h) {
         const scrollbar = @import("../core/scrollbar.zig");

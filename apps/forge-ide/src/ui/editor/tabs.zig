@@ -43,7 +43,7 @@ pub fn centeredY(size: f32) f32 {
 
 pub fn collectLayouts(wb: *const Workbench, editor_x: f32, editor_w: f32, out: *std.ArrayList(TabLayout)) !void {
     const visible_tab_w = @max(10.0, editor_w - 60.0);
-    const num_tabs = wb.tabs.tabs.items.len;
+    const num_tabs = wb.editor.tabs.tabs.items.len;
     if (num_tabs == 0) return;
 
     var total_raw: f32 = tab_padding_start;
@@ -133,9 +133,9 @@ test "max scroll grows with many tabs" {
     var wb: Workbench = undefined;
     try Workbench.init(&wb, allocator, std.testing.io, ".", "forge-ide", null);
     defer wb.deinit();
-    try wb.tabs.openOrActivate("a.zig");
-    try wb.tabs.openOrActivate("b.zig");
-    try wb.tabs.openOrActivate("very-long-filename-example.zig");
+    try wb.editor.tabs.openOrActivate("a.zig");
+    try wb.editor.tabs.openOrActivate("b.zig");
+    try wb.editor.tabs.openOrActivate("very-long-filename-example.zig");
     const max = maxScroll(&wb, 200);
     try std.testing.expect(max > 0);
 }

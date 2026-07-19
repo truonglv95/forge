@@ -11,7 +11,7 @@ pub const ctrl_mask: i32 = 0x01;
 pub fn canUninstallExtensionIndex(ext_index: usize) bool {
     const wb = state.wb orelse return false;
     if (ext_index >= wb.extension_host.extensions.items.len) return false;
-    return wb.canUninstallExtension(&wb.extension_host.extensions.items[ext_index]);
+    return @import("../../workbench/extensions_ops.zig").canUninstallExtension(wb, &wb.extension_host.extensions.items[ext_index]);
 }
 
 pub fn dispatchWorkbenchCommand(command: @import("../../workbench/commands.zig").Command) anyerror!void {
@@ -20,7 +20,7 @@ pub fn dispatchWorkbenchCommand(command: @import("../../workbench/commands.zig")
 }
 pub fn pasteIntoActiveBuffer(wb: *Workbench) void {
     if (wb.focused_panel == .agent) {
-        wb.pasteIntoAgent() catch {};
+        @import("../../workbench/agent_ops.zig").pasteIntoAgent(wb) catch {};
         return;
     }
 
@@ -31,7 +31,7 @@ pub fn pasteIntoActiveBuffer(wb: *Workbench) void {
     const buffer = if (wb.focused_panel == .editor)
         wb.activeBuffer() orelse return
     else if (wb.focused_panel == .agent)
-        &wb.prompt_buffer
+        &wb.agent_ui.prompt_buffer
     else if (wb.focused_panel == .find)
         if (wb.find_bar.replace_mode and wb.find_bar.focus_replace)
             &wb.find_bar.replace

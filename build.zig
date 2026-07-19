@@ -350,4 +350,18 @@ pub fn build(b: *std.Build) void {
     run_contract_tests.step.dependOn(b.getInstallStep()); // binary must be built first
     const test_contracts_step = b.step("test-contracts", "Run Forge CLI black-box contract tests");
     test_contracts_step.dependOn(&run_contract_tests.step);
+
+    // --- Eval tasks ---
+    const eval_cmd = b.addSystemCommand(&.{ "bash", "scripts/eval.sh" });
+    eval_cmd.step.dependOn(b.getInstallStep());
+    const eval_step = b.step("eval", "Run all evaluations via bash script");
+    eval_step.dependOn(&eval_cmd.step);
+
+    const eval_rel_cmd = b.addSystemCommand(&.{ "python3", "scripts/eval_reliability.py" });
+    if (b.args) |args| {
+        eval_rel_cmd.addArgs(args);
+    }
+    eval_rel_cmd.step.dependOn(b.getInstallStep());
+    const eval_rel_step = b.step("eval-reliability", "Run reliability eval python script");
+    eval_rel_step.dependOn(&eval_rel_cmd.step);
 }

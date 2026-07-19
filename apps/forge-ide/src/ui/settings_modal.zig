@@ -26,6 +26,11 @@ pub const Hit = union(enum) {
     close_modal,
     switch_tab: Tab,
     toggle_word_wrap,
+    ai_edit_provider,
+    ai_edit_model,
+    ai_edit_embedding_provider,
+    ai_edit_embedding_model,
+    ai_toggle_hyde,
     none,
 };
 
@@ -134,26 +139,26 @@ pub fn draw(wb: *Workbench, window_w: f32, window_h: f32) void {
         renderer.Renderer.drawText("AI routing currently loaded by Forge.", content_x + 32, cy, 13.0, text_muted);
         cy += 32;
 
-        drawValueRow(content_x + 32, cy, content_w - 64, "Chat Provider", wb.ai_provider, theme);
+        drawValueRow(content_x + 32, cy, content_w - 64, "Chat Provider", wb.agent_ui.provider, theme);
         cy += 44;
-        drawValueRow(content_x + 32, cy, content_w - 64, "Chat Model", wb.ai_model orelse "provider default", theme);
+        drawValueRow(content_x + 32, cy, content_w - 64, "Chat Model", wb.agent_ui.model orelse "default", theme);
         cy += 44;
-        drawValueRow(content_x + 32, cy, content_w - 64, "Ghost Completion", if (wb.user_settings.ghost_enabled) "enabled" else "disabled", theme);
+        drawValueRow(content_x + 32, cy, content_w - 64, "Embedding Provider", wb.agent_ui.embedding_provider orelse "default", theme);
         cy += 44;
-        drawValueRow(content_x + 32, cy, content_w - 64, "Ghost Provider", wb.user_settings.ghost_provider, theme);
+        drawValueRow(content_x + 32, cy, content_w - 64, "Embedding Model", wb.agent_ui.embedding_model orelse "default", theme);
         cy += 44;
-        drawValueRow(content_x + 32, cy, content_w - 64, "Ghost Model", wb.user_settings.ghost_model, theme);
+        drawToggleRow(content_x + 32, cy, content_w - 64, "HyDE Search", "Use LLM to generate hypothetical snippet for better search accuracy.", wb.agent_ui.enable_hyde, theme);
     } else if (wb.settings_modal_tab == .permissions) {
         renderer.Renderer.drawText("Permissions", content_x + 32, cy, 20.0, text_primary);
         cy += 30;
         renderer.Renderer.drawText("Agent tool and integration state.", content_x + 32, cy, 13.0, text_muted);
         cy += 32;
 
-        drawValueRow(content_x + 32, cy, content_w - 64, "MCP Tools", if (wb.ai_mcp_enabled) "enabled" else "disabled", theme);
+        drawValueRow(content_x + 32, cy, content_w - 64, "MCP Tools", if (wb.agent_ui.mcp_enabled) "enabled" else "disabled", theme);
         cy += 44;
         drawValueRow(content_x + 32, cy, content_w - 64, "MCP Status", wb.ai_mcp_status orelse "not checked", theme);
         cy += 44;
-        drawValueRow(content_x + 32, cy, content_w - 64, "Agent Mode", @tagName(wb.agent.mode), theme);
+        drawValueRow(content_x + 32, cy, content_w - 64, "Agent Mode", @tagName(wb.agent_ui.session.mode), theme);
     } else if (wb.settings_modal_tab == .project_forge) {
         // Draw Project Header
         renderer.Renderer.drawText(wb.workspace_name, content_x + 32, cy, 20.0, text_primary);
@@ -252,6 +257,23 @@ pub fn hitTestPoint(wb: *Workbench, window_w: f32, window_h: f32, px: f32, py: f
         const row_w = content_w - 64;
         if (px >= row_x and px <= row_x + row_w and py >= row_y and py <= row_y + 40) {
             return .toggle_word_wrap;
+        }
+    } else if (wb.settings_modal_tab == .models) {
+        const content_x: f32 = modal_x + sidebar_w;
+        const content_w: f32 = modal_w - sidebar_w;
+        const row_x = content_x + 32;
+        const row_w = content_w - 64;
+        var cy: f32 = modal_y + 94;
+        if (px >= row_x and px <= row_x + row_w) {
+            if (py >= cy and py <= cy + 40) return .ai_edit_provider;
+            cy += 44;
+            if (py >= cy and py <= cy + 40) return .ai_edit_model;
+            cy += 44;
+            if (py >= cy and py <= cy + 40) return .ai_edit_embedding_provider;
+            cy += 44;
+            if (py >= cy and py <= cy + 40) return .ai_edit_embedding_model;
+            cy += 44;
+            if (py >= cy and py <= cy + 48) return .ai_toggle_hyde;
         }
     }
 

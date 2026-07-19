@@ -157,13 +157,13 @@ pub fn draw(
     renderer.Renderer.drawRect(editor_x, top, editor_w, view_h, editor_bg);
     renderer.Renderer.drawRect(editor_x + file_col_w, top, 1, view_h, border);
 
-    wb.agent.lock();
-    const summary = wb.agent.summary;
-    const hunks = wb.agent.review.hunks;
-    const validation = wb.agent.validation_results.items;
+    wb.agent_ui.session.lock();
+    const summary = wb.agent_ui.session.summary;
+    const hunks = wb.agent_ui.session.review.hunks;
+    const validation = wb.agent_ui.session.validation_results.items;
     const file_index = wb.proposal_review_file_index;
     const scroll_y = wb.proposal_review_scroll_y;
-    wb.agent.unlock();
+    wb.agent_ui.session.unlock();
 
     var files = collectFiles(wb.allocator, hunks) catch return;
     defer files.deinit(wb.allocator);
@@ -263,10 +263,10 @@ pub fn draw(
     renderer.Renderer.drawRect(editor_x, bar_y, editor_w, action_bar_h, .{ .r = 0.12, .g = 0.13, .b = 0.16, .a = 1.0 });
     renderer.Renderer.drawRect(editor_x, bar_y, editor_w, 1, border);
 
-    wb.agent.lock();
-    const accepted_count = wb.agent.review.acceptedCount();
-    const total = wb.agent.review.hunks.len;
-    wb.agent.unlock();
+    wb.agent_ui.session.lock();
+    const accepted_count = wb.agent_ui.session.review.acceptedCount();
+    const total = wb.agent_ui.session.review.hunks.len;
+    wb.agent_ui.session.unlock();
 
     const apply_x = editor_x + content_inset;
     const apply_y = bar_y + 8;

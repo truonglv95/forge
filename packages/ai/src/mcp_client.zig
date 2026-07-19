@@ -18,6 +18,7 @@ pub const Tool = struct {
     name: []const u8,
     description: ?[]const u8 = null,
     input_schema_json: []const u8,
+    annotations_json: ?[]const u8 = null,
 };
 
 pub const Resource = struct {
@@ -40,6 +41,7 @@ pub const ToolList = struct {
             self.allocator.free(item.name);
             if (item.description) |d| self.allocator.free(d);
             self.allocator.free(item.input_schema_json);
+            if (item.annotations_json) |a| self.allocator.free(a);
         }
         self.allocator.free(self.items);
         self.* = undefined;
@@ -227,6 +229,7 @@ pub const Session = struct {
                 name: []const u8,
                 description: ?[]const u8 = null,
                 inputSchema: ?std.json.Value = null,
+                annotations: ?std.json.Value = null,
             } = null,
         };
         var parsed = std.json.parseFromSlice(Root, self.allocator, result, .{ .ignore_unknown_fields = true }) catch return error.ProtocolError;
@@ -239,6 +242,7 @@ pub const Session = struct {
                 self.allocator.free(item.name);
                 if (item.description) |d| self.allocator.free(d);
                 self.allocator.free(item.input_schema_json);
+                if (item.annotations_json) |a| self.allocator.free(a);
             }
             items.deinit(self.allocator);
         }
@@ -247,10 +251,15 @@ pub const Session = struct {
                 try std.json.Stringify.valueAlloc(self.allocator, schema, .{})
             else
                 try self.allocator.dupe(u8, "{\"type\":\"object\",\"properties\":{}}");
+            const annotations_json = if (tool.annotations) |ann|
+                try std.json.Stringify.valueAlloc(self.allocator, ann, .{})
+            else
+                null;
             try items.append(self.allocator, .{
                 .name = try self.allocator.dupe(u8, tool.name),
                 .description = if (tool.description) |d| try self.allocator.dupe(u8, d) else null,
                 .input_schema_json = schema_json,
+                .annotations_json = annotations_json,
             });
         }
         return ToolList{ .allocator = self.allocator, .items = try items.toOwnedSlice(self.allocator) };

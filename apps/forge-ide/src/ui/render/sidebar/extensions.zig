@@ -126,7 +126,7 @@ pub fn drawExtensionsPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) v
                     renderer.Renderer.drawText(@ptrCast(&cmd_buf), panel_x + 20, cmd_y, 10.0, .{ .r = 0.85, .g = 0.85, .b = 0.85, .a = 1.0 });
                     cmd_y += extensions_panel.cmd_row_h;
                 }
-                if (wb.canUninstallExtension(&ext)) {
+                if (@import("../../../workbench/extensions_ops.zig").canUninstallExtension(wb, &ext)) {
                     renderer.Renderer.drawText("Uninstall", panel_x + 16, y + block_h - 20, 10.0, .{ .r = 0.95, .g = 0.45, .b = 0.45, .a = 1.0 });
                 }
             }

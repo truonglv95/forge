@@ -321,7 +321,7 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
     }
 
     // Calculate Layout
-    const tree_y = explorer_scroll.list_top; // We don't use - wb.explorer_scroll_y because start_idx already offsets the slice
+    const tree_y = explorer_scroll.list_top; // We don't use - wb.explorer.scroll_y because start_idx already offsets the slice
     tree_root_node.calculateLayout(explorer_panel_width, h - tree_y, explorer_x, tree_y);
 
     // Render Flexbox Tree

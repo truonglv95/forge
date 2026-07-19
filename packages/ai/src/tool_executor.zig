@@ -39,6 +39,7 @@ pub const Context = struct {
     stream_context: ?*anyopaque = null,
     wasm_run_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, wasm_file: []const u8, args: [][]const u8) AgentToolError![]const u8 = null,
     wasm_run_context: ?*anyopaque = null,
+    enable_hyde: bool = false,
 };
 
 pub const Outcome = struct {
@@ -245,6 +246,7 @@ pub fn codebaseSearch(ctx: Context, query: []const u8) AgentToolError!CodebaseSe
         .top_k = 16,
         .prefer_gemini = ctx.environ_map != null,
         .environ_map = ctx.environ_map,
+        .enable_hyde = ctx.enable_hyde,
     }) catch {
         const summary = std.fmt.allocPrint(ctx.allocator, "codebase_search '{s}' -> index unavailable", .{query}) catch return error.WorkspaceFailed;
         const formatted = std.fmt.allocPrint(

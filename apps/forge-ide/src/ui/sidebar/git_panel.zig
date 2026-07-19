@@ -5,20 +5,41 @@ const git_status = @import("../../git/status.zig");
 pub const list_top: f32 = 131;
 pub const row_h: f32 = 28;
 
-pub fn contentHeight(entry_count: usize) f32 {
-    return @as(f32, @floatFromInt(entry_count)) * row_h + 8;
+pub fn contentHeight(wb: anytype) f32 {
+    var h: f32 = 40 + 34; // input box + commit button
+    if (wb.git.status) |status| {
+        if (!status.is_repo or status.entries.len == 0) {
+            h += 24;
+        } else {
+            const staged_count = status.staged_ptrs.len;
+            const changes_count = status.unstaged_ptrs.len;
+            if (staged_count > 0) {
+                h += 24;
+                if (!wb.git.staged_collapsed) {
+                    h += @as(f32, @floatFromInt(staged_count)) * 22.0;
+                }
+            }
+            if (changes_count > 0) {
+                h += 24;
+                if (!wb.git.changes_collapsed) {
+                    h += @as(f32, @floatFromInt(changes_count)) * 22.0;
+                }
+            }
+        }
+    }
+    return h + 8;
 }
 
 pub fn viewportHeight(window_h: f32) f32 {
     return @max(0, window_h - layout.status_height - list_top);
 }
 
-pub fn maxScrollY(entry_count: usize, window_h: f32) f32 {
-    return @max(0, contentHeight(entry_count) - viewportHeight(window_h));
+pub fn maxScrollY(wb: anytype, window_h: f32) f32 {
+    return @max(0, contentHeight(wb) - viewportHeight(window_h));
 }
 
-pub fn clampScrollY(scroll_y: f32, entry_count: usize, window_h: f32) f32 {
-    return std.math.clamp(scroll_y, 0, maxScrollY(entry_count, window_h));
+pub fn clampScrollY(scroll_y: f32, wb: anytype, window_h: f32) f32 {
+    return std.math.clamp(scroll_y, 0, maxScrollY(wb, window_h));
 }
 
 pub const Hit = union(enum) {

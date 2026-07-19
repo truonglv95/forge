@@ -30,6 +30,11 @@ pub fn main(init: std.process.Init) !void {
     }
     defer telemetry.deinit();
 
+    var opt_startup_span: ?telemetry.Span = null;
+    if (is_perf_harness) {
+        opt_startup_span = telemetry.startSpan("ide", "startup");
+    }
+
     var owned_workspace_path: ?[]u8 = null;
     defer if (owned_workspace_path) |path| allocator.free(path);
     const launch = try resolveWorkspacePath(allocator, io, args, &owned_workspace_path);
@@ -51,13 +56,16 @@ pub fn main(init: std.process.Init) !void {
     state.wb = wb;
     builtin_ext.bindStatus(&.{ .setStatus = state.StatusBridge.setStatus });
 
-    state.prompt_buffer = &wb.prompt_buffer;
-    state.chat_history = &wb.chat_history;
+    state.prompt_buffer = &wb.agent_ui.prompt_buffer;
+    state.chat_history = &wb.agent_ui.chat_history;
 
     const kernel_thread = try std.Thread.spawn(.{}, backgroundKernelTask, .{launch.path});
     _ = kernel_thread;
 
     try shell.initShell(allocator);
+
+    if (opt_startup_span) |*span| span.end();
+
     shell.runRenderer();
 
     std.debug.print("Forge IDE UI closed, shutting down.\n", .{});
@@ -144,4 +152,10 @@ fn isUsableWorkspace(io: std.Io, path: []const u8) bool {
     var root = workspace.WorkspaceRoot.open(io, path) catch return false;
     root.close(io);
     return true;
+}
+
+test {
+    _ = @import("workbench/conflict_resolver_test.zig");
+    _ = @import("workbench/debug_recovery_test.zig");
+    _ = @import("workbench/lsp_controller_test.zig");
 }

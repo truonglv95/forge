@@ -35,12 +35,12 @@ pub const Options = struct {
     recent_boost: f32 = 0.08,
     import_boost: f32 = 0.10,
     git_boost: f32 = 0.12,
-    path_overlap_max: f32 = 0.10,
+    path_overlap_max: f32 = 0.15,
     /// Boost applied when a chunk's symbol name exactly matches an intent term.
-    /// Kept intentionally modest (0.08) so RRF ranking still drives order —
-    /// a typical top-1 RRF score is ~0.016, so 0.08 is a meaningful but not
+    /// Kept intentionally modest (0.15) so RRF ranking still drives order —
+    /// a typical top-1 RRF score is ~0.016, so 0.15 is a meaningful but not
     /// overwhelming boost (was 0.30 which caused symbol hits to always win).
-    symbol_boost: f32 = 0.08,
+    symbol_boost: f32 = 0.15,
     symbol_overlap_max: f32 = 0.06,
 };
 

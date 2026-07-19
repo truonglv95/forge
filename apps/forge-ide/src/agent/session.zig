@@ -4,6 +4,8 @@ const kernel = @import("forge-kernel");
 const workspace = @import("forge-workspace");
 const review_store = @import("review_store.zig");
 const ai = @import("forge-ai");
+const core = @import("forge-core");
+const telemetry = core.telemetry;
 
 pub const Mode = enum { ask, plan, agent };
 
@@ -120,6 +122,8 @@ pub const Session = struct {
     stream_text: std.ArrayList(u8) = .empty,
     thinking_text: std.ArrayList(u8) = .empty,
     stream_live: bool = false,
+    generation_start_ts: ?i64 = null,
+    first_token_ts: ?i64 = null,
     last_transaction_id: ?u64 = null,
     last_checkpoint_id: ?u64 = null,
     spec_run_id: ?[]const u8 = null,
@@ -135,6 +139,8 @@ pub const Session = struct {
     approval_tool: ?[]const u8 = null,
     approval_args: ?[]const u8 = null,
     approval_risk: ?[]const u8 = null,
+
+    context_cache: ai.context_cache.ContextCache,
     approval_kind: ?ai.tool_registry.Approval = null,
     resume_offer_visible: bool = false,
     resume_offer_kind: ResumeOfferKind = .continue_run,
@@ -163,6 +169,7 @@ pub const Session = struct {
             .excluded_entries = .empty,
             .agent_steps = .empty,
             .attachments = .empty,
+            .context_cache = ai.context_cache.ContextCache.init(allocator),
         };
     }
 
@@ -175,6 +182,7 @@ pub const Session = struct {
     }
 
     pub fn deinit(self: *Session) void {
+        self.context_cache.deinit();
         self.lock();
         self.clearProposalStateUnlocked();
         self.freeLinesUnlocked(&self.context_lines);
@@ -688,6 +696,16 @@ pub const Session = struct {
         self.last_transaction_id = null;
         self.stream_text.clearRetainingCapacity();
         self.thinking_text.clearRetainingCapacity();
+        if (self.generation_start_ts) |start_ts| {
+            if (self.first_token_ts) |first_ts| {
+                telemetry.recordEvent("ai", "agent_ttft", start_ts, first_ts);
+                var end_span = telemetry.startSpan("ai", "agent_generation");
+                telemetry.recordEvent("ai", "agent_generation", start_ts, end_span.start_ts);
+                end_span.end();
+            }
+            self.generation_start_ts = null;
+            self.first_token_ts = null;
+        }
         self.stream_live = false;
         self.freeLinesUnlocked(&self.diff_lines);
         self.clearValidationResultsUnlocked();
@@ -706,6 +724,10 @@ pub const Session = struct {
         if (chunk.len == 0) return;
         self.lock();
         defer self.unlock();
+        if (self.first_token_ts == null) {
+            const span = telemetry.startSpan("", "");
+            self.first_token_ts = span.start_ts;
+        }
         const cap: usize = 64 * 1024;
         if (self.stream_text.items.len + chunk.len > cap) return;
         try self.stream_text.appendSlice(self.allocator, chunk);
@@ -747,6 +769,11 @@ pub const Session = struct {
         self.lock();
         defer self.unlock();
         if (self.status_line.len > 0) self.allocator.free(self.status_line);
+        if (phase == .sending and self.phase != .sending) {
+            const span = telemetry.startSpan("", "");
+            self.generation_start_ts = span.start_ts;
+            self.first_token_ts = null;
+        }
         self.phase = phase;
         self.status_line = owned;
     }

@@ -33,10 +33,10 @@ pub fn drawSearchPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void 
         for (results.matches[start_idx..end_idx], start_idx..) |match, index| {
             if (y + row_h >= 65 and y < h - layout.status_height) {
                 renderer.Renderer.drawRect(panel_x, y, panel_w, row_h - 4, shared.color(theme.colors.selection));
-                var path_buf: [160:0]u8 = undefined;
-                @memcpy(path_buf[0..@min(match.path.len, path_buf.len - 1)], match.path[0..@min(match.path.len, path_buf.len - 1)]);
-                path_buf[@min(match.path.len, path_buf.len - 1)] = 0;
-                renderer.Renderer.drawText(@ptrCast(&path_buf), panel_x + 16, y + 2, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+                var path_buf: [256:0]u8 = undefined;
+                const path_str: [:0]const u8 = std.fmt.bufPrintZ(&path_buf, "{s}:{d}", .{ match.path, match.line }) catch "<path too long>";
+                renderer.Renderer.drawText(path_str, panel_x + 16, y + 2, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+
                 var preview_buf: [128:0]u8 = undefined;
                 @memcpy(preview_buf[0..@min(match.line_text.len, preview_buf.len - 1)], match.line_text[0..@min(match.line_text.len, preview_buf.len - 1)]);
                 preview_buf[@min(match.line_text.len, preview_buf.len - 1)] = 0;

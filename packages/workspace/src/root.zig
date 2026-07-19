@@ -95,6 +95,7 @@ pub const Config = struct {
     ai_embedding_url: ?[]const u8 = null,
     ai_mcp_enabled: bool = true,
     ai_custom_models: ?[]const u8 = null,
+    ai_enable_hyde: bool = false,
     theme: theme_mod.ThemeSettings = .{},
     pub fn parse(source: []const u8) error{ InvalidSyntax, InvalidValue, UnknownKey }!Config {
         var config = Config{};
@@ -145,6 +146,8 @@ pub const Config = struct {
                 config.ai_custom_models = try parseString(value);
             } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "mcp")) {
                 config.ai_mcp_enabled = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+            } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "enable_hyde")) {
+                config.ai_enable_hyde = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
             } else if (std.mem.eql(u8, section, "theme")) {
                 try config.theme.applyKey(key, value);
             } else {

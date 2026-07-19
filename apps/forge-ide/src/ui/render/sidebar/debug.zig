@@ -9,7 +9,7 @@ const debug_panel = @import("../../sidebar/debug_panel.zig");
 const scrollbar = @import("../../core/scrollbar.zig");
 pub fn drawDebugPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const theme = &wb.theme;
-    const debug_active = wb.debug_lldb.isActive();
+    const debug_active = wb.debug.lldb.isActive();
     const panel_y = layout.header_height + layout.activity_bar_height;
     renderer.Renderer.setClipRect(panel_x, panel_y, panel_w, h - panel_y - layout.status_height);
     renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + 8, panel_y + 14, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
@@ -58,12 +58,12 @@ pub fn drawDebugPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     y += 16;
     if (y + 14 >= 65 and y < h - layout.status_height) {
         var bp_hdr: [32:0]u8 = undefined;
-        const hdr = std.fmt.bufPrint(&bp_hdr, "BREAKPOINTS ({d})", .{wb.breakpoints.items.items.len}) catch "BREAKPOINTS";
+        const hdr = std.fmt.bufPrint(&bp_hdr, "BREAKPOINTS ({d})", .{wb.debug.breakpoints.items.items.len}) catch "BREAKPOINTS";
         bp_hdr[hdr.len] = 0;
         renderer.Renderer.drawText(@ptrCast(&bp_hdr), panel_x + 16, y, 10.0, .{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 });
     }
     y += 18;
-    for (wb.breakpoints.items.items) |bp| {
+    for (wb.debug.breakpoints.items.items) |bp| {
         if (y + debug_panel.row_h >= 65 and y < h - layout.status_height) {
             renderer.Renderer.drawRoundedRect(panel_x + 14, y + 4, 8, 8, 4, shared.color(theme.colors.warning));
             var line_buf: [192:0]u8 = undefined;
@@ -74,7 +74,7 @@ pub fn drawDebugPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
         y += debug_panel.row_h;
     }
     renderer.Renderer.clearClipRect();
-    const bp_count = wb.breakpoints.items.items.len;
+    const bp_count = wb.debug.breakpoints.items.items.len;
     const debug_viewport = debug_panel.viewportHeight(h);
     const debug_content = debug_panel.contentHeight(bp_count, debug_active);
     const debug_max = debug_panel.maxScrollY(bp_count, h, debug_active);

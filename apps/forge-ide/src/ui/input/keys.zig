@@ -36,10 +36,10 @@ const CursorAction = union(enum) {
 fn applyMultiCursor(wb: *Workbench, active_buffer: *editor.Buffer, action: CursorAction) void {
     const primary = active_buffer.cursor;
     var all_cursors_buf: [256]editor.Cursor = undefined;
-    const cursors = wb.multi_cursor.allCursorsBottomUp(primary, &all_cursors_buf);
+    const cursors = wb.editor.multi_cursor.allCursorsBottomUp(primary, &all_cursors_buf);
 
     active_buffer.beginUndoGroup() catch {};
-    wb.multi_cursor.clear();
+    wb.editor.multi_cursor.clear();
 
     var new_primary: ?editor.Cursor = null;
     for (cursors) |cursor| {
@@ -69,12 +69,12 @@ fn applyMultiCursor(wb: *Workbench, active_buffer: *editor.Buffer, action: Curso
             },
         }
 
-        if (wb.focused_panel == .editor) wb.ghost.onBufferChanged(active_buffer.cursor.row, active_buffer.cursor.col);
+        if (wb.focused_panel == .editor) wb.editor.ghost.onBufferChanged(active_buffer.cursor.row, active_buffer.cursor.col);
 
         if (is_primary) {
             new_primary = active_buffer.cursor;
         } else {
-            wb.multi_cursor.add(active_buffer.cursor) catch {};
+            wb.editor.multi_cursor.add(active_buffer.cursor) catch {};
         }
     }
 
@@ -132,7 +132,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
-    if (wb.rename_preview.active and wb.bottom_panel_mode == .output) {
+    if (wb.lsp.rename_preview.active and wb.bottom_panel_mode == .output) {
         if (event.keycode == 53) {
             wb.dispatch(.rename_reject) catch {};
             return;
@@ -143,34 +143,34 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         }
     }
 
-    if (wb.completions.visible and (event.keycode == 48 or event.keycode == 36)) {
+    if (wb.lsp.completions.visible and (event.keycode == 48 or event.keycode == 36)) {
         wb.dispatch(.completion_accept) catch {};
         return;
     }
 
-    if (wb.completions.visible and event.keycode == 53) {
+    if (wb.lsp.completions.visible and event.keycode == 53) {
         wb.dispatch(.completion_dismiss) catch {};
         return;
     }
 
-    if (wb.completions.visible and event.keycode == 125) {
-        wb.completions.moveSelection(1);
+    if (wb.lsp.completions.visible and event.keycode == 125) {
+        wb.lsp.completions.moveSelection(1);
         return;
     }
-    if (wb.completions.visible and event.keycode == 126) {
-        wb.completions.moveSelection(-1);
+    if (wb.lsp.completions.visible and event.keycode == 126) {
+        wb.lsp.completions.moveSelection(-1);
         return;
     }
 
-    if (wb.agent.scope_picker_open) {
+    if (wb.agent_ui.session.scope_picker_open) {
         keys_agent.handleScopePickerKeys(wb, event);
         return;
     }
 
     if (wb.focused_panel == .agent and event.keycode == 53) {
-        wb.agent.lock();
-        const menus_open = wb.agent.mode_menu_open or wb.agent.model_menu_open;
-        wb.agent.unlock();
+        wb.agent_ui.session.lock();
+        const menus_open = wb.agent_ui.session.mode_menu_open or wb.agent_ui.session.model_menu_open;
+        wb.agent_ui.session.unlock();
         if (menus_open) {
             wb.dispatch(.agent_close_menus) catch {};
             return;
@@ -204,7 +204,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
 
     if (wb.proposal_review_open) {
         if (event.keycode == 126 or event.keycode == 125) { // Up or Down
-            var files = @import("../editor/proposal_review_panel.zig").collectFiles(wb.allocator, wb.agent.review.hunks) catch return;
+            var files = @import("../editor/proposal_review_panel.zig").collectFiles(wb.allocator, wb.agent_ui.session.review.hunks) catch return;
             defer files.deinit(wb.allocator);
             if (files.items.len > 0) {
                 if (event.keycode == 126) {
@@ -220,13 +220,13 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             return;
         }
         if (event.keycode == 49 and event.modifiers == 0) { // Space
-            var files = @import("../editor/proposal_review_panel.zig").collectFiles(wb.allocator, wb.agent.review.hunks) catch return;
+            var files = @import("../editor/proposal_review_panel.zig").collectFiles(wb.allocator, wb.agent_ui.session.review.hunks) catch return;
             defer files.deinit(wb.allocator);
             if (wb.proposal_review_file_index < files.items.len) {
                 const path = files.items[wb.proposal_review_file_index].path;
-                for (wb.agent.review.hunks, 0..) |*hunk, index| {
+                for (wb.agent_ui.session.review.hunks, 0..) |*hunk, index| {
                     if (std.mem.eql(u8, hunk.path, path)) {
-                        wb.agent.review.toggle(index);
+                        wb.agent_ui.session.review.toggle(index);
                     }
                 }
             }
@@ -242,7 +242,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         }
     }
 
-    if (wb.focused_panel == .agent and wb.agent.show_review) {
+    if (wb.focused_panel == .agent and wb.agent_ui.session.show_review) {
         if (event.keycode == 36 and event.modifiers & shared.cmd_mask != 0) {
             wb.dispatch(.agent_apply) catch {};
             return;
@@ -254,9 +254,9 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         if (event.keycode == 126 or event.keycode == 125) {
             const scroll_step: f32 = 14.0;
             if (event.keycode == 126) {
-                wb.agent.review_scroll_y = @max(0, wb.agent.review_scroll_y - scroll_step);
+                wb.agent_ui.session.review_scroll_y = @max(0, wb.agent_ui.session.review_scroll_y - scroll_step);
             } else {
-                wb.agent.review_scroll_y += scroll_step;
+                wb.agent_ui.session.review_scroll_y += scroll_step;
             }
             wb.clampReviewScroll(win_h);
             return;
@@ -308,7 +308,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     const active_buffer_opt: ?*editor.Buffer = if (wb.focused_panel == .editor)
         wb.activeBuffer()
     else if (wb.focused_panel == .agent)
-        &wb.prompt_buffer
+        &wb.agent_ui.prompt_buffer
     else if (wb.focused_panel == .git)
         &wb.git.commit_msg
     else
@@ -317,14 +317,14 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     if (active_buffer_opt) |active_buffer| {
         if (event.keycode == 0 and event.modifiers & shared.cmd_mask != 0) { // Command+A
             active_buffer.selectAll();
-            if (wb.focused_panel == .agent) wb.ensurePromptCursorVisible();
+            if (wb.focused_panel == .agent) @import("../../workbench/agent_ops.zig").ensurePromptCursorVisible(wb);
             return;
         }
 
         if (event.keycode == 8 and event.modifiers & shared.cmd_mask != 0) { // Command+C
             if (state.chat_selection) |sel| {
-                if (sel.msg_hash < wb.chat_history.items.len) {
-                    const msg = wb.chat_history.items[sel.msg_hash];
+                if (sel.msg_hash < wb.agent_ui.chat_history.items.len) {
+                    const msg = wb.agent_ui.chat_history.items[sel.msg_hash];
                     const start = @min(sel.start, sel.end);
                     const end = @max(sel.start, sel.end);
                     if (start < end and end <= msg.content.len) {
@@ -345,12 +345,12 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         if (event.modifiers & (shared.cmd_mask | shared.ctrl_mask | shared.alt_mask) == 0) {
             if (event.keycode == 51) {
                 applyMultiCursor(wb, active_buffer, .backspace);
-                if (wb.focused_panel == .agent) wb.ensurePromptCursorVisible();
+                if (wb.focused_panel == .agent) @import("../../workbench/agent_ops.zig").ensurePromptCursorVisible(wb);
                 return;
             }
             if (event.keycode == 117) {
                 applyMultiCursor(wb, active_buffer, .delete_forward);
-                if (wb.focused_panel == .agent) wb.ensurePromptCursorVisible();
+                if (wb.focused_panel == .agent) @import("../../workbench/agent_ops.zig").ensurePromptCursorVisible(wb);
                 return;
             }
         }
@@ -366,14 +366,14 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
-    if (event.keycode == 8 and event.modifiers & shared.cmd_mask != 0 and wb.focused_panel == .agent and wb.agent.worker_running) {
+    if (event.keycode == 8 and event.modifiers & shared.cmd_mask != 0 and wb.focused_panel == .agent and wb.agent_ui.session.worker_running) {
         wb.dispatch(.agent_cancel) catch {};
         return;
     }
 
     if (event.keycode == 53 and event.modifiers & shared.cmd_mask == 0) {
-        if (wb.multi_cursor.isActive()) {
-            wb.multi_cursor.clear();
+        if (wb.editor.multi_cursor.isActive()) {
+            wb.editor.multi_cursor.clear();
             return;
         }
         wb.dispatch(.palette_close) catch {};
@@ -458,7 +458,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         applyMultiCursor(wb, active_buffer, .move_up);
     } else if (event.chars.len > 0) {
         const char_val = event.chars[0];
-        if (wb.focused_panel == .agent and char_val == '@' and !wb.agent.show_review and !wb.agent.worker_running) {
+        if (wb.focused_panel == .agent and char_val == '@' and !wb.agent_ui.session.show_review and !wb.agent_ui.session.worker_running) {
             // P0-3: Open mention picker when user types @ in agent panel.
             wb.mention_picker.open();
             return;
@@ -466,17 +466,17 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         if (char_val >= 32 or char_val == '\t') {
             applyMultiCursor(wb, active_buffer, .{ .insert_string = event.chars });
             // P0-4: Mark fold ranges dirty so they recompute on next tick.
-            wb.fold_dirty = true;
+            wb.editor.fold_dirty = true;
             // P0-2: If inline edit prompt is active, append to it instead
             // of the editor buffer.
-            if (wb.inline_edit.active) {
-                wb.inline_edit.appendSlice(event.chars) catch {};
+            if (wb.editor.inline_edit.active) {
+                wb.editor.inline_edit.appendSlice(event.chars) catch {};
             }
         }
     }
 
     if (wb.focused_panel == .agent) {
-        wb.ensurePromptCursorVisible();
+        @import("../../workbench/agent_ops.zig").ensurePromptCursorVisible(wb);
     }
 }
 
@@ -489,7 +489,7 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
     var active_buffer = if (wb.focused_panel == .editor)
         wb.activeBuffer() orelse return
     else if (wb.focused_panel == .agent)
-        &wb.prompt_buffer
+        &wb.agent_ui.prompt_buffer
     else if (wb.focused_panel == .git)
         &wb.git.commit_msg
     else
@@ -513,10 +513,10 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
 
         if (event.text.len > 0) {
             active_buffer.insertString(event.text) catch {};
-            if (wb.focused_panel == .editor) wb.ghost.onBufferChanged(active_buffer.cursor.row, active_buffer.cursor.col);
-            wb.fold_dirty = true;
-            if (wb.inline_edit.active and wb.focused_panel == .editor) {
-                wb.inline_edit.appendSlice(event.text) catch {};
+            if (wb.focused_panel == .editor) wb.editor.ghost.onBufferChanged(active_buffer.cursor.row, active_buffer.cursor.col);
+            wb.editor.fold_dirty = true;
+            if (wb.editor.inline_edit.active and wb.focused_panel == .editor) {
+                wb.editor.inline_edit.appendSlice(event.text) catch {};
             }
         }
     } else {
@@ -542,6 +542,6 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
     }
 
     if (wb.focused_panel == .agent) {
-        wb.ensurePromptCursorVisible();
+        @import("../../workbench/agent_ops.zig").ensurePromptCursorVisible(wb);
     }
 }

@@ -1,4 +1,6 @@
 const std = @import("std");
+const core = @import("forge-core");
+const telemetry = core.telemetry;
 const workspace = @import("forge-workspace");
 const buffer_mod = @import("buffer.zig");
 
@@ -102,6 +104,8 @@ pub const TabGroup = struct {
     }
 
     pub fn openOrActivate(self: *TabGroup, path: []const u8) !*Document {
+        var span = telemetry.startSpan("ide", "open_file");
+        defer span.end();
         for (self.tabs.items, 0..) |*doc, index| {
             if (std.mem.eql(u8, doc.path, path)) {
                 self.active = index;

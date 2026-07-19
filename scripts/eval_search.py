@@ -65,7 +65,7 @@ BUILTIN_CORPUS: list[dict] = [
     {
         "id": "gemini-embedder",
         "query": "gemini text embedding API call task type retrieval",
-        "expected_paths": ["packages/ai/src/gemini_embedder.zig"],
+        "expected_paths": ["packages/ai/src/providers/gemini/embedder.zig"],
         "tags": ["semantic", "api"],
     },
     {
@@ -150,7 +150,7 @@ BUILTIN_CORPUS: list[dict] = [
     {
         "id": "update-embedding-model",
         "query": "update embedding model version gemini API endpoint",
-        "expected_paths": ["packages/ai/src/gemini_embedder.zig"],
+        "expected_paths": ["packages/ai/src/providers/gemini/embedder.zig"],
         "tags": ["edit", "action-verb"],
     },
     {

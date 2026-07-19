@@ -69,7 +69,7 @@ pub fn drawBreadcrumbs(
     const col: u32 = @intCast(buf.cursor.col);
 
     // Compute breadcrumb path.
-    const symbols = wb.outline_symbols;
+    const symbols = wb.lsp.outline_symbols;
     const crumbs = breadcrumbsForCursor(wb.allocator, symbols, row, col) catch return;
     defer wb.allocator.free(crumbs);
 
@@ -119,7 +119,7 @@ pub fn hitTest(
     const row: u32 = @intCast(buf.cursor.row);
     const col: u32 = @intCast(buf.cursor.col);
 
-    const symbols = wb.outline_symbols;
+    const symbols = wb.lsp.outline_symbols;
     const crumbs = breadcrumbsForCursor(wb.allocator, symbols, row, col) catch return null;
     defer wb.allocator.free(crumbs);
 

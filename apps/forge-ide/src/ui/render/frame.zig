@@ -15,6 +15,7 @@ const status_bar_render = @import("status_bar.zig");
 const task_panel_render = @import("task_panel.zig");
 const outline_panel = @import("../sidebar/outline_panel.zig");
 const notifications_render = @import("notifications.zig");
+const ai_render = @import("sidebar/ai.zig");
 
 const dialogs = @import("dialogs.zig");
 
@@ -23,13 +24,13 @@ fn c(rgba: @import("forge-workspace").Rgba) renderer.Color {
 }
 
 fn needsContinuousRendering(wb: anytype) bool {
-    if (wb.agent.worker_running) return true;
-    if (wb.completions.visible) return true;
+    if (wb.agent_ui.session.worker_running) return true;
+    if (wb.lsp.completions.visible) return true;
     if (wb.palette.open or wb.workspace_symbol_picker.open or wb.git_branch_picker.open or wb.output_channel_picker.open) return true;
     if (wb.agent_panel_visible) {
-        wb.agent.lock();
-        const live = wb.agent.stream_live or wb.agent.phase == .building_context or wb.agent.phase == .sending or wb.agent.phase == .streaming or wb.agent.phase == .parsing or wb.agent.phase == .waiting_approval;
-        wb.agent.unlock();
+        wb.agent_ui.session.lock();
+        const live = wb.agent_ui.session.stream_live or wb.agent_ui.session.phase == .building_context or wb.agent_ui.session.phase == .sending or wb.agent_ui.session.phase == .streaming or wb.agent_ui.session.phase == .parsing or wb.agent_ui.session.phase == .waiting_approval;
+        wb.agent_ui.session.unlock();
         if (live) return true;
     }
     return false;
@@ -114,7 +115,7 @@ pub fn onRenderFrame() void {
                     .run => sidebar_render.drawDebugPanel(wb, geo.explorer_x, geo.explorer_w, h),
                     .extensions => sidebar_render.drawExtensionsPanel(wb, geo.explorer_x, geo.explorer_w, h),
                     .outline => outline_panel.drawOutline(wb, geo.explorer_x, geo.explorer_w, h),
-                    .ai => {},
+                    .ai => ai_render.drawAiPanel(wb, geo.explorer_x, geo.explorer_w, h),
                 }
                 const sidebar_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 state.perf_sidebar_ms = @floatFromInt(sidebar_end_ms - sidebar_start_ms);
@@ -156,7 +157,7 @@ pub fn onRenderFrame() void {
         if (wb.output_channel_picker.open) dialogs.drawOutputChannelPicker(wb, w, h);
         if (wb.focused_panel == .conflict) dialogs.drawConflictDialog(wb, w, h);
         if (wb.focused_panel == .recovery) dialogs.drawRecoveryDialog(wb, w, h);
-        if (wb.agent.scope_picker_open) agent_render.drawScopePicker(wb, geo.agent_x, geo.agent_w, h);
+        if (wb.agent_ui.session.scope_picker_open) agent_render.drawScopePicker(wb, geo.agent_x, geo.agent_w, h);
 
         // Settings Modal must be drawn last to be on top
         if (wb.settings_modal_open) {
@@ -174,7 +175,7 @@ pub fn onRenderFrame() void {
     renderer.Renderer.measureTextCacheStats(&state.perf_measure_hits, &state.perf_measure_misses);
     renderer.Renderer.renderStats(&state.perf_redraw_requests, &state.perf_frames);
     chat_markdown.heightCacheStats(&state.perf_markdown_height_hits, &state.perf_markdown_height_misses);
-    state.perf_agent_queue_coalesced = wb.agent_ui_queue.coalescedCount();
+    state.perf_agent_queue_coalesced = wb.agent_ui.ui_queue.coalescedCount();
     state.clearDirty();
 
     const continuous = needsContinuousRendering(wb);

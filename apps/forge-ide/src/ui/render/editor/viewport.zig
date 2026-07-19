@@ -1,4 +1,6 @@
 const std = @import("std");
+const core = @import("forge-core");
+const telemetry = core.telemetry;
 const renderer = @import("forge-renderer");
 const state = @import("../../core/state.zig");
 const editor_scroll = @import("../../editor/editor_scroll.zig");
@@ -12,6 +14,7 @@ const bracket = @import("bracket.zig");
 const review_overlay = @import("review_overlay.zig");
 const decorations = @import("decorations.zig");
 const overlays = @import("overlays.zig");
+const conflict_resolver = @import("../../../workbench/conflict_resolver.zig");
 const inlay_hints_render = @import("inlay_hints.zig");
 
 pub fn drawEditorViewport(
@@ -25,10 +28,12 @@ pub fn drawEditorViewport(
     file_path: []const u8,
     pane_focused: bool,
 ) void {
-    wb.diagnostics.mutex.lock();
-    defer wb.diagnostics.mutex.unlock();
-    wb.lsp_sync.mutex.lock();
-    defer wb.lsp_sync.mutex.unlock();
+    var span = telemetry.startSpan("ide", "render_frame_scroll");
+    defer span.end();
+    wb.lsp.diagnostics.mutex.lock();
+    defer wb.lsp.diagnostics.mutex.unlock();
+    wb.lsp.sync.mutex.lock();
+    defer wb.lsp.sync.mutex.unlock();
 
     const theme = &wb.theme;
     const editor_view_h = editor_scroll.viewportHeight(editor_h);
@@ -50,7 +55,7 @@ pub fn drawEditorViewport(
     renderer.Renderer.setClipRect(editor_x, content_top, editor_w, editor_view_h);
     const show_cursor = @mod(state.time, 1.0) < 0.5;
     const show_editor_cursor = show_cursor and wb.focused_panel == .editor and pane_focused;
-    const bracket_pair = if (show_editor_cursor and !wb.agent.worker_running) blk: {
+    const bracket_pair = if (show_editor_cursor and !wb.agent_ui.session.worker_running) blk: {
         const hash = std.hash.CityHash64.hash(file_path);
         if (wb.bracket_match_cache.file_path_hash == hash and
             wb.bracket_match_cache.revision == editor_buf.revision and
@@ -106,7 +111,7 @@ pub fn drawEditorViewport(
     const max_scroll_x = if (wrap_enabled) @as(f32, 0) else editor_scroll.maxScrollX(content_w, editor_w, theme);
 
     const show_diags = blk: {
-        if (wb.diagnostics.active_path) |active_path| {
+        if (wb.lsp.diagnostics.active_path) |active_path| {
             break :blk std.mem.eql(u8, active_path, file_path);
         }
         break :blk false;
@@ -114,7 +119,7 @@ pub fn drawEditorViewport(
 
     const diag_store = @import("../../../workbench/diagnostics_store.zig");
     const semantic_tokens_for_file = blk: {
-        if (wb.lsp_sync.entries.get(file_path)) |entry| {
+        if (wb.lsp.sync.entries.get(file_path)) |entry| {
             break :blk entry.semantic_tokens;
         }
         break :blk null;
@@ -124,7 +129,7 @@ pub fn drawEditorViewport(
         const hash = std.hash.CityHash64.hash(file_path);
         if (wb.review_hunks_cache.file_path_hash == hash and
             wb.review_hunks_cache.buf_revision == editor_buf.revision and
-            wb.review_hunks_cache.review_revision == wb.agent.review.revision)
+            wb.review_hunks_cache.review_revision == wb.agent_ui.session.review.revision)
         {
             break :blk wb.review_hunks_cache.hunks;
         }
@@ -132,17 +137,31 @@ pub fn drawEditorViewport(
         wb.review_hunks_cache = .{
             .file_path_hash = hash,
             .buf_revision = editor_buf.revision,
-            .review_revision = wb.agent.review.revision,
+            .review_revision = wb.agent_ui.session.review.revision,
             .hunks = hunks,
         };
         break :blk wb.review_hunks_cache.hunks;
     };
 
+    const conflict_blocks = blk: {
+        const hash = std.hash.CityHash64.hash(file_path);
+        if (wb.conflict_blocks_cache.file_path_hash == hash and
+            wb.conflict_blocks_cache.buf_revision == editor_buf.revision)
+        {
+            break :blk wb.conflict_blocks_cache.blocks.items;
+        }
+
+        conflict_resolver.findConflicts(wb.allocator, editor_buf, &wb.conflict_blocks_cache.blocks) catch {};
+        wb.conflict_blocks_cache.file_path_hash = hash;
+        wb.conflict_blocks_cache.buf_revision = editor_buf.revision;
+        break :blk wb.conflict_blocks_cache.blocks.items;
+    };
+
     var ghost_newlines: f32 = 0;
     var ghost_row: ?usize = null;
-    wb.ghost.mutex.lock();
-    if (wb.ghost.ghost_text) |gt| {
-        if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+    wb.editor.ghost.mutex.lock();
+    if (wb.editor.ghost.ghost_text) |gt| {
+        if (wb.editor.ghost.trigger_row == editor_buf.cursor.row and wb.editor.ghost.trigger_col == editor_buf.cursor.col) {
             ghost_row = editor_buf.cursor.row;
             for (gt) |c| {
                 if (c == '\n') {
@@ -151,7 +170,7 @@ pub fn drawEditorViewport(
             }
         }
     }
-    wb.ghost.mutex.unlock();
+    wb.editor.ghost.mutex.unlock();
 
     const safe_margin: f32 = 2000;
     var start_idx: usize = 0;
@@ -171,12 +190,12 @@ pub fn drawEditorViewport(
             if (line_num_y + line_h >= content_top and line_num_y < content_top + editor_view_h) {
                 const seg = wrap_cache_opt.?.cachedSegmentAt(editor_buf, visual_idx, viewport_w, font_size);
                 if (seg.start_col == 0) {
-                    if (wb.breakpoints.hasAt(file_path, seg.buf_line)) {
+                    if (wb.debug.breakpoints.hasAt(file_path, seg.buf_line)) {
                         renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, syntax.color(theme.colors.warning));
                     }
                     const debug_here = blk: {
-                        if (wb.debug_stop_path) |stop_path| {
-                            if (wb.debug_stop_line) |stop_line| {
+                        if (wb.debug.stop_path) |stop_path| {
+                            if (wb.debug.stop_line) |stop_line| {
                                 break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == seg.buf_line;
                             }
                         }
@@ -189,7 +208,7 @@ pub fn drawEditorViewport(
                     const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{seg.buf_line + 1}) catch "";
                     renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, syntax.color(theme.colors.line_number));
                     if (show_diags) {
-                        if (diag_store.worstSeverityOnLine(wb.diagnostics.list, seg.buf_line)) |severity| {
+                        if (diag_store.worstSeverityOnLine(wb.lsp.diagnostics.list, seg.buf_line)) |severity| {
                             const marker = switch (severity) {
                                 .err => "!",
                                 .warning => "~",
@@ -212,12 +231,12 @@ pub fn drawEditorViewport(
         for (start_idx..line_count) |idx| {
             if (line_num_y > content_top + editor_view_h) break;
             if (line_num_y + line_h >= content_top and line_num_y < content_top + editor_view_h) {
-                if (wb.breakpoints.hasAt(file_path, idx)) {
+                if (wb.debug.breakpoints.hasAt(file_path, idx)) {
                     renderer.Renderer.drawRoundedRect(editor_x + 4, line_num_y + 4, 8, 8, 4, syntax.color(theme.colors.warning));
                 }
                 const debug_here = blk: {
-                    if (wb.debug_stop_path) |stop_path| {
-                        if (wb.debug_stop_line) |stop_line| {
+                    if (wb.debug.stop_path) |stop_path| {
+                        if (wb.debug.stop_line) |stop_line| {
                             break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == idx;
                         }
                     }
@@ -230,7 +249,7 @@ pub fn drawEditorViewport(
                 const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{idx + 1}) catch "";
                 renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, syntax.color(theme.colors.line_number));
                 if (show_diags) {
-                    if (diag_store.worstSeverityOnLine(wb.diagnostics.list, idx)) |severity| {
+                    if (diag_store.worstSeverityOnLine(wb.lsp.diagnostics.list, idx)) |severity| {
                         const marker = switch (severity) {
                             .err => "!",
                             .warning => "~",
@@ -267,8 +286,8 @@ pub fn drawEditorViewport(
                 const seg_text_x = text_x + editor_scroll.cursorX(editor_buf.lineAt(seg.buf_line), seg.start_col, font_size);
 
                 const debug_here = blk: {
-                    if (wb.debug_stop_path) |stop_path| {
-                        if (wb.debug_stop_line) |stop_line| {
+                    if (wb.debug.stop_path) |stop_path| {
+                        if (wb.debug.stop_line) |stop_line| {
                             break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == seg.buf_line and seg.start_col == 0;
                         }
                     }
@@ -300,15 +319,15 @@ pub fn drawEditorViewport(
                 syntax.drawHighlightedLine(file_path, slice, seg.buf_line, seg.start_col, seg_text_x, line_num_y, theme, semantic_tokens_for_file);
 
                 // P0-6: Inlay hints.
-                const hints_for_file = wb.inlay_hints.get(file_path);
+                const hints_for_file = wb.editor.inlay_hints.get(file_path);
                 inlay_hints_render.drawLineHints(hints_for_file, seg.buf_line, slice, seg_text_x, line_num_y, font_size, theme);
 
                 if (bracket_pair) |pair| {
                     bracket.drawBracketHighlight(editor_buf, pair, seg.buf_line, seg.start_col, seg.end_col, seg_text_x, line_num_y, line_h, font_size, theme);
                 }
                 if (show_diags) {
-                    const start_idx_diag = diag_store.firstForLine(wb.diagnostics.list, seg.buf_line);
-                    for (wb.diagnostics.list.items[start_idx_diag..]) |diag| {
+                    const start_idx_diag = diag_store.firstForLine(wb.lsp.diagnostics.list, seg.buf_line);
+                    for (wb.lsp.diagnostics.list.items[start_idx_diag..]) |diag| {
                         if (diag.line != seg.buf_line) break;
                         const line = editor_buf.lineAt(seg.buf_line);
                         const start_x = seg_text_x + editor_scroll.cursorX(line, @max(seg.start_col, @min(diag.character, seg.end_col)), font_size) - editor_scroll.cursorX(line, seg.start_col, font_size);
@@ -323,15 +342,21 @@ pub fn drawEditorViewport(
                         renderer.Renderer.drawRect(start_x, underline_y, @max(4, end_x - start_x), 2, underline_color);
                     }
                 }
+                for (conflict_blocks) |block| {
+                    if (block.start_row == seg.buf_line and seg.start_col == 0) {
+                        conflict_resolver.drawInlineActions(wb, block, editor_x, gutter, line_num_y, state.last_mouse_x, state.last_mouse_y);
+                    }
+                }
+
                 if (visual_idx == cursor_visual) {
                     const line = editor_buf.lineAt(seg.buf_line);
                     const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
                     if (show_editor_cursor) {
                         renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
                     }
-                    wb.ghost.mutex.lock();
-                    if (wb.ghost.ghost_text) |gt| {
-                        if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+                    wb.editor.ghost.mutex.lock();
+                    if (wb.editor.ghost.ghost_text) |gt| {
+                        if (wb.editor.ghost.trigger_row == editor_buf.cursor.row and wb.editor.ghost.trigger_col == editor_buf.cursor.col) {
                             var ghost_y = line_num_y;
                             var it = std.mem.splitScalar(u8, gt, '\n');
                             var is_first = true;
@@ -346,13 +371,13 @@ pub fn drawEditorViewport(
                             }
                         }
                     }
-                    wb.ghost.mutex.unlock();
+                    wb.editor.ghost.mutex.unlock();
                 }
             }
             if (visual_idx == cursor_visual) {
-                wb.ghost.mutex.lock();
-                if (wb.ghost.ghost_text) |gt| {
-                    if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+                wb.editor.ghost.mutex.lock();
+                if (wb.editor.ghost.ghost_text) |gt| {
+                    if (wb.editor.ghost.trigger_row == editor_buf.cursor.row and wb.editor.ghost.trigger_col == editor_buf.cursor.col) {
                         var newlines: f32 = 0;
                         for (gt) |c| {
                             if (c == '\n') newlines += 1.0;
@@ -360,7 +385,7 @@ pub fn drawEditorViewport(
                         line_num_y += newlines * line_h;
                     }
                 }
-                wb.ghost.mutex.unlock();
+                wb.editor.ghost.mutex.unlock();
             }
             line_num_y += line_h;
         }
@@ -368,14 +393,14 @@ pub fn drawEditorViewport(
         if (ghost_row != null and ghost_row.? < start_idx) line_num_y += ghost_newlines * line_h;
         for (start_idx..line_count) |idx| {
             // P0-4: Skip lines hidden by code folding.
-            if (wb.fold_controller.isLineHidden(@intCast(idx))) {
+            if (wb.editor.fold_controller.isLineHidden(@intCast(idx))) {
                 continue;
             }
             if (line_num_y > content_top + editor_view_h) break;
             if (line_num_y + line_h >= content_top and line_num_y < content_top + editor_view_h) {
                 const debug_here = blk: {
-                    if (wb.debug_stop_path) |stop_path| {
-                        if (wb.debug_stop_line) |stop_line| {
+                    if (wb.debug.stop_path) |stop_path| {
+                        if (wb.debug.stop_line) |stop_line| {
                             break :blk std.mem.eql(u8, stop_path, file_path) and stop_line == idx;
                         }
                     }
@@ -407,15 +432,15 @@ pub fn drawEditorViewport(
                 syntax.drawHighlightedLine(file_path, editor_buf.lineAt(idx), idx, 0, text_x, line_num_y, theme, semantic_tokens_for_file);
 
                 // P0-6: Inlay hints.
-                const hints_for_file = wb.inlay_hints.get(file_path);
+                const hints_for_file = wb.editor.inlay_hints.get(file_path);
                 inlay_hints_render.drawLineHints(hints_for_file, idx, editor_buf.lineAt(idx), text_x, line_num_y, font_size, theme);
 
                 if (bracket_pair) |pair| {
                     bracket.drawBracketHighlight(editor_buf, pair, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, theme);
                 }
                 if (show_diags) {
-                    const start_idx_diag = diag_store.firstForLine(wb.diagnostics.list, idx);
-                    for (wb.diagnostics.list.items[start_idx_diag..]) |diag| {
+                    const start_idx_diag = diag_store.firstForLine(wb.lsp.diagnostics.list, idx);
+                    for (wb.lsp.diagnostics.list.items[start_idx_diag..]) |diag| {
                         if (diag.line != idx) break;
                         const line = editor_buf.lineAt(idx);
                         const start_x = text_x + editor_scroll.cursorX(line, @min(diag.character, line.len), font_size);
@@ -448,9 +473,9 @@ pub fn drawEditorViewport(
                         renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
                         renderer.Renderer.setImeCursorRect(cursor_x, line_num_y, 0, line_h);
                     }
-                    wb.ghost.mutex.lock();
-                    if (wb.ghost.ghost_text) |gt| {
-                        if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+                    wb.editor.ghost.mutex.lock();
+                    if (wb.editor.ghost.ghost_text) |gt| {
+                        if (wb.editor.ghost.trigger_row == editor_buf.cursor.row and wb.editor.ghost.trigger_col == editor_buf.cursor.col) {
                             var ghost_y = line_num_y;
                             var it = std.mem.splitScalar(u8, gt, '\n');
                             var is_first = true;
@@ -465,13 +490,13 @@ pub fn drawEditorViewport(
                             }
                         }
                     }
-                    wb.ghost.mutex.unlock();
+                    wb.editor.ghost.mutex.unlock();
                 }
             }
             if (idx == editor_buf.cursor.row) {
-                wb.ghost.mutex.lock();
-                if (wb.ghost.ghost_text) |gt| {
-                    if (wb.ghost.trigger_row == editor_buf.cursor.row and wb.ghost.trigger_col == editor_buf.cursor.col) {
+                wb.editor.ghost.mutex.lock();
+                if (wb.editor.ghost.ghost_text) |gt| {
+                    if (wb.editor.ghost.trigger_row == editor_buf.cursor.row and wb.editor.ghost.trigger_col == editor_buf.cursor.col) {
                         var newlines: f32 = 0;
                         for (gt) |c| {
                             if (c == '\n') newlines += 1.0;
@@ -479,7 +504,7 @@ pub fn drawEditorViewport(
                         line_num_y += newlines * line_h;
                     }
                 }
-                wb.ghost.mutex.unlock();
+                wb.editor.ghost.mutex.unlock();
             }
             line_num_y += line_h;
         }

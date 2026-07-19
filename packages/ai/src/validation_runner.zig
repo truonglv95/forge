@@ -132,10 +132,28 @@ pub fn runTasks(
         };
         // argv is statically allocated from allowedCommandArgv now
 
+        const mac_sandbox_profile = std.fmt.allocPrint(allocator,
+            \\(version 1)
+            \\(deny default)
+            \\(allow file-read*)
+            \\(allow process-exec*)
+            \\(allow process-fork)
+            \\(allow network*)
+            \\(allow file-write*
+            \\    (subpath "/tmp")
+            \\    (subpath "/private/tmp")
+            \\    (subpath "/var/folders")
+            \\    (subpath "{s}")
+            \\)
+        , .{cwd}) catch return error.OutOfMemory;
+        defer allocator.free(mac_sandbox_profile);
+
         const captured = kernel.process.runCapture(allocator, .{
             .argv = argv,
             .cwd = cwd,
             .max_bytes = 16 * 1024,
+            .use_mac_sandbox = true,
+            .mac_sandbox_profile = mac_sandbox_profile,
         }) catch {
             const output = try allocator.dupe(u8, "failed to run task");
             try items.append(allocator, .{

@@ -132,7 +132,7 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
     }
 
     // 4. Problems count
-    const prob_count = wb.diagnostics.list.items.len;
+    const prob_count = wb.lsp.diagnostics.list.items.len;
     if (prob_count > 0) {
         var prob_buf: [32]u8 = undefined;
         const prob_label = std.fmt.bufPrint(&prob_buf, "{d} problems", .{prob_count}) catch "problems";
@@ -168,7 +168,7 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
     }
 
     // Agent model
-    if (wb.ai_model) |model| {
+    if (wb.agent_ui.model) |model| {
         const model_w = estimateWidth(model, font_size) + 16;
         right_x -= model_w;
         const is_hover = isHovered(wb, right_x, bar_y, model_w, bar_height);
@@ -200,9 +200,9 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
 
         // Language
         const lang_label: []const u8 = blk: {
-            wb.lsp_registry.mutex.lock();
-            defer wb.lsp_registry.mutex.unlock();
-            if (wb.lsp_registry.findForPathUnlocked(path)) |server| {
+            wb.lsp.registry.mutex.lock();
+            defer wb.lsp.registry.mutex.unlock();
+            if (wb.lsp.registry.findForPathUnlocked(path)) |server| {
                 break :blk server.language_id;
             }
             break :blk "plaintext";

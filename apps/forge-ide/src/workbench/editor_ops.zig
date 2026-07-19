@@ -5,7 +5,7 @@ const workspace = @import("forge-workspace");
 const references_store_mod = @import("references_store.zig");
 
 pub fn lspSyncDocument(wb: anytype, doc: *editor.Document) ![]const u8 {
-    return wb.lsp_sync.ensureSyncedBlocking(doc);
+    return wb.lsp.sync.ensureSyncedBlocking(doc);
 }
 
 pub fn applyWorkspaceEdit(wb: anytype, edit: *const lsp.rename.WorkspaceEdit) !void {
@@ -14,7 +14,7 @@ pub fn applyWorkspaceEdit(wb: anytype, edit: *const lsp.rename.WorkspaceEdit) !v
         const path = rel orelse continue;
         defer wb.allocator.free(path);
 
-        const doc = try wb.tabs.openOrActivate(path);
+        const doc = try wb.editor.tabs.openOrActivate(path);
         var index = file_edit.edits.len;
         while (index > 0) {
             index -= 1;
@@ -227,7 +227,7 @@ fn findIndexedDefinition(
 }
 
 pub fn gotoIndexedDefinition(wb: anytype, symbol: []const u8) !bool {
-    const doc = wb.tabs.activeDoc() orelse return false;
+    const doc = wb.editor.tabs.activeDoc() orelse return false;
     const active_line: u32 = @intCast(doc.buffer.cursor.row + 1);
     var definition = (try findIndexedDefinition(wb.allocator, wb.io, wb.workspace_root, symbol, doc.path, active_line)) orelse
         (try findScannedDefinition(wb.allocator, wb.io, wb.workspace_root, symbol, doc.path, active_line)) orelse
@@ -240,7 +240,7 @@ pub fn gotoIndexedDefinition(wb: anytype, symbol: []const u8) !bool {
         buf.goToLine(target_line);
         const line = buf.lineAt(buf.cursor.row);
         buf.cursor.col = @min(@as(usize, @intCast(definition.character)), line.len);
-        wb.scrollEditorToCursor();
+        @import("../workbench/editor_ops.zig").scrollEditorToCursor(wb);
     }
     return true;
 }
@@ -281,7 +281,7 @@ pub fn openEditorFind(wb: anytype, replace_mode: bool) !void {
     wb.find_bar.openFind(replace_mode);
     if (wb.activeBuffer()) |buf| {
         try wb.find_bar.refreshMatches(buf);
-        wb.scrollEditorToCursor();
+        @import("../workbench/editor_ops.zig").scrollEditorToCursor(wb);
     }
 }
 
@@ -299,29 +299,29 @@ pub fn closeEditorOverlay(wb: anytype) void {
     if (wb.focused_panel == .find or wb.focused_panel == .goto_line or wb.focused_panel == .rename) {
         wb.focused_panel = wb.previous_focus;
     }
-    wb.completions.dismiss();
+    wb.lsp.completions.dismiss();
 }
 
 /// Notify the ghost completion store that the buffer changed.
 /// Called after every character insertion in the editor. The store
 /// debounces internally; this function is cheap to call on every keystroke.
 pub fn notifyGhostBufferChanged(wb: anytype, row: usize, col: usize) void {
-    wb.ghost.onBufferChanged(row, col);
+    wb.editor.ghost.onBufferChanged(row, col);
 }
 
 /// Tick the ghost completion debounce timer and fire a request when ready.
 /// `delta_s` is the frame elapsed time in seconds.
 /// Should be called every frame from the render/update loop.
 pub fn tickGhostCompletion(wb: anytype, delta_s: f32) void {
-    if (!wb.ghost.config.enabled) return;
-    const doc = wb.tabs.activeDoc() orelse return;
+    if (!wb.editor.ghost.config.enabled) return;
+    const doc = wb.editor.tabs.activeDoc() orelse return;
 
     // Sync cursor position — dismiss if moved.
-    wb.ghost.onCursorMoved(doc.buffer.cursor.row, doc.buffer.cursor.col);
+    wb.editor.ghost.onCursorMoved(doc.buffer.cursor.row, doc.buffer.cursor.col);
     // Sync file path — needed by the `ai` provider for language detection.
-    wb.ghost.setFilePath(doc.path);
+    wb.editor.ghost.setFilePath(doc.path);
 
-    if (!wb.ghost.tick(delta_s * 1000.0)) return;
+    if (!wb.editor.ghost.tick(delta_s * 1000.0)) return;
 
     // Build prefix: content from the start of file up to cursor.
     const row = doc.buffer.cursor.row;
@@ -354,7 +354,7 @@ pub fn tickGhostCompletion(wb: anytype, delta_s: f32) void {
     }
 
     const line_content = doc.buffer.lineAt(row);
-    wb.ghost.requestCompletion(
+    wb.editor.ghost.requestCompletion(
         line_content,
         prefix_buf.items,
         suffix_buf.items,
@@ -378,13 +378,13 @@ pub fn openRenameSymbol(wb: anytype) !void {
 pub fn commitRenameSymbol(wb: anytype) !void {
     const name = wb.rename_bar.name();
     if (name.len == 0) return;
-    try wb.previewRenameSymbol(name);
-    wb.closeEditorOverlay();
+    try @import("../workbench/editor_ops.zig").previewRenameSymbol(wb, name);
+    @import("../workbench/editor_ops.zig").closeEditorOverlay(wb);
 }
 
 pub fn previewRenameSymbol(wb: anytype, new_name: []const u8) !void {
-    const doc = wb.tabs.activeDoc() orelse return;
-    const owned = try wb.lsp_registry.copyMatchForPath(wb.allocator, doc.path);
+    const doc = wb.editor.tabs.activeDoc() orelse return;
+    const owned = try wb.lsp.registry.copyMatchForPath(wb.allocator, doc.path);
     const config = owned orelse {
         try wb.setStatus("No language server for this file");
         return;
@@ -400,19 +400,19 @@ pub fn previewRenameSymbol(wb: anytype, new_name: []const u8) !void {
     defer wb.allocator.free(req);
 
     var response_buf: [65536]u8 = undefined;
-    const len = wb.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
+    const len = wb.lsp.proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
         try wb.setStatus("Rename failed");
         return;
     };
 
     const edit = try lsp.rename.parseRenameResponse(wb.allocator, response_buf[0..len]);
     if (edit) |workspace_edit| {
-        try wb.rename_preview.setPreview(wb.workspace_path, &wb.tabs, new_name, workspace_edit);
-        wb.references.clear();
+        try wb.lsp.rename_preview.setPreview(wb.workspace_path, &wb.editor.tabs, new_name, workspace_edit);
+        wb.lsp.references.clear();
         wb.bottom_panel_mode = .output;
         wb.task_scroll_y = 0;
         var status_buf: [96]u8 = undefined;
-        const msg = try std.fmt.bufPrint(&status_buf, "Rename preview: {d} change(s)", .{wb.rename_preview.lines.len});
+        const msg = try std.fmt.bufPrint(&status_buf, "Rename preview: {d} change(s)", .{wb.lsp.rename_preview.lines.len});
         try wb.setStatus(msg);
         return;
     }
@@ -420,9 +420,9 @@ pub fn previewRenameSymbol(wb: anytype, new_name: []const u8) !void {
 }
 
 pub fn acceptRenamePreview(wb: anytype) !void {
-    if (wb.rename_preview.edit) |*edit| {
+    if (wb.lsp.rename_preview.edit) |*edit| {
         try applyWorkspaceEdit(wb, edit);
-        wb.rename_preview.clear();
+        wb.lsp.rename_preview.clear();
         try wb.setStatus("Rename applied");
         return;
     }
@@ -430,19 +430,19 @@ pub fn acceptRenamePreview(wb: anytype) !void {
 }
 
 pub fn rejectRenamePreview(wb: anytype) void {
-    if (!wb.rename_preview.active) return;
-    wb.rename_preview.clear();
+    if (!wb.lsp.rename_preview.active) return;
+    wb.lsp.rename_preview.clear();
     wb.setStatus("Rename cancelled") catch {};
 }
 
 pub fn gotoReference(wb: anytype, index: usize) !void {
-    if (index >= wb.references.items.len) return;
-    const item = wb.references.items[index];
+    if (index >= wb.lsp.references.items.len) return;
+    const item = wb.lsp.references.items[index];
     try wb.openFile(item.path);
     if (wb.activeBuffer()) |buf| {
         buf.goToLine(@intCast(item.line + 1));
         buf.cursor.col = @intCast(item.character);
-        wb.scrollEditorToCursor();
+        @import("../workbench/editor_ops.zig").scrollEditorToCursor(wb);
     }
 }
 
@@ -454,7 +454,7 @@ pub fn gotoLocation(wb: anytype, loc: lsp.navigation.Location) !void {
         if (wb.activeBuffer()) |buf| {
             buf.goToLine(@intCast(loc.line + 1));
             buf.cursor.col = @intCast(loc.character);
-            wb.scrollEditorToCursor();
+            @import("../workbench/editor_ops.zig").scrollEditorToCursor(wb);
         }
         return;
     }
@@ -462,8 +462,8 @@ pub fn gotoLocation(wb: anytype, loc: lsp.navigation.Location) !void {
 }
 
 pub fn findReferences(wb: anytype) !void {
-    const doc = wb.tabs.activeDoc() orelse return;
-    const owned = try wb.lsp_registry.copyMatchForPath(wb.allocator, doc.path);
+    const doc = wb.editor.tabs.activeDoc() orelse return;
+    const owned = try wb.lsp.registry.copyMatchForPath(wb.allocator, doc.path);
     const config = owned orelse {
         try wb.setStatus("No language server for this file");
         return;
@@ -479,7 +479,7 @@ pub fn findReferences(wb: anytype) !void {
     defer wb.allocator.free(req);
 
     var response_buf: [65536]u8 = undefined;
-    const len = wb.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
+    const len = wb.lsp.proxy.request(config.language_id, req, &response_buf, response_buf.len) catch {
         try wb.setStatus("Find references failed");
         return;
     };
@@ -510,26 +510,26 @@ pub fn findReferences(wb: anytype) !void {
         });
     }
 
-    wb.references.setItems(try items.toOwnedSlice(wb.allocator));
-    wb.rename_preview.clear();
+    wb.lsp.references.setItems(try items.toOwnedSlice(wb.allocator));
+    wb.lsp.rename_preview.clear();
     wb.bottom_panel_mode = .output;
     wb.task_scroll_y = 0;
     var status_buf: [64]u8 = undefined;
-    const msg = try std.fmt.bufPrint(&status_buf, "{d} references", .{wb.references.items.len});
+    const msg = try std.fmt.bufPrint(&status_buf, "{d} references", .{wb.lsp.references.items.len});
     try wb.setStatus(msg);
 }
 
 pub fn renameSymbol(wb: anytype, new_name: []const u8) !void {
-    try wb.previewRenameSymbol(new_name);
-    if (wb.rename_preview.active) try wb.acceptRenamePreview();
+    try @import("../workbench/editor_ops.zig").previewRenameSymbol(wb, new_name);
+    if (wb.lsp.rename_preview.active) try @import("../workbench/editor_ops.zig").acceptRenamePreview(wb);
 }
 
 pub fn formatDocument(wb: anytype) !void {
-    const doc = wb.tabs.activeDoc() orelse {
+    const doc = wb.editor.tabs.activeDoc() orelse {
         try wb.setStatus("No file open to format");
         return;
     };
-    _ = try wb.lsp_sync.ensureSyncedBlocking(doc);
+    _ = try wb.lsp.sync.ensureSyncedBlocking(doc);
 
     const uri = try lsp.diagnostics.fileUri(wb.allocator, wb.workspace_path, doc.path);
     defer wb.allocator.free(uri);
@@ -537,7 +537,7 @@ pub fn formatDocument(wb: anytype) !void {
     const req = try lsp.format.buildFormatRequest(wb.allocator, 94, uri, 4);
     defer wb.allocator.free(req);
 
-    const owned = try wb.lsp_registry.copyMatchForPath(wb.allocator, doc.path);
+    const owned = try wb.lsp.registry.copyMatchForPath(wb.allocator, doc.path);
     const config = owned orelse {
         try wb.setStatus("No language server for format");
         return;
@@ -545,7 +545,7 @@ pub fn formatDocument(wb: anytype) !void {
     defer lsp.Registry.freeConfig(wb.allocator, config);
 
     var response_buf: [256 * 1024]u8 = undefined;
-    const len = wb.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len) catch |err| {
+    const len = wb.lsp.proxy.request(config.language_id, req, &response_buf, response_buf.len) catch |err| {
         try wb.setStatus(@errorName(err));
         return;
     };
@@ -579,33 +579,33 @@ pub fn findNextMatch(wb: anytype) !void {
     const buf = wb.activeBuffer() orelse return;
     if (wb.find_bar.matches.len == 0) try wb.find_bar.refreshMatches(buf);
     wb.find_bar.nextMatch(buf);
-    wb.scrollEditorToCursor();
+    @import("../workbench/editor_ops.zig").scrollEditorToCursor(wb);
 }
 
 pub fn findPrevMatch(wb: anytype) !void {
     const buf = wb.activeBuffer() orelse return;
     if (wb.find_bar.matches.len == 0) try wb.find_bar.refreshMatches(buf);
     wb.find_bar.prevMatch(buf);
-    wb.scrollEditorToCursor();
+    @import("../workbench/editor_ops.zig").scrollEditorToCursor(wb);
 }
 
 pub fn commitGotoLine(wb: anytype) !void {
     const line = wb.goto_bar.parseLine() orelse return;
     if (wb.activeBuffer()) |buf| {
         buf.goToLine(line);
-        wb.scrollEditorToCursor();
+        @import("../workbench/editor_ops.zig").scrollEditorToCursor(wb);
     }
-    wb.closeEditorOverlay();
+    @import("../workbench/editor_ops.zig").closeEditorOverlay(wb);
 }
 
 pub fn gotoProblem(wb: anytype, index: usize) !void {
-    if (index >= wb.diagnostics.list.items.len) return;
-    const diag = wb.diagnostics.list.items[index];
+    if (index >= wb.lsp.diagnostics.list.items.len) return;
+    const diag = wb.lsp.diagnostics.list.items[index];
     if (wb.activeBuffer()) |buf| {
         buf.cursor.row = @intCast(@min(diag.line, buf.lineCount() - 1));
         const line_len = buf.lineAt(buf.cursor.row).len;
         buf.cursor.col = @intCast(@min(diag.character, line_len));
-        wb.scrollEditorToCursor();
+        @import("../workbench/editor_ops.zig").scrollEditorToCursor(wb);
         wb.focused_panel = .editor;
     }
 }

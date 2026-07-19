@@ -1,8 +1,8 @@
 const std = @import("std");
-const workspace = @import("forge-workspace");
+const tree = @import("../explorer/tree.zig");
 
 pub const ExplorerController = struct {
-    entries: []const workspace.DirEntry = &[_]workspace.DirEntry{},
+    entries: []tree.Entry = &[_]tree.Entry{},
     scroll_y: f32 = 0,
     panel_width: f32 = 250,
     boot_pending: bool = false,

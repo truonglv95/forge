@@ -1,4 +1,6 @@
 const std = @import("std");
+const core = @import("forge-core");
+const telemetry = core.telemetry;
 const lsp = @import("forge-lsp");
 const workspace = @import("forge-workspace");
 const editor = @import("forge-editor");
@@ -253,6 +255,8 @@ pub const Store = struct {
     }
 
     fn fetchSemanticWorker(ctx: anytype) void {
+        var span = telemetry.startSpan("lsp", "parse_semantic_tokens");
+        defer span.end();
         const self = ctx.store;
         defer self.allocator.free(ctx.path);
         defer self.allocator.free(ctx.language_id);

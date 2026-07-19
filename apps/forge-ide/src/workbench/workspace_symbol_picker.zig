@@ -21,7 +21,7 @@ pub const Picker = struct {
     open: bool = false,
     selected: usize = 0,
     entries: std.ArrayList(Entry),
-    proxy: *lsp.Proxy,
+    proxy: ?*lsp.Proxy,
     cooldown: f32 = 0,
     request_pending: std.atomic.Value(bool) = .init(false),
 
@@ -31,7 +31,7 @@ pub const Picker = struct {
     background_ready: std.atomic.Value(bool) = .init(false),
     background_mtx: @import("forge-util").sync.Mutex = .{},
 
-    pub fn init(allocator: std.mem.Allocator, proxy: *lsp.Proxy) !Picker {
+    pub fn init(allocator: std.mem.Allocator, proxy: ?*lsp.Proxy) !Picker {
         return .{
             .allocator = allocator,
             .query = try allocator.alloc(u8, 256),
@@ -172,7 +172,8 @@ pub const Picker = struct {
 
         var response_buf: [2 * 1024 * 1024]u8 = undefined;
         // In a real app we need to track what languages are active. For now we use "zig".
-        const len = picker.proxy.request("zig", req, &response_buf, response_buf.len) catch 0;
+        const proxy = picker.proxy orelse return;
+        const len = proxy.request("zig", req, &response_buf, response_buf.len) catch 0;
         if (len > 0) {
             var parsed = std.json.parseFromSlice(std.json.Value, picker.allocator, response_buf[0..len], .{}) catch null;
             if (parsed != null) {

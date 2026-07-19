@@ -280,14 +280,14 @@ pub fn hitTestSteps(wb: *@import("../../workbench.zig").Workbench, agent_x: f32,
         }
     }
 
-    wb.agent.lock();
-    defer wb.agent.unlock();
-    const mode = wb.agent.mode;
+    wb.agent_ui.session.lock();
+    defer wb.agent_ui.session.unlock();
+    const mode = wb.agent_ui.session.mode;
 
     var step_i: usize = 0;
-    while (step_i < wb.agent.agent_steps.items.len) : (step_i += 1) {
+    while (step_i < wb.agent_ui.session.agent_steps.items.len) : (step_i += 1) {
         if (tool_step_card.hitTestStep(
-            wb.agent.agent_steps.items,
+            wb.agent_ui.session.agent_steps.items,
             step_i,
             content_y,
             x,
@@ -295,7 +295,7 @@ pub fn hitTestSteps(wb: *@import("../../workbench.zig").Workbench, agent_x: f32,
             inner_x,
             content_w,
         )) |index| return index;
-        content_y += tool_step_card.stepHeight(wb.agent.agent_steps.items, step_i, content_w, mode);
+        content_y += tool_step_card.stepHeight(wb.agent_ui.session.agent_steps.items, step_i, content_w, mode);
     }
     return null;
 }

@@ -132,8 +132,8 @@ typedef struct {
         _currentY = 1;
         _rowHeight = 0;
         
-        int width = 2048;
-        int height = 2048;
+        int width = 512;
+        int height = 512;
         _bitmapData = calloc(width * height * 4, 1);
         
         MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
@@ -169,7 +169,7 @@ typedef struct {
         shape->stroke.type = NSVG_PAINT_NONE; // Optional: we could colorize strokes too
     }
     
-    if (_currentX + w > 2048) {
+    if (_currentX + w > 512) {
         _currentX = 1;
         _currentY += _rowHeight;
         _rowHeight = 0;
@@ -177,7 +177,7 @@ typedef struct {
     if (h > _rowHeight) {
         _rowHeight = h;
     }
-    if (_currentY + h > 2048) {
+    if (_currentY + h > 512) {
         nsvgDelete(image);
         ForgeIconInfo empty = {0};
         return empty;
@@ -199,8 +199,8 @@ typedef struct {
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             int srcIdx = (y * w + x) * 4;
-            // Metal texture uses y=0 as top. Our atlas is 2048x2048.
-            int dstIdx = ((_currentY + y) * 2048 + (_currentX + x)) * 4;
+            // Metal texture uses y=0 as top. Our atlas is 512x512.
+            int dstIdx = ((_currentY + y) * 512 + (_currentX + x)) * 4;
             
             // nanosvg outputs RGBA (premultiplied?). We need to make sure alpha works.
             _bitmapData[dstIdx] = tempBuf[srcIdx];       // R
@@ -214,8 +214,8 @@ typedef struct {
     nsvgDelete(image);
     
     ForgeIconInfo info;
-    info.uvX = (float)_currentX / 2048.0;
-    info.uvY = (float)_currentY / 2048.0;
+    info.uvX = (float)_currentX / 512.0;
+    info.uvY = (float)_currentY / 512.0;
     info.gw = w;
     info.gh = h;
     
@@ -234,7 +234,7 @@ typedef struct {
 
 - (void)uploadIfNeeded {
     if (_needsUpload) {
-        [_texture replaceRegion:MTLRegionMake2D(0, 0, 2048, 2048) mipmapLevel:0 withBytes:_bitmapData bytesPerRow:2048*4];
+        [_texture replaceRegion:MTLRegionMake2D(0, 0, 512, 512) mipmapLevel:0 withBytes:_bitmapData bytesPerRow:512*4];
         _needsUpload = NO;
     }
 }
@@ -261,9 +261,9 @@ typedef struct {
         _currentY = 1;
         _rowHeight = 0;
         
-        // 1. Create Bitmap Context (2048x2048 RGBA)
-        int width = 2048;
-        int height = 2048;
+        // 1. Create Bitmap Context (1024x1024 RGBA)
+        int width = 1024;
+        int height = 1024;
         _bitmapData = calloc(width * height * 4, 1);
         CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
         _bitmapContext = CGBitmapContextCreate(_bitmapData, width, height, 8, width * 4, colorSpace, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
@@ -280,10 +280,10 @@ typedef struct {
         // Setup coordinate system (Standard Bottom-Left origin)
         // No CTM flip!
         
-        // Fill (0, 2047) pixel with solid white for drawing rects
-        // In Bottom-Left context, y=2047 is the top row in memory, mapping to uv=(0,0) in Metal texture.
+        // Fill (0, 1023) pixel with solid white for drawing rects
+        // In Bottom-Left context, y=1023 is the top row in memory, mapping to uv=(0,0) in Metal texture.
         CGContextSetRGBFillColor(_bitmapContext, 1.0, 1.0, 1.0, 1.0);
-        CGContextFillRect(_bitmapContext, CGRectMake(0, 2047, 1, 1));
+        CGContextFillRect(_bitmapContext, CGRectMake(0, 1023, 1, 1));
         
         // 2. Create Metal Texture
         MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
@@ -319,7 +319,7 @@ typedef struct {
     int gh = ceil(bounds.size.height) + 2;
     if (gw == 0 || gh == 0) gw = gh = 10; // Fallback
     
-    if (_currentX + gw > 2048) {
+    if (_currentX + gw > 1024) {
         _currentX = 1;
         _currentY += _rowHeight;
         _rowHeight = 0;
@@ -328,8 +328,8 @@ typedef struct {
         _rowHeight = gh;
     }
     
-    if (_currentY + gh > 2048) {
-        NSLog(@"Atlas full! Ignoring glyph.");
+    if (_currentY + gh > 1024) {
+        [self resetGlyphs];
         ForgeGlyphInfo empty = {0};
         return empty;
     }
@@ -353,12 +353,12 @@ typedef struct {
     CGContextRestoreGState(_bitmapContext);
     
     // Calculate UV (0.0 - 1.0)
-    // Metal texture maps y=0 to top row in memory, which is y=2048 in CGContext.
-    // Our box top is at `_currentY + gh`. So its distance from the top of the context is `2048 - (_currentY + gh)`.
-    CGRect uv = CGRectMake((float)_currentX / 2048.0, 
-                           (float)(2048 - _currentY - gh) / 2048.0, 
-                           (float)gw / 2048.0, 
-                           (float)gh / 2048.0);
+    // Metal texture maps y=0 to top row in memory, which is y=1024 in CGContext.
+    // Our box top is at `_currentY + gh`. So its distance from the top of the context is `1024 - (_currentY + gh)`.
+    CGRect uv = CGRectMake((float)_currentX / 1024.0, 
+                           (float)(1024 - _currentY - gh) / 1024.0, 
+                           (float)gw / 1024.0, 
+                           (float)gh / 1024.0);
                            
     ForgeGlyphInfo info;
     info.uvX = uv.origin.x;
@@ -379,7 +379,7 @@ typedef struct {
 
 - (void)uploadIfNeeded {
     if (_needsUpload) {
-        [_texture replaceRegion:MTLRegionMake2D(0, 0, 2048, 2048) mipmapLevel:0 withBytes:_bitmapData bytesPerRow:2048*4];
+        [_texture replaceRegion:MTLRegionMake2D(0, 0, 1024, 1024) mipmapLevel:0 withBytes:_bitmapData bytesPerRow:1024*4];
         _needsUpload = NO;
     }
 }
@@ -389,9 +389,9 @@ typedef struct {
     _currentX = 1;
     _currentY = 1;
     _rowHeight = 0;
-    memset(_bitmapData, 0, 2048 * 2048 * 4);
+    memset(_bitmapData, 0, 1024 * 1024 * 4);
     CGContextSetRGBFillColor(_bitmapContext, 1.0, 1.0, 1.0, 1.0);
-    CGContextFillRect(_bitmapContext, CGRectMake(0, 2047, 1, 1));
+    CGContextFillRect(_bitmapContext, CGRectMake(0, 1023, 1, 1));
     _needsUpload = YES;
 }
 @end
@@ -399,7 +399,7 @@ typedef struct {
 
 // --- Global Renderer State ---
 static ForgeRenderCallback g_renderCallback = NULL;
-static const NSUInteger kMaxVertices = 512000;
+static const NSUInteger kMaxVertices = 256000;
 static atomic_bool g_redrawPending = false;
 static atomic_ullong g_redrawRequestCount = 0;
 static atomic_ullong g_frameCount = 0;
@@ -896,8 +896,8 @@ static void ForgeDrawGlyphsFromCTLine(CTLineRef line, CTFontRef defaultFont, flo
             NSUInteger idx = g_renderer.vertexOffset + g_renderer.vertexCount;
             if (idx + 6 > kMaxVertices) return;
 
-            float uvW = gw / 2048.0f;
-            float uvH = gh / 2048.0f;
+            float uvW = gw / 1024.0f;
+            float uvH = gh / 1024.0f;
 
             vector_float4 sdf_params = {0, 0, 0, 0};
             vector_float4 sdf_params2 = {0, 0, 0, 0};
@@ -1265,8 +1265,8 @@ void forge_mac_draw_svg(const char* svg_string, float x, float y, float w, float
     
     float u1 = info.uvX;
     float v1 = info.uvY;
-    float u2 = info.uvX + (info.gw / 2048.0);
-    float v2 = info.uvY + (info.gh / 2048.0);
+    float u2 = info.uvX + (info.gw / 512.0);
+    float v2 = info.uvY + (info.gh / 512.0);
     
     vector_float4 color = {r, g, b, a};
     vector_float4 no_sdf = {0,0,0,0};

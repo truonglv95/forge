@@ -12,6 +12,7 @@ const scope_resolver = @import("scope_resolver.zig");
 const web_fetcher = @import("web_fetcher.zig");
 const agent_memory = @import("agent_memory.zig");
 const import_graph = @import("import_graph.zig");
+const context_cache = @import("context_cache.zig");
 const workspace = @import("forge-workspace");
 
 pub const AttachmentInput = struct {
@@ -57,6 +58,8 @@ pub const LoadOptions = struct {
     web_max_urls: usize = 4,
     web_max_bytes: usize = 32 * 1024,
     excluded_entries: []const []const u8 = &.{},
+    cache: ?*context_cache.ContextCache = null,
+    enable_hyde: bool = false,
 };
 
 pub const ManifestStatus = enum {
@@ -668,6 +671,7 @@ fn loadFusedBlock(
             .embedding = options.embedding,
             .environ_map = options.environ_map,
             .allow_rebuild = options.allow_rebuild,
+            .enable_hyde = options.enable_hyde,
         }) catch @as([]codebase_search.ScoredChunk, &.{});
         defer if (semantic.len > 0) codebase_search.freeResults(allocator, semantic);
 
@@ -709,6 +713,7 @@ fn loadFusedBlock(
         import_graph.collectNeighborPaths(allocator, io, root, seed_paths, skip, .{
             .max_files = options.import_max_files,
             .preview_bytes = 0,
+            .cache = options.cache,
         }) catch &[_][]const u8{}
     else
         &[_][]const u8{};
@@ -770,6 +775,7 @@ fn loadSemanticBlock(
         .embedding = options.embedding,
         .environ_map = options.environ_map,
         .allow_rebuild = options.allow_rebuild,
+        .enable_hyde = options.enable_hyde,
     }) catch return;
     defer codebase_search.freeResults(allocator, results);
 
@@ -837,7 +843,7 @@ fn loadRecentFileBlocks(
 
     for (recent_paths) |path| {
         if (pathAlreadyInBuilder(builder, path)) continue;
-        try loadRecentPreview(allocator, io, root, builder, path, options.recent_file_preview_bytes);
+        try loadRecentPreview(allocator, io, root, builder, path, options.recent_file_preview_bytes, options);
     }
 }
 
@@ -879,8 +885,27 @@ fn loadRecentPreview(
     builder: *context.ContextBuilder,
     file_path: []const u8,
     preview_bytes: usize,
+    options: LoadOptions,
 ) !void {
     const wp = workspace.WorkspacePath.parse(file_path) catch return;
+
+    var mtime: i128 = 0;
+    if (root.dir.statFile(io, wp.raw, .{})) |stat| {
+        mtime = stat.mtime.nanoseconds;
+    } else |_| {}
+
+    if (options.cache) |cache| {
+        cache.mutex.lock();
+        if (cache.entries.get(file_path)) |entry| {
+            if (entry.mtime == mtime and entry.preview != null) {
+                try builder.addBlock(.recent, file_path, entry.preview.?);
+                cache.mutex.unlock();
+                return;
+            }
+        }
+        cache.mutex.unlock();
+    }
+
     var snap = workspace.FileSnapshot.read(allocator, io, root, wp) catch return;
     defer snap.deinit();
 
@@ -890,6 +915,30 @@ fn loadRecentPreview(
     try preview_buf.appendSlice(allocator, snap.content[0..take]);
     if (take < snap.content.len) {
         try preview_buf.appendSlice(allocator, "\n... [preview truncated]\n");
+    }
+
+    if (options.cache) |cache| {
+        cache.mutex.lock();
+        defer cache.mutex.unlock();
+        var owned_path = file_path;
+
+        var entry = cache.entries.get(file_path) orelse context_cache.ContextCache.Entry{ .mtime = mtime };
+        if (entry.mtime != mtime) {
+            if (entry.preview) |p| allocator.free(p);
+            if (entry.imports) |arr| {
+                for (arr) |p| allocator.free(p);
+                allocator.free(arr);
+            }
+            entry = context_cache.ContextCache.Entry{ .mtime = mtime };
+        }
+
+        if (!cache.entries.contains(file_path)) {
+            owned_path = try allocator.dupe(u8, file_path);
+        } else {
+            if (entry.preview) |p| allocator.free(p);
+        }
+        entry.preview = try allocator.dupe(u8, preview_buf.items);
+        try cache.entries.put(owned_path, entry);
     }
 
     try builder.addBlock(.recent, file_path, preview_buf.items);
@@ -998,6 +1047,7 @@ fn loadImportGraphBlock(
     const neighbors = import_graph.collectNeighborPaths(allocator, io, root, seed_paths, skip, .{
         .max_files = options.import_max_files,
         .preview_bytes = options.import_preview_bytes,
+        .cache = options.cache,
     }) catch return;
     defer import_graph.freePaths(allocator, neighbors);
     if (neighbors.len == 0) return;

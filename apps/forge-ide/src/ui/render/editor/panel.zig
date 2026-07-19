@@ -14,6 +14,7 @@ const breadcrumbs = @import("breadcrumbs.zig");
 const welcome = @import("welcome.zig");
 
 pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, editor_w: f32, editor_h: f32, _: f32) void {
+    wb.conflict_action_rects.clearRetainingCapacity();
     if (wb.proposal_review_open) {
         const theme = &wb.theme;
         proposal_review_panel.drawTab(editor_x, syntax.color(theme.colors.accent), syntax.color(theme.colors.editor_bg), syntax.color(theme.colors.border), syntax.color(theme.colors.text_primary), theme.ui_font_size);
@@ -34,17 +35,17 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
 
     for (tab_layouts.items) |tab_layout| {
         const tab_index = tab_layout.index;
-        const doc = &wb.tabs.tabs.items[tab_index];
+        const doc = &wb.editor.tabs.tabs.items[tab_index];
         var label_buf: [128]u8 = undefined;
         const label = wb.tabLabel(tab_index, &label_buf);
-        const is_active = tab_index == wb.tabs.active;
+        const is_active = tab_index == wb.editor.tabs.active;
 
         if (is_active) {
             // Draw the active tab background
             renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, tabs_ui.tab_height + 1, syntax.color(theme.colors.editor_bg));
         } else {
             // Draw a subtle left separator for inactive tabs (unless it's the first tab)
-            if (tab_index > 0 and tab_index - 1 != wb.tabs.active) {
+            if (tab_index > 0 and tab_index - 1 != wb.editor.tabs.active) {
                 renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y + 8, 1, tabs_ui.tab_height - 16, .{ .r = border.r, .g = border.g, .b = border.b, .a = border.a * 0.5 });
             }
         }
@@ -105,7 +106,7 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
     }
     renderer.Renderer.drawSvg(renderer.icons.repo, rx, layout.header_height + 7, 16, 16, icon_c);
 
-    if (wb.welcome_visible and wb.tabs.tabs.items.len == 0) {
+    if (wb.welcome_visible and wb.editor.tabs.tabs.items.len == 0) {
         welcome.draw(wb, editor_x, editor_w, editor_h);
         return;
     }
@@ -149,7 +150,7 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
         viewport.drawEditorViewport(wb, buf, editor_x, editor_w, editor_h, wb.editor_scroll_y, wb.editor_scroll_x, path, true);
     }
 
-    if (wb.completions.visible and wb.completions.list.items.len > 0 and wb.focused_panel == .editor) {
+    if (wb.lsp.completions.visible and wb.lsp.completions.list.items.len > 0 and wb.focused_panel == .editor) {
         const gutter = editor_scroll.gutterWidth(theme);
         const focus_x = wb.paneOriginX(editor_x, editor_w, wb.focusedPane());
         const focus_w = pane_w;
@@ -157,14 +158,14 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
         const popup_y: f32 = 90;
         const popup_w = @min(focus_w - gutter - 16, 360);
         const row_h: f32 = 16;
-        const count = @min(wb.completions.list.items.len, 10);
+        const count = @min(wb.lsp.completions.list.items.len, 10);
         const popup_h = @as(f32, @floatFromInt(count)) * row_h + 8;
         renderer.Renderer.drawRoundedRect(popup_x, popup_y, popup_w, popup_h, 6, .{ .r = 0.14, .g = 0.16, .b = 0.22, .a = 0.98 });
         var row: usize = 0;
         while (row < count) : (row += 1) {
-            const item = wb.completions.list.items[row];
+            const item = wb.lsp.completions.list.items[row];
             const row_y = popup_y + 4 + @as(f32, @floatFromInt(row)) * row_h;
-            if (row == wb.completions.selected) {
+            if (row == wb.lsp.completions.selected) {
                 renderer.Renderer.drawRect(popup_x + 4, row_y, popup_w - 8, row_h, .{ .r = 0.22, .g = 0.34, .b = 0.52, .a = 1.0 });
             }
             var label_buf: [128:0]u8 = undefined;

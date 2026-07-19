@@ -176,7 +176,7 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
             try wb.setStatus("Switch branch not yet implemented via Palette");
             // TODO: dispatch a palette command for branch switching
         },
-        .commit => try wb.commitStagedChanges(),
+        .commit => try @import("../workbench/git_ops.zig").commitStagedChanges(wb),
         .ai_generate => try wb.setStatus("AI Commit Generation not yet implemented"),
         .view_as_tree => try wb.setStatus("View as tree not yet implemented"),
         .more_actions => try wb.setStatus("More actions not yet implemented"),
@@ -223,7 +223,7 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
             const path = try wb.allocator.dupe(u8, entry.path);
             defer wb.allocator.free(path);
             const untracked = entry.status[0] == '?' or entry.status[1] == '?';
-            try wb.showGitDiff(path, untracked, info.is_staged);
+            try @import("../workbench/git_ops.zig").showGitDiff(wb, path, untracked, info.is_staged);
         },
         .stage_all => {
             const process_spawn = @import("forge-util").process_spawn;
@@ -270,7 +270,7 @@ pub fn showGitDiff(wb: anytype, path: []const u8, untracked: bool, is_staged: bo
     const diff_path = try std.fmt.bufPrint(&buf, "git-diff://{s}", .{path});
 
     // Open or activate the tab
-    const doc = try wb.tabs.openOrActivate(diff_path);
+    const doc = try wb.editor.tabs.openOrActivate(diff_path);
     try doc.buffer.loadFromSlice(diff);
 
     // Set it as read-only (if buffer supports it, otherwise just leave it as is)

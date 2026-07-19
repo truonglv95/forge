@@ -41,6 +41,7 @@ pub const SearchOptions = struct {
     /// Minimum cosine similarity to include a chunk.
     /// When 0 (default), an adaptive threshold of max(0.01, top_score * 0.20) is used.
     score_floor: f32 = 0,
+    enable_hyde: bool = false,
 };
 
 pub const ScoredChunk = struct {
@@ -318,6 +319,16 @@ pub fn search(
 ) ![]ScoredChunk {
     defer if (builtin.is_test) clearSearchCaches(allocator);
 
+    var effective_query: []const u8 = query;
+    var hyde_expanded: ?[]u8 = null;
+    if (options.enable_hyde and options.environ_map != null) {
+        if (generateHydeQuery(allocator, io, options, query)) |expanded| {
+            hyde_expanded = expanded;
+            effective_query = expanded;
+        } else |_| {} // fallback to standard query on failure
+    }
+    defer if (hyde_expanded) |expanded| allocator.free(expanded);
+
     ensureIndex(allocator, io, root, options) catch {};
 
     var local_index: LoadedIndex = undefined;
@@ -335,7 +346,7 @@ pub fn search(
     defer allocator.free(query_vec);
     @memset(query_vec, 0);
 
-    try embedQueryCached(allocator, io, &backend, query, index.dim, query_vec);
+    try embedQueryCached(allocator, io, &backend, effective_query, index.dim, query_vec);
     const query_norm_sq = normSquared(query_vec);
     if (query_norm_sq == 0) return &.{};
 
@@ -778,4 +789,52 @@ test "local semantic index achieves recall at one on symbol corpus" {
         if (results.len == 1 and std.mem.eql(u8, results[0].path, query.expected)) recalled += 1;
     }
     try std.testing.expectEqual(corpus.len, recalled);
+}
+
+fn generateHydeQuery(allocator: std.mem.Allocator, io: std.Io, options: SearchOptions, query: []const u8) ![]u8 {
+    const map = options.environ_map orelse return error.MissingCredentials;
+    var creds = credentials.Credentials.load(allocator, io, map, &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" }, "forge-gemini", "default") catch return error.MissingCredentials;
+    defer creds.deinit();
+
+    const Part = struct { text: []const u8 };
+    const Content = struct { parts: []const Part };
+    const Payload = struct {
+        contents: []const Content,
+        generationConfig: struct { temperature: f32 = 0.2 } = .{},
+    };
+
+    const prompt = try std.fmt.allocPrint(allocator, "Write a hypothetical code snippet that answers this query. Only return code, no markdown block, no explanation. Query: {s}", .{query});
+    defer allocator.free(prompt);
+
+    const parts = [_]Part{.{ .text = prompt }};
+    const contents = [_]Content{.{ .parts = &parts }};
+    const payload = Payload{ .contents = &contents };
+    const payload_str = try std.json.Stringify.valueAlloc(allocator, payload, .{});
+    defer allocator.free(payload_str);
+
+    var client = std.http.Client{ .allocator = allocator, .io = io };
+    defer client.deinit();
+
+    var response_alloc = std.Io.Writer.Allocating.init(allocator);
+    defer response_alloc.deinit();
+
+    const api_headers = [_]std.http.Header{.{ .name = "x-goog-api-key", .value = creds.api_key }};
+    const result = client.fetch(.{
+        .location = .{ .url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent" },
+        .method = .POST,
+        .payload = payload_str,
+        .headers = .{ .content_type = .{ .override = "application/json" } },
+        .extra_headers = &api_headers,
+        .response_writer = &response_alloc.writer,
+    }) catch return error.ProviderFailed;
+
+    if (result.status != .ok) return error.ProviderFailed;
+    const body = try response_alloc.toOwnedSlice();
+    defer allocator.free(body);
+
+    const gemini_provider = @import("providers/gemini/provider.zig");
+    const text = try gemini_provider.normalizeModelText(allocator, body);
+    defer allocator.free(text);
+
+    return try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ query, text });
 }

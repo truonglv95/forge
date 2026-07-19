@@ -284,13 +284,22 @@ fn appendRangeChunks(
         const line_end = lineAtOffset(content, if (end > cursor) end - 1 else end);
         var id_buf: [std.fs.max_path_bytes + 96]u8 = undefined;
         const id = try std.fmt.bufPrint(&id_buf, "{s}:{d}:{d}:{s}", .{ path, line_start, line_end, kind });
+
+        const comment_prefix = if (std.mem.eql(u8, language, "python")) "#" else "//";
+        const header = if (symbol.len > 0)
+            try std.fmt.allocPrint(allocator, "{s} File: {s}, Symbol: {s}\n", .{ comment_prefix, path, symbol })
+        else
+            try std.fmt.allocPrint(allocator, "{s} File: {s}\n", .{ comment_prefix, path });
+        defer allocator.free(header);
+        const full_text = try std.mem.concat(allocator, u8, &.{ header, content[cursor..end] });
+
         try chunks.append(allocator, .{
             .id = try allocator.dupe(u8, id),
             .path = try allocator.dupe(u8, path),
             .line_start = line_start,
             .line_end = line_end,
             .file_hash = file_hash,
-            .text = try allocator.dupe(u8, content[cursor..end]),
+            .text = full_text,
             .symbol = try allocator.dupe(u8, symbol),
             .kind = try allocator.dupe(u8, kind),
             .language = try allocator.dupe(u8, language),

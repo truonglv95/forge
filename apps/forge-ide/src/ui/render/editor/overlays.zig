@@ -6,7 +6,7 @@ const Workbench = @import("../../../workbench.zig").Workbench;
 const Buffer = @import("forge-editor").Buffer;
 
 pub fn drawHoverTooltip(wb: *Workbench, editor_x: f32, editor_w: f32) void {
-    const text = wb.hover.text orelse return;
+    const text = wb.lsp.hover.text orelse return;
     if (text.len == 0) return;
 
     const font_size: f32 = 11.0;
@@ -56,11 +56,11 @@ pub fn drawHoverTooltip(wb: *Workbench, editor_x: f32, editor_w: f32) void {
     }
     box_w = @min(max_w, box_w + padding * 2);
     const box_h = @as(f32, @floatFromInt(line_count)) * line_h + padding * 2;
-    var box_x = wb.hover.anchor_x + 12;
-    var box_y = wb.hover.anchor_y - box_h - 8;
+    var box_x = wb.lsp.hover.anchor_x + 12;
+    var box_y = wb.lsp.hover.anchor_y - box_h - 8;
     if (box_x + box_w > editor_x + editor_w - 8) box_x = editor_x + editor_w - box_w - 8;
     if (box_x < editor_x + 8) box_x = editor_x + 8;
-    if (box_y < 70) box_y = wb.hover.anchor_y + 18;
+    if (box_y < 70) box_y = wb.lsp.hover.anchor_y + 18;
 
     renderer.Renderer.drawRect(box_x, box_y, box_w, box_h, .{ .r = 0.14, .g = 0.16, .b = 0.2, .a = 0.98 });
     var y = box_y + padding;

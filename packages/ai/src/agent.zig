@@ -88,6 +88,7 @@ pub const Config = struct {
     max_conversation_bytes: usize = 256 * 1024,
     max_conversation_compactions: u8 = 4,
     context_budget_tier: context_budget.BudgetTier = .full,
+    enable_hyde: bool = false,
 };
 
 pub const Step = struct {
@@ -226,6 +227,7 @@ pub fn run(
         .recent_files = effective_config.recent_files,
         .max_bytes = budget_plan.max_context_bytes,
         .embedding = effective_config.embedding,
+        .enable_hyde = effective_config.enable_hyde,
     };
 
     const budget_detail = std.fmt.allocPrint(
@@ -345,6 +347,7 @@ pub fn run(
         .editor_context_callback = effective_config.editor_context_callback,
         .editor_context = effective_config.editor_context,
         .cache = &tool_cache,
+        .enable_hyde = effective_config.enable_hyde,
     };
 
     var next_index: u32 = 1;

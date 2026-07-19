@@ -57,32 +57,32 @@ fn agentChrome(wb: anytype) struct {
     attachment_count: usize,
     has_routing: bool,
 } {
-    wb.agent.lock();
-    defer wb.agent.unlock();
-    const expanded = wb.agent.context_inspector_expanded;
+    wb.agent_ui.session.lock();
+    defer wb.agent_ui.session.unlock();
+    const expanded = wb.agent_ui.session.context_inspector_expanded;
     return .{
-        .entry_count = wb.agent.context_entries.items.len,
+        .entry_count = wb.agent_ui.session.context_entries.items.len,
         .expanded = expanded,
-        .has_detail = wb.agent.context_selected_index != null and expanded,
-        .attachment_count = wb.agent.attachments.items.len,
-        .has_routing = wb.agent.routing_task_intent.len > 0,
+        .has_detail = wb.agent_ui.session.context_selected_index != null and expanded,
+        .attachment_count = wb.agent_ui.session.attachments.items.len,
+        .has_routing = wb.agent_ui.session.routing_task_intent.len > 0,
     };
 }
 
 fn liveContentHeight(wb: anytype, content_w: f32) f32 {
-    wb.agent.lock();
-    defer wb.agent.unlock();
-    const worker_running = wb.agent.worker_running or phaseShowsLive(wb.agent.phase);
-    const steps_len = wb.agent.agent_steps.items.len;
+    wb.agent_ui.session.lock();
+    defer wb.agent_ui.session.unlock();
+    const worker_running = wb.agent_ui.session.worker_running or phaseShowsLive(wb.agent_ui.session.phase);
+    const steps_len = wb.agent_ui.session.agent_steps.items.len;
     _ = steps_len;
     if (!worker_running) return 0;
 
     var h: f32 = 0;
-    if (worker_running and wb.agent.stream_text.items.len == 0) {
+    if (worker_running and wb.agent_ui.session.stream_text.items.len == 0) {
         h += chat_bubble_mod.thinkingLineHeight();
     }
-    if (wb.agent.stream_text.items.len > 0) {
-        h += chat_bubble_mod.agentMessageHeight(wb.agent.stream_text.items, content_w);
+    if (wb.agent_ui.session.stream_text.items.len > 0) {
+        h += chat_bubble_mod.agentMessageHeight(wb.agent_ui.session.stream_text.items, content_w);
     }
     return h;
 }
@@ -145,12 +145,12 @@ fn messageHeight(line_entry: chat_message_lines_mod.Entry, msg: anytype, content
 }
 
 fn rebuildHistory(wb: anytype, cache: *Cache, content_w: f32) void {
-    const total = wb.chat_history.items.len;
+    const total = wb.agent_ui.chat_history.items.len;
     if (cache.content_w == content_w and cache.message_heights.items.len < total) {
         var history_h = cache.history_content_h;
         var i = cache.message_heights.items.len;
         while (i < total) : (i += 1) {
-            const msg = wb.chat_history.items[i];
+            const msg = wb.agent_ui.chat_history.items[i];
             const line_entry = buildLineEntry(wb, msg, content_w);
             const msg_h = messageHeight(line_entry, msg, content_w);
             appendMessageMetrics(cache, wb, msg_h, line_entry);
@@ -167,7 +167,7 @@ fn rebuildHistory(wb: anytype, cache: *Cache, content_w: f32) void {
     for (cache.message_lines.items) |*entry| entry.deinit(wb.allocator);
     cache.message_lines.clearRetainingCapacity();
     var history_h: f32 = 0;
-    for (wb.chat_history.items) |msg| {
+    for (wb.agent_ui.chat_history.items) |msg| {
         const line_entry = buildLineEntry(wb, msg, content_w);
         const msg_h = messageHeight(line_entry, msg, content_w);
         appendMessageMetrics(cache, wb, msg_h, line_entry);
@@ -219,16 +219,16 @@ pub fn hitTestMessageOpen(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
     const cache = &wb.chat_layout;
     const chat_top = agent_panel_mod.chat_content_top + 8.0;
 
-    wb.agent.lock();
-    const post_apply_visible = wb.agent.post_apply_visible;
-    const validation_failed = wb.agent.phase == .failed;
-    const validation_count = wb.agent.validation_results.items.len;
-    const resume_offer_visible = wb.agent.resume_offer_visible;
+    wb.agent_ui.session.lock();
+    const post_apply_visible = wb.agent_ui.session.post_apply_visible;
+    const validation_failed = wb.agent_ui.session.phase == .failed;
+    const validation_count = wb.agent_ui.session.validation_results.items.len;
+    const resume_offer_visible = wb.agent_ui.session.resume_offer_visible;
     var resume_intent: []const u8 = "previous run";
     var resume_state: []const u8 = "interrupted";
-    if (wb.agent.resume_intent) |i| resume_intent = i;
-    if (wb.agent.resume_state) |s| resume_state = s;
-    wb.agent.unlock();
+    if (wb.agent_ui.session.resume_intent) |i| resume_intent = i;
+    if (wb.agent_ui.session.resume_state) |s| resume_state = s;
+    wb.agent_ui.session.unlock();
 
     var history_prefix: f32 = 0;
     if (post_apply_visible) {
@@ -243,7 +243,7 @@ pub fn hitTestMessageOpen(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
     const start_i = firstVisibleIndex(cache, scroll_y, history_prefix);
     const end_i = lastVisibleIndex(cache, scroll_y, history_prefix, cache.viewport_h);
 
-    for (wb.chat_history.items[start_i..end_i], start_i..) |msg, i| {
+    for (wb.agent_ui.chat_history.items[start_i..end_i], start_i..) |msg, i| {
         if (msg.role != .agent) continue;
         if (i >= cache.message_heights.items.len) break;
         const msg_h = cache.message_heights.items[i];
@@ -267,16 +267,16 @@ pub fn hitTestMessageCopy(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
     const cache = &wb.chat_layout;
     const chat_top = agent_panel_mod.chat_content_top + 8.0;
 
-    wb.agent.lock();
-    const post_apply_visible = wb.agent.post_apply_visible;
-    const validation_failed = wb.agent.phase == .failed;
-    const validation_count = wb.agent.validation_results.items.len;
-    const resume_offer_visible = wb.agent.resume_offer_visible;
+    wb.agent_ui.session.lock();
+    const post_apply_visible = wb.agent_ui.session.post_apply_visible;
+    const validation_failed = wb.agent_ui.session.phase == .failed;
+    const validation_count = wb.agent_ui.session.validation_results.items.len;
+    const resume_offer_visible = wb.agent_ui.session.resume_offer_visible;
     var resume_intent: []const u8 = "previous run";
     var resume_state: []const u8 = "interrupted";
-    if (wb.agent.resume_intent) |i| resume_intent = i;
-    if (wb.agent.resume_state) |s| resume_state = s;
-    wb.agent.unlock();
+    if (wb.agent_ui.session.resume_intent) |i| resume_intent = i;
+    if (wb.agent_ui.session.resume_state) |s| resume_state = s;
+    wb.agent_ui.session.unlock();
 
     var history_prefix: f32 = 0;
     if (post_apply_visible) {
@@ -291,7 +291,7 @@ pub fn hitTestMessageCopy(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
     const start_i = firstVisibleIndex(cache, scroll_y, history_prefix);
     const end_i = lastVisibleIndex(cache, scroll_y, history_prefix, cache.viewport_h);
 
-    for (wb.chat_history.items[start_i..end_i], start_i..) |msg, i| {
+    for (wb.agent_ui.chat_history.items[start_i..end_i], start_i..) |msg, i| {
         if (msg.role != .agent) continue;
         if (i >= cache.message_heights.items.len) break;
         const msg_h = cache.message_heights.items[i];
@@ -314,8 +314,8 @@ fn layoutChrome(wb: anytype, agent_h: f32) struct {
     _ = chrome.entry_count;
     _ = chrome.has_detail;
     _ = chrome.has_routing;
-    const bottom = agent_panel_mod.bottomReserved(chrome.attachment_count, wb.agent_panel_width, &wb.prompt_buffer);
-    const composer_top = @import("../ui/agent/agent_composer.zig").composerTop(agent_h, chrome.attachment_count, wb.agent_panel_width, &wb.prompt_buffer);
+    const bottom = agent_panel_mod.bottomReserved(chrome.attachment_count, wb.agent_panel_width, &wb.agent_ui.prompt_buffer);
+    const composer_top = @import("../ui/agent/agent_composer.zig").composerTop(agent_h, chrome.attachment_count, wb.agent_panel_width, &wb.agent_ui.prompt_buffer);
     const chat_top = agent_panel_mod.chat_content_top + 8.0;
     const viewport = @max(0, composer_top - chat_composer_gap - chat_top);
     return .{ .bottom = bottom, .viewport = viewport };
@@ -326,12 +326,12 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
     const cache = &wb.chat_layout;
 
     const history_dirty = cache.content_w != content_w or cache.built_revision != wb.chat_history_revision;
-    wb.agent.lock();
-    const stream_len = wb.agent.stream_text.items.len;
-    const thinking_len = wb.agent.thinking_text.items.len;
-    const steps_len = wb.agent.agent_steps.items.len;
-    const worker_running = wb.agent.worker_running or phaseShowsLive(wb.agent.phase);
-    wb.agent.unlock();
+    wb.agent_ui.session.lock();
+    const stream_len = wb.agent_ui.session.stream_text.items.len;
+    const thinking_len = wb.agent_ui.session.thinking_text.items.len;
+    const steps_len = wb.agent_ui.session.agent_steps.items.len;
+    const worker_running = wb.agent_ui.session.worker_running or phaseShowsLive(wb.agent_ui.session.phase);
+    wb.agent_ui.session.unlock();
 
     if (!history_dirty and
         cache.agent_h == agent_h and
@@ -367,9 +367,9 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
 
         if (stream_len != cache.stream_built_len) {
             cache.stream_entry.deinit(wb.allocator);
-            wb.agent.lock();
-            const stream_text = wb.agent.stream_text.items;
-            wb.agent.unlock();
+            wb.agent_ui.session.lock();
+            const stream_text = wb.agent_ui.session.stream_text.items;
+            wb.agent_ui.session.unlock();
             cache.stream_entry = chat_message_lines_mod.build(wb.allocator, stream_text, chat_bubble_mod.agentTextWidth(content_w)) catch .{};
             cache.stream_built_len = stream_len;
         }
@@ -379,7 +379,7 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
     cache.bottom_reserved = chrome.bottom;
     cache.viewport_h = chrome.viewport;
     cache.max_scroll = @max(0, cache.content_h - chrome.viewport);
-    cache.chrome_prompt_lines = wb.prompt_buffer.lineCount();
+    cache.chrome_prompt_lines = wb.agent_ui.prompt_buffer.lineCount();
 }
 
 pub fn clampScrollY(wb: anytype, agent_h: f32) void {
@@ -406,16 +406,16 @@ pub fn hitTestChatSelection(wb: anytype, agent_x: f32, agent_w: f32, event_x: f3
     const cache = &wb.chat_layout;
     const chat_top = agent_panel_mod.chat_content_top + 8.0;
 
-    wb.agent.lock();
-    const post_apply_visible = wb.agent.post_apply_visible;
-    const validation_failed = wb.agent.phase == .failed;
-    const validation_count = wb.agent.validation_results.items.len;
-    const resume_offer_visible = wb.agent.resume_offer_visible;
+    wb.agent_ui.session.lock();
+    const post_apply_visible = wb.agent_ui.session.post_apply_visible;
+    const validation_failed = wb.agent_ui.session.phase == .failed;
+    const validation_count = wb.agent_ui.session.validation_results.items.len;
+    const resume_offer_visible = wb.agent_ui.session.resume_offer_visible;
     var resume_intent: []const u8 = "previous run";
     var resume_state: []const u8 = "interrupted";
-    if (wb.agent.resume_intent) |i| resume_intent = i;
-    if (wb.agent.resume_state) |s| resume_state = s;
-    wb.agent.unlock();
+    if (wb.agent_ui.session.resume_intent) |i| resume_intent = i;
+    if (wb.agent_ui.session.resume_state) |s| resume_state = s;
+    wb.agent_ui.session.unlock();
 
     var history_prefix: f32 = 0;
     if (post_apply_visible) {
@@ -430,7 +430,7 @@ pub fn hitTestChatSelection(wb: anytype, agent_x: f32, agent_w: f32, event_x: f3
     const start_i = firstVisibleIndex(cache, scroll_y, history_prefix);
     const end_i = lastVisibleIndex(cache, scroll_y, history_prefix, cache.viewport_h);
 
-    for (wb.chat_history.items[start_i..end_i], start_i..) |msg, i| {
+    for (wb.agent_ui.chat_history.items[start_i..end_i], start_i..) |msg, i| {
         if (msg.role == .tool or msg.content.len == 0) continue;
         if (i >= cache.message_heights.items.len) break;
         const msg_h = cache.message_heights.items[i];

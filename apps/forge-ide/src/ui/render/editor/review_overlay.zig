@@ -45,14 +45,14 @@ pub const ReviewHunks = struct {
 
 pub fn resolveHunks(wb: *Workbench, editor_buf: *Buffer, file_path: []const u8) ReviewHunks {
     var resolved_hunks = ReviewHunks{};
-    if (!wb.agent.show_review) return resolved_hunks;
-    wb.agent.lock();
-    defer wb.agent.unlock();
+    if (!wb.agent_ui.session.show_review) return resolved_hunks;
+    wb.agent_ui.session.lock();
+    defer wb.agent_ui.session.unlock();
 
-    var valid_hunks: std.ArrayList(*const @TypeOf(wb.agent.review.hunks[0])) = .empty;
+    var valid_hunks: std.ArrayList(*const @TypeOf(wb.agent_ui.session.review.hunks[0])) = .empty;
     defer valid_hunks.deinit(wb.allocator);
 
-    for (wb.agent.review.hunks) |*hunk| {
+    for (wb.agent_ui.session.review.hunks) |*hunk| {
         if (!hunk.accepted or !std.mem.eql(u8, hunk.path, file_path)) continue;
         if (hunk.edit_start == null or hunk.edit_end == null) {
             resolved_hunks.append(.{
@@ -67,8 +67,8 @@ pub fn resolveHunks(wb: *Workbench, editor_buf: *Buffer, file_path: []const u8) 
         valid_hunks.append(wb.allocator, hunk) catch {};
     }
 
-    std.sort.pdq(*const @TypeOf(wb.agent.review.hunks[0]), valid_hunks.items, {}, struct {
-        pub fn less(_: void, a: *const @TypeOf(wb.agent.review.hunks[0]), b: *const @TypeOf(wb.agent.review.hunks[0])) bool {
+    std.sort.pdq(*const @TypeOf(wb.agent_ui.session.review.hunks[0]), valid_hunks.items, {}, struct {
+        pub fn less(_: void, a: *const @TypeOf(wb.agent_ui.session.review.hunks[0]), b: *const @TypeOf(wb.agent_ui.session.review.hunks[0])) bool {
             return a.edit_start.? < b.edit_start.?;
         }
     }.less);

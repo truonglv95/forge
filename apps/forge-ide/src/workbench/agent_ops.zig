@@ -20,33 +20,33 @@ pub fn clearScopePickerPaths(wb: anytype) void {
 pub fn openScopePicker(wb: anytype) !void {
     clearScopePickerPaths(wb);
     try agent_scope_picker.collectFilePaths(wb.allocator, &wb.explorer, &wb.scope_picker_paths);
-    wb.agent.openScopePicker();
+    wb.agent_ui.session.openScopePicker();
     try applyScopePickerFilter(wb);
 }
 
 pub fn applyScopePickerFilter(wb: anytype) !void {
-    wb.agent.lock();
-    const query = wb.agent.scope_query[0..wb.agent.scope_query_len];
-    wb.agent.unlock();
+    wb.agent_ui.session.lock();
+    const query = wb.agent_ui.session.scope_query[0..wb.agent_ui.session.scope_query_len];
+    wb.agent_ui.session.unlock();
     try agent_scope_picker.applyFilter(wb.allocator, query, wb.scope_picker_paths.items, &wb.scope_picker_filtered);
-    wb.agent.lock();
-    if (wb.agent.scope_picker_selected >= wb.scope_picker_filtered.items.len) {
-        wb.agent.scope_picker_selected = if (wb.scope_picker_filtered.items.len > 0) wb.scope_picker_filtered.items.len - 1 else 0;
+    wb.agent_ui.session.lock();
+    if (wb.agent_ui.session.scope_picker_selected >= wb.scope_picker_filtered.items.len) {
+        wb.agent_ui.session.scope_picker_selected = if (wb.scope_picker_filtered.items.len > 0) wb.scope_picker_filtered.items.len - 1 else 0;
     }
-    wb.agent.unlock();
+    wb.agent_ui.session.unlock();
 }
 
 pub fn setAgentModelIndex(wb: anytype, index: usize) !void {
-    if (index >= wb.ai_models.len) return;
-    const option = wb.ai_models[index];
-    if (wb.ai_model) |old| wb.allocator.free(old);
-    wb.ai_model = try wb.allocator.dupe(u8, option.id);
-    wb.allocator.free(wb.ai_provider);
-    wb.ai_provider = try wb.allocator.dupe(u8, option.provider);
-    wb.agent.closeMenus();
+    if (index >= wb.agent_ui.models.len) return;
+    const option = wb.agent_ui.models[index];
+    if (wb.agent_ui.model) |old| wb.allocator.free(old);
+    wb.agent_ui.model = try wb.allocator.dupe(u8, option.id);
+    wb.allocator.free(wb.agent_ui.provider);
+    wb.agent_ui.provider = try wb.allocator.dupe(u8, option.provider);
+    wb.agent_ui.session.closeMenus();
     try ai_config_io.writeAiProvider(wb.allocator, wb.io, wb.workspace_root, option.provider);
     try ai_config_io.writeAiModel(wb.allocator, wb.io, wb.workspace_root, option.id);
-    for (wb.tabs.tabs.items) |*doc| {
+    for (wb.editor.tabs.tabs.items) |*doc| {
         if (std.mem.endsWith(u8, doc.path, "settings.toml")) {
             @import("../workspace_io.zig").loadDocument(wb.io, wb.workspace_root, doc) catch {};
         }
@@ -63,12 +63,12 @@ pub fn refreshAiMcpStatus(wb: anytype) !void {
     if (wb.ai_mcp_status) |old| wb.allocator.free(old);
     wb.ai_mcp_status = null;
 
-    if (!wb.ai_mcp_enabled) {
+    if (!wb.agent_ui.mcp_enabled) {
         wb.ai_mcp_status = try wb.allocator.dupe(u8, "MCP disabled in forge.toml ([ai] mcp = false)");
         return;
     }
 
-    var registry = ai.mcp_registry.Registry.load(
+    const registry = ai.mcp_registry.Registry.load(
         wb.allocator,
         wb.io,
         wb.workspace_root,
@@ -81,14 +81,15 @@ pub fn refreshAiMcpStatus(wb: anytype) !void {
         wb.ai_mcp_status = msg;
         return;
     };
-    defer registry.deinit();
+    if (wb.ai_mcp_registry) |*reg| reg.deinit();
+    wb.ai_mcp_registry = registry;
     wb.ai_mcp_status = try wb.allocator.dupe(u8, registry.status_lines);
 }
 
 pub fn toggleAiMcp(wb: anytype) !void {
-    const next = !wb.ai_mcp_enabled;
+    const next = !wb.agent_ui.mcp_enabled;
     try ai_config_io.writeAiMcp(wb.allocator, wb.io, wb.workspace_root, next);
-    wb.ai_mcp_enabled = next;
+    wb.agent_ui.mcp_enabled = next;
     try refreshAiMcpStatus(
         wb,
     );
@@ -171,9 +172,9 @@ pub fn handleProposalReviewClick(wb: anytype, hit: @import("../ui/editor/proposa
             wb.proposal_review_scroll_y = 0;
         },
         .toggle_hunk => |index| {
-            wb.agent.lock();
-            wb.agent.review.toggle(index);
-            wb.agent.unlock();
+            wb.agent_ui.session.lock();
+            wb.agent_ui.session.review.toggle(index);
+            wb.agent_ui.session.unlock();
         },
         .apply => try wb.dispatch(.agent_apply),
         .reject => try wb.dispatch(.agent_reject),
@@ -187,6 +188,11 @@ pub fn handleSettingsModalClick(wb: anytype, hit: @import("../ui/settings_modal.
             wb.settings_modal_tab = tab;
         },
         .toggle_word_wrap => try wb.dispatch(.settings_toggle_word_wrap),
+        .ai_edit_provider => try wb.dispatch(.ai_edit_provider),
+        .ai_edit_model => try wb.dispatch(.ai_edit_model),
+        .ai_edit_embedding_provider => try wb.dispatch(.ai_edit_embedding_provider),
+        .ai_edit_embedding_model => try wb.dispatch(.ai_edit_embedding_model),
+        .ai_toggle_hyde => try wb.dispatch(.ai_toggle_hyde),
         .none => {},
     }
 }
@@ -205,7 +211,7 @@ pub fn pasteIntoAgent(wb: anytype) !void {
         var label_buf: [64:0]u8 = undefined;
         const label = std.fmt.bufPrint(&label_buf, "image_{d}.png", .{timestamp_ms}) catch "image.png";
         label_buf[label.len] = 0;
-        try wb.agent.addAttachment(.{
+        try wb.agent_ui.session.addAttachment(.{
             .kind = .image,
             .label = try wb.allocator.dupe(u8, label_buf[0..label.len]),
             .stored_path = try wb.allocator.dupe(u8, abs_path),
@@ -225,7 +231,7 @@ pub fn pasteIntoAgent(wb: anytype) !void {
         const label = std.fmt.bufPrint(&label_buf, "paste_{d}.txt", .{timestamp_ms}) catch "paste.txt";
         label_buf[label.len] = 0;
         const preview = try wb.allocator.dupe(u8, text[0..4096]);
-        try wb.agent.addAttachment(.{
+        try wb.agent_ui.session.addAttachment(.{
             .kind = .text_snippet,
             .label = try wb.allocator.dupe(u8, label_buf[0..label.len]),
             .stored_path = null,
@@ -238,7 +244,7 @@ pub fn pasteIntoAgent(wb: anytype) !void {
         return;
     }
 
-    try wb.prompt_buffer.insertString(text);
+    try wb.agent_ui.prompt_buffer.insertString(text);
     ensurePromptCursorVisible(
         wb,
     );
@@ -262,22 +268,22 @@ pub fn ensurePromptCursorVisible(wb: anytype) void {
     const ac = @import("../ui/agent/agent_composer.zig");
     const max_w = ac.promptMaxWidth(geo.agent_w);
     const input_h = wb.composerInputHeight(geo.agent_w);
-    wb.prompt_scroll_y = ac.ensureCursorVisible(wb.prompt_scroll_y, &wb.prompt_buffer, max_w, input_h);
+    wb.prompt_scroll_y = ac.ensureCursorVisible(wb.prompt_scroll_y, &wb.agent_ui.prompt_buffer, max_w, input_h);
 }
 
 pub fn refreshAgentContextPreview(wb: anytype) void {
-    wb.agent.lock();
-    const worker_running = wb.agent.worker_running;
-    wb.agent.unlock();
+    wb.agent_ui.session.lock();
+    const worker_running = wb.agent_ui.session.worker_running;
+    wb.agent_ui.session.unlock();
     if (worker_running) return;
 
     const host = agentHost(wb);
-    const active = wb.tabs.activeDoc();
+    const active = wb.editor.tabs.activeDoc();
     const active_path = if (active) |doc| doc.path else null;
     const intent_owned = blk: {
-        wb.agent.lock();
-        defer wb.agent.unlock();
-        if (wb.agent.intent) |text| break :blk wb.allocator.dupe(u8, text) catch null;
+        wb.agent_ui.session.lock();
+        defer wb.agent_ui.session.unlock();
+        if (wb.agent_ui.session.intent) |text| break :blk wb.allocator.dupe(u8, text) catch null;
         break :blk null;
     };
     if (intent_owned) |intent| {
@@ -285,8 +291,8 @@ pub fn refreshAgentContextPreview(wb: anytype) void {
         agent_workflow.refreshContextPreview(&host, intent, active_path) catch {};
         return;
     }
-    const prompt = wb.prompt_buffer.content() catch return;
-    defer wb.prompt_buffer.allocator.free(prompt);
+    const prompt = wb.agent_ui.prompt_buffer.content() catch return;
+    defer wb.agent_ui.prompt_buffer.allocator.free(prompt);
     const trimmed = std.mem.trim(u8, prompt, &std.ascii.whitespace);
     if (trimmed.len == 0) {
         agent_workflow.refreshContextPreview(&host, null, active_path) catch {};
@@ -296,25 +302,25 @@ pub fn refreshAgentContextPreview(wb: anytype) void {
 }
 
 pub fn selectScopePickerEntry(wb: anytype) !void {
-    const query = wb.agent.scope_query[0..wb.agent.scope_query_len];
+    const query = wb.agent_ui.session.scope_query[0..wb.agent_ui.session.scope_query_len];
     const total_rows = agent_scope_picker.visibleRowCount(wb.scope_picker_filtered.items.len, query);
     if (total_rows == 0) {
-        wb.agent.closeScopePicker();
+        wb.agent_ui.session.closeScopePicker();
         return;
     }
-    wb.agent.lock();
-    const selected = wb.agent.scope_picker_selected;
-    wb.agent.unlock();
+    wb.agent_ui.session.lock();
+    const selected = wb.agent_ui.session.scope_picker_selected;
+    wb.agent_ui.session.unlock();
 
     if (agent_scope_picker.pinnedMarkerAt(query, selected)) |marker| {
-        try wb.agent.addScopeFile(marker);
+        try wb.agent_ui.session.addScopeFile(marker);
     } else if (agent_scope_picker.fileListIndex(selected, query)) |list_index| {
         if (list_index >= wb.scope_picker_filtered.items.len) return;
         const path_index = wb.scope_picker_filtered.items[list_index];
         const path = wb.scope_picker_paths.items[path_index];
-        try wb.agent.addScopeFile(path);
+        try wb.agent_ui.session.addScopeFile(path);
     }
-    wb.agent.closeScopePicker();
+    wb.agent_ui.session.closeScopePicker();
     refreshAgentContextPreview(
         wb,
     );
@@ -337,11 +343,11 @@ pub fn showAgentReview(wb: anytype) !void {
     defer if (owned_path) |path| wb.allocator.free(path);
 
     const proposal_rel = blk: {
-        wb.agent.lock();
-        defer wb.agent.unlock();
-        if (wb.agent.proposal_rel) |path| break :blk path;
-        if (wb.agent.run_history.items.len == 0) break :blk null;
-        const entry = wb.agent.run_history.items[wb.agent.selected_run_index];
+        wb.agent_ui.session.lock();
+        defer wb.agent_ui.session.unlock();
+        if (wb.agent_ui.session.proposal_rel) |path| break :blk path;
+        if (wb.agent_ui.session.run_history.items.len == 0) break :blk null;
+        const entry = wb.agent_ui.session.run_history.items[wb.agent_ui.session.selected_run_index];
         // Build absolute proposal path in session dir
         const sess_dir = workspace.global_store.getSessionDir(wb.allocator, wb.io, wb.workspace_root) catch null;
         if (sess_dir) |sd| {
@@ -373,18 +379,19 @@ pub fn agentHost(wb: anytype) agent_workflow.Host {
         .allocator = wb.allocator,
         .io = wb.io,
         .environ_map = wb.environ_map,
-        .ai_provider = wb.ai_provider,
-        .ai_model = wb.ai_model,
-        .ai_ollama_url = wb.ai_ollama_url,
-        .ai_openrouter_url = wb.ai_openrouter_url,
-        .ai_embedding_provider = wb.ai_embedding_provider,
-        .ai_embedding_model = wb.ai_embedding_model,
-        .ai_embedding_url = wb.ai_embedding_url,
-        .ai_mcp_enabled = wb.ai_mcp_enabled,
+        .ai_provider = wb.agent_ui.provider,
+        .ai_model = wb.agent_ui.model,
+        .ai_ollama_url = wb.agent_ui.ollama_url,
+        .ai_openrouter_url = wb.agent_ui.openrouter_url,
+        .ai_embedding_provider = wb.agent_ui.embedding_provider,
+        .ai_embedding_model = wb.agent_ui.embedding_model,
+        .ai_embedding_url = wb.agent_ui.embedding_url,
+        .ai_mcp_enabled = wb.agent_ui.mcp_enabled,
+        .ai_enable_hyde = wb.agent_ui.enable_hyde,
         .workspace_root = wb.workspace_root,
         .workspace_path = wb.workspace_path,
-        .agent = &wb.agent,
-        .agent_cancel_slot = &wb.agent_cancel_source,
+        .agent = &wb.agent_ui.session,
+        .agent_cancel_slot = &wb.agent_ui.cancel_source,
         .context = wb,
         .append_chat = bridgeAppendChat,
         .set_status = bridgeSetStatus,
@@ -407,11 +414,11 @@ fn bridgeLspRequest(context: ?*anyopaque, allocator: std.mem.Allocator, method: 
     const wb = @as(*Workbench, @ptrCast(@alignCast(context.?)));
 
     var language_id: ?[]const u8 = null;
-    wb.lsp_registry.mutex.lock();
-    if (wb.lsp_registry.servers.items.len > 0) {
-        language_id = wb.allocator.dupe(u8, wb.lsp_registry.servers.items[0].language_id) catch null;
+    wb.lsp.registry.mutex.lock();
+    if (wb.lsp.registry.servers.items.len > 0) {
+        language_id = wb.allocator.dupe(u8, wb.lsp.registry.servers.items[0].language_id) catch null;
     }
-    wb.lsp_registry.mutex.unlock();
+    wb.lsp.registry.mutex.unlock();
 
     const lang = language_id orelse return null;
     defer wb.allocator.free(lang);
@@ -429,7 +436,7 @@ fn bridgeLspRequest(context: ?*anyopaque, allocator: std.mem.Allocator, method: 
     defer allocator.free(req_json);
 
     var response_buf: [2 * 1024 * 1024]u8 = undefined;
-    const len = wb.lsp_proxy.request(lang, req_json, &response_buf, response_buf.len) catch return null;
+    const len = wb.lsp.proxy.request(lang, req_json, &response_buf, response_buf.len) catch return null;
 
     return allocator.dupe(u8, response_buf[0..len]) catch null;
 }
@@ -449,7 +456,7 @@ pub fn snapshotContextSupplement(wb: anytype, allocator: std.mem.Allocator) !ai.
 
     var cursor_pos: ?ai.context_supplement.CursorPosition = null;
 
-    const doc = wb.tabs.activeDoc();
+    const doc = wb.editor.tabs.activeDoc();
     if (doc) |active| {
         cursor_owned = try allocator.dupe(u8, active.path);
         const line: u32 = @intCast(active.buffer.cursor.row);
@@ -460,7 +467,7 @@ pub fn snapshotContextSupplement(wb: anytype, allocator: std.mem.Allocator) !ai.
             .character = character,
         };
 
-        for (wb.diagnostics.list.items) |diag| {
+        for (wb.lsp.diagnostics.list.items) |diag| {
             try diagnostics.append(allocator, .{
                 .path = try allocator.dupe(u8, active.path),
                 .line = diag.line,
@@ -470,7 +477,7 @@ pub fn snapshotContextSupplement(wb: anytype, allocator: std.mem.Allocator) !ai.
             });
         }
 
-        const owned = wb.lsp_registry.copyMatchForPath(allocator, active.path) catch null;
+        const owned = wb.lsp.registry.copyMatchForPath(allocator, active.path) catch null;
         if (owned) |config| {
             defer lsp.Registry.freeConfig(allocator, config);
 
@@ -481,7 +488,7 @@ pub fn snapshotContextSupplement(wb: anytype, allocator: std.mem.Allocator) !ai.
                 if (hover_req) |hover_req_body| {
                     defer allocator.free(hover_req_body);
                     var hover_buf: [65536]u8 = undefined;
-                    if (wb.lsp_proxy.request(config.language_id, hover_req_body, &hover_buf, hover_buf.len) catch null) |hover_len| {
+                    if (wb.lsp.proxy.request(config.language_id, hover_req_body, &hover_buf, hover_buf.len) catch null) |hover_len| {
                         hover_owned = lsp.hover.parseHoverResponse(allocator, hover_buf[0..hover_len]) catch null;
                     }
                 }
@@ -490,7 +497,7 @@ pub fn snapshotContextSupplement(wb: anytype, allocator: std.mem.Allocator) !ai.
                 if (def_req) |req| {
                     defer allocator.free(req);
                     var response_buf: [65536]u8 = undefined;
-                    if (wb.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len)) |len| {
+                    if (wb.lsp.proxy.request(config.language_id, req, &response_buf, response_buf.len)) |len| {
                         if (lsp.navigation.parseDefinitionResponse(allocator, response_buf[0..len])) |location| {
                             if (location) |loc_value| {
                                 var loc = loc_value;
@@ -512,7 +519,7 @@ pub fn snapshotContextSupplement(wb: anytype, allocator: std.mem.Allocator) !ai.
                 if (refs_req) |req| {
                     defer allocator.free(req);
                     var response_buf: [65536]u8 = undefined;
-                    if (wb.lsp_proxy.request(config.language_id, req, &response_buf, response_buf.len)) |len| {
+                    if (wb.lsp.proxy.request(config.language_id, req, &response_buf, response_buf.len)) |len| {
                         if (lsp.references.parseReferencesResponse(allocator, response_buf[0..len])) |list| {
                             var owned_list = list;
                             defer owned_list.deinit(allocator);
@@ -567,7 +574,7 @@ pub fn bridgeFreeContextSupplement(context: ?*anyopaque, allocator: std.mem.Allo
 }
 
 pub fn snapshotEditorSelection(wb: anytype, allocator: std.mem.Allocator) !?[]const u8 {
-    const doc = wb.tabs.activeDoc() orelse return null;
+    const doc = wb.editor.tabs.activeDoc() orelse return null;
     if (!doc.buffer.hasSelection()) return null;
     const selected = try doc.buffer.selectedText(allocator);
     if (selected.len == 0) {
@@ -583,11 +590,11 @@ pub fn bridgeSnapshotEditorSelection(context: ?*anyopaque, allocator: std.mem.Al
 }
 
 pub fn snapshotEditorContext(wb: anytype, allocator: std.mem.Allocator) !?[]const u8 {
-    const doc = wb.tabs.activeDoc() orelse return null;
+    const doc = wb.editor.tabs.activeDoc() orelse return null;
 
     var open_tabs_arr: std.ArrayList([]const u8) = .empty;
     defer open_tabs_arr.deinit(allocator);
-    for (wb.tabs.tabs.items) |tab| {
+    for (wb.editor.tabs.tabs.items) |tab| {
         try open_tabs_arr.append(allocator, tab.path);
     }
 
@@ -627,17 +634,17 @@ pub fn snapshotRecentTabPaths(wb: anytype, allocator: std.mem.Allocator) ![]cons
         paths.deinit(allocator);
     }
 
-    if (wb.tabs.tabs.items.len == 0) return try paths.toOwnedSlice(allocator);
+    if (wb.editor.tabs.tabs.items.len == 0) return try paths.toOwnedSlice(allocator);
 
-    if (wb.tabs.active < wb.tabs.tabs.items.len) {
-        try paths.append(allocator, try allocator.dupe(u8, wb.tabs.tabs.items[wb.tabs.active].path));
+    if (wb.editor.tabs.active < wb.editor.tabs.tabs.items.len) {
+        try paths.append(allocator, try allocator.dupe(u8, wb.editor.tabs.tabs.items[wb.editor.tabs.active].path));
     }
 
-    var index = wb.tabs.tabs.items.len;
+    var index = wb.editor.tabs.tabs.items.len;
     while (index > 0) {
         index -= 1;
-        if (index == wb.tabs.active) continue;
-        const path = wb.tabs.tabs.items[index].path;
+        if (index == wb.editor.tabs.active) continue;
+        const path = wb.editor.tabs.tabs.items[index].path;
         var duplicate = false;
         for (paths.items) |existing| {
             if (std.mem.eql(u8, existing, path)) {
@@ -667,11 +674,11 @@ pub fn snapshotAgentConversation(wb: anytype, allocator: std.mem.Allocator) ![]a
     var turns: std.ArrayList(ai.conversation.Turn) = .empty;
     errdefer ai.conversation.freeTurns(allocator, turns.items);
 
-    var end = wb.chat_history.items.len;
-    if (end > 0 and wb.chat_history.items[end - 1].role == .user) end -= 1;
+    var end = wb.agent_ui.chat_history.items.len;
+    if (end > 0 and wb.agent_ui.chat_history.items[end - 1].role == .user) end -= 1;
 
     const start = if (end > ai.conversation.max_turns) end - ai.conversation.max_turns else 0;
-    for (wb.chat_history.items[start..end]) |msg| {
+    for (wb.agent_ui.chat_history.items[start..end]) |msg| {
         if (msg.role == .tool) continue;
         const slice = ai.conversation.truncateContent(msg.content);
         try turns.append(allocator, .{
@@ -709,16 +716,16 @@ pub fn bridgeSetStatus(context: ?*anyopaque, message: []const u8) void {
 
 pub fn bridgeEnqueueAgentUi(context: ?*anyopaque, op: agent_ui_queue_mod.Op) void {
     const wb: *Workbench = @ptrCast(@alignCast(context.?));
-    wb.agent_ui_queue.push(wb.allocator, op) catch {
+    wb.agent_ui.ui_queue.push(wb.allocator, op) catch {
         var owned = op;
         owned.deinit(wb.allocator);
     };
 }
 
 fn findOpenDoc(wb: anytype, path: []const u8) ?*editor.Document {
-    for (wb.tabs.tabs.items, 0..) |*doc, index| {
+    for (wb.editor.tabs.tabs.items, 0..) |*doc, index| {
         if (std.mem.eql(u8, doc.path, path)) {
-            wb.tabs.active = index;
+            wb.editor.tabs.active = index;
             return doc;
         }
     }
@@ -753,9 +760,9 @@ fn applyDirectAgentEdit(wb: anytype, path: []const u8, start_line: usize, end_li
 
     const doc = findOpenDoc(wb, trimmed_path) orelse blk: {
         if (wb.openFile(trimmed_path)) |_| {
-            break :blk wb.tabs.activeDoc() orelse return;
+            break :blk wb.editor.tabs.activeDoc() orelse return;
         } else |_| {
-            const created = try wb.tabs.openOrActivate(trimmed_path);
+            const created = try wb.editor.tabs.openOrActivate(trimmed_path);
             try created.buffer.loadFromSlice("");
             wb.focused_panel = .editor;
             break :blk created;
@@ -777,7 +784,7 @@ fn applyDirectAgentEdit(wb: anytype, path: []const u8, start_line: usize, end_li
 
     wb.focused_panel = .editor;
     wb.explorer.select(trimmed_path) catch {};
-    wb.diagnostics.setActivePath(trimmed_path) catch {};
+    wb.lsp.diagnostics.setActivePath(trimmed_path) catch {};
     if (@import("editor_ops.zig").lspSyncDocument(wb, doc)) |uri| {
         wb.allocator.free(uri);
     } else |_| {}
@@ -788,7 +795,7 @@ fn applyDirectAgentEdit(wb: anytype, path: []const u8, start_line: usize, end_li
 }
 
 pub fn flushAgentUi(wb: anytype) !void {
-    const ops = try wb.agent_ui_queue.takeAll(wb.allocator);
+    const ops = try wb.agent_ui.ui_queue.takeAll(wb.allocator);
     defer wb.allocator.free(ops);
     const host = agentHost(wb);
     var pending_context_refresh = false;
@@ -798,88 +805,88 @@ pub fn flushAgentUi(wb: anytype) !void {
             .refresh_context_preview => pending_context_refresh = true,
             .append_chat => |payload| {
                 const mapped: ChatRole = if (payload.role == .user) .user else .agent;
-                try wb.appendChat(mapped, payload.text);
+                try @import("../workbench/agent_ops.zig").appendChat(wb, mapped, payload.text);
             },
             .set_status => |text| try wb.setStatus(text),
             .append_thinking => |text| {
-                try wb.agent.appendThinkingChunk(text);
+                try wb.agent_ui.session.appendThinkingChunk(text);
                 wb.chat_follow_stream = true;
                 wb.chat_scroll_to_end_on_ready = true;
             },
             .append_stream => |text| {
-                try wb.agent.appendStreamChunk(text);
+                try wb.agent_ui.session.appendStreamChunk(text);
                 wb.chat_follow_stream = true;
                 wb.chat_scroll_to_end_on_ready = true;
             },
             .begin_step => |payload| {
                 try flushLiveAssistantBeforeTool(wb);
-                try wb.agent.beginAgentStep(payload.index, payload.kind, payload.label, payload.content);
+                try wb.agent_ui.session.beginAgentStep(payload.index, payload.kind, payload.label, payload.content);
                 try appendToolChatStep(wb, payload.index, payload.kind, payload.label, payload.content, true);
                 wb.chat_follow_stream = true;
                 wb.chat_scroll_to_end_on_ready = true;
             },
             .append_step => |payload| {
-                try wb.agent.appendAgentStep(payload.index, payload.kind, payload.summary);
+                try wb.agent_ui.session.appendAgentStep(payload.index, payload.kind, payload.summary);
                 try finishToolChatStep(wb, payload.index, payload.kind, payload.summary);
                 wb.chat_follow_stream = true;
                 wb.chat_scroll_to_end_on_ready = true;
             },
             .set_phase => |payload| {
                 if (payload.phase == .sending) {
-                    wb.agent.clearStreamText();
+                    wb.agent_ui.session.clearStreamText();
                 } else if (payload.phase == .streaming) {
-                    wb.agent.lock();
-                    wb.agent.stream_live = true;
-                    wb.agent.unlock();
+                    wb.agent_ui.session.lock();
+                    wb.agent_ui.session.stream_live = true;
+                    wb.agent_ui.session.unlock();
                 }
-                try wb.agent.setPhase(payload.phase, payload.label);
+                try wb.agent_ui.session.setPhase(payload.phase, payload.label);
                 wb.chat_scroll_to_end_on_ready = true;
             },
             .run_finished => |payload| {
-                wb.agent.lock();
-                const stream_snapshot = wb.allocator.dupe(u8, wb.agent.stream_text.items) catch {
-                    wb.agent.unlock();
+                wb.agent_ui.session.lock();
+                const stream_snapshot = wb.allocator.dupe(u8, wb.agent_ui.session.stream_text.items) catch {
+                    wb.agent_ui.session.unlock();
                     return;
                 };
                 errdefer wb.allocator.free(stream_snapshot);
-                const thinking_snapshot = wb.allocator.dupe(u8, wb.agent.thinking_text.items) catch {
-                    wb.agent.unlock();
+                const thinking_snapshot = wb.allocator.dupe(u8, wb.agent_ui.session.thinking_text.items) catch {
+                    wb.agent_ui.session.unlock();
                     wb.allocator.free(stream_snapshot);
                     return;
                 };
                 errdefer wb.allocator.free(thinking_snapshot);
-                if (wb.agent.run_id) |old| wb.allocator.free(old);
-                if (wb.agent.proposal_rel) |old| wb.allocator.free(old);
-                wb.agent.run_id = try wb.allocator.dupe(u8, payload.run_id);
-                if (wb.agent.mode == .ask or payload.proposal_rel.len == 0) {
-                    wb.agent.proposal_rel = null;
+                if (wb.agent_ui.session.run_id) |old| wb.allocator.free(old);
+                if (wb.agent_ui.session.proposal_rel) |old| wb.allocator.free(old);
+                wb.agent_ui.session.run_id = try wb.allocator.dupe(u8, payload.run_id);
+                if (wb.agent_ui.session.mode == .ask or payload.proposal_rel.len == 0) {
+                    wb.agent_ui.session.proposal_rel = null;
                 } else {
-                    wb.agent.proposal_rel = try wb.allocator.dupe(u8, payload.proposal_rel);
+                    wb.agent_ui.session.proposal_rel = try wb.allocator.dupe(u8, payload.proposal_rel);
                 }
-                wb.agent.stream_text.clearRetainingCapacity();
-                wb.agent.thinking_text.clearRetainingCapacity();
-                wb.agent.stream_live = false;
-                wb.agent.worker_running = false;
-                wb.agent.unlock();
+                wb.agent_ui.session.stream_text.clearRetainingCapacity();
+                wb.agent_ui.session.thinking_text.clearRetainingCapacity();
+                wb.agent_ui.session.stream_live = false;
+                wb.agent_ui.session.worker_running = false;
+                wb.agent_ui.session.unlock();
 
                 agent_workflow.applyManifestText(&host, payload.manifest_text) catch {};
-                if (payload.proposal_rel.len > 0 and wb.agent.mode != .ask) {
+                if (payload.proposal_rel.len > 0 and wb.agent_ui.session.mode != .ask) {
                     if (agent_workflow.loadProposalPreview(&host, payload.proposal_rel)) {
                         openProposalReview(wb);
-                        try wb.agent.setPhase(.proposal_ready, "Proposal ready for review");
+                        try wb.agent_ui.session.setPhase(.proposal_ready, "Proposal ready for review");
                         try wb.setStatus("Proposal ready for review");
                     } else |_| {
-                        try wb.agent.setPhase(.idle, "Proposal preview unavailable");
+                        try wb.agent_ui.session.setPhase(.idle, "Proposal preview unavailable");
                         try wb.setStatus("Proposal preview unavailable");
                     }
-                } else if (wb.agent.mode == .ask) {
-                    try wb.agent.setPhase(.idle, "Answer ready");
+                } else if (wb.agent_ui.session.mode == .ask) {
+                    try wb.agent_ui.session.setPhase(.idle, "Answer ready");
                     try wb.setStatus("Answer ready");
-                } else if (wb.agent.mode == .agent) {
-                    try wb.agent.setPhase(.idle, "Agent finished");
+                } else if (wb.agent_ui.session.mode == .agent) {
+                    try wb.agent_ui.session.setPhase(.idle, "Agent finished");
                     try wb.setStatus("Agent finished");
                 } else {
-                    try wb.agent.setPhase(.idle, "Spec ready — approve to continue");
+                    try wb.agent_ui.session.setPhase(.idle, "Spec ready — approve to continue");
                     try wb.setStatus("Spec ready — approve to continue");
                 }
                 agent_workflow.refreshRunHistory(&host) catch {};
@@ -889,28 +896,28 @@ pub fn flushAgentUi(wb: anytype) !void {
                 wb.chat_follow_stream = true;
             },
             .run_failed => |payload| {
-                wb.agent.lock();
-                wb.agent.worker_running = false;
-                wb.agent.unlock();
-                try wb.agent.setPhase(payload.phase, payload.message);
-                try wb.appendChat(.agent, payload.message);
+                wb.agent_ui.session.lock();
+                wb.agent_ui.session.worker_running = false;
+                wb.agent_ui.session.unlock();
+                try wb.agent_ui.session.setPhase(payload.phase, payload.message);
+                try @import("../workbench/agent_ops.zig").appendChat(wb, .agent, payload.message);
                 try wb.setStatus(payload.message);
             },
             .propose_edit => |*payload| {
-                wb.agent.lock();
-                if (wb.agent.ephemeral_proposal) |*p| p.deinit();
-                wb.agent.ephemeral_proposal = @import("forge-workspace").OwnedProposal{
+                wb.agent_ui.session.lock();
+                if (wb.agent_ui.session.ephemeral_proposal) |*p| p.deinit();
+                wb.agent_ui.session.ephemeral_proposal = @import("forge-workspace").OwnedProposal{
                     .allocator = wb.allocator,
                     .files = @constCast(payload.files),
                     .metadata = .{},
                 };
-                wb.agent.unlock();
+                wb.agent_ui.session.unlock();
 
-                wb.agent.review.buildFromProposal(
+                wb.agent_ui.session.review.buildFromProposal(
                     wb.allocator,
                     wb.io,
                     wb.workspace_root,
-                    &wb.agent.ephemeral_proposal.?,
+                    &wb.agent_ui.session.ephemeral_proposal.?,
                 ) catch {};
 
                 openProposalReview(wb);
@@ -921,14 +928,14 @@ pub fn flushAgentUi(wb: anytype) !void {
 }
 
 fn flushLiveAssistantBeforeTool(wb: anytype) !void {
-    wb.agent.lock();
-    const stream_snapshot = wb.allocator.dupe(u8, wb.agent.stream_text.items) catch {
-        wb.agent.unlock();
+    wb.agent_ui.session.lock();
+    const stream_snapshot = wb.allocator.dupe(u8, wb.agent_ui.session.stream_text.items) catch {
+        wb.agent_ui.session.unlock();
         return;
     };
-    wb.agent.stream_text.clearRetainingCapacity();
-    wb.agent.thinking_text.clearRetainingCapacity();
-    wb.agent.unlock();
+    wb.agent_ui.session.stream_text.clearRetainingCapacity();
+    wb.agent_ui.session.thinking_text.clearRetainingCapacity();
+    wb.agent_ui.session.unlock();
     defer wb.allocator.free(stream_snapshot);
 
     const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
@@ -943,7 +950,7 @@ pub fn appendChat(wb: anytype, role: ChatRole, content: []const u8) !void {
     const source = normalized orelse content;
     if (!agent_panel_mod.chatHasVisibleContent(source)) return;
     const owned = try wb.allocator.dupeZ(u8, source);
-    try wb.chat_history.append(wb.allocator, .{ .role = role, .content = owned });
+    try wb.agent_ui.chat_history.append(wb.allocator, .{ .role = role, .content = owned });
     wb.chat_history_revision += 1;
     wb.chat_follow_stream = true;
     wb.chat_scroll_to_end_on_ready = true;
@@ -965,7 +972,7 @@ fn appendToolChatStep(
     const owned_content = if (content) |text| try wb.allocator.dupeZ(u8, text) else null;
     errdefer if (owned_content) |text| wb.allocator.free(text);
 
-    try wb.chat_history.append(wb.allocator, .{
+    try wb.agent_ui.chat_history.append(wb.allocator, .{
         .role = .tool,
         .content = owned_label,
         .tool_index = index,
@@ -984,9 +991,9 @@ fn finishToolChatStep(wb: anytype, index: u32, kind: []const u8, summary: []cons
     const compact_summary = try chat_persistence.compactToolSummaryAlloc(wb.allocator, summary);
     defer wb.allocator.free(compact_summary);
 
-    var i = wb.chat_history.items.len;
+    var i = wb.agent_ui.chat_history.items.len;
     while (i > 0) : (i -= 1) {
-        const msg = &wb.chat_history.items[i - 1];
+        const msg = &wb.agent_ui.chat_history.items[i - 1];
         if (msg.role != .tool or msg.tool_index != index or !msg.tool_running) continue;
         if (msg.tool_kind) |existing_kind| {
             if (!std.mem.eql(u8, existing_kind, kind)) continue;

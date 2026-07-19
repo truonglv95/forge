@@ -36,7 +36,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
 
     var status_copy: [320]u8 = undefined;
     var provider_copy: [128]u8 = undefined;
-    const snap = wb.agent.snapshot(&status_copy, &provider_copy);
+    const snap = wb.agent_ui.session.snapshot(&status_copy, &provider_copy);
     chat_layout.ensure(wb, h);
     if (wb.chat_scroll_to_end_on_ready) {
         wb.chat_scroll_to_end_on_ready = false;
@@ -70,7 +70,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     }
     renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx, icon_y, 16, 16, icon_c);
 
-    const composer_layout = agent_composer.computeLayout(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer);
+    const composer_layout = agent_composer.computeLayout(agent_x, agent_w, h, snap.attachment_count, &wb.agent_ui.prompt_buffer);
     wb.clampPromptScroll(agent_w);
     const chat_bottom = composer_layout.composer_top - chat_composer_gap;
 
@@ -83,11 +83,11 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         defer renderer.Renderer.popClipRect();
 
         if (snap.post_apply_visible) {
-            wb.agent.lock();
-            const validation_results = wb.agent.validation_results.items;
+            wb.agent_ui.session.lock();
+            const validation_results = wb.agent_ui.session.validation_results.items;
             const banner_h = agent_panel.applyBannerHeight(snap.validation_failed, validation_results.len);
             agent_panel.drawApplyBanner(agent_x, agent_w, content_y, snap.validation_failed, validation_results);
-            wb.agent.unlock();
+            wb.agent_ui.session.unlock();
             content_y += banner_h + 4;
         }
 
@@ -103,13 +103,13 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
             .fg = tokens.color.text_primary,
         };
         const history_prefix = content_y - (chat_top - wb.chat_scroll_y);
-        const history_count = wb.chat_history.items.len;
+        const history_count = wb.agent_ui.chat_history.items.len;
         const start_i = chat_layout.firstVisibleIndex(&wb.chat_layout, wb.chat_scroll_y, history_prefix);
         const base_y = chat_top - wb.chat_scroll_y + history_prefix;
         const end_i = chat_layout.lastVisibleIndex(&wb.chat_layout, wb.chat_scroll_y, history_prefix, chat_viewport_h);
         var msg_i = start_i;
         while (msg_i < history_count and msg_i < end_i) : (msg_i += 1) {
-            const msg = wb.chat_history.items[msg_i];
+            const msg = wb.agent_ui.chat_history.items[msg_i];
             if (msg.role != .tool and !agent_panel.chatHasVisibleContent(msg.content)) continue;
             if (msg_i >= wb.chat_layout.message_heights.items.len) break;
             const msg_h = wb.chat_layout.message_heights.items[msg_i];
@@ -146,11 +146,11 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
 
         const live_active = snap.worker_running or phaseShowsLive(snap.phase);
         if (live_active) {
-            wb.agent.lock();
-            defer wb.agent.unlock();
+            wb.agent_ui.session.lock();
+            defer wb.agent_ui.session.unlock();
 
-            const thinking_src = wb.agent.thinking_text.items;
-            const stream_src = wb.agent.stream_text.items;
+            const thinking_src = wb.agent_ui.session.thinking_text.items;
+            const stream_src = wb.agent_ui.session.stream_text.items;
 
             if (stream_src.len == 0) {
                 const thinking_label = if (thinking_src.len > 0) thinking_src else snap.status_line;
@@ -166,7 +166,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                     chat_bubble.agent_text_style,
                     &wb.chat_layout.stream_entry,
                     wb,
-                    wb.chat_history.items.len,
+                    wb.agent_ui.chat_history.items.len,
                 );
             }
         }
@@ -191,8 +191,8 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
             var review_y = content_y;
             renderer.Renderer.drawText("CONTEXT", inner_x, review_y, 10.0, .{ .r = 0.55, .g = 0.75, .b = 1.0, .a = 1.0 });
             review_y += 14.0;
-            wb.agent.lock();
-            for (wb.agent.context_lines.items) |line| {
+            wb.agent_ui.session.lock();
+            for (wb.agent_ui.session.context_lines.items) |line| {
                 if (review_y > chat_bottom) break;
                 var ctx_buf: [512:0]u8 = undefined;
                 const clipped = if (line.len > 511) line[0..511] else line;
@@ -204,7 +204,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
             review_y += 6.0;
             renderer.Renderer.drawText("CHANGES (click to toggle)", inner_x, review_y, 10.0, .{ .r = 0.55, .g = 0.75, .b = 1.0, .a = 1.0 });
             review_y += 14.0;
-            for (wb.agent.review.hunks) |hunk| {
+            for (wb.agent_ui.session.review.hunks) |hunk| {
                 if (review_y > chat_bottom) break;
                 const block_h = @import("../../agent/review_store.zig").Store.hunkBlockHeight(hunk);
                 const accepted = hunk.accepted;
@@ -231,24 +231,24 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                 }
                 review_y += block_h + 6.0;
             }
-            wb.agent.unlock();
+            wb.agent_ui.session.unlock();
             content_y = review_y;
         }
     }
 
     if (snap.approval_pending) {
-        wb.agent.lock();
-        const tool = wb.agent.approval_tool orelse "unknown tool";
-        const risk = wb.agent.approval_risk orelse "unknown";
-        const args = wb.agent.approval_args orelse "{}";
+        wb.agent_ui.session.lock();
+        const tool = wb.agent_ui.session.approval_tool orelse "unknown tool";
+        const risk = wb.agent_ui.session.approval_risk orelse "unknown";
+        const args = wb.agent_ui.session.approval_args orelse "{}";
         const is_review = snap.approval_kind == .review;
-        wb.agent.unlock();
+        wb.agent_ui.session.unlock();
         agent_panel.drawApprovalOverlay(
             agent_x,
             agent_w,
             h,
             snap.attachment_count,
-            &wb.prompt_buffer,
+            &wb.agent_ui.prompt_buffer,
             tool,
             risk,
             args,
@@ -257,7 +257,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     }
 
     if (snap.approval_pending) {
-        const actions = agent_panel.approvalActions(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer);
+        const actions = agent_panel.approvalActions(agent_x, agent_w, h, snap.attachment_count, &wb.agent_ui.prompt_buffer);
         renderer.Renderer.drawRoundedRect(actions.approve.x, actions.approve.y, actions.approve.w, actions.approve.h, 6, .{ .r = 0.2, .g = 0.55, .b = 0.35, .a = 1.0 });
         renderer.Renderer.drawText("Approve once", actions.approve.x + 10, actions.approve.y + 6, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
         renderer.Renderer.drawRoundedRect(actions.reject.x, actions.reject.y, actions.reject.w, actions.reject.h, 6, .{ .r = 0.5, .g = 0.2, .b = 0.2, .a = 1.0 });
@@ -283,7 +283,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     }
 
     context_inspector.draw(
-        &wb.agent,
+        &wb.agent_ui.session,
         agent_x,
         agent_w,
         h,
@@ -292,19 +292,19 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         snap.context_entry_count,
         snap.context_inspector_expanded,
         snap.attachment_count,
-        &wb.prompt_buffer,
-        wb.agent.context_inspector_scroll_y,
-        wb.agent.context_selected_index,
+        &wb.agent_ui.prompt_buffer,
+        wb.agent_ui.session.context_inspector_scroll_y,
+        wb.agent_ui.session.context_selected_index,
     );
 
     const show_prompt_cursor = @mod(state.time, 1.0) < 0.5 and wb.focused_panel == .agent;
     agent_composer.draw(
-        &wb.agent,
+        &wb.agent_ui.session,
         composer_layout,
-        wb.ai_model,
-        wb.ai_provider,
-        wb.ai_models,
-        &wb.prompt_buffer,
+        wb.agent_ui.model,
+        wb.agent_ui.provider,
+        wb.agent_ui.models,
+        &wb.agent_ui.prompt_buffer,
         wb.prompt_scroll_y,
         show_prompt_cursor,
         snap.worker_running,
@@ -312,13 +312,13 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     );
 
     if (snap.show_review and !wb.proposal_review_open) {
-        wb.agent.lock();
-        const show_rollback = wb.agent.last_checkpoint_id != null;
-        const show_approve_spec = wb.agent.spec_pending;
-        const accepted = wb.agent.review.acceptedCount();
-        const total = wb.agent.review.hunks.len;
-        wb.agent.unlock();
-        const agent_actions = agent_panel.reviewActions(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer, show_rollback, show_approve_spec);
+        wb.agent_ui.session.lock();
+        const show_rollback = wb.agent_ui.session.last_checkpoint_id != null;
+        const show_approve_spec = wb.agent_ui.session.spec_pending;
+        const accepted = wb.agent_ui.session.review.acceptedCount();
+        const total = wb.agent_ui.session.review.hunks.len;
+        wb.agent_ui.session.unlock();
+        const agent_actions = agent_panel.reviewActions(agent_x, agent_w, h, snap.attachment_count, &wb.agent_ui.prompt_buffer, show_rollback, show_approve_spec);
         renderer.Renderer.drawRoundedRect(agent_actions.apply.x, agent_actions.apply.y, agent_actions.apply.w, agent_actions.apply.h, 6, .{ .r = 0.2, .g = 0.55, .b = 0.35, .a = 1.0 });
         var apply_buf: [32:0]u8 = undefined;
         const apply_label = std.fmt.bufPrint(&apply_buf, "Apply ({d}/{d})", .{ accepted, total }) catch "Apply";
@@ -337,7 +337,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         const hint_y = agent_actions.apply.y - 14;
         renderer.Renderer.drawText("Click hunks to accept/reject — Apply selected", inner_x, hint_y, 10.0, .{ .r = 0.65, .g = 0.65, .b = 0.65, .a = 1.0 });
     } else if (snap.spec_pending) {
-        const agent_actions = agent_panel.reviewActions(agent_x, agent_w, h, snap.attachment_count, &wb.prompt_buffer, snap.last_checkpoint_id != null, true);
+        const agent_actions = agent_panel.reviewActions(agent_x, agent_w, h, snap.attachment_count, &wb.agent_ui.prompt_buffer, snap.last_checkpoint_id != null, true);
         if (agent_actions.approve_spec.w > 0) {
             renderer.Renderer.drawRoundedRect(agent_actions.approve_spec.x, agent_actions.approve_spec.y, agent_actions.approve_spec.w, agent_actions.approve_spec.h, 6, .{ .r = 0.2, .g = 0.4, .b = 0.7, .a = 1.0 });
             renderer.Renderer.drawText("Approve spec", agent_actions.approve_spec.x + 8, agent_actions.approve_spec.y + 6, 12.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
@@ -355,19 +355,19 @@ pub fn drawScopePicker(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void 
     renderer.Renderer.drawRoundedRect(box_x, box_y, box_w, box_h, 8, .{ .r = 0.14, .g = 0.16, .b = 0.2, .a = 1.0 });
     renderer.Renderer.drawText("Add file to scope", box_x + 12, box_y + 10, 13.0, .{ .r = 0.85, .g = 0.85, .b = 0.85, .a = 1.0 });
 
-    wb.agent.lock();
+    wb.agent_ui.session.lock();
     var query_buf: [320:0]u8 = undefined;
-    @memcpy(query_buf[0..wb.agent.scope_query_len], wb.agent.scope_query[0..wb.agent.scope_query_len]);
-    query_buf[wb.agent.scope_query_len] = 0;
-    const selected = wb.agent.scope_picker_selected;
-    wb.agent.unlock();
+    @memcpy(query_buf[0..wb.agent_ui.session.scope_query_len], wb.agent_ui.session.scope_query[0..wb.agent_ui.session.scope_query_len]);
+    query_buf[wb.agent_ui.session.scope_query_len] = 0;
+    const selected = wb.agent_ui.session.scope_picker_selected;
+    wb.agent_ui.session.unlock();
 
     renderer.Renderer.drawRoundedRect(box_x + 10, box_y + 32, box_w - 20, 24, 4, .{ .r = 0.1, .g = 0.1, .b = 0.12, .a = 1.0 });
     renderer.Renderer.drawText(@ptrCast(&query_buf), box_x + 16, box_y + 38, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
 
     var row_y = box_y + 64;
     const max_rows: usize = 12;
-    const pinned_count = agent_scope_picker_mod.pinnedVisibleCount(query_buf[0..wb.agent.scope_query_len]);
+    const pinned_count = agent_scope_picker_mod.pinnedVisibleCount(query_buf[0..wb.agent_ui.session.scope_query_len]);
     var visible_rows: usize = @min(wb.scope_picker_filtered.items.len, max_rows);
     if (pinned_count > 0 and visible_rows + pinned_count <= max_rows) {
         visible_rows += pinned_count;
@@ -380,7 +380,7 @@ pub fn drawScopePicker(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void 
         if (draw_index == selected) {
             renderer.Renderer.drawRoundedRect(box_x + 8, row_y - 2, box_w - 16, 18, 3, .{ .r = 0.22, .g = 0.35, .b = 0.55, .a = 1.0 });
         }
-        const label = agent_scope_picker_mod.pinnedLabelAt(query_buf[0..wb.agent.scope_query_len], draw_index) orelse "@pinned";
+        const label = agent_scope_picker_mod.pinnedLabelAt(query_buf[0..wb.agent_ui.session.scope_query_len], draw_index) orelse "@pinned";
         var line_buf: [384:0]u8 = undefined;
         @memcpy(line_buf[0..label.len], label);
         line_buf[label.len] = 0;

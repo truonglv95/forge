@@ -122,3 +122,31 @@ pub fn writeAiMcp(
     const value = if (enabled) "true" else "false";
     try writeTomlKey(allocator, io, root, "ai", "mcp", value);
 }
+
+pub fn writeAiEmbeddingProvider(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    provider: []const u8,
+) !void {
+    try writeTomlQuotedString(allocator, io, root, "ai", "embedding_provider", provider);
+}
+
+pub fn writeAiEmbeddingModel(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    model: []const u8,
+) !void {
+    try writeTomlQuotedString(allocator, io, root, "ai", "embedding_model", model);
+}
+
+pub fn writeAiEnableHyde(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    enabled: bool,
+) !void {
+    const value = if (enabled) "true" else "false";
+    try writeTomlKey(allocator, io, root, "ai", "enable_hyde", value);
+}
