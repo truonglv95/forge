@@ -96,14 +96,14 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 }
             } else if (geo.shell_mode == .ide and wb.sidebar_view == .git and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x) {
                 if (git_panel.hitTest(
-                    if (wb.git_status) |status| status.entries else &.{},
-                    wb.git_staged_collapsed,
-                    wb.git_changes_collapsed,
+                    if (wb.git.status) |status| status.entries else &.{},
+                    wb.git.staged_collapsed,
+                    wb.git.changes_collapsed,
                     geo.explorer_x,
                     geo.explorer_w,
                     event.x,
                     event.y,
-                    wb.git_scroll_y,
+                    wb.git.scroll_y,
                 )) |hit| {
                     if (hit.is_icon) {
                         renderer.Renderer.setCursor(4);
@@ -217,26 +217,26 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .search and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= search_panel.list_top - 40) {
             wb.focused_panel = .search;
             if (search_panel.hitTest(
-                if (wb.search_results) |results| results.matches else &.{},
+                if (wb.search.results) |results| results.matches else &.{},
                 geo.explorer_x,
                 geo.explorer_w,
                 event.x,
                 event.y,
-                wb.search_scroll_y,
+                wb.search.scroll_y,
             )) |hit| {
                 wb.handleSearchClick(hit) catch {};
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .git and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height) {
             wb.focused_panel = .git;
             if (git_panel.hitTest(
-                if (wb.git_status) |status| status.entries else &.{},
-                wb.git_staged_collapsed,
-                wb.git_changes_collapsed,
+                if (wb.git.status) |status| status.entries else &.{},
+                wb.git.staged_collapsed,
+                wb.git.changes_collapsed,
                 geo.explorer_x,
                 geo.explorer_w,
                 event.x,
                 event.y,
-                wb.git_scroll_y,
+                wb.git.scroll_y,
             )) |hit| {
                 wb.handleGitClick(hit.action) catch {};
             }
@@ -751,11 +751,11 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 },
                 .ai => {},
                 .search => {
-                    wb.search_scroll_y += scroll_delta_y;
+                    wb.search.scroll_y += scroll_delta_y;
                     wb.clampSearchScroll(h);
                 },
                 .git => {
-                    wb.git_scroll_y += scroll_delta_y;
+                    wb.git.scroll_y += scroll_delta_y;
                     wb.clampGitScroll(h);
                 },
                 .run => {

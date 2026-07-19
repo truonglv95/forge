@@ -93,7 +93,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const is_hovering_panel = mx >= panel_x and mx < panel_x + panel_w;
 
     // Header
-    const branch_name = if (wb.git_status) |s| s.branch orelse "HEAD" else "CHANGES";
+    const branch_name = if (wb.git.status) |s| s.branch orelse "HEAD" else "CHANGES";
     renderer.Renderer.drawSvg(renderer.icons.repo, panel_x + 8, panel_y + 8, 16, 16, icon_c);
     renderer.Renderer.drawText(branch_name, panel_x + 28, panel_y + 9, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
 
@@ -102,7 +102,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const branch_name_w = renderer.Renderer.measureText(branch_name, 11.0);
     var sync_x = panel_x + 28 + branch_name_w + 10;
 
-    if (wb.git_status) |status| {
+    if (wb.git.status) |status| {
         if (status.ahead > 0 or status.behind > 0) {
             var buf: [32]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "↑{d} ↓{d}", .{ status.ahead, status.behind }) catch "";
@@ -130,15 +130,15 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, panel_x + panel_w - 24, header_action_y + 3, 16, 16, icon_c);
 
     // Push button
-    if (wb.git_push_running) {
-        renderer.Renderer.drawSvgRotated(renderer.icons.chevron_up, panel_x + panel_w - 48, header_action_y + 3, 16, 16, wb.sync_icon_angle * std.math.pi / 180.0, icon_c);
+    if (wb.git.push_running) {
+        renderer.Renderer.drawSvgRotated(renderer.icons.chevron_up, panel_x + panel_w - 48, header_action_y + 3, 16, 16, wb.git.sync_icon_angle * std.math.pi / 180.0, icon_c);
     } else {
         renderer.Renderer.drawSvg(renderer.icons.chevron_up, panel_x + panel_w - 48, header_action_y + 3, 16, 16, icon_c);
     }
 
     // Pull button
-    if (wb.git_pull_running) {
-        renderer.Renderer.drawSvgRotated(renderer.icons.chevron_down, panel_x + panel_w - 72, header_action_y + 3, 16, 16, -wb.sync_icon_angle * std.math.pi / 180.0, icon_c);
+    if (wb.git.pull_running) {
+        renderer.Renderer.drawSvgRotated(renderer.icons.chevron_down, panel_x + panel_w - 72, header_action_y + 3, 16, 16, -wb.git.sync_icon_angle * std.math.pi / 180.0, icon_c);
     } else {
         renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + panel_w - 72, header_action_y + 3, 16, 16, icon_c);
     }
@@ -147,7 +147,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     renderer.Renderer.setClipRect(panel_x, scroll_y_start, panel_w, h - scroll_y_start - layout.status_height);
 
     var y = scroll_y_start;
-    y -= wb.git_scroll_y;
+    y -= wb.git.scroll_y;
 
     // Input Box
     const input_h = 32.0;
@@ -159,7 +159,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     renderer.Renderer.drawRoundedRect(panel_x + 9, y + 1, panel_w - 18, input_h - 2, 4, input_bg);
 
     var commit_msg_buf: [1024]u8 = undefined;
-    const msg = wb.git_commit_msg.content() catch "";
+    const msg = wb.git.commit_msg.content() catch "";
     defer if (msg.len > 0) wb.allocator.free(msg);
 
     if (msg.len == 0) {
@@ -190,7 +190,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
 
     y += 34;
 
-    if (wb.git_status) |status| {
+    if (wb.git.status) |status| {
         if (!status.is_repo) {
             renderer.Renderer.drawText("Not a git repository.", panel_x + 16, y, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
         } else if (status.entries.len == 0) {
@@ -279,8 +279,8 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                 }
             };
 
-            drawSection.draw(&y, staged_count, "STAGED CHANGES", wb.git_staged_collapsed, status.staged_ptrs, true, panel_x, panel_w, h, my, mx, hover_c);
-            drawSection.draw(&y, changes_count, "CHANGES", wb.git_changes_collapsed, status.unstaged_ptrs, false, panel_x, panel_w, h, my, mx, hover_c);
+            drawSection.draw(&y, staged_count, "STAGED CHANGES", wb.git.staged_collapsed, status.staged_ptrs, true, panel_x, panel_w, h, my, mx, hover_c);
+            drawSection.draw(&y, changes_count, "CHANGES", wb.git.changes_collapsed, status.unstaged_ptrs, false, panel_x, panel_w, h, my, mx, hover_c);
         }
     }
 
@@ -288,7 +288,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
 
     // Calculate total height for scrollbar
     var total_entries: usize = 0;
-    if (wb.git_status) |status| {
+    if (wb.git.status) |status| {
         if (status.is_repo) {
             var sc: usize = 0;
             var cc: usize = 0;
@@ -296,13 +296,13 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                 if (e.isStaged()) sc += 1;
                 if (e.isUnstaged()) cc += 1;
             }
-            if (sc > 0) total_entries += 1 + if (wb.git_staged_collapsed) 0 else sc;
-            if (cc > 0) total_entries += 1 + if (wb.git_changes_collapsed) 0 else cc;
+            if (sc > 0) total_entries += 1 + if (wb.git.staged_collapsed) 0 else sc;
+            if (cc > 0) total_entries += 1 + if (wb.git.changes_collapsed) 0 else cc;
         }
     }
     // const total_h = 36 + 32 + 40 + 34 + @as(f32, @floatFromInt(total_entries)) * 24; // approx
     // Using git_panel.maxScrollY logic roughly:
     // ... we need to make maxScrollY reflect this total_h. Wait, maxScrollY depends on total_h!
 
-    shared.drawSidebarScrollbar(panel_x, panel_w, layout.header_height + layout.activity_bar_height, h, wb.git_scroll_y, total_entries, 24);
+    shared.drawSidebarScrollbar(panel_x, panel_w, layout.header_height + layout.activity_bar_height, h, wb.git.scroll_y, total_entries, 24);
 }

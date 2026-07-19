@@ -23,13 +23,13 @@ pub fn drawSearchPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void 
     renderer.Renderer.drawRoundedRect(panel_x + 12, query_y + 34, panel_w - 24, 18, 4, shared.color(theme.colors.accent_soft));
     renderer.Renderer.drawText("Search workspace", panel_x + 20, query_y + 37, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
 
-    if (wb.search_results) |results| {
+    if (wb.search.results) |results| {
         const row_h = search_panel.row_h;
-        const start_idx: usize = if (wb.search_scroll_y > 28) @as(usize, @intFromFloat((wb.search_scroll_y - 28) / row_h)) else 0;
+        const start_idx: usize = if (wb.search.scroll_y > 28) @as(usize, @intFromFloat((wb.search.scroll_y - 28) / row_h)) else 0;
         const visual_count: usize = @as(usize, @intFromFloat((h - 65 - layout.status_height) / row_h)) + 2;
         const end_idx = @min(results.matches.len, start_idx + visual_count);
 
-        var y = search_panel.list_top - wb.search_scroll_y + 28 + @as(f32, @floatFromInt(start_idx)) * row_h;
+        var y = search_panel.list_top - wb.search.scroll_y + 28 + @as(f32, @floatFromInt(start_idx)) * row_h;
         for (results.matches[start_idx..end_idx], start_idx..) |match, index| {
             if (y + row_h >= 65 and y < h - layout.status_height) {
                 renderer.Renderer.drawRect(panel_x, y, panel_w, row_h - 4, shared.color(theme.colors.selection));
@@ -52,6 +52,6 @@ pub fn drawSearchPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void 
         renderer.Renderer.drawText("Enter query and click Search.", panel_x + 16, search_panel.list_top + 8, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
     }
     renderer.Renderer.clearClipRect();
-    const result_count = if (wb.search_results) |results| results.matches.len else 0;
-    shared.drawSidebarScrollbar(panel_x, panel_w, search_panel.list_top, h, wb.search_scroll_y, result_count, search_panel.row_h);
+    const result_count = if (wb.search.results) |results| results.matches.len else 0;
+    shared.drawSidebarScrollbar(panel_x, panel_w, search_panel.list_top, h, wb.search.scroll_y, result_count, search_panel.row_h);
 }

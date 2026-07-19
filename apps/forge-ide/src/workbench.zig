@@ -21,6 +21,8 @@ const ai = @import("forge-ai");
 const agent_scope_picker = @import("agent/scope_picker.zig");
 const renderer = @import("forge-renderer");
 const SearchCtx = @import("workbench/search_ops.zig").SearchCtx;
+const SearchController = @import("workbench/search_controller.zig").SearchController;
+const GitController = @import("workbench/search_controller.zig").GitController;
 const git_status_mod = @import("git/status.zig");
 const git_diff_mod = @import("git/diff.zig");
 const diagnostics_store_mod = @import("workbench/diagnostics_store.zig");
@@ -106,24 +108,8 @@ pub const Workbench = struct {
     extensions_detail_index: ?usize = null,
     bottom_panel_mode: commands_mod.BottomPanelMode = .output,
     search_buffer: editor.Buffer,
-    search_results: ?workspace.search.SearchResult = null,
-    search_mutex: sync_mod.Mutex = .{},
-    search_running: bool = false,
-    search_ready: bool = false,
-    search_failed: bool = false,
-    search_pending_results: ?workspace.search.SearchResult = null,
-    search_scroll_y: f32 = 0,
-    git_status: ?git_status_mod.Status = null,
-    git_refresh_mutex: sync_mod.Mutex = .{},
-    git_refresh_running: bool = false,
-    git_refresh_ready: bool = false,
-    git_refresh_failed: bool = false,
-    git_refresh_pending_status: ?git_status_mod.Status = null,
-
-    git_push_running: bool = false,
-    git_push_done: bool = false,
-    git_pull_running: bool = false,
-    git_pull_done: bool = false,
+    search: SearchController = .{},
+    git: GitController = undefined,
     sync_icon_angle: f32 = 0,
     git_scroll_y: f32 = 0,
     run_scroll_y: f32 = 0,
@@ -261,9 +247,7 @@ pub const Workbench = struct {
     ime_text: ?[]const u8 = null,
     ime_cursor: i32 = -1,
 
-    git_commit_msg: editor.Buffer,
-    git_staged_collapsed: bool = false,
-    git_changes_collapsed: bool = false,
+    chat_system_prompt: editor.Buffer,
 
     code_scroll_x: std.AutoHashMap(u64, CodeScrollState),
     rendered_code_blocks: std.ArrayList(RenderedCodeBlock),
@@ -363,8 +347,8 @@ pub const Workbench = struct {
             .scope_picker_filtered = .empty,
             .prompt_buffer = try editor.Buffer.init(allocator),
             .rename_buffer = try editor.Buffer.init(allocator),
+            .chat_system_prompt = try editor.Buffer.init(allocator),
             .search_buffer = try editor.Buffer.init(allocator),
-            .git_commit_msg = try editor.Buffer.init(allocator),
             .chat_history = .empty,
             .breakpoints = breakpoints_mod.Store.init(allocator),
             .debug_console = debug_console_mod.DebugConsole.init(allocator, io),
@@ -408,6 +392,7 @@ pub const Workbench = struct {
             .watch_expressions = watch_expressions_mod.Store.init(allocator),
         };
         errdefer self.deinit();
+        self.git = GitController.init(allocator);
 
         self.terminals = try terminal_group_mod.Group.init(allocator, io, self.workspace_path);
         self.lsp_sync = lsp_sync_mod.Store.init(allocator, self.workspace_path, &self.lsp_proxy, &self.lsp_registry);
@@ -575,19 +560,8 @@ pub const Workbench = struct {
         self.chat_layout.deinit(self.allocator);
         self.rename_buffer.deinit();
         self.search_buffer.deinit();
-        self.git_commit_msg.deinit();
-        if (self.search_results) |*results| results.deinit(self.allocator);
-        self.search_mutex.lock();
-        if (self.search_pending_results) |*results| results.deinit(self.allocator);
-        self.search_pending_results = null;
-        self.search_mutex.unlock();
-        self.search_mutex.deinit();
-        if (self.git_status) |*status| status.deinit(self.allocator);
-        self.git_refresh_mutex.lock();
-        if (self.git_refresh_pending_status) |*status| status.deinit(self.allocator);
-        self.git_refresh_pending_status = null;
-        self.git_refresh_mutex.unlock();
-        self.git_refresh_mutex.deinit();
+        self.search.deinit(self.allocator);
+        self.git.deinit(self.allocator);
         if (self.debug_stop_path) |path| self.allocator.free(path);
         self.debug_variables.deinit();
         self.debug_callstack.deinit();
@@ -1156,7 +1130,7 @@ pub const Workbench = struct {
 
     pub fn updateTerminalPrompt(self: *Workbench) !void {
         var buf: [256]u8 = undefined;
-        const git_ptr: ?*const git_status_mod.Status = if (self.git_status) |*status| status else null;
+        const git_ptr: ?*const git_status_mod.Status = if (self.git.status) |*status| status else null;
         const prompt = @import("ui/panel/terminal_prompt.zig").format(self.workspace_path, git_ptr, &buf);
         try self.activeTerminal().setPromptLine(prompt);
     }
@@ -2017,26 +1991,26 @@ pub const Workbench = struct {
             self.scheduleGitStatusRefresh();
         }
 
-        if (self.git_push_done) {
-            self.git_push_done = false;
-            self.git_push_running = false;
+        if (self.git.push_done) {
+            self.git.push_done = false;
+            self.git.push_running = false;
             try self.refreshGitStatus();
         }
-        if (self.git_pull_done) {
-            self.git_pull_done = false;
-            self.git_pull_running = false;
+        if (self.git.pull_done) {
+            self.git.pull_done = false;
+            self.git.pull_running = false;
             try self.refreshGitStatus();
         }
 
-        if (self.git_push_running or self.git_pull_running) {
+        if (self.git.push_running or self.git.pull_running) {
             self.setStatus("Git operation running...") catch {};
-            self.sync_icon_angle += dt * 360.0;
-            if (self.sync_icon_angle >= 360.0) {
-                self.sync_icon_angle -= 360.0;
+            self.git.sync_icon_angle += dt * 360.0;
+            if (self.git.sync_icon_angle >= 360.0) {
+                self.git.sync_icon_angle -= 360.0;
             }
             @import("forge-renderer").Renderer.requestRedraw();
         } else {
-            self.sync_icon_angle = 0;
+            self.git.sync_icon_angle = 0;
         }
 
         self.lsp_sync.tick(dt, &self.tabs);

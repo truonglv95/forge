@@ -305,7 +305,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     else if (wb.focused_panel == .agent)
         &wb.prompt_buffer
     else if (wb.focused_panel == .git)
-        &wb.git_commit_msg
+        &wb.git.commit_msg
     else
         null;
 
@@ -484,7 +484,7 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
     else if (wb.focused_panel == .agent)
         &wb.prompt_buffer
     else if (wb.focused_panel == .git)
-        &wb.git_commit_msg
+        &wb.git.commit_msg
     else
         return;
 

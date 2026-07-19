@@ -10,12 +10,12 @@ pub fn refreshGitStatus(wb: anytype) !void {
 }
 
 fn replaceGitStatus(wb: anytype, new_status: git_status_mod.Status, reset_scroll: bool) !void {
-    if (wb.git_status) |*status| status.deinit(wb.allocator);
-    wb.git_status = new_status;
-    if (reset_scroll) wb.git_scroll_y = 0;
-    if (wb.git_status.?.is_repo) {
+    if (wb.git.status) |*status| status.deinit(wb.allocator);
+    wb.git.status = new_status;
+    if (reset_scroll) wb.git.scroll_y = 0;
+    if (wb.git.status.?.is_repo) {
         var buf: [96]u8 = undefined;
-        const msg = try std.fmt.bufPrint(&buf, "Git: {d} change(s)", .{wb.git_status.?.entries.len});
+        const msg = try std.fmt.bufPrint(&buf, "Git: {d} change(s)", .{wb.git.status.?.entries.len});
         try wb.setStatus(msg);
     } else {
         try wb.setStatus("Not a git repository");
@@ -27,19 +27,19 @@ const RefreshCtx = struct {
 };
 
 pub fn scheduleGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) void {
-    wb.git_refresh_mutex.lock();
-    if (wb.git_refresh_running) {
-        wb.git_refresh_mutex.unlock();
+    wb.git.refresh_mutex.lock();
+    if (wb.git.refresh_running) {
+        wb.git.refresh_mutex.unlock();
         return;
     }
-    wb.git_refresh_running = true;
-    wb.git_refresh_failed = false;
-    wb.git_refresh_mutex.unlock();
+    wb.git.refresh_running = true;
+    wb.git.refresh_failed = false;
+    wb.git.refresh_mutex.unlock();
 
     background_jobs.spawnDetached("git-refresh", RefreshCtx, wb.allocator, .{ .wb = wb }, gitRefreshWorker) catch {
-        wb.git_refresh_mutex.lock();
-        wb.git_refresh_running = false;
-        wb.git_refresh_mutex.unlock();
+        wb.git.refresh_mutex.lock();
+        wb.git.refresh_running = false;
+        wb.git.refresh_mutex.unlock();
         return;
     };
 }
@@ -50,18 +50,18 @@ fn gitRefreshWorker(ctx: *RefreshCtx) void {
 
     const result = git_status_mod.refresh(wb.allocator, wb.workspace_path);
 
-    wb.git_refresh_mutex.lock();
-    defer wb.git_refresh_mutex.unlock();
+    wb.git.refresh_mutex.lock();
+    defer wb.git.refresh_mutex.unlock();
 
     if (result) |status| {
-        if (wb.git_refresh_pending_status) |*old| old.deinit(wb.allocator);
-        wb.git_refresh_pending_status = status;
-        wb.git_refresh_ready = true;
-        wb.git_refresh_failed = false;
+        if (wb.git.refresh_pending_status) |*old| old.deinit(wb.allocator);
+        wb.git.refresh_pending_status = status;
+        wb.git.refresh_ready = true;
+        wb.git.refresh_failed = false;
     } else |_| {
-        wb.git_refresh_failed = true;
+        wb.git.refresh_failed = true;
     }
-    wb.git_refresh_running = false;
+    wb.git.refresh_running = false;
     renderer.Renderer.requestRedraw();
 }
 
@@ -70,12 +70,12 @@ const SyncCtx = struct {
 };
 
 pub fn scheduleGitPull(wb: *@import("../workbench.zig").Workbench) void {
-    if (wb.git_pull_running or wb.git_push_running) return;
-    wb.git_pull_running = true;
-    wb.git_pull_done = false;
+    if (wb.git.pull_running or wb.git.push_running) return;
+    wb.git.pull_running = true;
+    wb.git.pull_done = false;
     wb.setStatus("Git pull running...") catch {};
     background_jobs.spawnDetached("git-pull", SyncCtx, wb.allocator, .{ .wb = wb }, gitPullWorker) catch {
-        wb.git_pull_running = false;
+        wb.git.pull_running = false;
         wb.setStatus("Git pull failed to start") catch {};
         return;
     };
@@ -84,18 +84,18 @@ pub fn scheduleGitPull(wb: *@import("../workbench.zig").Workbench) void {
 fn gitPullWorker(ctx: *SyncCtx) void {
     const wb = ctx.wb;
     defer wb.allocator.destroy(ctx);
-    defer wb.git_pull_done = true;
+    defer wb.git.pull_done = true;
 
     _ = runGitWithOutput(wb, &.{ "git", "pull" }, "git pull", true) catch -1;
 }
 
 pub fn scheduleGitPush(wb: *@import("../workbench.zig").Workbench) void {
-    if (wb.git_push_running or wb.git_pull_running) return;
-    wb.git_push_running = true;
-    wb.git_push_done = false;
+    if (wb.git.push_running or wb.git.pull_running) return;
+    wb.git.push_running = true;
+    wb.git.push_done = false;
     wb.setStatus("Git push running...") catch {};
     background_jobs.spawnDetached("git-push", SyncCtx, wb.allocator, .{ .wb = wb }, gitPushWorker) catch {
-        wb.git_push_running = false;
+        wb.git.push_running = false;
         wb.setStatus("Git push failed to start") catch {};
         return;
     };
@@ -104,7 +104,7 @@ pub fn scheduleGitPush(wb: *@import("../workbench.zig").Workbench) void {
 fn gitPushWorker(ctx: *SyncCtx) void {
     const wb = ctx.wb;
     defer wb.allocator.destroy(ctx);
-    defer wb.git_push_done = true;
+    defer wb.git.push_done = true;
 
     _ = runGitWithOutput(wb, &.{ "git", "push" }, "git push", true) catch -1;
 }
@@ -141,16 +141,16 @@ pub fn runGitWithOutput(wb: *@import("../workbench.zig").Workbench, args: []cons
 }
 
 pub fn flushGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) !bool {
-    wb.git_refresh_mutex.lock();
-    const ready = wb.git_refresh_ready;
-    const failed = wb.git_refresh_failed;
-    const pending = if (ready) wb.git_refresh_pending_status else null;
+    wb.git.refresh_mutex.lock();
+    const ready = wb.git.refresh_ready;
+    const failed = wb.git.refresh_failed;
+    const pending = if (ready) wb.git.refresh_pending_status else null;
     if (ready) {
-        wb.git_refresh_pending_status = null;
-        wb.git_refresh_ready = false;
+        wb.git.refresh_pending_status = null;
+        wb.git.refresh_ready = false;
     }
-    wb.git_refresh_failed = false;
-    wb.git_refresh_mutex.unlock();
+    wb.git.refresh_failed = false;
+    wb.git.refresh_mutex.unlock();
 
     if (pending) |status| {
         replaceGitStatus(wb, status, false) catch |err| {
@@ -183,10 +183,10 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
         .focus_commit_msg => {
             // Focus is already set to .git by input.zig
         },
-        .toggle_staged_section => wb.git_staged_collapsed = !wb.git_staged_collapsed,
-        .toggle_changes_section => wb.git_changes_collapsed = !wb.git_changes_collapsed,
+        .toggle_staged_section => wb.git.staged_collapsed = !wb.git.staged_collapsed,
+        .toggle_changes_section => wb.git.changes_collapsed = !wb.git.changes_collapsed,
         .toggle_file_staged => |index| {
-            const status = wb.git_status orelse return;
+            const status = wb.git.status orelse return;
             if (index >= status.entries.len) return;
             const entry = status.entries[index];
             const process_spawn = @import("forge-util").process_spawn;
@@ -200,7 +200,7 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
             try refreshGitStatus(wb);
         },
         .discard_file_changes => |index| {
-            const status = wb.git_status orelse return;
+            const status = wb.git.status orelse return;
             if (index >= status.entries.len) return;
             const entry = status.entries[index];
             const process_spawn = @import("forge-util").process_spawn;
@@ -217,7 +217,7 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
             try refreshGitStatus(wb);
         },
         .open_file => |info| {
-            const status = wb.git_status orelse return;
+            const status = wb.git.status orelse return;
             if (info.index >= status.entries.len) return;
             const entry = status.entries[info.index];
             const path = try wb.allocator.dupe(u8, entry.path);
@@ -245,7 +245,7 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
 }
 
 pub fn commitStagedChanges(wb: anytype) !void {
-    const msg = try wb.git_commit_msg.content();
+    const msg = try wb.git.commit_msg.content();
     defer wb.allocator.free(msg);
 
     if (msg.len == 0) {
@@ -256,7 +256,7 @@ pub fn commitStagedChanges(wb: anytype) !void {
     const exit_code = try runGitWithOutput(wb, &.{ "git", "commit", "-m", msg }, "git commit", true);
 
     if (exit_code == 0) {
-        wb.git_commit_msg.clear();
+        wb.git.commit_msg.clear();
         try refreshGitStatus(wb);
     }
 }
