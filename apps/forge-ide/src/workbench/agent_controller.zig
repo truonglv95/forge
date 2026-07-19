@@ -33,6 +33,7 @@ pub const AgentController = struct {
             .chat_history = .empty,
             .prompt_buffer = try @import("forge-editor").Buffer.init(allocator),
             .chat_system_prompt = try @import("forge-editor").Buffer.init(allocator),
+            .provider = try allocator.dupe(u8, "auto"),
         };
         errdefer self.deinit();
         return self;
@@ -48,6 +49,23 @@ pub const AgentController = struct {
         }
         self.chat_history.deinit(self.allocator);
         self.ui_queue.deinit(self.allocator);
+
+        // Free config
+        self.allocator.free(self.provider);
+        if (self.model) |model| self.allocator.free(model);
+        if (self.ollama_url) |url| self.allocator.free(url);
+        if (self.openrouter_url) |url| self.allocator.free(url);
+        if (self.embedding_provider) |provider| self.allocator.free(provider);
+        if (self.embedding_model) |model| self.allocator.free(model);
+        if (self.embedding_url) |url| self.allocator.free(url);
+
+        for (self.models) |m| {
+            self.allocator.free(m.id);
+            self.allocator.free(m.label);
+            self.allocator.free(m.provider);
+        }
+        self.allocator.free(self.models);
+
         // Additional cleanup for session if necessary
     }
 };
