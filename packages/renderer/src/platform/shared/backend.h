@@ -33,7 +33,7 @@ void forge_backend_draw_rect(float x, float y, float w, float h, float r, float 
 void forge_backend_draw_rounded_rect(float x, float y, float w, float h, float r, float g, float b, float a, float corner_radius);
 void forge_backend_draw_text_len(const char* text, size_t len, float x, float y, float font_size, float r, float g, float b, float a);
 void forge_backend_draw_styled_text(const char* text, size_t len, float x, float y, float font_size, const ForgeTextSpan* spans, size_t span_count);
-void forge_backend_draw_svg(const char* svg_string, float x, float y, float w, float h, float r, float g, float b, float a);
+void forge_backend_draw_svg(const char* svg_string, float x, float y, float w, float h, float angle, float r, float g, float b, float a);
 
 void forge_backend_set_text_style(const char* font_family, int font_weight);
 void forge_backend_set_editor_text_metrics(float editor_font_size, float line_height, float baseline);

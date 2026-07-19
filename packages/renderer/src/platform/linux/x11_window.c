@@ -232,8 +232,8 @@ void forge_backend_draw_styled_text(const char* text, size_t len, float x, float
     }
 }
 
-void forge_backend_draw_svg(const char* svg, float x, float y, float w, float h, float r, float g, float b, float a) {
-    (void)svg; forge_backend_draw_rect(x, y, w, h, r, g, b, a * 0.7f);
+void forge_backend_draw_svg(const char* svg, float x, float y, float w, float h, float angle, float r, float g, float b, float a) {
+    (void)svg; (void)angle; forge_backend_draw_rect(x, y, w, h, r, g, b, a * 0.7f);
 }
 
 float forge_backend_measure_text_width(const char* text, size_t len, float font_size) {

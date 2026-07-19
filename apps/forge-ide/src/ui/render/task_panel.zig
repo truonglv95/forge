@@ -90,28 +90,46 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                     line_y += line_h;
                 }
             } else {
-                const task_state = wb.task_output.snapshotState();
-                wb.task_output.lock();
-                defer wb.task_output.unlock();
-                const line_h: f32 = 14.0;
-                const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
-                const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
-                const end_idx = @min(wb.task_output.lines.items.len, start_idx + visual_count);
+                const rx = editor_x + editor_w;
+                const top_y = tab_y + 3;
 
-                var y = line_y + @as(f32, @floatFromInt(start_idx)) * line_h;
-                for (wb.task_output.lines.items[start_idx..end_idx]) |line| {
-                    var buf: [512:0]u8 = undefined;
-                    const clipped = if (line.len > 511) line[0..511] else line;
-                    @memcpy(buf[0..clipped.len], clipped);
-                    buf[clipped.len] = 0;
-                    renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, y, 12.0, .{ .r = 0.85, .g = 0.85, .b = 0.85, .a = 1.0 });
-                    y += line_h;
+                var channel_name: []const u8 = "Tasks";
+                if (wb.getOutputChannel(wb.active_output_channel_id)) |chan| {
+                    channel_name = chan.name;
                 }
-                if (task_state.last_exit_code) |code| {
-                    var exit_buf: [64:0]u8 = undefined;
-                    const exit_msg = std.fmt.bufPrint(&exit_buf, "exit code: {d}", .{code}) catch "";
-                    exit_buf[exit_msg.len] = 0;
-                    renderer.Renderer.drawText(@ptrCast(&exit_buf), editor_x + 20, panel_y + panel_h - 26, 12.0, .{ .r = 0.6, .g = 0.8, .b = 0.6, .a = 1.0 });
+
+                var buf_btn: [128:0]u8 = undefined;
+                const btn_text = std.fmt.bufPrint(&buf_btn, "Channel: {s} \xEF\xBF\xBD", .{channel_name}) catch "Channel \xEF\xBF\xBD";
+                buf_btn[btn_text.len] = 0;
+
+                const text_w = renderer.Renderer.measureText(@ptrCast(&buf_btn), 11.0);
+                renderer.Renderer.drawText(@ptrCast(&buf_btn), rx - text_w - 10, top_y, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+
+                if (wb.getOutputChannel(wb.active_output_channel_id)) |chan| {
+                    const active_output = chan.output;
+                    const task_state = active_output.snapshotState();
+                    active_output.lock();
+                    defer active_output.unlock();
+                    const line_h: f32 = 14.0;
+                    const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
+                    const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+                    const end_idx = @min(active_output.lines.items.len, start_idx + visual_count);
+
+                    var y = line_y + @as(f32, @floatFromInt(start_idx)) * line_h;
+                    for (active_output.lines.items[start_idx..end_idx]) |line| {
+                        var buf: [512:0]u8 = undefined;
+                        const clipped = if (line.len > 511) line[0..511] else line;
+                        @memcpy(buf[0..clipped.len], clipped);
+                        buf[clipped.len] = 0;
+                        renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, y, 12.0, .{ .r = 0.85, .g = 0.85, .b = 0.85, .a = 1.0 });
+                        y += line_h;
+                    }
+                    if (task_state.last_exit_code) |code| {
+                        var exit_buf: [64:0]u8 = undefined;
+                        const exit_msg = std.fmt.bufPrint(&exit_buf, "exit code: {d}", .{code}) catch "";
+                        exit_buf[exit_msg.len] = 0;
+                        renderer.Renderer.drawText(@ptrCast(&exit_buf), editor_x + 20, panel_y + panel_h - 26, 12.0, .{ .r = 0.6, .g = 0.8, .b = 0.6, .a = 1.0 });
+                    }
                 }
             }
         },

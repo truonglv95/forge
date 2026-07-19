@@ -87,7 +87,49 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and isDefinitionClick(event.modifiers) and editor_hit.isEditorContentArea(geo, event.x, event.y)) {
             renderer.Renderer.setCursor(4);
         } else {
-            renderer.Renderer.setCursor(0);
+            var handled_cursor = false;
+            if (event.y >= h - 22) {
+                const status_bar = @import("../render/status_bar.zig");
+                if (status_bar.hitTest(wb, event.x, event.y) != .none) {
+                    renderer.Renderer.setCursor(4);
+                    handled_cursor = true;
+                }
+            } else if (geo.shell_mode == .ide and wb.sidebar_view == .git and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x) {
+                if (git_panel.hitTest(
+                    if (wb.git_status) |status| status.entries else &.{},
+                    wb.git_staged_collapsed,
+                    wb.git_changes_collapsed,
+                    geo.explorer_x,
+                    geo.explorer_w,
+                    event.x,
+                    event.y,
+                    wb.git_scroll_y,
+                )) |hit| {
+                    if (hit.is_icon) {
+                        renderer.Renderer.setCursor(4);
+                        handled_cursor = true;
+                    }
+                }
+            } else if (geo.shell_mode == .ide and wb.bottom_panel_visible and event.y >= geo.task_panel_y and wb.bottom_panel_mode == .output) {
+                const rx = geo.editor_x + geo.editor_w;
+                const top_y = geo.task_panel_y + 6 + 3; // tab_y_offset is 6
+                if (event.y >= top_y and event.y <= top_y + 11) {
+                    var channel_name: []const u8 = "Tasks";
+                    if (wb.getOutputChannel(wb.active_output_channel_id)) |chan| {
+                        channel_name = chan.name;
+                    }
+                    var buf_btn: [128:0]u8 = undefined;
+                    const btn_text = std.fmt.bufPrint(&buf_btn, "Channel: {s} \xEF\xBF\xBD", .{channel_name}) catch "Channel \xEF\xBF\xBD";
+                    buf_btn[btn_text.len] = 0;
+
+                    const text_w = renderer.Renderer.measureText(@ptrCast(&buf_btn), 11.0);
+                    if (event.x >= rx - text_w - 10 and event.x <= rx - 10) {
+                        renderer.Renderer.setCursor(4);
+                        handled_cursor = true;
+                    }
+                }
+            }
+            if (!handled_cursor) renderer.Renderer.setCursor(0);
         }
 
         if (geo.shell_mode == .ide and wb.sidebar_view == .explorer and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= explorer_scroll.list_top and event.y < h - layout.status_height) {
@@ -196,7 +238,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 event.y,
                 wb.git_scroll_y,
             )) |hit| {
-                wb.handleGitClick(hit) catch {};
+                wb.handleGitClick(hit.action) catch {};
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .run and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= debug_panel.list_top - 40) {
             wb.focused_panel = .run;
@@ -508,6 +550,24 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and event.y >= geo.task_panel_y) {
             if (bottom_panel.hitTab(geo.editor_x, geo.task_panel_y, event.x, event.y)) |mode| {
                 wb.dispatch(.{ .set_bottom_panel_mode = mode }) catch {};
+            } else if (wb.bottom_panel_mode == .output) {
+                const rx = geo.editor_x + geo.editor_w;
+                const top_y = bottom_panel.tabBarTop(geo.task_panel_y) + 3;
+                if (event.y >= top_y and event.y <= top_y + 11) {
+                    var channel_name: []const u8 = "Tasks";
+                    if (wb.getOutputChannel(wb.active_output_channel_id)) |chan| {
+                        channel_name = chan.name;
+                    }
+                    var buf_btn: [128:0]u8 = undefined;
+                    const btn_text = std.fmt.bufPrint(&buf_btn, "Channel: {s} \xEF\xBF\xBD", .{channel_name}) catch "Channel \xEF\xBF\xBD";
+                    buf_btn[btn_text.len] = 0;
+
+                    const text_w = renderer.Renderer.measureText(@ptrCast(&buf_btn), 11.0);
+                    if (event.x >= rx - text_w - 10 and event.x <= rx - 10) {
+                        wb.dispatch(.select_output_channel) catch {};
+                        return;
+                    }
+                }
             } else if (wb.bottom_panel_mode == .terminal and bottom_panel.inContentArea(geo.task_panel_y, event.y)) {
                 wb.focused_panel = .terminal;
                 if (terminal_panel.hitSessionTab(geo.editor_x, geo.editor_w, geo.task_panel_y, event.x, event.y, wb.terminals.sessions.items.len)) |hit| {

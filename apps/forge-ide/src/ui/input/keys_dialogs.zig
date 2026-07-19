@@ -117,3 +117,53 @@ pub fn handleGitBranchPickerKeys(wb: *Workbench, event: renderer.KeyEvent) void 
         return;
     }
 }
+
+pub fn handleOutputChannelPickerKeys(wb: *Workbench, event: renderer.KeyEvent) void {
+    if (event.keycode == 53) {
+        wb.output_channel_picker.close();
+        if (wb.previous_focus == .output_channels) {
+            wb.focused_panel = .editor;
+        } else {
+            wb.focused_panel = wb.previous_focus;
+        }
+        return;
+    }
+
+    if (event.keycode == 36) {
+        if (wb.output_channel_picker.filtered.items.len > 0) {
+            const selected_idx = wb.output_channel_picker.filtered.items[wb.output_channel_picker.selected];
+            const channel_id = wb.output_channel_picker.entries.items[selected_idx].id;
+
+            // Switch to this channel
+            if (wb.getOutputChannel(channel_id) != null) {
+                // Free previous if it was dupe, but we shouldn't free the old one here,
+                // wait, active_output_channel_id is NOT owned. It points to string literal or we should make it point to the channel's id.
+                wb.active_output_channel_id = wb.getOutputChannel(channel_id).?.id;
+                wb.task_scroll_y = 0;
+            }
+        }
+        wb.output_channel_picker.close();
+        wb.focused_panel = .editor; // After selecting output, focus back to editor or output?
+        return;
+    }
+
+    if (event.keycode == 125) {
+        wb.output_channel_picker.moveSelection(1);
+        return;
+    }
+
+    if (event.keycode == 126) {
+        wb.output_channel_picker.moveSelection(-1);
+        return;
+    }
+
+    if (event.keycode == 51) {
+        wb.output_channel_picker.backspace() catch {};
+        return;
+    }
+
+    if (event.chars.len > 0 and event.chars[0] >= 32) {
+        wb.output_channel_picker.insertChar(event.chars) catch {};
+        return;
+    }
+}

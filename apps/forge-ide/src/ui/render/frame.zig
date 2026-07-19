@@ -23,7 +23,7 @@ fn c(rgba: @import("forge-workspace").Rgba) renderer.Color {
 fn needsContinuousRendering(wb: anytype) bool {
     if (wb.agent.worker_running) return true;
     if (wb.completions.visible) return true;
-    if (wb.palette.open or wb.workspace_symbol_picker.open or wb.git_branch_picker.open) return true;
+    if (wb.palette.open or wb.workspace_symbol_picker.open or wb.git_branch_picker.open or wb.output_channel_picker.open) return true;
     if (wb.agent_panel_visible) {
         wb.agent.lock();
         const live = wb.agent.stream_live or wb.agent.phase == .building_context or wb.agent.phase == .sending or wb.agent.phase == .streaming or wb.agent.phase == .parsing or wb.agent.phase == .waiting_approval;
@@ -138,6 +138,7 @@ pub fn onRenderFrame() void {
         if (wb.palette.open) dialogs.drawPalette(wb, w, h);
         if (wb.workspace_symbol_picker.open) dialogs.drawWorkspaceSymbolPicker(wb, w, h);
         if (wb.git_branch_picker.open) dialogs.drawGitBranchPicker(wb, w, h);
+        if (wb.output_channel_picker.open) dialogs.drawOutputChannelPicker(wb, w, h);
         if (wb.focused_panel == .conflict) dialogs.drawConflictDialog(wb, w, h);
         if (wb.focused_panel == .recovery) dialogs.drawRecoveryDialog(wb, w, h);
         if (wb.agent.scope_picker_open) agent_render.drawScopePicker(wb, geo.agent_x, geo.agent_w, h);

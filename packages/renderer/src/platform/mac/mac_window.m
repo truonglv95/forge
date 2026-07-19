@@ -1231,7 +1231,7 @@ void forge_mac_clear_clip_rect(void) {
 }
 
 
-void forge_mac_draw_svg(const char* svg_string, float x, float y, float w, float h, float r, float g, float b, float a) {
+void forge_mac_draw_svg(const char* svg_string, float x, float y, float w, float h, float angle, float r, float g, float b, float a) {
     if (!g_renderer) return;
     
     if (g_renderer.currentTexture != g_renderer.iconAtlas.texture) {
@@ -1249,10 +1249,19 @@ void forge_mac_draw_svg(const char* svg_string, float x, float y, float w, float
     ForgeEnsureVertexCapacity(6);
     Vertex *v = (Vertex *)[g_renderer.vertexBuffer contents] + g_renderer.vertexOffset + g_renderer.vertexCount;
     
-    float x1 = x;
-    float y1 = y;
-    float x2 = x + w;
-    float y2 = y + h;
+    float cx = x + w / 2.0f;
+    float cy = y + h / 2.0f;
+    float rad = angle * M_PI / 180.0f;
+    float c = cosf(rad);
+    float s = sinf(rad);
+    
+    float dx1 = -w / 2.0f; float dy1 = -h / 2.0f;
+    float dx2 = w / 2.0f;  float dy2 = h / 2.0f;
+    
+    float rx1 = cx + dx1 * c - dy1 * s; float ry1 = cy + dx1 * s + dy1 * c;
+    float rx2 = cx + dx2 * c - dy1 * s; float ry2 = cy + dx2 * s + dy1 * c;
+    float rx3 = cx + dx1 * c - dy2 * s; float ry3 = cy + dx1 * s + dy2 * c;
+    float rx4 = cx + dx2 * c - dy2 * s; float ry4 = cy + dx2 * s + dy2 * c;
     
     float u1 = info.uvX;
     float v1 = info.uvY;
@@ -1263,12 +1272,12 @@ void forge_mac_draw_svg(const char* svg_string, float x, float y, float w, float
     vector_float4 no_sdf = {0,0,0,0};
     vector_float4 no_sdf2 = {0,0,0,0};
     
-    v[0] = (Vertex){{x1, y1}, {u1, v1}, color, no_sdf, no_sdf2};
-    v[1] = (Vertex){{x2, y1}, {u2, v1}, color, no_sdf, no_sdf2};
-    v[2] = (Vertex){{x1, y2}, {u1, v2}, color, no_sdf, no_sdf2};
-    v[3] = (Vertex){{x2, y1}, {u2, v1}, color, no_sdf, no_sdf2};
-    v[4] = (Vertex){{x1, y2}, {u1, v2}, color, no_sdf, no_sdf2};
-    v[5] = (Vertex){{x2, y2}, {u2, v2}, color, no_sdf, no_sdf2};
+    v[0] = (Vertex){{rx1, ry1}, {u1, v1}, color, no_sdf, no_sdf2};
+    v[1] = (Vertex){{rx2, ry2}, {u2, v1}, color, no_sdf, no_sdf2};
+    v[2] = (Vertex){{rx3, ry3}, {u1, v2}, color, no_sdf, no_sdf2};
+    v[3] = (Vertex){{rx2, ry2}, {u2, v1}, color, no_sdf, no_sdf2};
+    v[4] = (Vertex){{rx3, ry3}, {u1, v2}, color, no_sdf, no_sdf2};
+    v[5] = (Vertex){{rx4, ry4}, {u2, v2}, color, no_sdf, no_sdf2};
     
     g_renderer.vertexCount += 6;
 }

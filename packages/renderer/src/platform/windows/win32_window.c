@@ -94,7 +94,7 @@ void forge_backend_init(void) {
     wc.lpfnWndProc = window_proc;
     wc.hInstance = GetModuleHandleW(NULL);
     wc.lpszClassName = FORGE_WINDOW_CLASS_NAME;
-    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     RegisterClassW(&wc);
 }
@@ -164,16 +164,26 @@ void forge_backend_set_render_callback(ForgeRenderCallback cb) { g_render_cb = c
 void forge_backend_set_key_callback(ForgeKeyCallback cb) { g_key_cb = cb; }
 void forge_backend_set_mouse_callback(ForgeMouseCallback cb) { g_mouse_cb = cb; }
 
+void forge_backend_set_ime_composition_callback(ForgeImeCompositionCallback cb) {
+    // IME composition not fully implemented in Win32 backend yet
+    (void)cb;
+}
+
+void forge_backend_set_ime_cursor_rect(float x, float y, float w, float h) {
+    // IME cursor rect not fully implemented in Win32 backend yet
+    (void)x; (void)y; (void)w; (void)h;
+}
+
 void forge_backend_set_cursor(int type) {
     if (!g_hwnd) return;
     HCURSOR cursor = NULL;
     switch (type) {
-        case 0: cursor = LoadCursorW(NULL, IDC_ARROW); break;
-        case 1: cursor = LoadCursorW(NULL, IDC_IBEAM); break;
-        case 2: cursor = LoadCursorW(NULL, IDC_SIZENS); break;
-        case 3: cursor = LoadCursorW(NULL, IDC_SIZEWE); break;
-        case 4: cursor = LoadCursorW(NULL, IDC_HAND); break;
-        default: cursor = LoadCursorW(NULL, IDC_ARROW); break;
+        case 0: cursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW); break;
+        case 1: cursor = LoadCursorW(NULL, (LPCWSTR)IDC_IBEAM); break;
+        case 2: cursor = LoadCursorW(NULL, (LPCWSTR)IDC_SIZENS); break;
+        case 3: cursor = LoadCursorW(NULL, (LPCWSTR)IDC_SIZEWE); break;
+        case 4: cursor = LoadCursorW(NULL, (LPCWSTR)IDC_HAND); break;
+        default: cursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW); break;
     }
     if (cursor) SetCursor(cursor);
 }
@@ -233,8 +243,9 @@ void forge_backend_draw_styled_text(const char* text, size_t len, float x, float
     forge_backend_draw_text_len(text, len, x, y, font_size, 0.85f, 0.85f, 0.85f, 1.0f);
 }
 
-void forge_backend_draw_svg(const char* svg_string, float x, float y, float w, float h, float r, float g, float b, float a) {
+void forge_backend_draw_svg(const char* svg_string, float x, float y, float w, float h, float angle, float r, float g, float b, float a) {
     // SVG rendering not supported in Win32 GDI backend — draw a placeholder rect.
+    (void)angle;
     forge_backend_draw_rect(x, y, w, h, r, g, b, a);
 }
 

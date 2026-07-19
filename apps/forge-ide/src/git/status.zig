@@ -221,13 +221,18 @@ fn buildDirectoryStatus(
 
 fn runCapture(allocator: std.mem.Allocator, cwd: []const u8, args: []const []const u8) ![]u8 {
     const result = try process_spawn.runCapture(allocator, args, .{ .cwd = cwd });
+    const logger = @import("logger.zig");
+    logger.log(args);
     defer allocator.free(result.output);
     return try allocator.dupe(u8, result.output);
 }
 
 fn runExitCode(cwd: []const u8, args: []const []const u8) i32 {
     const allocator = std.heap.page_allocator;
-    return process_spawn.runWait(allocator, args, .{ .cwd = cwd }) catch -1;
+    const result = process_spawn.runWait(allocator, args, .{ .cwd = cwd }) catch -1;
+    const logger = @import("logger.zig");
+    logger.log(args);
+    return result;
 }
 
 fn parseBranchLine(

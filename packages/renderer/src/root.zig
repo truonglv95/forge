@@ -289,7 +289,11 @@ pub const Renderer = struct {
     }
 
     pub fn drawSvg(svg_string: [:0]const u8, x: f32, y: f32, w: f32, h: f32, color: Color) void {
-        backend.forge_backend_draw_svg(svg_string.ptr, x, y, w, h, color.r, color.g, color.b, color.a);
+        backend.forge_backend_draw_svg(svg_string.ptr, x, y, w, h, 0, color.r, color.g, color.b, color.a);
+    }
+
+    pub fn drawSvgRotated(svg_string: [:0]const u8, x: f32, y: f32, w: f32, h: f32, angle: f32, color: Color) void {
+        backend.forge_backend_draw_svg(svg_string.ptr, x, y, w, h, angle, color.r, color.g, color.b, color.a);
     }
 
     pub fn getResolvedFontName(buf: []u8) void {

@@ -182,12 +182,13 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         },
         .run_task => |task_name| {
             wb.references.clear();
-            if (wb.task_output.isRunning()) {
-                try wb.setStatus("Task already running");
+            const task_out = wb.getOutputChannel("tasks").?.output;
+            if (task_out.isRunning()) {
                 return;
             }
-            wb.task_output.clear();
-            wb.task_output.setRunning(true);
+
+            task_out.clear();
+            task_out.setRunning(true);
             const Wb = @TypeOf(wb.*);
             try tasks_mod.spawn(
                 wb.allocator,
@@ -593,6 +594,22 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         },
         .search_run => try wb.runSearch(),
         .git_refresh => try wb.refreshGitStatus(),
+        .git_pull => {
+            @import("git_ops.zig").scheduleGitPull(wb);
+        },
+        .git_push => {
+            @import("git_ops.zig").scheduleGitPush(wb);
+        },
+        .git_stage_all => {
+            const process_spawn = @import("forge-util").process_spawn;
+            _ = process_spawn.runWait(wb.allocator, &.{ "git", "add", "." }, .{ .cwd = wb.workspace_path }) catch {};
+            try wb.refreshGitStatus();
+        },
+        .git_unstage_all => {
+            const process_spawn = @import("forge-util").process_spawn;
+            _ = process_spawn.runWait(wb.allocator, &.{ "git", "reset" }, .{ .cwd = wb.workspace_path }) catch {};
+            try wb.refreshGitStatus();
+        },
         .uninstall_extension => |extension_id| {
             try plugin.marketplace.uninstall(wb.allocator, wb.io, wb.workspace_root, extension_id);
             try wb.reloadExtensions();
@@ -876,6 +893,18 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .debug_watch_refresh => {
             try wb.refreshWatchExpressions();
             try wb.setStatus("Watch expressions refreshed");
+        },
+        .select_output_channel => {
+            if (wb.output_channels.count() > 0) {
+                wb.output_channel_picker.openPicker() catch {};
+                var it = wb.output_channels.iterator();
+                while (it.next()) |entry| {
+                    wb.output_channel_picker.addChannel(entry.value_ptr.*.id, entry.value_ptr.*.name) catch {};
+                }
+                wb.output_channel_picker.applyFilter() catch {};
+                wb.previous_focus = wb.focused_panel;
+                wb.focused_panel = .output_channels;
+            }
         },
     }
 }

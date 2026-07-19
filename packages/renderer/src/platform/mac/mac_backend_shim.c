@@ -18,7 +18,7 @@ void forge_mac_draw_rect(float x, float y, float w, float h, float r, float g, f
 void forge_mac_draw_rounded_rect(float x, float y, float w, float h, float r, float g, float b, float a, float cr);
 void forge_mac_draw_text_len(const char* text, size_t len, float x, float y, float fs, float r, float g, float b, float a);
 void forge_mac_draw_styled_text(const char* text, size_t len, float x, float y, float fs, const ForgeTextSpan* spans, size_t n);
-void forge_mac_draw_svg(const char* svg, float x, float y, float w, float h, float r, float g, float b, float a);
+void forge_mac_draw_svg(const char* svg, float x, float y, float w, float h, float angle, float r, float g, float b, float a);
 void forge_mac_set_text_style(const char* family, int weight);
 void forge_mac_set_editor_text_metrics(float fs, float lh, float b);
 void forge_mac_get_resolved_font_name(char* buf, size_t cap);
@@ -48,7 +48,7 @@ void forge_backend_draw_rect(float x, float y, float w, float h, float r, float 
 void forge_backend_draw_rounded_rect(float x, float y, float w, float h, float r, float g, float b, float a, float cr) { forge_mac_draw_rounded_rect(x, y, w, h, r, g, b, a, cr); }
 void forge_backend_draw_text_len(const char* t, size_t l, float x, float y, float fs, float r, float g, float b, float a) { forge_mac_draw_text_len(t, l, x, y, fs, r, g, b, a); }
 void forge_backend_draw_styled_text(const char* t, size_t l, float x, float y, float fs, const ForgeTextSpan* s, size_t n) { forge_mac_draw_styled_text(t, l, x, y, fs, s, n); }
-void forge_backend_draw_svg(const char* svg, float x, float y, float w, float h, float r, float g, float b, float a) { forge_mac_draw_svg(svg, x, y, w, h, r, g, b, a); }
+void forge_backend_draw_svg(const char* svg, float x, float y, float w, float h, float angle, float r, float g, float b, float a) { forge_mac_draw_svg(svg, x, y, w, h, angle, r, g, b, a); }
 void forge_backend_set_text_style(const char* f, int w) { forge_mac_set_text_style(f, w); }
 void forge_backend_set_editor_text_metrics(float fs, float lh, float b) { forge_mac_set_editor_text_metrics(fs, lh, b); }
 void forge_backend_get_resolved_font_name(char* buf, size_t cap) { forge_mac_get_resolved_font_name(buf, cap); }

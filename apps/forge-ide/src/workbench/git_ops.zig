@@ -65,6 +65,81 @@ fn gitRefreshWorker(ctx: *RefreshCtx) void {
     renderer.Renderer.requestRedraw();
 }
 
+const SyncCtx = struct {
+    wb: *@import("../workbench.zig").Workbench,
+};
+
+pub fn scheduleGitPull(wb: *@import("../workbench.zig").Workbench) void {
+    if (wb.git_pull_running or wb.git_push_running) return;
+    wb.git_pull_running = true;
+    wb.git_pull_done = false;
+    wb.setStatus("Git pull running...") catch {};
+    background_jobs.spawnDetached("git-pull", SyncCtx, wb.allocator, .{ .wb = wb }, gitPullWorker) catch {
+        wb.git_pull_running = false;
+        wb.setStatus("Git pull failed to start") catch {};
+        return;
+    };
+}
+
+fn gitPullWorker(ctx: *SyncCtx) void {
+    const wb = ctx.wb;
+    defer wb.allocator.destroy(ctx);
+    defer wb.git_pull_done = true;
+
+    _ = runGitWithOutput(wb, &.{ "git", "pull" }, "git pull", true) catch -1;
+}
+
+pub fn scheduleGitPush(wb: *@import("../workbench.zig").Workbench) void {
+    if (wb.git_push_running or wb.git_pull_running) return;
+    wb.git_push_running = true;
+    wb.git_push_done = false;
+    wb.setStatus("Git push running...") catch {};
+    background_jobs.spawnDetached("git-push", SyncCtx, wb.allocator, .{ .wb = wb }, gitPushWorker) catch {
+        wb.git_push_running = false;
+        wb.setStatus("Git push failed to start") catch {};
+        return;
+    };
+}
+
+fn gitPushWorker(ctx: *SyncCtx) void {
+    const wb = ctx.wb;
+    defer wb.allocator.destroy(ctx);
+    defer wb.git_push_done = true;
+
+    _ = runGitWithOutput(wb, &.{ "git", "push" }, "git push", true) catch -1;
+}
+
+pub fn runGitWithOutput(wb: *@import("../workbench.zig").Workbench, args: []const []const u8, log_title: []const u8, open_panel_on_error: bool) !i32 {
+    const process_spawn = @import("forge-util").process_spawn;
+    const result = process_spawn.runCapture(wb.allocator, args, .{ .cwd = wb.workspace_path }) catch return -1;
+    defer wb.allocator.free(result.output);
+
+    var title_buf: [256]u8 = undefined;
+    const title_str = std.fmt.bufPrint(&title_buf, "[info] > {s}\n", .{log_title}) catch "> git command\n";
+    if (wb.getOrCreateOutputChannel("git", "Git") catch null) |git_chan| {
+        git_chan.output.appendChunk(title_str) catch {};
+        if (result.output.len > 0) {
+            git_chan.output.appendChunk(result.output) catch {};
+        }
+    }
+
+    if (result.exit_code == 0) {
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "{s} completed", .{log_title}) catch "git command completed";
+        wb.setStatus(msg) catch {};
+    } else {
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "{s} failed", .{log_title}) catch "git command failed";
+        wb.setStatus(msg) catch {};
+        if (open_panel_on_error) {
+            wb.bottom_panel_visible = true;
+            wb.bottom_panel_mode = .output;
+            wb.active_output_channel_id = "git";
+        }
+    }
+    return result.exit_code;
+}
+
 pub fn flushGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) !bool {
     wb.git_refresh_mutex.lock();
     const ready = wb.git_refresh_ready;
@@ -95,28 +170,8 @@ pub fn flushGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) !bool {
 pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").Hit) !void {
     switch (hit) {
         .refresh => try wb.dispatch(.git_refresh),
-        .push => {
-            try wb.setStatus("Git pushing...");
-            const process_spawn = @import("forge-util").process_spawn;
-            const exit_code = process_spawn.runWait(wb.allocator, &.{ "git", "push" }, .{ .cwd = wb.workspace_path }) catch -1;
-            if (exit_code == 0) {
-                try wb.setStatus("Git push successful");
-                try wb.dispatch(.git_refresh);
-            } else {
-                try wb.setStatus("Git push failed");
-            }
-        },
-        .pull => {
-            try wb.setStatus("Git pulling...");
-            const process_spawn = @import("forge-util").process_spawn;
-            const exit_code = process_spawn.runWait(wb.allocator, &.{ "git", "pull" }, .{ .cwd = wb.workspace_path }) catch -1;
-            if (exit_code == 0) {
-                try wb.setStatus("Git pull successful");
-                try wb.dispatch(.git_refresh);
-            } else {
-                try wb.setStatus("Git pull failed");
-            }
-        },
+        .push => try wb.dispatch(.git_push),
+        .pull => try wb.dispatch(.git_pull),
         .switch_branch => {
             try wb.setStatus("Switch branch not yet implemented via Palette");
             // TODO: dispatch a palette command for branch switching
@@ -170,6 +225,22 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
             const untracked = entry.status[0] == '?' or entry.status[1] == '?';
             try wb.showGitDiff(path, untracked, info.is_staged);
         },
+        .stage_all => {
+            const process_spawn = @import("forge-util").process_spawn;
+            _ = process_spawn.runWait(wb.allocator, &.{ "git", "add", "-A" }, .{ .cwd = wb.workspace_path }) catch {};
+            try refreshGitStatus(wb);
+        },
+        .unstage_all => {
+            const process_spawn = @import("forge-util").process_spawn;
+            _ = process_spawn.runWait(wb.allocator, &.{ "git", "reset" }, .{ .cwd = wb.workspace_path }) catch {};
+            try refreshGitStatus(wb);
+        },
+        .discard_all => {
+            const process_spawn = @import("forge-util").process_spawn;
+            _ = process_spawn.runWait(wb.allocator, &.{ "git", "checkout", "--", "." }, .{ .cwd = wb.workspace_path }) catch {};
+            _ = process_spawn.runWait(wb.allocator, &.{ "git", "clean", "-fd" }, .{ .cwd = wb.workspace_path }) catch {};
+            try refreshGitStatus(wb);
+        },
     }
 }
 
@@ -182,15 +253,11 @@ pub fn commitStagedChanges(wb: anytype) !void {
         return;
     }
 
-    const process_spawn = @import("forge-util").process_spawn;
-    const exit_code = process_spawn.runWait(wb.allocator, &.{ "git", "commit", "-m", msg }, .{ .cwd = wb.workspace_path }) catch -1;
+    const exit_code = try runGitWithOutput(wb, &.{ "git", "commit", "-m", msg }, "git commit", true);
 
     if (exit_code == 0) {
         wb.git_commit_msg.clear();
         try refreshGitStatus(wb);
-        try wb.setStatus("Commit successful");
-    } else {
-        try wb.setStatus("Commit failed (are there staged changes?)");
     }
 }
 

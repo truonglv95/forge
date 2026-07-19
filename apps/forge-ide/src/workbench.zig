@@ -62,7 +62,7 @@ const notifications_mod = @import("workbench/notifications.zig");
 const watch_expressions_mod = @import("workbench/watch_expressions.zig");
 const sync_mod = @import("forge-util").sync;
 
-pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, settings_modal, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename };
+pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, settings_modal, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename, output_channels };
 pub const EditorPane = enum { primary, secondary };
 pub const ChatRole = @import("workbench/types.zig").ChatRole;
 pub const ChatMessage = struct {
@@ -119,6 +119,12 @@ pub const Workbench = struct {
     git_refresh_ready: bool = false,
     git_refresh_failed: bool = false,
     git_refresh_pending_status: ?git_status_mod.Status = null,
+
+    git_push_running: bool = false,
+    git_push_done: bool = false,
+    git_pull_running: bool = false,
+    git_pull_done: bool = false,
+    sync_icon_angle: f32 = 0,
     git_scroll_y: f32 = 0,
     run_scroll_y: f32 = 0,
     breakpoints: breakpoints_mod.Store,
@@ -141,7 +147,9 @@ pub const Workbench = struct {
     palette: palette_mod.Palette,
     workspace_symbol_picker: workspace_symbol_picker_mod.Picker,
     git_branch_picker: git_branch_picker_mod.Picker,
-    task_output: task_output_mod.TaskOutput,
+    output_channels: std.StringHashMap(*@import("workbench/output_channel.zig").OutputChannel),
+    active_output_channel_id: []const u8,
+    output_channel_picker: @import("workbench/output_channel_picker.zig").Picker,
     agent: agent_session.Session,
     agent_ui_queue: agent_ui_queue_mod.Queue = .{},
     agent_cancel_source: ?*kernel.cancellation.CancellationTokenSource = null,
@@ -228,6 +236,7 @@ pub const Workbench = struct {
     conflict_check_cooldown: f32 = 0,
     conflict_full_check_cooldown: f32 = 30.0,
     terminal_prompt_refresh_cooldown: f32 = 3.0,
+    git_refresh_cooldown: f32 = 3.0,
     terminal_boot_pending: bool = false,
     explorer_boot_pending: bool = false,
     explorer_root_expanded: bool = true,
@@ -286,6 +295,14 @@ pub const Workbench = struct {
         max_scroll_x: f32 = 0,
     };
 
+    pub const SplitterDragState = struct {
+        active: bool = false,
+        start_x: f32 = 0,
+        start_y: f32 = 0,
+        start_w: f32 = 0,
+        start_h: f32 = 0,
+    };
+
     pub const RenderedCodeBlock = struct {
         hash: u64,
         x: f32,
@@ -338,7 +355,9 @@ pub const Workbench = struct {
             .palette = try palette_mod.Palette.init(allocator),
             .workspace_symbol_picker = try workspace_symbol_picker_mod.Picker.init(allocator, &self.lsp_proxy),
             .git_branch_picker = try git_branch_picker_mod.Picker.init(allocator),
-            .task_output = task_output_mod.TaskOutput.init(allocator, io),
+            .output_channels = std.StringHashMap(*@import("workbench/output_channel.zig").OutputChannel).init(allocator),
+            .active_output_channel_id = "tasks",
+            .output_channel_picker = try @import("workbench/output_channel_picker.zig").Picker.init(allocator),
             .agent = agent_session.Session.init(allocator, io),
             .scope_picker_paths = .empty,
             .scope_picker_filtered = .empty,
@@ -407,10 +426,42 @@ pub const Workbench = struct {
         try self.extension_host.activateAll();
         try self.syncContributions();
         try self.palette.addExtensionCommands(&self.extension_host);
+        // Register default channels
+        _ = try self.getOrCreateOutputChannel("tasks", "Tasks");
+        _ = try self.getOrCreateOutputChannel("git", "Git");
+
         if (options.record_workspace) {
             try recent_workspaces_mod.record(allocator, io, self.workspace_path);
         }
         try self.refreshRecentWorkspaces();
+
+        @import("git/logger.zig").global_log_ctx = self;
+        @import("git/logger.zig").global_log_fn = struct {
+            fn log(ctx: ?*anyopaque, args: []const []const u8) void {
+                const s: *Workbench = @ptrCast(@alignCast(ctx orelse return));
+                var buf: [1024]u8 = undefined;
+                var len: usize = 0;
+
+                const prefix = "[info] >";
+                @memcpy(buf[len .. len + prefix.len], prefix);
+                len += prefix.len;
+
+                for (args) |arg| {
+                    if (len + 1 + arg.len > buf.len) break;
+                    buf[len] = ' ';
+                    len += 1;
+                    @memcpy(buf[len .. len + arg.len], arg);
+                    len += arg.len;
+                }
+                if (len + 1 <= buf.len) {
+                    buf[len] = '\n';
+                    len += 1;
+                }
+                if (s.getOutputChannel("git")) |git_chan| {
+                    git_chan.output.appendChunk(buf[0..len]) catch {};
+                }
+            }
+        }.log;
 
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
         self.user_settings = settings_mod.load(allocator, io, root) catch .{};
@@ -501,6 +552,19 @@ pub const Workbench = struct {
         };
     }
 
+    pub fn getOutputChannel(self: *Workbench, id: []const u8) ?*@import("workbench/output_channel.zig").OutputChannel {
+        return self.output_channels.get(id);
+    }
+
+    pub fn getOrCreateOutputChannel(self: *Workbench, id: []const u8, name: []const u8) !*@import("workbench/output_channel.zig").OutputChannel {
+        if (self.getOutputChannel(id)) |existing| {
+            return existing;
+        }
+        const channel = try @import("workbench/output_channel.zig").OutputChannel.init(self.allocator, self.io, id, name);
+        try self.output_channels.put(channel.id, channel);
+        return channel;
+    }
+
     pub fn deinit(self: *Workbench) void {
         self.persistSessionState() catch {};
         recovery_mod.snapshotDirtyDocs(self.allocator, self.io, self.workspace_root, &self.tabs) catch {};
@@ -569,7 +633,12 @@ pub const Workbench = struct {
         self.lsp_proxy.deinit();
         self.agent_ui_queue.deinit(self.allocator);
         self.prompt_buffer.deinit();
-        self.task_output.deinit();
+        var it = self.output_channels.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+        }
+        self.output_channels.deinit();
+        self.output_channel_picker.deinit();
         self.agent.deinit();
         self.clearScopePickerPaths();
         self.scope_picker_paths.deinit(self.allocator);
@@ -943,7 +1012,10 @@ pub const Workbench = struct {
                     break :blk self.rename_preview.lines.len + 1;
                 }
                 if (self.references.active) break :blk self.references.items.len;
-                break :blk self.task_output.lines.items.len;
+                if (@constCast(self).getOutputChannel(self.active_output_channel_id)) |chan| {
+                    break :blk chan.output.lines.items.len;
+                }
+                break :blk 0;
             },
             .problems => self.diagnostics.list.items.len,
             .terminal => blk: {
@@ -1457,13 +1529,17 @@ pub const Workbench = struct {
 
     pub fn onTaskLine(context: ?*anyopaque, line: []const u8) void {
         const self: *Workbench = @ptrCast(@alignCast(context.?));
-        self.task_output.appendLine(line) catch {};
+        if (self.getOutputChannel("tasks")) |chan| {
+            chan.output.appendLine(line) catch {};
+        }
     }
 
     pub fn onTaskFinished(context: ?*anyopaque, exit_code: i32) void {
         const self: *Workbench = @ptrCast(@alignCast(context.?));
-        self.task_output.setRunning(false);
-        self.task_output.setExitCode(exit_code);
+        if (self.getOutputChannel("tasks")) |chan| {
+            chan.output.setRunning(false);
+            chan.output.setExitCode(exit_code);
+        }
         var buf: [64]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Task finished (exit {d})", .{exit_code}) catch "Task finished";
         self.debug_console.log(msg) catch {};
@@ -1931,9 +2007,36 @@ pub const Workbench = struct {
             if (self.terminal_prompt_refresh_cooldown <= 0) {
                 self.terminal_prompt_refresh_cooldown = 3.0;
                 self.updateTerminalPrompt() catch {};
-                self.scheduleGitStatusRefresh();
             }
             self.syncTerminalSize();
+        }
+
+        self.git_refresh_cooldown -= dt;
+        if (self.git_refresh_cooldown <= 0) {
+            self.git_refresh_cooldown = 3.0;
+            self.scheduleGitStatusRefresh();
+        }
+
+        if (self.git_push_done) {
+            self.git_push_done = false;
+            self.git_push_running = false;
+            try self.refreshGitStatus();
+        }
+        if (self.git_pull_done) {
+            self.git_pull_done = false;
+            self.git_pull_running = false;
+            try self.refreshGitStatus();
+        }
+
+        if (self.git_push_running or self.git_pull_running) {
+            self.setStatus("Git operation running...") catch {};
+            self.sync_icon_angle += dt * 360.0;
+            if (self.sync_icon_angle >= 360.0) {
+                self.sync_icon_angle -= 360.0;
+            }
+            @import("forge-renderer").Renderer.requestRedraw();
+        } else {
+            self.sync_icon_angle = 0;
         }
 
         self.lsp_sync.tick(dt, &self.tabs);

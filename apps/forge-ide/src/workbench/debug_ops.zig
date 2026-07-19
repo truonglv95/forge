@@ -29,12 +29,13 @@ pub fn runLaunchConfig(wb: anytype, index: usize) !void {
             try wb.setStatus("No file open for debug");
             return;
         };
-        if (wb.task_output.isRunning()) {
-            try wb.setStatus("Task already running");
+        const task_out = wb.getOutputChannel("tasks").?.output;
+        if (task_out.isRunning()) {
             return;
         }
-        wb.task_output.clear();
-        wb.task_output.setRunning(true);
+
+        task_out.clear();
+        task_out.setRunning(true);
         wb.debug_console.clear();
         clearDebugStop(wb);
         clearDebugInspect(wb);
@@ -57,12 +58,13 @@ pub fn runLaunchConfig(wb: anytype, index: usize) !void {
     var buf: [128]u8 = undefined;
     const msg = try std.fmt.bufPrint(&buf, "Launch: {s}", .{launch.label});
     try wb.debug_console.log(msg);
-    if (wb.task_output.isRunning()) {
-        try wb.setStatus("Task already running");
+    const task_out = wb.getOutputChannel("tasks").?.output;
+    if (task_out.isRunning()) {
         return;
     }
-    wb.task_output.clear();
-    wb.task_output.setRunning(true);
+
+    task_out.clear();
+    task_out.setRunning(true);
     try tasks_mod.spawn(
         wb.allocator,
         wb.io,
@@ -136,7 +138,7 @@ pub fn onDebugLldbFinished(context: ?*anyopaque, exit_code: i32) void {
     const wb: *Workbench = @ptrCast(@alignCast(context));
     clearDebugStop(wb);
     clearDebugInspect(wb);
-    wb.task_output.setRunning(false);
+    wb.getOutputChannel("tasks").?.output.setRunning(false);
     var buf: [64]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "Debug session ended (exit {d})", .{exit_code}) catch "Debug session ended";
     wb.debug_console.log(msg) catch {};
@@ -211,7 +213,7 @@ pub fn debugStop(wb: anytype) void {
     } else return;
     clearDebugStop(wb);
     clearDebugInspect(wb);
-    wb.task_output.setRunning(false);
+    wb.getOutputChannel("tasks").?.output.setRunning(false);
     wb.debug_console.log("Debug session stopped") catch {};
 }
 

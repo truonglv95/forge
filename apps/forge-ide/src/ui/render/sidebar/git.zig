@@ -98,7 +98,24 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     renderer.Renderer.drawText(branch_name, panel_x + 28, panel_y + 9, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
 
     const header_action_y = panel_y + 5;
-    // more, push, pull, refresh
+    // Draw ahead/behind counts and sync button next to branch name
+    const branch_name_w = renderer.Renderer.measureText(branch_name, 11.0);
+    var sync_x = panel_x + 28 + branch_name_w + 10;
+
+    if (wb.git_status) |status| {
+        if (status.ahead > 0 or status.behind > 0) {
+            var buf: [32]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, "↑{d} ↓{d}", .{ status.ahead, status.behind }) catch "";
+            const text_w = renderer.Renderer.measureText(text, 11.0);
+            if (is_hovering_panel and my >= panel_y + 5 and my < panel_y + 25 and mx >= sync_x - 4 and mx < sync_x + text_w + 4) {
+                renderer.Renderer.drawRoundedRect(sync_x - 4, panel_y + 5, text_w + 8, 20, 4, hover_c);
+            }
+            renderer.Renderer.drawText(text, sync_x, panel_y + 9, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+            sync_x += text_w + 10;
+        }
+    }
+
+    // Right-aligned actions (More, Push, Pull)
     if (is_hovering_panel and my >= header_action_y and my < header_action_y + 20) {
         if (mx >= panel_x + panel_w - 24 and mx < panel_x + panel_w - 8) {
             renderer.Renderer.drawRoundedRect(panel_x + panel_w - 26, header_action_y, 20, 20, 4, hover_c);
@@ -106,16 +123,25 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
             renderer.Renderer.drawRoundedRect(panel_x + panel_w - 50, header_action_y, 20, 20, 4, hover_c);
         } else if (mx >= panel_x + panel_w - 72 and mx < panel_x + panel_w - 56) {
             renderer.Renderer.drawRoundedRect(panel_x + panel_w - 74, header_action_y, 20, 20, 4, hover_c);
-        } else if (mx >= panel_x + panel_w - 96 and mx < panel_x + panel_w - 80) {
-            renderer.Renderer.drawRoundedRect(panel_x + panel_w - 98, header_action_y, 20, 20, 4, hover_c);
-        } else if (mx >= panel_x + 8 and mx < panel_x + 100) { // Hover over branch name
-            renderer.Renderer.drawRoundedRect(panel_x + 6, header_action_y, 100, 20, 4, hover_c);
+        } else if (mx >= panel_x + 8 and mx < panel_x + 28 + branch_name_w) {
+            renderer.Renderer.drawRoundedRect(panel_x + 6, header_action_y, 24 + branch_name_w, 20, 4, hover_c);
         }
     }
     renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, panel_x + panel_w - 24, header_action_y + 3, 16, 16, icon_c);
-    renderer.Renderer.drawSvg(renderer.icons.chevron_up, panel_x + panel_w - 48, header_action_y + 3, 16, 16, icon_c);
-    renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + panel_w - 72, header_action_y + 3, 16, 16, icon_c);
-    renderer.Renderer.drawSvg(renderer.icons.sync, panel_x + panel_w - 96, header_action_y + 3, 16, 16, icon_c);
+
+    // Push button
+    if (wb.git_push_running) {
+        renderer.Renderer.drawSvgRotated(renderer.icons.chevron_up, panel_x + panel_w - 48, header_action_y + 3, 16, 16, wb.sync_icon_angle * std.math.pi / 180.0, icon_c);
+    } else {
+        renderer.Renderer.drawSvg(renderer.icons.chevron_up, panel_x + panel_w - 48, header_action_y + 3, 16, 16, icon_c);
+    }
+
+    // Pull button
+    if (wb.git_pull_running) {
+        renderer.Renderer.drawSvgRotated(renderer.icons.chevron_down, panel_x + panel_w - 72, header_action_y + 3, 16, 16, -wb.sync_icon_angle * std.math.pi / 180.0, icon_c);
+    } else {
+        renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + panel_w - 72, header_action_y + 3, 16, 16, icon_c);
+    }
 
     const scroll_y_start = panel_y + 36;
     renderer.Renderer.setClipRect(panel_x, scroll_y_start, panel_w, h - scroll_y_start - layout.status_height);
@@ -177,7 +203,8 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                 fn draw(py: *f32, count: usize, title: [:0]const u8, is_collapsed: bool, ptrs: []const *const @import("../../../git/status.zig").Entry, is_staged_section: bool, px: f32, pw: f32, ch: f32, my_y: f32, mx_x: f32, hc: renderer.Color) void {
                     if (count == 0) return;
 
-                    if (mx_x >= px and mx_x < px + pw and my_y >= py.* and my_y < py.* + 24) {
+                    const is_header_hovered = mx_x >= px and mx_x < px + pw and my_y >= py.* and my_y < py.* + 24;
+                    if (is_header_hovered) {
                         renderer.Renderer.drawRect(px, py.*, pw, 24, hc);
                     }
 
@@ -188,7 +215,20 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                     var badge_buf: [16:0]u8 = undefined;
                     const badge_str = std.fmt.bufPrintZ(&badge_buf, "{d}", .{count}) catch "0";
                     const badge_w = @as(f32, @floatFromInt(badge_str.len)) * 6.5 + 8;
-                    const badge_x = px + pw - badge_w - 12;
+
+                    var actions_w: f32 = 0;
+                    if (is_header_hovered) {
+                        if (is_staged_section) {
+                            actions_w = 24;
+                            renderer.Renderer.drawSvg(renderer.icons.dash, px + pw - 24, py.* + 4, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                        } else {
+                            actions_w = 48;
+                            renderer.Renderer.drawSvg(renderer.icons.plus, px + pw - 24, py.* + 4, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                            renderer.Renderer.drawSvg(renderer.icons.reply, px + pw - 48, py.* + 4, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                        }
+                    }
+
+                    const badge_x = px + pw - badge_w - 12 - actions_w;
                     renderer.Renderer.drawRoundedRect(badge_x, py.* + 4, badge_w, 16, 8, .{ .r = 0.3, .g = 0.5, .b = 0.5, .a = 1.0 });
                     renderer.Renderer.drawText(badge_str, badge_x + 4, py.* + 5, 10.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
 

@@ -265,6 +265,16 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
+    if (event.keycode == 120 and wb.focused_panel == .editor) {
+        wb.dispatch(.editor_rename_symbol) catch {};
+        return;
+    }
+
+    if (event.keycode == 47 and event.modifiers & shared.cmd_mask != 0 and wb.focused_panel == .editor) {
+        wb.dispatch(.editor_show_quick_fixes) catch {};
+        return;
+    }
+
     if (wb.workspace_symbol_picker.open) {
         keys_dialogs.handleWorkspaceSymbolPickerKeys(wb, event);
         return;
@@ -272,6 +282,11 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
 
     if (wb.git_branch_picker.open) {
         keys_dialogs.handleGitBranchPickerKeys(wb, event);
+        return;
+    }
+
+    if (wb.output_channel_picker.open) {
+        keys_dialogs.handleOutputChannelPickerKeys(wb, event);
         return;
     }
 

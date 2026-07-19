@@ -150,3 +150,38 @@ pub fn drawGitBranchPicker(wb: *@import("../../workbench.zig").Workbench, w: f32
         row_y += 24;
     }
 }
+
+pub fn drawOutputChannelPicker(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32) void {
+    renderer.Renderer.drawRect(0, 0, w, h, .{ .r = 0, .g = 0, .b = 0, .a = 0.55 });
+    const box_w: f32 = 400;
+    const box_h: f32 = 320;
+    const box_x = (w - box_w) / 2;
+    const box_y = (h - box_h) / 3;
+    renderer.Renderer.drawRoundedRect(box_x, box_y, box_w, box_h, 10, .{ .r = 0.16, .g = 0.16, .b = 0.18, .a = 1.0 });
+    renderer.Renderer.drawText("Select Output Channel", box_x + 16, box_y + 12, 14.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+
+    var query_buf: [320:0]u8 = undefined;
+    @memcpy(query_buf[0..wb.output_channel_picker.query_len], wb.output_channel_picker.query[0..wb.output_channel_picker.query_len]);
+    query_buf[wb.output_channel_picker.query_len] = 0;
+    renderer.Renderer.drawRoundedRect(box_x + 12, box_y + 36, box_w - 24, 28, 6, .{ .r = 0.1, .g = 0.1, .b = 0.12, .a = 1.0 });
+    renderer.Renderer.drawText(@ptrCast(&query_buf), box_x + 20, box_y + 42, 14.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+
+    var row_y = box_y + 76;
+    const max_rows: usize = 9;
+    const show_rows = @min(wb.output_channel_picker.filtered.items.len, max_rows);
+    for (0..show_rows) |visible_index| {
+        const entry_index = wb.output_channel_picker.filtered.items[visible_index];
+        const entry = wb.output_channel_picker.entries.items[entry_index];
+        if (visible_index == wb.output_channel_picker.selected) {
+            renderer.Renderer.drawRoundedRect(box_x + 12, row_y, box_w - 24, 24, 4, .{ .r = 0.25, .g = 0.4, .b = 0.6, .a = 1.0 });
+        } else {
+            // renderer.Renderer.drawRoundedRect(box_x + 12, row_y, box_w - 24, 24, 4, .{ .r = 0.2, .g = 0.2, .b = 0.22, .a = 1.0 });
+        }
+        var name_buf: [256:0]u8 = undefined;
+        const name_len = @min(entry.name.len, 255);
+        @memcpy(name_buf[0..name_len], entry.name[0..name_len]);
+        name_buf[name_len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&name_buf), box_x + 24, row_y + 4, 13.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+        row_y += 26;
+    }
+}
