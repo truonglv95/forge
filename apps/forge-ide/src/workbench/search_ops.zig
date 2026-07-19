@@ -1,5 +1,4 @@
 const std = @import("std");
-const search_engine = @import("../search/engine.zig");
 const workspace = @import("forge-workspace");
 const background_jobs = @import("background_jobs.zig");
 const renderer = @import("forge-renderer");
@@ -41,23 +40,14 @@ pub fn runSearch(wb: anytype) !void {
         wb.search_mutex.unlock();
     };
 
-    var paths: std.ArrayList([]const u8) = .empty;
-    errdefer {
-        for (paths.items) |path| wb.allocator.free(path);
-        paths.deinit(wb.allocator);
-    }
-    for (wb.explorer.entries) |entry| {
-        if (entry.kind != .file) continue;
-        try paths.append(wb.allocator, try wb.allocator.dupe(u8, entry.path));
-    }
-
-    const ctx = SearchCtx{
+    const ctx = try wb.allocator.create(SearchCtx);
+    ctx.* = .{
         .wb = wb,
         .query = query,
-        .paths = try paths.toOwnedSlice(wb.allocator),
     };
     background_jobs.spawnDetached("workspace-search", SearchCtx, wb.allocator, ctx, searchWorker) catch |err| {
-        freePathSnapshot(wb.allocator, ctx.paths);
+        wb.allocator.free(ctx.query);
+        wb.allocator.destroy(ctx);
         wb.search_mutex.lock();
         wb.search_running = false;
         wb.search_failed = true;
@@ -71,19 +61,12 @@ pub fn runSearch(wb: anytype) !void {
 const SearchCtx = struct {
     wb: *@import("../workbench.zig").Workbench,
     query: []const u8,
-    paths: []const []const u8,
 };
-
-fn freePathSnapshot(allocator: std.mem.Allocator, paths: []const []const u8) void {
-    for (paths) |path| allocator.free(path);
-    allocator.free(paths);
-}
 
 fn searchWorker(ctx: *SearchCtx) void {
     const wb = ctx.wb;
     defer {
         wb.allocator.free(ctx.query);
-        freePathSnapshot(wb.allocator, ctx.paths);
         wb.allocator.destroy(ctx);
     }
 
@@ -93,7 +76,11 @@ fn searchWorker(ctx: *SearchCtx) void {
     };
     defer root.close(wb.io);
 
-    const result = search_engine.searchWorkspacePaths(wb.allocator, wb.io, root, ctx.paths, ctx.query) catch {
+    const result = workspace.search.grepContent(wb.allocator, wb.io, root, .{
+        .pattern = ctx.query,
+        .path = ".",
+        .case_sensitive = false,
+    }) catch {
         markSearchFailed(wb);
         return;
     };
@@ -154,12 +141,11 @@ pub fn handleSearchClick(wb: anytype, hit: @import("../ui/sidebar/search_panel.z
             const path = try wb.allocator.dupe(u8, match.path);
             defer wb.allocator.free(path);
             try wb.dispatch(.{ .open_file = path });
-            if (match.line) |line| {
-                if (wb.activeBuffer()) |buf| {
-                    if (line < buf.lineCount()) {
-                        buf.cursor.row = line;
-                        buf.cursor.col = 0;
-                    }
+            const line = if (match.line > 0) match.line - 1 else 0;
+            if (wb.activeBuffer()) |buf| {
+                if (line < buf.lineCount()) {
+                    buf.cursor.row = line;
+                    buf.cursor.col = 0;
                 }
             }
         },

@@ -38,8 +38,8 @@ pub fn drawSearchPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void 
                 path_buf[@min(match.path.len, path_buf.len - 1)] = 0;
                 renderer.Renderer.drawText(@ptrCast(&path_buf), panel_x + 16, y + 2, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
                 var preview_buf: [128:0]u8 = undefined;
-                @memcpy(preview_buf[0..@min(match.preview.len, preview_buf.len - 1)], match.preview[0..@min(match.preview.len, preview_buf.len - 1)]);
-                preview_buf[@min(match.preview.len, preview_buf.len - 1)] = 0;
+                @memcpy(preview_buf[0..@min(match.line_text.len, preview_buf.len - 1)], match.line_text[0..@min(match.line_text.len, preview_buf.len - 1)]);
+                preview_buf[@min(match.line_text.len, preview_buf.len - 1)] = 0;
                 renderer.Renderer.drawText(@ptrCast(&preview_buf), panel_x + 16, y + 16, 10.0, .{ .r = 0.65, .g = 0.75, .b = 0.85, .a = 1.0 });
                 _ = index;
             }

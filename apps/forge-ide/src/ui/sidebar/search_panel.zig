@@ -1,6 +1,6 @@
 const std = @import("std");
 const layout = @import("../core/layout.zig");
-const search_engine = @import("../../search/engine.zig");
+const workspace = @import("forge-workspace");
 
 pub const list_top: f32 = 131;
 pub const query_box_h: f32 = 28;
@@ -28,7 +28,7 @@ pub const Hit = union(enum) {
 };
 
 pub fn hitTest(
-    results: []const search_engine.Match,
+    results: []const workspace.search.Match,
     panel_x: f32,
     panel_w: f32,
     click_x: f32,
