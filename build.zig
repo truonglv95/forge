@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{.{ .name = "forge-util", .module = util }},
     });
+    core.linkSystemLibrary("c", .{});
     const kernel = b.addModule("forge-kernel", .{
         .root_source_file = b.path("packages/kernel/src/root.zig"),
         .target = target,

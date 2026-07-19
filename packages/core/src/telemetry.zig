@@ -1,5 +1,9 @@
 const std = @import("std");
 const time = std.time;
+const c = @cImport({
+    @cInclude("unistd.h");
+    @cInclude("fcntl.h");
+});
 
 pub const Span = struct {
     category: []const u8,
@@ -13,22 +17,22 @@ pub const Span = struct {
     }
 };
 
-var trace_file: ?std.fs.File = null;
+var trace_fd: c_int = -1;
 var is_first_span: bool = true;
 var mutex = std.Thread.Mutex{};
 
 pub fn init(out_path: [:0]const u8) !void {
-    const fd = try std.posix.open(out_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o666);
-    const file = std.fs.File{ .handle = fd };
-    try file.writeAll("[\n");
-    trace_file = file;
+    const fd = c.open(out_path.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_int, 0o666));
+    if (fd == -1) return error.FailedToOpen;
+    _ = c.write(fd, "[\n", 2);
+    trace_fd = fd;
 }
 
 pub fn deinit() void {
-    if (trace_file) |f| {
-        f.writeAll("\n]\n") catch {};
-        f.close();
-        trace_file = null;
+    if (trace_fd != -1) {
+        _ = c.write(trace_fd, "\n]\n", 3);
+        _ = c.close(trace_fd);
+        trace_fd = -1;
     }
 }
 
@@ -41,25 +45,26 @@ pub fn startSpan(category: []const u8, name: []const u8) Span {
 }
 
 pub fn recordSpan(span: Span) void {
-    if (trace_file == null) return;
-    mutex.lock();
-    defer mutex.unlock();
-    const f = trace_file.?;
-    if (!is_first_span) {
-        f.writeAll(",\n") catch return;
-    }
-    is_first_span = false;
+    if (trace_fd != -1) {
+        mutex.lock();
+        defer mutex.unlock();
+        if (!is_first_span) {
+            _ = c.write(trace_fd, ",\n", 2);
+        } else {
+            is_first_span = false;
+        }
 
-    var buf: [1024]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf,
-        \\  {{"name": "{s}", "cat": "{s}", "ph": "X", "ts": {d}, "dur": {d}, "pid": 1, "tid": 1}}
-    , .{
-        span.name,
-        span.category,
-        span.start_ts,
-        span.end_ts - span.start_ts,
-    }) catch return;
-    f.writeAll(s) catch return;
+        var buf: [1024]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf,
+            \\  {{"name": "{s}", "cat": "{s}", "ph": "X", "ts": {d}, "dur": {d}, "pid": 1, "tid": 1}}
+        , .{
+            span.name,
+            span.category,
+            span.start_ts,
+            span.end_ts - span.start_ts,
+        }) catch return;
+        _ = c.write(trace_fd, s.ptr, s.len);
+    }
 }
 
 pub fn recordEvent(category: []const u8, name: []const u8, start_ts: i64, end_ts: i64) void {
