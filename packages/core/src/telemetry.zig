@@ -17,8 +17,9 @@ var trace_file: ?std.fs.File = null;
 var is_first_span: bool = true;
 var mutex = std.Thread.Mutex{};
 
-pub fn init(out_path: []const u8) !void {
-    const file = try std.fs.cwd().createFile(out_path, .{});
+pub fn init(out_path: [:0]const u8) !void {
+    const fd = try std.posix.open(out_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o666);
+    const file = std.fs.File{ .handle = fd };
     try file.writeAll("[\n");
     trace_file = file;
 }
