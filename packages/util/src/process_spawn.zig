@@ -30,6 +30,9 @@ pub const SpawnOptions = struct {
     stderr: Stdio = .inherit,
     /// Extra/overriding environment variables (merged with inherited environ).
     extra_env: []const EnvEntry = &.{},
+    /// Enable macos sandbox-exec wrapping (only applies on macos)
+    use_mac_sandbox: bool = false,
+    mac_sandbox_profile: ?[]const u8 = null,
 };
 
 pub const EnvEntry = struct {
@@ -131,11 +134,38 @@ fn spawnRaw(
 
     var arg_storage: [max_spawn_args][max_arg_bytes:0]u8 = undefined;
     var c_argv: [max_spawn_args + 1]?[*:0]const u8 = .{null} ** (max_spawn_args + 1);
-    for (argv_in, 0..) |arg, i| {
+
+    var out_arg_idx: usize = 0;
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .macos and options.use_mac_sandbox and options.mac_sandbox_profile != null) {
+        if (argv_in.len + 3 > max_spawn_args) return error.EmptyArgv;
+
+        const sandbox_bin = "sandbox-exec";
+        @memcpy(arg_storage[out_arg_idx][0..sandbox_bin.len], sandbox_bin);
+        arg_storage[out_arg_idx][sandbox_bin.len] = 0;
+        c_argv[out_arg_idx] = &arg_storage[out_arg_idx];
+        out_arg_idx += 1;
+
+        const p_flag = "-p";
+        @memcpy(arg_storage[out_arg_idx][0..p_flag.len], p_flag);
+        arg_storage[out_arg_idx][p_flag.len] = 0;
+        c_argv[out_arg_idx] = &arg_storage[out_arg_idx];
+        out_arg_idx += 1;
+
+        const profile = options.mac_sandbox_profile.?;
+        if (profile.len >= max_arg_bytes) return error.PathTooLong;
+        @memcpy(arg_storage[out_arg_idx][0..profile.len], profile);
+        arg_storage[out_arg_idx][profile.len] = 0;
+        c_argv[out_arg_idx] = &arg_storage[out_arg_idx];
+        out_arg_idx += 1;
+    }
+
+    for (argv_in) |arg| {
         if (arg.len >= max_arg_bytes) return error.PathTooLong;
-        @memcpy(arg_storage[i][0..arg.len], arg);
-        arg_storage[i][arg.len] = 0;
-        c_argv[i] = &arg_storage[i];
+        @memcpy(arg_storage[out_arg_idx][0..arg.len], arg);
+        arg_storage[out_arg_idx][arg.len] = 0;
+        c_argv[out_arg_idx] = &arg_storage[out_arg_idx];
+        out_arg_idx += 1;
     }
 
     var spawned: c.forge_process_child = undefined;

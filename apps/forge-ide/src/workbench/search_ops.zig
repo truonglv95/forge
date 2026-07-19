@@ -12,7 +12,7 @@ pub fn runSearch(wb: anytype) !void {
     if (trimmed.len == 0) {
         wb.search_buffer.allocator.free(query);
         query_owned = false;
-        if (wb.search.results) |*results| results.deinit(wb.allocator);
+        if (wb.search.results) |*results| results.deinit();
         wb.search.results = null;
         wb.search.scroll_y = 0;
         try wb.setStatus("Search cleared");
@@ -30,7 +30,7 @@ pub fn runSearch(wb: anytype) !void {
     wb.search.running = true;
     wb.search.ready = false;
     wb.search.failed = false;
-    if (wb.search.pending_results) |*results| results.deinit(wb.allocator);
+    if (wb.search.pending_results) |*results| results.deinit();
     wb.search.pending_results = null;
     wb.search.mutex.unlock();
     errdefer if (query_owned) {
@@ -45,7 +45,7 @@ pub fn runSearch(wb: anytype) !void {
         .wb = wb,
         .query = query,
     };
-    background_jobs.spawnDetached("workspace-search", SearchCtx, wb.allocator, ctx, searchWorker) catch |err| {
+    background_jobs.spawnDetached("workspace-search", SearchCtx, wb.allocator, ctx.*, searchWorker) catch |err| {
         wb.allocator.free(ctx.query);
         wb.allocator.destroy(ctx);
         wb.search.mutex.lock();
@@ -86,7 +86,7 @@ fn searchWorker(ctx: *SearchCtx) void {
     };
 
     wb.search.mutex.lock();
-    if (wb.search.pending_results) |*old| old.deinit(wb.allocator);
+    if (wb.search.pending_results) |*old| old.deinit();
     wb.search.pending_results = result;
     wb.search.ready = true;
     wb.search.failed = false;
@@ -116,7 +116,7 @@ pub fn flushSearchResults(wb: *@import("../workbench.zig").Workbench) !bool {
     wb.search.mutex.unlock();
 
     if (pending) |results| {
-        if (wb.search.results) |*old| old.deinit(wb.allocator);
+        if (wb.search.results) |*old| old.deinit();
         wb.search.results = results;
         wb.search.scroll_y = 0;
         var buf: [96]u8 = undefined;

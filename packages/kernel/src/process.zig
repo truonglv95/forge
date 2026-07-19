@@ -12,6 +12,8 @@ pub const CaptureOptions = struct {
     argv: []const []const u8,
     cwd: ?[]const u8 = null,
     max_bytes: usize = 32 * 1024,
+    use_mac_sandbox: bool = false,
+    mac_sandbox_profile: ?[]const u8 = null,
 };
 
 pub const CaptureResult = struct {
@@ -59,6 +61,8 @@ pub const StreamOptions = struct {
     on_output: ?*const fn (?*anyopaque, []const u8) void = null,
     on_output_context: ?*anyopaque = null,
     token: ?cancellation.CancellationToken = null,
+    use_mac_sandbox: bool = false,
+    mac_sandbox_profile: ?[]const u8 = null,
 };
 
 pub const StreamResult = struct {
@@ -73,6 +77,8 @@ pub fn runStreaming(allocator: std.mem.Allocator, options: StreamOptions) !Strea
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
+        .use_mac_sandbox = options.use_mac_sandbox,
+        .mac_sandbox_profile = options.mac_sandbox_profile,
     };
     var child = try process_spawn.spawn(allocator, options.argv, spawn_opts);
     defer child.deinit();

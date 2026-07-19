@@ -221,7 +221,7 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
         var is_added = false;
         var is_untracked = false;
 
-        if (wb.git_status) |*status| {
+        if (wb.git.status) |*status| {
             if (std.mem.startsWith(u8, row.path, wb.workspace_path)) {
                 var rel_path = row.path[wb.workspace_path.len..];
                 if (rel_path.len > 0 and (rel_path[0] == '/' or rel_path[0] == '\\')) {

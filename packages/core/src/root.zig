@@ -3,6 +3,7 @@
 const std = @import("std");
 const util = @import("forge-util");
 
+pub const telemetry = @import("telemetry.zig");
 pub const version = "0.1.0-dev";
 
 pub const Subsystem = enum {

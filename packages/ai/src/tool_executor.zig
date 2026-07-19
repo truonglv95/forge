@@ -666,7 +666,24 @@ pub fn runCommand(ctx: Context, command: []const u8) AgentToolError!Outcome {
     return runCommandUnchecked(ctx, command);
 }
 
+const mac_sandbox_profile_template =
+    \\(version 1)
+    \\(deny default)
+    \\(allow file-read*)
+    \\(allow process-exec*)
+    \\(allow process-fork)
+    \\(allow network*)
+    \\(allow file-write*
+    \\    (subpath "/tmp")
+    \\    (subpath "/private/tmp")
+    \\    (subpath "/var/folders")
+    \\    (subpath "{s}")
+    \\)
+;
+
 fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome {
+    const mac_sandbox_profile = std.fmt.allocPrint(ctx.allocator, mac_sandbox_profile_template, .{ctx.root.path}) catch return error.WorkspaceFailed;
+    defer ctx.allocator.free(mac_sandbox_profile);
     if (std.mem.startsWith(u8, command, "wasm-run ")) {
         if (ctx.wasm_run_callback) |cb| {
             const rest = std.mem.trim(u8, command["wasm-run ".len..], &std.ascii.whitespace);
@@ -717,6 +734,8 @@ fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome
             .on_output = ctx.stream_callback,
             .on_output_context = ctx.stream_context,
             .token = if (ctx.cancel_token) |token| token.* else null,
+            .use_mac_sandbox = true,
+            .mac_sandbox_profile = mac_sandbox_profile,
         }) catch return error.TaskFailed;
         defer ctx.allocator.free(stream_result.output);
         if (stream_result.cancelled) return error.Cancelled;
@@ -729,6 +748,8 @@ fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome
         .argv = argv,
         .cwd = ctx.cwd,
         .max_bytes = 24 * 1024,
+        .use_mac_sandbox = true,
+        .mac_sandbox_profile = mac_sandbox_profile,
     }) catch return error.TaskFailed;
     defer ctx.allocator.free(captured.output);
 

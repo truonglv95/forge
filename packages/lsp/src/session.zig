@@ -5,8 +5,11 @@ const diagnostics = @import("diagnostics.zig");
 const process_spawn = @import("forge-util").process_spawn;
 
 const c = @cImport({
+    @cInclude("unistd.h");
     @cInclude("sys/wait.h");
 });
+const core = @import("forge-core");
+const telemetry = core.telemetry;
 
 pub const SessionError = error{
     SpawnFailed,
@@ -93,6 +96,8 @@ pub const Session = struct {
     }
 
     pub fn sendRawRequest(self: *Session, request_json: []const u8, response_out: []u8) SessionError!usize {
+        var span = telemetry.startSpan("lsp", "sendRawRequest");
+        defer span.end();
         if (!self.initialized) {
             const init_id = self.next_id;
             self.next_id += 1;

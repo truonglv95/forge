@@ -1,6 +1,8 @@
 const std = @import("std");
 const kernel = @import("forge-kernel");
 const workspace = @import("forge-workspace");
+const core = @import("forge-core");
+const telemetry = core.telemetry;
 const Workbench = @import("workbench.zig");
 const builtin_ext = @import("extensions/builtin.zig");
 const recent_workspaces = @import("workbench/recent_workspaces.zig");
@@ -16,6 +18,18 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const args = try init.minimal.args.toSlice(allocator);
+
+    var is_perf_harness = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--perf-harness")) {
+            is_perf_harness = true;
+            try telemetry.init("trace.json");
+            state.continuous_rendering_enabled = true;
+            break;
+        }
+    }
+    defer telemetry.deinit();
+
     var owned_workspace_path: ?[]u8 = null;
     defer if (owned_workspace_path) |path| allocator.free(path);
     const launch = try resolveWorkspacePath(allocator, io, args, &owned_workspace_path);
@@ -70,8 +84,16 @@ fn resolveWorkspacePath(
     args: []const []const u8,
     owned_workspace_path: *?[]u8,
 ) !LaunchWorkspace {
-    if (args.len > 1 and !std.mem.startsWith(u8, args[1], "-psn_")) {
-        return .{ .path = args[1] };
+    var path_arg: ?[]const u8 = null;
+    for (args[1..]) |arg| {
+        if (!std.mem.startsWith(u8, arg, "-")) {
+            path_arg = arg;
+            break;
+        }
+    }
+
+    if (path_arg) |p| {
+        return .{ .path = p };
     }
 
     if (!shouldUseAppLaunchFallback(io)) {

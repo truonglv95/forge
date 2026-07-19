@@ -1,5 +1,7 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
+const core = @import("forge-core");
+const telemetry = core.telemetry;
 const state = @import("../core/state.zig");
 const layout = @import("../core/layout.zig");
 const settings_modal = @import("../settings_modal.zig");
@@ -46,9 +48,11 @@ pub fn onRenderFrame() void {
     const theme = &wb.theme;
 
     state.time += 0.016;
+    var tick_span = telemetry.startSpan("render", "tick");
     const tick_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
     wb.tickFrame(0.016) catch {};
     const tick_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+    tick_span.end();
     theme_loader.applyShellColors(theme.*);
 
     renderer.Renderer.clearClipRect();
@@ -57,6 +61,7 @@ pub fn onRenderFrame() void {
     var h: f32 = 0;
     renderer.Renderer.getWindowSize(&w, &h);
 
+    var layout_span = telemetry.startSpan("render", "layout");
     const layout_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
     const geo = wb.layoutGeometry(w, h);
     wb.clampEditorScroll(geo.editor_w, geo.editor_h);
@@ -69,8 +74,10 @@ pub fn onRenderFrame() void {
     if (wb.proposal_review_open) wb.clampProposalReviewScroll(geo.editor_h);
     const side_h = geo.content_h;
     const layout_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+    layout_span.end();
 
     if (state.root_view) |rv| {
+        var draw_span = telemetry.startSpan("render", "draw");
         const draw_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
         rv.frame = .{ .x = 0, .y = 0, .w = w, .h = h };
         if (state.header_view) |v| v.frame = .{ .x = 0, .y = 0, .w = w, .h = layout.header_height };
@@ -95,6 +102,7 @@ pub fn onRenderFrame() void {
 
         if (geo.shell_mode == .ide) {
             if (wb.sidebar_visible and geo.explorer_w > 0) {
+                var sidebar_span = telemetry.startSpan("render", "sidebar");
                 const sidebar_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 sidebar_render.drawActivityBar(wb, geo.explorer_w, frame_alloc);
                 renderer.Renderer.drawRect(geo.explorer_x - 1, layout.header_height, 1, side_h, subtle_border);
@@ -110,25 +118,32 @@ pub fn onRenderFrame() void {
                 }
                 const sidebar_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 state.perf_sidebar_ms = @floatFromInt(sidebar_end_ms - sidebar_start_ms);
+                sidebar_span.end();
             }
+            var editor_span = telemetry.startSpan("render", "editor");
             const editor_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
             editor_render.drawEditorPanel(wb, editor_buf, geo.editor_x, geo.editor_w, geo.editor_h, w);
             const editor_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
             state.perf_editor_ms = @floatFromInt(editor_end_ms - editor_start_ms);
+            editor_span.end();
             if (wb.bottom_panel_visible and geo.task_panel_h > 0) {
+                var panel_span = telemetry.startSpan("render", "panel");
                 const panel_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 task_panel_render.drawTaskPanel(wb, geo.editor_x, geo.editor_w, geo.task_panel_y, geo.task_panel_h);
                 const panel_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 state.perf_panel_ms = @floatFromInt(panel_end_ms - panel_start_ms);
+                panel_span.end();
             }
         }
         if (wb.agent_panel_visible and geo.agent_w > 0) {
+            var agent_span = telemetry.startSpan("render", "agent");
             const agent_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
             renderer.Renderer.drawRect(geo.agent_x, layout.header_height, geo.agent_w, side_h, .{ .r = 0.055, .g = 0.055, .b = 0.06, .a = 1.0 });
             renderer.Renderer.drawRect(geo.agent_x - 1, layout.header_height, 1, side_h, subtle_border);
             agent_render.drawAgentPanel(wb, geo.agent_x, geo.agent_w, h);
             const agent_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
             state.perf_agent_ms = @floatFromInt(agent_end_ms - agent_start_ms);
+            agent_span.end();
         }
         status_bar_render.drawStatusBar(wb, w, h, geo.shell_mode);
         // P1-4: Toast notifications (bottom-right corner, on top of everything).
@@ -150,6 +165,7 @@ pub fn onRenderFrame() void {
 
         const draw_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
         state.perf_draw_ms = @floatFromInt(draw_end_ms - draw_start_ms);
+        draw_span.end();
     }
     const frame_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
     state.perf_tick_ms = @floatFromInt(tick_end_ms - tick_start_ms);

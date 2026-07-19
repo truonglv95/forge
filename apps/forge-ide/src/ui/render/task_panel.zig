@@ -168,7 +168,7 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             const content_top = terminal_panel.contentTop(panel_y);
             const content_h = panel_h - (content_top - panel_y);
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
-            const git_ptr: ?*const @import("../../git/status.zig").Status = if (wb.git_status) |*status| status else null;
+            const git_ptr: ?*const @import("../../git/status.zig").Status = if (wb.git.status) |*status| status else null;
             const show_cursor = @mod(state.time, 1.0) < 0.5;
             const show_terminal_cursor = show_cursor and wb.focused_panel == .terminal;
 

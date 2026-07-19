@@ -1,5 +1,7 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
+const core = @import("forge-core");
+const telemetry = core.telemetry;
 const state = @import("../core/state.zig");
 const layout = @import("../core/layout.zig");
 const activity_bar = @import("../sidebar/activity_bar.zig");
@@ -54,6 +56,8 @@ fn selectWordAt(buf: *editor_mod.Buffer, row: usize, col: usize) bool {
 }
 
 pub fn onMouseEvent(event: renderer.MouseEvent) void {
+    var span = telemetry.startSpan("input", "mouse_event");
+    defer span.end();
     const wb = state.wb orelse return;
     state.markAllDirty();
 

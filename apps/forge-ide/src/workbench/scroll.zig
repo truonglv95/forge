@@ -116,13 +116,13 @@ pub fn clampExtensionsScroll(wb: anytype, window_h: f32) void {
 
 pub fn clampSearchScroll(wb: anytype, window_h: f32) void {
     const scroll = @import("../ui/sidebar/search_panel.zig");
-    const count = if (wb.search_results) |results| results.matches.len else 0;
-    wb.search_scroll_y = scroll.clampScrollY(wb.search_scroll_y, count, window_h);
+    const count = if (wb.search.results) |results| results.matches.len else 0;
+    wb.search.scroll_y = scroll.clampScrollY(wb.search.scroll_y, count, window_h);
 }
 
 pub fn clampGitScroll(wb: anytype, window_h: f32) void {
     const scroll = @import("../ui/sidebar/git_panel.zig");
-    const count = if (wb.git_status) |status| status.entries.len else 0;
+    const count = if (wb.git.status) |status| status.entries.len else 0;
     wb.git_scroll_y = scroll.clampScrollY(wb.git_scroll_y, count, window_h);
 }
 

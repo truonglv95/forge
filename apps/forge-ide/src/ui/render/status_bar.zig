@@ -80,7 +80,7 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
     left_x += mode_w + 8;
 
     // 2. Git branch
-    if (wb.git_status) |gs| {
+    if (wb.git.status) |gs| {
         if (gs.branch) |branch| {
             if (branch.len > 0) {
                 const branch_w = estimateWidth(branch, font_size) + 16 + 18; // 18 for icon

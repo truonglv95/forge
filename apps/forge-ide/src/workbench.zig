@@ -22,7 +22,7 @@ const agent_scope_picker = @import("agent/scope_picker.zig");
 const renderer = @import("forge-renderer");
 const SearchCtx = @import("workbench/search_ops.zig").SearchCtx;
 const SearchController = @import("workbench/search_controller.zig").SearchController;
-const GitController = @import("workbench/search_controller.zig").GitController;
+const GitController = @import("workbench/git_controller.zig").GitController;
 const git_status_mod = @import("git/status.zig");
 const git_diff_mod = @import("git/diff.zig");
 const diagnostics_store_mod = @import("workbench/diagnostics_store.zig");
@@ -392,7 +392,7 @@ pub const Workbench = struct {
             .watch_expressions = watch_expressions_mod.Store.init(allocator),
         };
         errdefer self.deinit();
-        self.git = GitController.init(allocator);
+        self.git = try GitController.init(allocator);
 
         self.terminals = try terminal_group_mod.Group.init(allocator, io, self.workspace_path);
         self.lsp_sync = lsp_sync_mod.Store.init(allocator, self.workspace_path, &self.lsp_proxy, &self.lsp_registry);
@@ -560,7 +560,7 @@ pub const Workbench = struct {
         self.chat_layout.deinit(self.allocator);
         self.rename_buffer.deinit();
         self.search_buffer.deinit();
-        self.search.deinit(self.allocator);
+        self.search.deinit();
         self.git.deinit(self.allocator);
         if (self.debug_stop_path) |path| self.allocator.free(path);
         self.debug_variables.deinit();

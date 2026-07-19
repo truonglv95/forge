@@ -1,6 +1,6 @@
 const std = @import("std");
 const workspace = @import("forge-workspace");
-const sync_mod = @import("forge-core").sync;
+const sync_mod = @import("forge-util").sync;
 
 pub const SearchController = struct {
     results: ?workspace.search.SearchResult = null,
@@ -15,8 +15,8 @@ pub const SearchController = struct {
         return .{};
     }
 
-    pub fn deinit(self: *SearchController, allocator: std.mem.Allocator) void {
-        if (self.results) |*res| res.deinit(allocator);
-        if (self.pending_results) |*res| res.deinit(allocator);
+    pub fn deinit(self: *SearchController) void {
+        if (self.results) |*res| res.deinit();
+        if (self.pending_results) |*res| res.deinit();
     }
 };

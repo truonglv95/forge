@@ -1,4 +1,7 @@
 const std = @import("std");
+const core = @import("forge-core");
+const telemetry = core.telemetry;
+const lsp = @import("forge-lsp");
 const editor = @import("forge-editor");
 const renderer = @import("forge-renderer");
 const state = @import("../core/state.zig");
@@ -82,6 +85,8 @@ fn applyMultiCursor(wb: *Workbench, active_buffer: *editor.Buffer, action: Curso
 }
 
 pub fn onKeyEvent(event: renderer.KeyEvent) void {
+    var span = telemetry.startSpan("input", "key_event");
+    defer span.end();
     if (!event.is_down) return;
     const wb = state.wb orelse return;
     state.markAllDirty();
@@ -476,6 +481,8 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
 }
 
 pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
+    var span = telemetry.startSpan("input", "ime_event");
+    defer span.end();
     const wb = state.wb orelse return;
     state.markAllDirty();
 

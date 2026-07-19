@@ -1,6 +1,6 @@
 const std = @import("std");
-const sync_mod = @import("forge-core").sync;
-const git_status_mod = @import("git/status.zig");
+const sync_mod = @import("forge-util").sync;
+const git_status_mod = @import("../git/status.zig");
 const editor = @import("forge-editor");
 
 pub const GitController = struct {
@@ -20,9 +20,9 @@ pub const GitController = struct {
     changes_collapsed: bool = false,
     sync_icon_angle: f32 = 0,
 
-    pub fn init(allocator: std.mem.Allocator) GitController {
+    pub fn init(allocator: std.mem.Allocator) !GitController {
         return .{
-            .commit_msg = editor.Buffer.init(allocator),
+            .commit_msg = try editor.Buffer.init(allocator),
         };
     }
 
