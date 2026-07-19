@@ -95,6 +95,32 @@ pub fn flushGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) !bool {
 pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").Hit) !void {
     switch (hit) {
         .refresh => try wb.dispatch(.git_refresh),
+        .push => {
+            try wb.setStatus("Git pushing...");
+            const process_spawn = @import("forge-util").process_spawn;
+            const exit_code = process_spawn.runWait(wb.allocator, &.{ "git", "push" }, .{ .cwd = wb.workspace_path }) catch -1;
+            if (exit_code == 0) {
+                try wb.setStatus("Git push successful");
+                try wb.dispatch(.git_refresh);
+            } else {
+                try wb.setStatus("Git push failed");
+            }
+        },
+        .pull => {
+            try wb.setStatus("Git pulling...");
+            const process_spawn = @import("forge-util").process_spawn;
+            const exit_code = process_spawn.runWait(wb.allocator, &.{ "git", "pull" }, .{ .cwd = wb.workspace_path }) catch -1;
+            if (exit_code == 0) {
+                try wb.setStatus("Git pull successful");
+                try wb.dispatch(.git_refresh);
+            } else {
+                try wb.setStatus("Git pull failed");
+            }
+        },
+        .switch_branch => {
+            try wb.setStatus("Switch branch not yet implemented via Palette");
+            // TODO: dispatch a palette command for branch switching
+        },
         .commit => try wb.commitStagedChanges(),
         .ai_generate => try wb.setStatus("AI Commit Generation not yet implemented"),
         .view_as_tree => try wb.setStatus("View as tree not yet implemented"),
@@ -118,16 +144,31 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
             }
             try refreshGitStatus(wb);
         },
-        .open_file => |index| {
+        .discard_file_changes => |index| {
             const status = wb.git_status orelse return;
             if (index >= status.entries.len) return;
             const entry = status.entries[index];
+            const process_spawn = @import("forge-util").process_spawn;
+            if (entry.isUnstaged()) {
+                if (entry.status[1] == '?') {
+                    // Untracked file
+                    // We probably should delete the file? Or maybe let user handle it manually, but 'git clean' works.
+                    // For now, let's use standard git checkout if tracked, or rm if untracked.
+                    _ = process_spawn.runWait(wb.allocator, &.{ "rm", entry.path }, .{ .cwd = wb.workspace_path }) catch {};
+                } else {
+                    _ = process_spawn.runWait(wb.allocator, &.{ "git", "checkout", "--", entry.path }, .{ .cwd = wb.workspace_path }) catch {};
+                }
+            }
+            try refreshGitStatus(wb);
+        },
+        .open_file => |info| {
+            const status = wb.git_status orelse return;
+            if (info.index >= status.entries.len) return;
+            const entry = status.entries[info.index];
             const path = try wb.allocator.dupe(u8, entry.path);
             defer wb.allocator.free(path);
             const untracked = entry.status[0] == '?' or entry.status[1] == '?';
-            try wb.showGitDiff(path, untracked);
-            const open_path = try wb.allocator.dupe(u8, path);
-            try wb.dispatch(.{ .open_file = open_path });
+            try wb.showGitDiff(path, untracked, info.is_staged);
         },
     }
 }
@@ -153,12 +194,40 @@ pub fn commitStagedChanges(wb: anytype) !void {
     }
 }
 
-pub fn showGitDiff(wb: anytype, path: []const u8, untracked: bool) !void {
-    const diff = try git_diff_mod.fileDiff(wb.allocator, wb.workspace_path, path, untracked);
+pub fn showGitDiff(wb: anytype, path: []const u8, untracked: bool, is_staged: bool) !void {
+    const diff = try git_diff_mod.fileDiff(wb.allocator, wb.workspace_path, path, untracked, is_staged);
     defer wb.allocator.free(diff);
-    wb.task_output.clear();
-    try wb.task_output.appendChunk(diff);
-    wb.bottom_panel_mode = .output;
-    wb.task_scroll_y = 0;
+
+    // Create a virtual path for the diff tab
+    var buf: [1024]u8 = undefined;
+    const diff_path = try std.fmt.bufPrint(&buf, "git-diff://{s}", .{path});
+
+    // Open or activate the tab
+    const doc = try wb.tabs.openOrActivate(diff_path);
+    try doc.buffer.loadFromSlice(diff);
+
+    // Set it as read-only (if buffer supports it, otherwise just leave it as is)
+    // we could also set doc.saved_hash to prevent unsaved changes indicator
+    const hash = @import("forge-workspace").edit.contentHash(diff);
+    doc.saved_hash = hash;
+    doc.disk_hash = hash;
+    doc.external_conflict = false;
+
+    wb.focused_panel = .editor;
+    wb.syncTabScroll();
     try wb.setStatus("Git diff");
+}
+
+pub fn gitCheckout(wb: anytype, branch: []const u8) !void {
+    const process_spawn = @import("forge-util").process_spawn;
+    const exit_code = process_spawn.runWait(wb.allocator, &.{ "git", "checkout", branch }, .{ .cwd = wb.workspace_path }) catch -1;
+
+    if (exit_code == 0) {
+        try refreshGitStatus(wb);
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Switched to branch '{s}'", .{branch}) catch "Switched branch";
+        try wb.setStatus(msg);
+    } else {
+        try wb.setStatus("Git checkout failed");
+    }
 }

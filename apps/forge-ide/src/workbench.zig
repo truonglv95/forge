@@ -41,6 +41,7 @@ const recent_workspaces_mod = @import("workbench/recent_workspaces.zig");
 const debug_console_mod = @import("workbench/debug_console.zig");
 const breakpoints_mod = @import("workbench/breakpoints.zig");
 const workspace_symbol_picker_mod = @import("workbench/workspace_symbol_picker.zig");
+const git_branch_picker_mod = @import("workbench/git_branch_picker.zig");
 const editor_find_mod = @import("workbench/editor_find.zig");
 const settings_mod = @import("workbench/settings.zig");
 const ai_config_io = @import("workbench/ai_config_io.zig");
@@ -139,6 +140,7 @@ pub const Workbench = struct {
     events: kernel.EventBus(Event),
     palette: palette_mod.Palette,
     workspace_symbol_picker: workspace_symbol_picker_mod.Picker,
+    git_branch_picker: git_branch_picker_mod.Picker,
     task_output: task_output_mod.TaskOutput,
     agent: agent_session.Session,
     agent_ui_queue: agent_ui_queue_mod.Queue = .{},
@@ -335,6 +337,7 @@ pub const Workbench = struct {
             .events = kernel.EventBus(Event).init(allocator),
             .palette = try palette_mod.Palette.init(allocator),
             .workspace_symbol_picker = try workspace_symbol_picker_mod.Picker.init(allocator, &self.lsp_proxy),
+            .git_branch_picker = try git_branch_picker_mod.Picker.init(allocator),
             .task_output = task_output_mod.TaskOutput.init(allocator, io),
             .agent = agent_session.Session.init(allocator, io),
             .scope_picker_paths = .empty,
@@ -539,6 +542,7 @@ pub const Workbench = struct {
         self.inlay_hints.deinit();
         self.inline_edit.deinit();
         self.mention_picker.deinit();
+        self.git_branch_picker.deinit();
         self.context_menu.deinit();
         launch_config_mod.freeConfigs(self.allocator, self.launch_configs);
         self.notifications.deinit();
@@ -1277,7 +1281,7 @@ pub const Workbench = struct {
         }
     }
 
-    pub fn quickFixAtCursor(self: *Workbench) !void {
+    pub fn quickFixAtCursor(self: *Workbench, action_index: ?usize, screen_x: f32, screen_y: f32) !void {
         const doc = self.tabs.activeDoc() orelse {
             try self.setStatus("No file open for quick fix");
             return;
@@ -1329,12 +1333,22 @@ pub const Workbench = struct {
             return;
         }
 
-        if (actions[0].edit) |*edit| {
-            try @import("workbench/editor_ops.zig").applyWorkspaceEdit(self, edit);
-            try self.setStatus(actions[0].title);
+        if (action_index) |idx| {
+            if (idx >= actions.len) return;
+            if (actions[idx].edit) |*edit| {
+                try self.rename_preview.setPreview(self.workspace_path, &self.tabs, actions[idx].title, edit.*);
+                self.bottom_panel_mode = .output;
+                self.bottom_panel_visible = true;
+                return;
+            }
+            try self.setStatus("Quick fix has no edit");
             return;
         }
-        try self.setStatus("Quick fix has no edit");
+
+        var titles: std.ArrayList([]const u8) = .empty;
+        defer titles.deinit(self.allocator);
+        for (actions) |action| try titles.append(self.allocator, self.allocator.dupe(u8, action.title) catch action.title);
+        try self.context_menu.openQuickFix(screen_x, screen_y, titles.items);
     }
 
     pub fn clampTabScroll(self: *Workbench, editor_w: f32) void {
@@ -1970,8 +1984,8 @@ pub const Workbench = struct {
         self.activeTerminal().resize(cols, rows);
     }
 
-    pub fn showGitDiff(self: *Workbench, path: []const u8, untracked: bool) !void {
-        return @import("workbench/git_ops.zig").showGitDiff(self, path, untracked);
+    pub fn showGitDiff(self: *Workbench, path: []const u8, untracked: bool, is_staged: bool) !void {
+        return @import("workbench/git_ops.zig").showGitDiff(self, path, untracked, is_staged);
     }
 
     pub fn goToDefinition(self: *Workbench) !void {

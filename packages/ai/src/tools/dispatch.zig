@@ -34,6 +34,11 @@ pub fn execute(
             return reg.callTool(call.name, call.args_json) catch return error.WorkspaceFailed;
         }
     }
+    if (std.mem.eql(u8, call.name, "get_editor_context")) {
+        const out = tool_executor.getEditorContext(tool_ctx) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
     if (std.mem.eql(u8, call.name, "search")) {
         const search_args = args.parseSearchArgs(allocator, call.args_json) catch return error.ParseFailed;
         defer args.freeSearchArgs(allocator, search_args);
@@ -94,9 +99,58 @@ pub fn execute(
         defer allocator.free(out.summary);
         return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
     }
+    if (std.mem.eql(u8, call.name, "read_many_files")) {
+        const read_args = args.parseReadManyFilesArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer args.freeReadManyFilesArgs(allocator, read_args);
+        const out = tool_executor.readManyFiles(tool_ctx, read_args) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
+    if (std.mem.eql(u8, call.name, "lsp_definition")) {
+        const lsp_args = args.parseLspPositionArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer allocator.free(lsp_args.path);
+        const out = tool_executor.lspDefinition(tool_ctx, lsp_args.path, lsp_args.line, lsp_args.character) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
+    if (std.mem.eql(u8, call.name, "lsp_hover")) {
+        const lsp_args = args.parseLspPositionArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer allocator.free(lsp_args.path);
+        const out = tool_executor.lspHover(tool_ctx, lsp_args.path, lsp_args.line, lsp_args.character) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
+    if (std.mem.eql(u8, call.name, "lsp_document_symbols")) {
+        const lsp_args = args.parseLspDocumentArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer allocator.free(lsp_args.path);
+        const out = tool_executor.lspDocumentSymbols(tool_ctx, lsp_args.path) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
+    if (std.mem.eql(u8, call.name, "lsp_diagnostics")) {
+        const lsp_args = args.parseLspDocumentArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer allocator.free(lsp_args.path);
+        const out = tool_executor.lspDiagnostics(tool_ctx, lsp_args.path) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
     if (std.mem.eql(u8, call.name, "git_diff")) {
         const diff_args = args.parseGitDiffArgs(allocator, call.args_json) catch return error.ParseFailed;
         const out = tool_executor.gitDiff(tool_ctx, diff_args.stat) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
+    if (std.mem.eql(u8, call.name, "git_stage")) {
+        const stage_args = args.parseGitStageArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer args.freeGitStageArgs(allocator, stage_args);
+        const out = tool_executor.gitStage(tool_ctx, stage_args) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
+    if (std.mem.eql(u8, call.name, "git_commit")) {
+        const commit_args = args.parseGitCommitArgs(allocator, call.args_json) catch return error.ParseFailed;
+        defer allocator.free(commit_args.message);
+        const out = tool_executor.gitCommit(tool_ctx, commit_args) catch |err| return mapTool(err);
         defer allocator.free(out.summary);
         return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
     }

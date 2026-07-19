@@ -108,6 +108,7 @@ pub const Session = struct {
     ephemeral_proposal: ?workspace.OwnedProposal = null,
     run_history: std.ArrayList(RunEntry),
     scope_files: std.ArrayList([]const u8),
+    excluded_entries: std.ArrayList([]const u8),
     scope_picker_open: bool = false,
     scope_query: [256]u8 = undefined,
     scope_query_len: usize = 0,
@@ -159,6 +160,7 @@ pub const Session = struct {
             .diff_lines = .empty,
             .run_history = .empty,
             .scope_files = .empty,
+            .excluded_entries = .empty,
             .agent_steps = .empty,
             .attachments = .empty,
         };
@@ -192,6 +194,8 @@ pub const Session = struct {
         self.run_history.deinit(self.allocator);
         for (self.scope_files.items) |path| self.allocator.free(path);
         self.scope_files.deinit(self.allocator);
+        for (self.excluded_entries.items) |name| self.allocator.free(name);
+        self.excluded_entries.deinit(self.allocator);
         self.clearAttachmentsUnlocked();
         self.attachments.deinit(self.allocator);
         if (self.approval_tool) |text| self.allocator.free(text);
@@ -246,6 +250,38 @@ pub const Session = struct {
         self.lock();
         defer self.unlock();
         return self.scope_files.items;
+    }
+
+    pub fn addExcludedEntry(self: *Session, name: []const u8) !void {
+        self.lock();
+        defer self.unlock();
+        for (self.excluded_entries.items) |existing| {
+            if (std.mem.eql(u8, existing, name)) return;
+        }
+        try self.excluded_entries.append(self.allocator, try self.allocator.dupe(u8, name));
+    }
+
+    pub fn removeExcludedEntry(self: *Session, name: []const u8) void {
+        self.lock();
+        defer self.unlock();
+        var index: usize = 0;
+        while (index < self.excluded_entries.items.len) {
+            if (std.mem.eql(u8, self.excluded_entries.items[index], name)) {
+                self.allocator.free(self.excluded_entries.items[index]);
+                _ = self.excluded_entries.orderedRemove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    pub fn isExcluded(self: *Session, name: []const u8) bool {
+        self.lock();
+        defer self.unlock();
+        for (self.excluded_entries.items) |existing| {
+            if (std.mem.eql(u8, existing, name)) return true;
+        }
+        return false;
     }
 
     pub fn openScopePicker(self: *Session) void {

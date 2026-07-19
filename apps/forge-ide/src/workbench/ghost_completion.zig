@@ -29,9 +29,9 @@ pub const Config = struct {
     /// - "ai": uses `forge-ai.inline_completion` module which routes through
     ///         the provider factory (supports gemini/openai/openrouter/nvidia/
     ///         ollama/fake, credential lookup, cancellation, etc.)
-    provider: []const u8 = "ollama",
-    /// e.g. "qwen2.5-coder:7b" or "gemini-2.0-flash"
-    model: []const u8 = "qwen2.5-coder:7b",
+    provider: []const u8 = "ai",
+    /// e.g. "gemini-2.5-flash" or "qwen2.5-coder:7b"
+    model: []const u8 = "gemini-2.5-flash",
     /// Ollama base URL
     ollama_url: []const u8 = "http://127.0.0.1:11434",
     /// Gemini API key (read from env GEMINI_API_KEY if empty)

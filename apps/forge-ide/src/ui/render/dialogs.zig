@@ -115,3 +115,38 @@ pub fn drawWorkspaceSymbolPicker(wb: *@import("../../workbench.zig").Workbench, 
         row_y += 24;
     }
 }
+
+pub fn drawGitBranchPicker(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32) void {
+    renderer.Renderer.drawRect(0, 0, w, h, .{ .r = 0, .g = 0, .b = 0, .a = 0.55 });
+    const box_w: f32 = 400;
+    const box_h: f32 = 320;
+    const box_x = (w - box_w) / 2;
+    const box_y = (h - box_h) / 3;
+    renderer.Renderer.drawRoundedRect(box_x, box_y, box_w, box_h, 10, .{ .r = 0.16, .g = 0.16, .b = 0.18, .a = 1.0 });
+    renderer.Renderer.drawText("Switch Branch", box_x + 16, box_y + 12, 14.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+
+    var query_buf: [320:0]u8 = undefined;
+    @memcpy(query_buf[0..wb.git_branch_picker.query_len], wb.git_branch_picker.query[0..wb.git_branch_picker.query_len]);
+    query_buf[wb.git_branch_picker.query_len] = 0;
+    renderer.Renderer.drawRoundedRect(box_x + 12, box_y + 36, box_w - 24, 28, 6, .{ .r = 0.1, .g = 0.1, .b = 0.12, .a = 1.0 });
+    renderer.Renderer.drawText(@ptrCast(&query_buf), box_x + 20, box_y + 42, 14.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+
+    var row_y = box_y + 76;
+    const max_rows: usize = 9;
+    const show_rows = @min(wb.git_branch_picker.filtered.items.len, max_rows);
+    for (0..show_rows) |visible_index| {
+        const entry_index = wb.git_branch_picker.filtered.items[visible_index];
+        const entry = wb.git_branch_picker.entries.items[entry_index];
+        const selected = visible_index == wb.git_branch_picker.selected;
+        if (selected) {
+            renderer.Renderer.drawRoundedRect(box_x + 8, row_y - 4, box_w - 16, 24, 4, .{ .r = 0.25, .g = 0.45, .b = 0.85, .a = 1.0 });
+        }
+
+        var line_buf: [256]u8 = undefined;
+        const len = (std.fmt.bufPrint(&line_buf, "{s}", .{entry.name}) catch entry.name).len;
+        line_buf[len] = 0;
+
+        renderer.Renderer.drawText(@ptrCast(&line_buf), box_x + 18, row_y, 13.0, .{ .r = 0.92, .g = 0.92, .b = 0.92, .a = 1.0 });
+        row_y += 24;
+    }
+}

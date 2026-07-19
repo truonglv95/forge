@@ -29,7 +29,7 @@ fn gitStatusColor(entry: *const @import("../../../git/status.zig").Entry) render
     return .{ .r = 0.78, .g = 0.68, .b = 0.52, .a = 1.0 };
 }
 
-fn drawGitEntryLabel(entry: *const @import("../../../git/status.zig").Entry, px: f32, py: f32, pw: f32) void {
+fn drawGitEntryLabel(entry: *const @import("../../../git/status.zig").Entry, px: f32, py: f32, pw: f32, is_hovered: bool, is_staged_section: bool) void {
     const basename = std.fs.path.basename(entry.path);
     var dir_path: []const u8 = "";
     if (entry.path.len > basename.len) {
@@ -50,8 +50,17 @@ fn drawGitEntryLabel(entry: *const @import("../../../git/status.zig").Entry, px:
     renderer.Renderer.drawText("▰", px + 16, py + 2, 11.0, icon_color);
 
     const name_x = px + 30;
-    const status_x = px + pw - 18;
-    const name_max_w = @max(0, status_x - name_x - 18);
+
+    var right_margin: f32 = 18; // Default margin for the status glyph
+    if (is_hovered) {
+        if (is_staged_section) {
+            right_margin = 48; // Leftmost icon is at pw - 48
+        } else {
+            right_margin = 72; // Leftmost icon is at pw - 72
+        }
+    }
+    const content_right = px + pw - right_margin;
+    const name_max_w = @max(0, content_right - name_x - 8);
     renderer.Renderer.pushClipRect(name_x, py, name_max_w, 22);
     renderer.Renderer.drawText(basename, name_x, py + 2, 11.5, name_color);
     renderer.Renderer.drawText(basename, name_x + 0.35, py + 2, 11.5, name_color);
@@ -59,15 +68,18 @@ fn drawGitEntryLabel(entry: *const @import("../../../git/status.zig").Entry, px:
 
     const name_w = renderer.Renderer.measureText(basename, 11.5);
     const path_x = name_x + name_w + 7;
-    const path_max_w = status_x - path_x - 8;
+    const path_max_w = content_right - path_x - 8;
     if (dir_path.len > 0 and path_max_w > 12) {
         renderer.Renderer.pushClipRect(path_x, py, path_max_w, 22);
         renderer.Renderer.drawText(dir_path, path_x, py + 3, 10.5, path_color);
         renderer.Renderer.popClipRect();
     }
 
-    const glyph = gitStatusGlyph(entry);
-    renderer.Renderer.drawText(glyph, status_x, py + 2, 11.0, status_color);
+    if (!is_hovered) {
+        const status_x = px + pw - 18;
+        const glyph = gitStatusGlyph(entry);
+        renderer.Renderer.drawText(glyph, status_x, py + 2, 11.0, status_color);
+    }
 }
 
 pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
@@ -80,12 +92,13 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const mx = state.last_mouse_x;
     const is_hovering_panel = mx >= panel_x and mx < panel_x + panel_w;
 
-    // Header CHANGES
-    renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + 8, panel_y + 8, 16, 16, icon_c);
-    renderer.Renderer.drawText("CHANGES", panel_x + 22, panel_y + 9, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
+    // Header
+    const branch_name = if (wb.git_status) |s| s.branch orelse "HEAD" else "CHANGES";
+    renderer.Renderer.drawSvg(renderer.icons.repo, panel_x + 8, panel_y + 8, 16, 16, icon_c);
+    renderer.Renderer.drawText(branch_name, panel_x + 28, panel_y + 9, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
 
     const header_action_y = panel_y + 5;
-    // more, refresh, commit, tree
+    // more, push, pull, refresh
     if (is_hovering_panel and my >= header_action_y and my < header_action_y + 20) {
         if (mx >= panel_x + panel_w - 24 and mx < panel_x + panel_w - 8) {
             renderer.Renderer.drawRoundedRect(panel_x + panel_w - 26, header_action_y, 20, 20, 4, hover_c);
@@ -95,14 +108,19 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
             renderer.Renderer.drawRoundedRect(panel_x + panel_w - 74, header_action_y, 20, 20, 4, hover_c);
         } else if (mx >= panel_x + panel_w - 96 and mx < panel_x + panel_w - 80) {
             renderer.Renderer.drawRoundedRect(panel_x + panel_w - 98, header_action_y, 20, 20, 4, hover_c);
+        } else if (mx >= panel_x + 8 and mx < panel_x + 100) { // Hover over branch name
+            renderer.Renderer.drawRoundedRect(panel_x + 6, header_action_y, 100, 20, 4, hover_c);
         }
     }
     renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, panel_x + panel_w - 24, header_action_y + 3, 16, 16, icon_c);
-    renderer.Renderer.drawSvg(renderer.icons.sync, panel_x + panel_w - 48, header_action_y + 3, 16, 16, icon_c);
-    renderer.Renderer.drawSvg(renderer.icons.check, panel_x + panel_w - 72, header_action_y + 3, 16, 16, icon_c);
-    renderer.Renderer.drawSvg(renderer.icons.repo, panel_x + panel_w - 96, header_action_y + 3, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.icons.chevron_up, panel_x + panel_w - 48, header_action_y + 3, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.icons.chevron_down, panel_x + panel_w - 72, header_action_y + 3, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.icons.sync, panel_x + panel_w - 96, header_action_y + 3, 16, 16, icon_c);
 
-    var y = panel_y + 36;
+    const scroll_y_start = panel_y + 36;
+    renderer.Renderer.setClipRect(panel_x, scroll_y_start, panel_w, h - scroll_y_start - layout.status_height);
+
+    var y = scroll_y_start;
     y -= wb.git_scroll_y;
 
     // Input Box
@@ -178,8 +196,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
 
                     if (!is_collapsed) {
                         const row_h: f32 = 22.0;
-                        const header_h: f32 = 65.0; // layout top area
-                        const visible_top = header_h;
+                        const visible_top = 101.0; // panel_y (65) + 36
                         const visible_bottom = ch - layout.status_height;
 
                         // We compute which elements are within the visible bounds: [visible_top, visible_bottom]
@@ -187,8 +204,9 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                         const view_top = @max(0, visible_top - py.*);
                         const view_bottom = @max(0, visible_bottom - py.*);
 
-                        const start_idx: usize = @as(usize, @intFromFloat(view_top / row_h));
-                        const end_idx = @min(ptrs.len, @as(usize, @intFromFloat(view_bottom / row_h)) + 2);
+                        const start_idx: usize = @min(ptrs.len, @as(usize, @intFromFloat(view_top / row_h)));
+                        var end_idx = @min(ptrs.len, @as(usize, @intFromFloat(view_bottom / row_h)) + 2);
+                        if (end_idx < start_idx) end_idx = start_idx;
 
                         // Increment py.* by the hidden rows we skipped above
                         py.* += @as(f32, @floatFromInt(start_idx)) * row_h;
@@ -199,13 +217,16 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                                 if (is_hovered) {
                                     renderer.Renderer.drawRect(px, py.*, pw, row_h, hc);
                                     if (is_staged_section) {
-                                        renderer.Renderer.drawSvg(renderer.icons.dash, px + pw - 34, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                                        renderer.Renderer.drawSvg(renderer.icons.dash, px + pw - 24, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                                        renderer.Renderer.drawSvg(renderer.icons.file, px + pw - 48, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
                                     } else {
-                                        renderer.Renderer.drawSvg(renderer.icons.plus, px + pw - 34, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                                        renderer.Renderer.drawSvg(renderer.icons.plus, px + pw - 24, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                                        renderer.Renderer.drawSvg(renderer.icons.reply, px + pw - 48, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+                                        renderer.Renderer.drawSvg(renderer.icons.file, px + pw - 72, py.* + 3, 16, 16, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
                                     }
                                 }
 
-                                drawGitEntryLabel(entry, px, py.*, pw);
+                                drawGitEntryLabel(entry, px, py.*, pw, is_hovered, is_staged_section);
                             }
                             // If it's not visible at all, we don't draw anything (fast skip)
                             py.* += row_h;

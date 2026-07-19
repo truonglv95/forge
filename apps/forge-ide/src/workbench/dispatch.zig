@@ -243,6 +243,11 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             wb.palette.close();
             wb.focused_panel = wb.previous_focus;
         },
+        .palette_git_switch_branch => {
+            wb.previous_focus = wb.focused_panel;
+            wb.focused_panel = .palette;
+            try wb.git_branch_picker.openPicker(wb.workspace_path);
+        },
         .workspace_symbol_picker_open => {
             wb.previous_focus = wb.focused_panel;
             wb.focused_panel = .palette; // Reuse palette focus for keys? Or create new? Let's use a new focus if needed, wait, let's reuse palette focus but we need to route it.
@@ -695,7 +700,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .settings_reload => try wb.reloadUserSettings(),
         .settings_toggle_word_wrap => try wb.toggleWordWrap(),
         .open_recent_workspace => |index| try wb.openRecentWorkspace(index),
-        .problem_quick_fix => try wb.quickFixAtCursor(),
+        .problem_quick_fix => try wb.quickFixAtCursor(null, state.last_mouse_x, state.last_mouse_y),
         .debug_stack_goto => |index| try wb.gotoDebugStackFrame(index),
         .debug_copy_variable => |index| try wb.copyDebugVariable(index),
         .ai_open_settings_toml => try wb.openSettingsToml(),
@@ -792,16 +797,11 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         },
         .editor_apply_quick_fix => |index| {
             // Index comes from clicking a context-menu quick-fix item.
-            // For now, we delegate to the existing problem_quick_fix path
-            // (which applies the first available fix). Future work: index
-            // into the LSP codeAction array.
-            _ = index;
-            try wb.quickFixAtCursor();
+            try wb.quickFixAtCursor(index, state.last_mouse_x, state.last_mouse_y);
         },
         .editor_show_quick_fixes => {
-            // Open the existing problem_quick_fix path which shows the
-            // first available fix. A full menu UI is future work.
-            try wb.quickFixAtCursor();
+            // Open the context menu with available quick fixes.
+            try wb.quickFixAtCursor(null, state.last_mouse_x, state.last_mouse_y);
         },
         // P0-2: Inline edit (Cmd+K)
         .inline_edit_open => {

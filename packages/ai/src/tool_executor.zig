@@ -7,6 +7,7 @@ const context_rerank = @import("context_rerank.zig");
 const context_retrieval = @import("context_retrieval.zig");
 const web_fetcher = @import("web_fetcher.zig");
 const tool_cache_mod = @import("tool_cache.zig");
+const args_mod = @import("tools/args.zig");
 
 pub const ToolCache = tool_cache_mod.Cache;
 
@@ -30,6 +31,8 @@ pub const Context = struct {
     direct_apply_edits: bool = false,
     lsp_request_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 = null,
     lsp_context: ?*anyopaque = null,
+    editor_context_callback: ?*const fn (?*anyopaque, std.mem.Allocator) ?[]const u8 = null,
+    editor_context: ?*anyopaque = null,
     cache: ?*tool_cache_mod.Cache = null,
     extra_allowed_commands: []const []const u8 = &.{},
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
@@ -61,6 +64,22 @@ fn checkCancel(ctx: Context) AgentToolError!void {
 
 fn requireTool(ctx: Context, tool: tools.ToolId) AgentToolError!void {
     if (!tools.isAllowed(ctx.profile, tool)) return error.NotAllowed;
+}
+
+pub fn getEditorContext(ctx: Context) AgentToolError!Outcome {
+    try requireTool(ctx, .get_editor_context);
+    try checkCancel(ctx);
+
+    if (ctx.editor_context_callback) |callback| {
+        if (callback(ctx.editor_context, ctx.allocator)) |context_json| {
+            defer ctx.allocator.free(context_json);
+            const summary = std.fmt.allocPrint(ctx.allocator, "editor context retrieved:\n{s}", .{context_json}) catch return error.WorkspaceFailed;
+            return .{ .summary = summary };
+        }
+    }
+
+    const summary = ctx.allocator.dupe(u8, "no editor context available") catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
 }
 
 pub fn search(ctx: Context, args: @import("tools/args.zig").SearchArgs) AgentToolError!SearchOutcome {
@@ -140,7 +159,6 @@ pub fn search(ctx: Context, args: @import("tools/args.zig").SearchArgs) AgentToo
             appendPrint(ctx.allocator, &observation, "\n{s}:{d}\n{s}\n", .{ match.path, match.line, match.line_text }) catch return error.WorkspaceFailed;
         }
     }
-
     const first_match_path = if (result.matches.len > 0)
         ctx.allocator.dupe(u8, result.matches[0].path) catch return error.WorkspaceFailed
     else
@@ -468,12 +486,25 @@ pub fn listTree(ctx: Context, base_path: []const u8, max_depth: usize) AgentTool
     var tree = workspace.tree.scan(ctx.allocator, ctx.io, ctx.root, ".") catch return error.WorkspaceFailed;
     defer tree.deinit();
 
+    var scoped_files: usize = 0;
+    var scoped_dirs: usize = 0;
+    for (tree.entries) |entry| {
+        if (!pathUnderBase(entry.path, base_path)) continue;
+        if (isBaseDirectoryEntry(entry, base_path)) continue;
+        switch (entry.kind) {
+            .file => scoped_files += 1,
+            .directory => scoped_dirs += 1,
+            else => {},
+        }
+    }
+
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(ctx.allocator);
-    appendPrint(ctx.allocator, &output, "Tree `{s}` ({d} files, {d} dirs)\n", .{ base_path, tree.file_count, tree.dir_count }) catch return error.WorkspaceFailed;
+    appendPrint(ctx.allocator, &output, "Tree `{s}` ({d} files, {d} dirs)\n", .{ base_path, scoped_files, scoped_dirs }) catch return error.WorkspaceFailed;
     var shown: usize = 0;
     for (tree.entries) |entry| {
         if (!pathUnderBase(entry.path, base_path)) continue;
+        if (isBaseDirectoryEntry(entry, base_path)) continue;
         if (relativeDepth(entry.path, base_path) > max_depth) continue;
         appendPrint(ctx.allocator, &output, "{s}{s}\n", .{ entry.path, if (entry.kind == .directory) "/" else "" }) catch return error.WorkspaceFailed;
         shown += 1;
@@ -489,6 +520,11 @@ pub fn listTree(ctx: Context, base_path: []const u8, max_depth: usize) AgentTool
     const rendered = output.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed;
     ctx.allocator.free(summary);
     return .{ .summary = rendered };
+}
+
+fn isBaseDirectoryEntry(entry: workspace.tree.TreeEntry, base_path: []const u8) bool {
+    if (std.mem.eql(u8, base_path, ".") or base_path.len == 0) return false;
+    return entry.kind == .directory and std.mem.eql(u8, entry.path, base_path);
 }
 
 fn pathUnderBase(path: []const u8, base_path: []const u8) bool {
@@ -565,6 +601,45 @@ pub fn gitDiff(ctx: Context, stat: bool) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .git_diff);
     return runCommandUnchecked(ctx, if (stat) "git diff --stat" else "git diff");
+}
+
+pub fn gitStage(ctx: Context, args: args_mod.GitStageArgs) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .git_stage);
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(ctx.allocator);
+    argv.appendSlice(ctx.allocator, &.{ "git", "add", "--" }) catch return error.WorkspaceFailed;
+    for (args.paths) |path| {
+        argv.append(ctx.allocator, path) catch return error.WorkspaceFailed;
+    }
+
+    const captured = kernel.process.runCapture(ctx.allocator, .{
+        .argv = argv.items,
+        .cwd = ctx.cwd,
+        .max_bytes = 24 * 1024,
+    }) catch return error.TaskFailed;
+    defer ctx.allocator.free(captured.output);
+
+    const clipped = if (captured.output.len > 1200) captured.output[0..1200] else captured.output;
+    const summary = std.fmt.allocPrint(ctx.allocator, "git stage exit {d}\n{s}", .{ captured.exit_code, clipped }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
+}
+
+pub fn gitCommit(ctx: Context, args: args_mod.GitCommitArgs) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .git_commit);
+
+    const captured = kernel.process.runCapture(ctx.allocator, .{
+        .argv = &.{ "git", "commit", "-m", args.message },
+        .cwd = ctx.cwd,
+        .max_bytes = 24 * 1024,
+    }) catch return error.TaskFailed;
+    defer ctx.allocator.free(captured.output);
+
+    const clipped = if (captured.output.len > 1200) captured.output[0..1200] else captured.output;
+    const summary = std.fmt.allocPrint(ctx.allocator, "git commit exit {d}\n{s}", .{ captured.exit_code, clipped }) catch return error.WorkspaceFailed;
+    return .{ .summary = summary };
 }
 
 fn appendPrint(allocator: std.mem.Allocator, out: *std.ArrayList(u8), comptime format: []const u8, args: anytype) !void {
@@ -1280,6 +1355,30 @@ test "list tree returns workspace paths" {
     try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "src/main.zig") != null);
 }
 
+test "list tree counts requested subtree only" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
+    try tmp.dir.createDirPath(io, "packages/lsp/src");
+    try tmp.dir.createDirPath(io, "apps/forge");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("packages/lsp/src/root.zig"), "pub const ok = true;\n");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("apps/forge/main.zig"), "pub fn main() void {}\n");
+
+    const outcome = try listTree(.{
+        .allocator = allocator,
+        .io = io,
+        .root = root,
+        .cwd = ".",
+        .profile = .read_only,
+    }, "packages/lsp", 3);
+    defer allocator.free(outcome.summary);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "Tree `packages/lsp` (1 files, 1 dirs)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "packages/lsp/src/root.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "apps/forge/main.zig") == null);
+}
+
 test "tool executor codebase_search returns semantic hits" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -1354,4 +1453,96 @@ test "run command rejects shell injection and path-reading commands" {
     try std.testing.expect(allowedCommandArgv("git diff $(touch owned)") == null);
     try std.testing.expect(allowedCommandArgv("cat ../../.ssh/id_rsa") == null);
     try std.testing.expect(allowedCommandArgv("find . -exec sh {} ;") == null);
+}
+
+pub fn readManyFiles(ctx: Context, args: @import("tools/args.zig").ReadManyFilesArgs) AgentToolError!Outcome {
+    try requireTool(ctx, .read_many_files);
+    try checkCancel(ctx);
+
+    var summary: std.ArrayList(u8) = .empty;
+    defer summary.deinit(ctx.allocator);
+
+    for (args.files) |f| {
+        if (summary.items.len > 0) {
+            appendPrint(ctx.allocator, &summary, "\n---\n", .{}) catch return error.WorkspaceFailed;
+        }
+
+        const start_line: ?usize = if (f.start_line) |l| @as(usize, l) else null;
+        const end_line: ?usize = if (f.end_line) |l| @as(usize, l) else null;
+        const outcome = readFile(ctx, f.path, start_line, end_line) catch |err| {
+            appendPrint(ctx.allocator, &summary, "file {s} not found or unreadable: {s}\n", .{ f.path, @errorName(err) }) catch return error.WorkspaceFailed;
+            continue;
+        };
+        defer ctx.allocator.free(outcome.summary);
+
+        appendPrint(ctx.allocator, &summary, "{s}", .{outcome.summary}) catch return error.WorkspaceFailed;
+    }
+
+    if (summary.items.len == 0) {
+        return .{ .summary = ctx.allocator.dupe(u8, "no files read") catch return error.WorkspaceFailed };
+    }
+
+    return .{ .summary = summary.toOwnedSlice(ctx.allocator) catch return error.WorkspaceFailed };
+}
+
+pub fn lspDefinition(ctx: Context, path: []const u8, line: u32, character: u32) AgentToolError!Outcome {
+    try requireTool(ctx, .lsp_definition);
+    try checkCancel(ctx);
+
+    if (ctx.lsp_request_callback) |callback| {
+        const params_json = std.fmt.allocPrint(ctx.allocator, "{{\"textDocument\":{{\"uri\":\"{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}", .{ path, line, character }) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(params_json);
+
+        if (callback(ctx.lsp_context, ctx.allocator, "textDocument/definition", params_json)) |res| {
+            return .{ .summary = res };
+        }
+    }
+    return .{ .summary = ctx.allocator.dupe(u8, "Language server definition not available") catch return error.WorkspaceFailed };
+}
+
+pub fn lspHover(ctx: Context, path: []const u8, line: u32, character: u32) AgentToolError!Outcome {
+    try requireTool(ctx, .lsp_hover);
+    try checkCancel(ctx);
+
+    if (ctx.lsp_request_callback) |callback| {
+        const params_json = std.fmt.allocPrint(ctx.allocator, "{{\"textDocument\":{{\"uri\":\"{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}", .{ path, line, character }) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(params_json);
+
+        if (callback(ctx.lsp_context, ctx.allocator, "textDocument/hover", params_json)) |res| {
+            return .{ .summary = res };
+        }
+    }
+    return .{ .summary = ctx.allocator.dupe(u8, "Language server hover not available") catch return error.WorkspaceFailed };
+}
+
+pub fn lspDocumentSymbols(ctx: Context, path: []const u8) AgentToolError!Outcome {
+    try requireTool(ctx, .lsp_document_symbols);
+    try checkCancel(ctx);
+
+    if (ctx.lsp_request_callback) |callback| {
+        const params_json = std.fmt.allocPrint(ctx.allocator, "{{\"textDocument\":{{\"uri\":\"{s}\"}}}}", .{path}) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(params_json);
+
+        if (callback(ctx.lsp_context, ctx.allocator, "textDocument/documentSymbol", params_json)) |res| {
+            return .{ .summary = res };
+        }
+    }
+    return .{ .summary = ctx.allocator.dupe(u8, "Language server document symbols not available") catch return error.WorkspaceFailed };
+}
+
+pub fn lspDiagnostics(ctx: Context, path: []const u8) AgentToolError!Outcome {
+    try requireTool(ctx, .lsp_diagnostics);
+    try checkCancel(ctx);
+
+    // Some LSPs push diagnostics instead of pull. We may need to query the workspace store instead of making an LSP request.
+    // For now, let's return a stub if pullDiagnostics is not supported natively.
+    if (ctx.lsp_request_callback) |callback| {
+        const params_json = std.fmt.allocPrint(ctx.allocator, "{{\"textDocument\":{{\"uri\":\"{s}\"}}}}", .{path}) catch return error.WorkspaceFailed;
+        defer ctx.allocator.free(params_json);
+
+        if (callback(ctx.lsp_context, ctx.allocator, "textDocument/diagnostic", params_json)) |res| {
+            return .{ .summary = res };
+        }
+    }
+    return .{ .summary = ctx.allocator.dupe(u8, "Language server diagnostics not available (or uses push diagnostics)") catch return error.WorkspaceFailed };
 }

@@ -135,9 +135,6 @@ pub fn openSettingsModal(wb: anytype) !void {
     wb.settings_modal_open = true;
     wb.focused_panel = .settings_modal;
     wb.settings_modal_scroll_y = 0;
-    try refreshAiMcpStatus(
-        wb,
-    );
 }
 
 pub fn closeSettingsModal(wb: anytype) void {
@@ -401,6 +398,7 @@ pub fn agentHost(wb: anytype) agent_workflow.Host {
         .snapshot_context_supplement = bridgeSnapshotContextSupplement,
         .free_context_supplement = bridgeFreeContextSupplement,
         .snapshot_editor_selection = bridgeSnapshotEditorSelection,
+        .snapshot_editor_context = bridgeSnapshotEditorContext,
         .lsp_request = bridgeLspRequest,
     };
 }
@@ -582,6 +580,44 @@ pub fn snapshotEditorSelection(wb: anytype, allocator: std.mem.Allocator) !?[]co
 pub fn bridgeSnapshotEditorSelection(context: ?*anyopaque, allocator: std.mem.Allocator) ?[]const u8 {
     const wb: *Workbench = @ptrCast(@alignCast(context.?));
     return snapshotEditorSelection(wb, allocator) catch null;
+}
+
+pub fn snapshotEditorContext(wb: anytype, allocator: std.mem.Allocator) !?[]const u8 {
+    const doc = wb.tabs.activeDoc() orelse return null;
+
+    var open_tabs_arr: std.ArrayList([]const u8) = .empty;
+    defer open_tabs_arr.deinit(allocator);
+    for (wb.tabs.tabs.items) |tab| {
+        try open_tabs_arr.append(allocator, tab.path);
+    }
+
+    var selection_str: ?[]const u8 = null;
+    if (doc.buffer.hasSelection()) {
+        selection_str = try doc.buffer.selectedText(allocator);
+    }
+    defer if (selection_str) |s| allocator.free(s);
+
+    const Ctx = struct {
+        active_tab: []const u8,
+        cursor_row: usize,
+        cursor_col: usize,
+        selection: ?[]const u8,
+        open_tabs: [][]const u8,
+    };
+
+    const ctx = Ctx{
+        .active_tab = doc.path,
+        .cursor_row = doc.buffer.cursor.row,
+        .cursor_col = doc.buffer.cursor.col,
+        .selection = selection_str,
+        .open_tabs = open_tabs_arr.items,
+    };
+    return try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(ctx, .{})});
+}
+
+pub fn bridgeSnapshotEditorContext(context: ?*anyopaque, allocator: std.mem.Allocator) ?[]const u8 {
+    const wb: *Workbench = @ptrCast(@alignCast(context.?));
+    return snapshotEditorContext(wb, allocator) catch null;
 }
 
 pub fn snapshotRecentTabPaths(wb: anytype, allocator: std.mem.Allocator) ![]const []const u8 {

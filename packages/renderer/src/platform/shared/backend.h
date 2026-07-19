@@ -20,7 +20,7 @@ void forge_backend_get_render_stats(unsigned long long* redraw_requests, unsigne
 typedef void (*ForgeRenderCallback)(void);
 typedef void (*ForgeKeyCallback)(int keycode, const char* chars, bool is_down, int modifiers);
 typedef void (*ForgeMouseCallback)(float x, float y, int button, int action, int modifiers, int click_count);
-typedef void (*ForgeImeCompositionCallback)(const char* text, size_t len, int cursor_pos);
+typedef void (*ForgeImeCompositionCallback)(const char* text, size_t len, int cursor_pos, int replace_loc, int replace_len);
 
 void forge_backend_set_render_callback(ForgeRenderCallback cb);
 void forge_backend_set_key_callback(ForgeKeyCallback cb);

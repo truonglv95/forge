@@ -70,6 +70,8 @@ pub const Config = struct {
     edit_context: ?*anyopaque = null,
     lsp_request_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 = null,
     lsp_context: ?*anyopaque = null,
+    editor_context_callback: ?*const fn (?*anyopaque, std.mem.Allocator) ?[]const u8 = null,
+    editor_context: ?*anyopaque = null,
     use_inline_edits: bool = false,
     resume_conversation_json: []const u8 = "",
     resume_task_ledger_json: []const u8 = "",
@@ -340,6 +342,8 @@ pub fn run(
         .direct_apply_edits = effective_config.use_inline_edits and effective_config.edit_callback == null,
         .lsp_request_callback = effective_config.lsp_request_callback,
         .lsp_context = effective_config.lsp_context,
+        .editor_context_callback = effective_config.editor_context_callback,
+        .editor_context = effective_config.editor_context,
         .cache = &tool_cache,
     };
 

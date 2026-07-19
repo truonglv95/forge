@@ -610,7 +610,7 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
     if (g_imeCompositionCallback && text) {
         const char *utf8Text = [text UTF8String];
         // Commit text (cursor_pos = -1 means committed)
-        g_imeCompositionCallback(utf8Text, strlen(utf8Text), -1);
+        g_imeCompositionCallback(utf8Text, strlen(utf8Text), -1, -1, 0);
     }
     [self setNeedsDisplay:YES];
 }
@@ -631,8 +631,14 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
     _markedRange = NSMakeRange(0, text.length);
     if (g_imeCompositionCallback) {
         const char *utf8Text = [text UTF8String];
+        int repl_loc = -1;
+        int repl_len = 0;
+        if (replacementRange.location != NSNotFound) {
+            repl_loc = (int)replacementRange.location;
+            repl_len = (int)replacementRange.length;
+        }
         // Ongoing composition text
-        g_imeCompositionCallback(utf8Text, strlen(utf8Text), (int)selectedRange.location);
+        g_imeCompositionCallback(utf8Text, strlen(utf8Text), (int)selectedRange.location, repl_loc, repl_len);
     }
     [self setNeedsDisplay:YES];
 }
@@ -641,9 +647,42 @@ static int ForgeMapModifiers(NSEventModifierFlags flags) {
     _markedRange = NSMakeRange(NSNotFound, 0);
     if (g_imeCompositionCallback) {
         // Clear composition
-        g_imeCompositionCallback("", 0, -1);
+        g_imeCompositionCallback("", 0, -1, -1, 0);
     }
     [self setNeedsDisplay:YES];
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+    if (!g_keyCallback) return;
+
+    NSEvent *event = [NSApp currentEvent];
+    int modifiers = event ? ForgeMapModifiers(event.modifierFlags) : 0;
+    int keycode = -1;
+
+    if (selector == @selector(deleteBackward:)) {
+        keycode = 51;
+    } else if (selector == @selector(deleteForward:)) {
+        keycode = 117;
+    } else if (selector == @selector(insertNewline:)) {
+        keycode = 36;
+    } else if (selector == @selector(insertTab:)) {
+        keycode = 48;
+    } else if (selector == @selector(moveLeft:)) {
+        keycode = 123;
+    } else if (selector == @selector(moveRight:)) {
+        keycode = 124;
+    } else if (selector == @selector(moveDown:)) {
+        keycode = 125;
+    } else if (selector == @selector(moveUp:)) {
+        keycode = 126;
+    } else if (selector == @selector(cancelOperation:)) {
+        keycode = 53;
+    }
+
+    if (keycode >= 0) {
+        g_keyCallback(keycode, "", true, modifiers);
+        [self setNeedsDisplay:YES];
+    }
 }
 
 - (NSRange)selectedRange {
@@ -795,7 +834,7 @@ static CTFontRef ForgeApplyEditorFeatures(CTFontRef font, CGFloat pixelSize) {
 
 static vector_float4 ForgeColorFromRun(CTRunRef run, vector_float4 fallback) {
     CFDictionaryRef attrs = CTRunGetAttributes(run);
-    CGColorRef cgColor = CFDictionaryGetValue(attrs, kCTForegroundColorAttributeName);
+    CGColorRef cgColor = (CGColorRef)CFDictionaryGetValue(attrs, kCTForegroundColorAttributeName);
     if (!cgColor) return fallback;
 
     size_t componentCount = CGColorGetNumberOfComponents(cgColor);
@@ -1017,9 +1056,7 @@ static void ForgeBringWindowToFront(NSWindow *window) {
     [window deminiaturize:nil];
     [window makeKeyAndOrderFront:nil];
     [window orderFrontRegardless];
-    [NSApp activateIgnoringOtherApps:YES];
-    [[NSRunningApplication currentApplication] activateWithOptions:
-        NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows];
+    [[NSRunningApplication currentApplication] activateWithOptions:NSApplicationActivateAllWindows];
 }
 
 void forge_mac_init(void) {

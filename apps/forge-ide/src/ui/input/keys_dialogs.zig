@@ -78,3 +78,42 @@ pub fn handleWorkspaceSymbolPickerKeys(wb: *Workbench, event: renderer.KeyEvent)
         return;
     }
 }
+
+pub fn handleGitBranchPickerKeys(wb: *Workbench, event: renderer.KeyEvent) void {
+    if (event.keycode == 53) {
+        wb.git_branch_picker.close();
+        wb.focused_panel = wb.previous_focus;
+        return;
+    }
+
+    if (event.keycode == 36) {
+        if (wb.git_branch_picker.filtered.items.len > 0) {
+            const selected_idx = wb.git_branch_picker.filtered.items[wb.git_branch_picker.selected];
+            const branch_name = wb.git_branch_picker.entries.items[selected_idx].name;
+            @import("../../workbench/git_ops.zig").gitCheckout(wb, branch_name) catch {};
+        }
+        wb.git_branch_picker.close();
+        wb.focused_panel = wb.previous_focus;
+        return;
+    }
+
+    if (event.keycode == 125) {
+        wb.git_branch_picker.moveSelection(1);
+        return;
+    }
+
+    if (event.keycode == 126) {
+        wb.git_branch_picker.moveSelection(-1);
+        return;
+    }
+
+    if (event.keycode == 51) {
+        wb.git_branch_picker.backspace() catch {};
+        return;
+    }
+
+    if (event.chars.len > 0 and event.chars[0] >= 32) {
+        wb.git_branch_picker.insertChar(event.chars) catch {};
+        return;
+    }
+}

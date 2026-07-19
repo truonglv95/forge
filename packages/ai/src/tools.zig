@@ -17,12 +17,18 @@ pub fn profileForMode(mode: Mode) CapabilityProfile {
 }
 
 pub const ToolId = enum {
+    get_editor_context,
     read_file,
+    read_many_files,
     git_diff,
     search,
     codebase_search,
     lsp_workspace_symbol,
     lsp_find_references,
+    lsp_definition,
+    lsp_hover,
+    lsp_document_symbols,
+    lsp_diagnostics,
     find_files,
     remember,
     fetch_url,
@@ -36,16 +42,18 @@ pub const ToolId = enum {
     show_context,
     spawn_subagent,
     diff_preview,
+    git_stage,
+    git_commit,
 };
 
 pub fn isAllowed(profile: CapabilityProfile, tool: ToolId) bool {
     return switch (profile) {
         .read_only => switch (tool) {
-            .read_file, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .find_files, .fetch_url, .list_tree, .show_context, .diff_preview => true,
+            .get_editor_context, .read_file, .read_many_files, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .lsp_definition, .lsp_hover, .lsp_document_symbols, .lsp_diagnostics, .find_files, .fetch_url, .list_tree, .show_context, .diff_preview => true,
             else => false,
         },
         .propose => switch (tool) {
-            .read_file, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .find_files, .fetch_url, .list_tree, .show_context, .propose_edit, .multi_edit, .remember, .run_command, .diff_preview => true,
+            .get_editor_context, .read_file, .read_many_files, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .lsp_definition, .lsp_hover, .lsp_document_symbols, .lsp_diagnostics, .find_files, .fetch_url, .list_tree, .show_context, .propose_edit, .multi_edit, .remember, .run_command, .diff_preview, .git_stage, .git_commit => true,
             else => false,
         },
         .propose_and_task => switch (tool) {
@@ -57,12 +65,18 @@ pub fn isAllowed(profile: CapabilityProfile, tool: ToolId) bool {
 
 pub fn name(tool: ToolId) []const u8 {
     return switch (tool) {
+        .get_editor_context => "get_editor_context",
         .read_file => "read_file",
+        .read_many_files => "read_many_files",
         .git_diff => "git_diff",
         .search => "search",
         .codebase_search => "codebase_search",
         .lsp_workspace_symbol => "lsp_workspace_symbol",
         .lsp_find_references => "lsp_find_references",
+        .lsp_definition => "lsp_definition",
+        .lsp_hover => "lsp_hover",
+        .lsp_document_symbols => "lsp_document_symbols",
+        .lsp_diagnostics => "lsp_diagnostics",
         .find_files => "find_files",
         .remember => "remember",
         .fetch_url => "fetch_url",
@@ -76,6 +90,8 @@ pub fn name(tool: ToolId) []const u8 {
         .show_context => "show_context",
         .spawn_subagent => "spawn_subagent",
         .diff_preview => "diff_preview",
+        .git_stage => "git_stage",
+        .git_commit => "git_commit",
     };
 }
 

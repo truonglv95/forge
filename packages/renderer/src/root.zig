@@ -150,15 +150,19 @@ export fn internal_mouse_callback(x: f32, y: f32, button: c_int, action: c_int, 
 pub const ImeCompositionEvent = struct {
     text: []const u8,
     cursor_pos: i32, // -1 means committed
+    replace_loc: i32, // -1 means no replacement
+    replace_len: i32,
 };
 
 var app_ime_composition_callback: ?*const fn (ImeCompositionEvent) void = null;
 
-export fn internal_ime_composition_callback(text: [*c]const u8, len: usize, cursor_pos: c_int) void {
+export fn internal_ime_composition_callback(text: [*c]const u8, len: usize, cursor_pos: c_int, replace_loc: c_int, replace_len: c_int) void {
     if (app_ime_composition_callback) |cb| {
         cb(.{
             .text = text[0..len],
             .cursor_pos = @as(i32, @intCast(cursor_pos)),
+            .replace_loc = @as(i32, @intCast(replace_loc)),
+            .replace_len = @as(i32, @intCast(replace_len)),
         });
     }
 }

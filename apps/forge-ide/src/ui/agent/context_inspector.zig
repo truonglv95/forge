@@ -123,6 +123,30 @@ pub fn hitEntryRow(
     return row;
 }
 
+pub fn hitEntryAction(
+    agent_x: f32,
+    agent_w: f32,
+    window_h: f32,
+    entry_count: usize,
+    attachment_count: usize,
+    prompt: *const @import("forge-editor").Buffer,
+    scroll_y: f32,
+    x: f32,
+    y: f32,
+) ?usize {
+    if (entry_count == 0) return null;
+    const pad: f32 = 10;
+    const action_x = agent_x + agent_w - pad - 24;
+    const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false, false);
+    const list_top = top + header_h + pill_h + 8 - scroll_y;
+    if (x < action_x or x > action_x + 16) return null;
+    const rel = y - list_top;
+    if (rel < 0) return null;
+    const row = @as(usize, @intFromFloat(rel / row_h));
+    if (row >= entry_count or row >= max_visible_rows) return null;
+    return row;
+}
+
 fn formatBytes(buf: []u8, value: usize) []const u8 {
     if (value >= 1024 * 1024) {
         return std.fmt.bufPrint(buf, "{d:.1} MiB", .{@as(f64, @floatFromInt(value)) / (1024.0 * 1024.0)}) catch "???";
@@ -314,6 +338,27 @@ pub fn draw(
             };
             row_buf[row_line.len] = 0;
             renderer.Renderer.drawText(@ptrCast(&row_buf), inner_x, row_y, 9.5, statusColor(entry.status));
+
+            const action_x = agent_x + agent_w - pad - 24;
+            const is_file = std.mem.eql(u8, entry.kind, "file");
+            var is_pinned = false;
+            if (is_file) {
+                for (agent.scope_files.items) |existing| {
+                    if (std.mem.eql(u8, existing, entry.name)) {
+                        is_pinned = true;
+                        break;
+                    }
+                }
+            }
+            if (is_file) {
+                if (is_pinned) {
+                    renderer.Renderer.drawText("x", action_x, row_y, 10.0, .{ .r = 0.8, .g = 0.4, .b = 0.4, .a = 1.0 });
+                } else {
+                    renderer.Renderer.drawText("+", action_x, row_y, 10.0, .{ .r = 0.4, .g = 0.8, .b = 0.4, .a = 1.0 });
+                }
+            } else {
+                renderer.Renderer.drawText("x", action_x, row_y, 10.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+            }
         }
         row_y += row_h;
         row_index += 1;

@@ -75,6 +75,13 @@ pub const MultiCursor = struct {
         return out[0..n];
     }
 
+    /// Get all cursors (primary + secondary) in bottom-to-top order.
+    pub fn allCursorsBottomUp(self: *const MultiCursor, primary: buffer_mod.Cursor, out: []buffer_mod.Cursor) []buffer_mod.Cursor {
+        const result = self.allCursors(primary, out);
+        std.mem.reverse(buffer_mod.Cursor, result);
+        return result;
+    }
+
     /// Add cursors at all occurrences of `word` in the buffer.
     /// Returns the number of cursors added (excluding primary).
     pub fn addAllOccurrences(self: *MultiCursor, buf: *const buffer_mod.Buffer, word: []const u8) !usize {

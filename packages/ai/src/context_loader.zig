@@ -56,6 +56,7 @@ pub const LoadOptions = struct {
     include_web: bool = true,
     web_max_urls: usize = 4,
     web_max_bytes: usize = 32 * 1024,
+    excluded_entries: []const []const u8 = &.{},
 };
 
 pub const ManifestStatus = enum {
@@ -132,6 +133,7 @@ pub fn build(
     options: LoadOptions,
 ) !context.ContextBuilder {
     var builder = context.ContextBuilder.init(allocator, options.max_bytes);
+    builder.excluded_entries = options.excluded_entries;
 
     if (options.include_project_rules) {
         try loadProjectRules(allocator, io, root, &builder);

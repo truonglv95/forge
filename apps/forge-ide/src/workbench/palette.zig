@@ -69,6 +69,7 @@ pub const Palette = struct {
             .{ .id = "agent.context", .title = "Agent: Toggle Context Inspector", .category = "Agent", .command = .agent_toggle_context_inspector },
             .{ .id = "agent.scope", .title = "Agent: Add File to Scope (@)", .category = "Agent", .command = .agent_scope_picker_open },
             .{ .id = "agent.scope.clear", .title = "Agent: Clear Scope", .category = "Agent", .command = .agent_clear_scope },
+            .{ .id = "git.switch_branch", .title = "Git: Switch Branch", .category = "Git", .command = .palette_git_switch_branch },
             .{ .id = "chat.clear_history", .title = "Chat: Clear History", .category = "Chat", .command = .chat_clear_history },
             .{ .id = "agent.plan", .title = "Agent: Plan Mode", .category = "Agent", .command = .{ .agent_set_mode = .plan } },
             .{ .id = "agent.agent", .title = "Agent: Agent Mode", .category = "Agent", .command = .{ .agent_set_mode = .agent } },

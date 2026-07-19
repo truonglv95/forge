@@ -277,6 +277,21 @@ pub fn drawEditorViewport(
                 if (debug_here) {
                     renderer.Renderer.drawRect(seg_text_x - 4, line_num_y, viewport_w, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
                 }
+
+                if (std.mem.startsWith(u8, file_path, "git-diff://")) {
+                    const full_line = editor_buf.lineAt(seg.buf_line);
+                    if (full_line.len > 0) {
+                        const bg_w = @max(viewport_w, content_w + 8);
+                        if (full_line[0] == '+') {
+                            renderer.Renderer.drawRect(seg_text_x - 4, line_num_y, bg_w, line_h, .{ .r = 0.2, .g = 0.8, .b = 0.2, .a = 0.15 });
+                        } else if (full_line[0] == '-') {
+                            renderer.Renderer.drawRect(seg_text_x - 4, line_num_y, bg_w, line_h, .{ .r = 0.8, .g = 0.2, .b = 0.2, .a = 0.15 });
+                        } else if (std.mem.startsWith(u8, full_line, "@@")) {
+                            renderer.Renderer.drawRect(seg_text_x - 4, line_num_y, bg_w, line_h, .{ .r = 0.2, .g = 0.4, .b = 0.8, .a = 0.15 });
+                        }
+                    }
+                }
+
                 decorations.drawDecorations(editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, viewport_w);
                 bracket.drawSelectionInSegment(editor_buf, seg.buf_line, seg.start_col, seg.end_col, seg_text_x, line_num_y, line_h, font_size, .{ .r = 0.35, .g = 0.55, .b = 0.95, .a = 0.35 });
                 review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, seg.buf_line, seg_text_x, line_num_y, line_h, font_size);
@@ -369,6 +384,21 @@ pub fn drawEditorViewport(
                 if (debug_here) {
                     renderer.Renderer.drawRect(text_x - 4, line_num_y, content_w + 8, line_h, .{ .r = 0.2, .g = 0.45, .b = 0.75, .a = 0.18 });
                 }
+
+                if (std.mem.startsWith(u8, file_path, "git-diff://")) {
+                    const full_line = editor_buf.lineAt(idx);
+                    if (full_line.len > 0) {
+                        const bg_w = @max(viewport_w, content_w + 8);
+                        if (full_line[0] == '+') {
+                            renderer.Renderer.drawRect(text_x - 4, line_num_y, bg_w, line_h, .{ .r = 0.2, .g = 0.8, .b = 0.2, .a = 0.15 });
+                        } else if (full_line[0] == '-') {
+                            renderer.Renderer.drawRect(text_x - 4, line_num_y, bg_w, line_h, .{ .r = 0.8, .g = 0.2, .b = 0.2, .a = 0.15 });
+                        } else if (std.mem.startsWith(u8, full_line, "@@")) {
+                            renderer.Renderer.drawRect(text_x - 4, line_num_y, bg_w, line_h, .{ .r = 0.2, .g = 0.4, .b = 0.8, .a = 0.15 });
+                        }
+                    }
+                }
+
                 decorations.drawDecorations(editor_buf, idx, text_x, line_num_y, line_h, content_w);
                 bracket.drawSelectionInSegment(editor_buf, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, .{ .r = 0.35, .g = 0.55, .b = 0.95, .a = 0.35 });
                 review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, idx, text_x, line_num_y, line_h, font_size);

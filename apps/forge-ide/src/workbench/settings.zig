@@ -8,8 +8,8 @@ pub const Settings = struct {
     format_on_save: bool = false,
     terminal_shell: ?[]const u8 = null,
     // Ghost text / inline AI completion settings ([ghost_completion] section)
-    ghost_provider: []const u8 = "ollama",
-    ghost_model: []const u8 = "qwen2.5-coder:7b",
+    ghost_provider: []const u8 = "ai",
+    ghost_model: []const u8 = "gemini-2.5-flash",
     ghost_ollama_url: []const u8 = "http://127.0.0.1:11434",
     ghost_enabled: bool = true,
     /// When ghost_provider == "ai", which forge-ai provider to use

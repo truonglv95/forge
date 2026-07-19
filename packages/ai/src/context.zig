@@ -42,6 +42,7 @@ pub const ContextBuilder = struct {
     blocks: std.ArrayList(ContextBlock),
     rejected: std.StringHashMap([]const u8),
     manifest_extras: std.ArrayList(ManifestExtra),
+    excluded_entries: []const []const u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, max_bytes: usize) ContextBuilder {
         return .{
@@ -103,6 +104,14 @@ pub const ContextBuilder = struct {
         if (btype == .file and secret_scanner.isSecretFile(name)) {
             try self.rejected.put(try self.allocator.dupe(u8, name), "Secret file extension or name detected");
             return;
+        }
+
+        // 1.5 Check if excluded
+        for (self.excluded_entries) |excluded| {
+            if (std.mem.eql(u8, excluded, name)) {
+                try self.rejected.put(try self.allocator.dupe(u8, name), "Excluded by user");
+                return;
+            }
         }
 
         // 2. Scan content for secrets

@@ -37,6 +37,7 @@ pub const Host = struct {
     snapshot_context_supplement: *const fn (?*anyopaque, std.mem.Allocator) ai.context_supplement.Supplement,
     free_context_supplement: *const fn (?*anyopaque, std.mem.Allocator, ai.context_supplement.Supplement) void,
     snapshot_editor_selection: *const fn (?*anyopaque, std.mem.Allocator) ?[]const u8,
+    snapshot_editor_context: *const fn (?*anyopaque, std.mem.Allocator) ?[]const u8,
     lsp_request: *const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8,
 
     pub fn embeddingOptions(self: *const Host) ai.codebase_search.EmbeddingOptions {
@@ -645,6 +646,8 @@ fn resumeWorker(ctx: *ResumeContext) void {
             .edit_context = host,
             .lsp_request_callback = lspBridge,
             .lsp_context = host,
+            .editor_context_callback = editorContextBridge,
+            .editor_context = host,
             .use_inline_edits = ctx.capability_profile != .read_only,
             .workspace_cwd = host.workspace_path,
             .mcp_enabled = host.ai_mcp_enabled,
@@ -883,6 +886,8 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
             .edit_context = host,
             .lsp_request_callback = lspBridge,
             .lsp_context = host,
+            .editor_context_callback = editorContextBridge,
+            .editor_context = host,
             .use_inline_edits = capability_profile != .read_only,
             .workspace_cwd = host.workspace_path,
             .mcp_enabled = host.ai_mcp_enabled,
@@ -1238,6 +1243,11 @@ fn lspBridge(context: ?*anyopaque, allocator: std.mem.Allocator, method: []const
     return host.lsp_request(host.context, allocator, method, params_json);
 }
 
+fn editorContextBridge(context: ?*anyopaque, allocator: std.mem.Allocator) ?[]const u8 {
+    const host: *Host = @ptrCast(@alignCast(context.?));
+    return host.snapshot_editor_context(host.context, allocator);
+}
+
 fn streamBridge(context: ?*anyopaque, chunk: []const u8) void {
     const host: *Host = @ptrCast(@alignCast(context.?));
     enqueueStreamChunk(host, chunk, .text);
@@ -1337,6 +1347,7 @@ fn buildContext(
         .include_semantic_search = !preview_only,
         .environ_map = host.environ_map,
         .embedding = host.embeddingOptions(),
+        .excluded_entries = host.agent.excluded_entries.items,
     }).route;
     var context_opts = route.context;
     if (preview_only) {

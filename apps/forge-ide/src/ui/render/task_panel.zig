@@ -63,7 +63,7 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                 const end_idx = @min(wb.rename_preview.lines.len, start_idx + visual_count);
 
                 line_y = content_top - wb.task_scroll_y;
-                renderer.Renderer.drawText("Rename preview — Enter=Accept  Esc=Reject", editor_x + 20, line_y, 12.0, .{ .r = 0.95, .g = 0.85, .b = 0.45, .a = 1.0 });
+                renderer.Renderer.drawText("Workspace Edit Preview — Enter=Accept  Esc=Reject", editor_x + 20, line_y, 12.0, .{ .r = 0.95, .g = 0.85, .b = 0.45, .a = 1.0 });
                 line_y += line_h;
                 line_y += @as(f32, @floatFromInt(start_idx)) * line_h;
                 for (wb.rename_preview.lines[start_idx..end_idx]) |item| {

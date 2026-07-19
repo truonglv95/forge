@@ -228,7 +228,13 @@ pub fn writeTemplate(writer: *std.Io.Writer) !void {
         \\    {"id": "network.fetch", "description": "Fetch public URLs", "risk": "medium", "approval": "every_time"}
         \\  ],
         \\  "tools": [
+        \\    {"id": "forge.get_editor_context", "title": "Editor context", "transport": "native", "permissions": ["workspace.read"]},
         \\    {"id": "forge.read_file", "title": "Read file", "transport": "native", "permissions": ["workspace.read"]},
+        \\    {"id": "forge.read_many_files", "title": "Read many files", "transport": "native", "permissions": ["workspace.read"]},
+        \\    {"id": "forge.lsp_definition", "title": "Go to definition", "transport": "native", "permissions": ["workspace.read"]},
+        \\    {"id": "forge.lsp_hover", "title": "Hover symbol", "transport": "native", "permissions": ["workspace.read"]},
+        \\    {"id": "forge.lsp_document_symbols", "title": "Document symbols", "transport": "native", "permissions": ["workspace.read"]},
+        \\    {"id": "forge.lsp_diagnostics", "title": "Diagnostics", "transport": "native", "permissions": ["workspace.read"]},
         \\    {"id": "forge.replace_file_content", "title": "Edit file", "transport": "native", "permissions": ["workspace.write"]}
         \\  ],
         \\  "context_sources": [
@@ -244,7 +250,7 @@ pub fn writeTemplate(writer: *std.Io.Writer) !void {
         \\          "id": "forge.implement",
         \\          "title": "Implement a focused code change",
         \\          "mode": "agent",
-        \\          "tools": ["forge.read_file", "forge.replace_file_content"],
+        \\          "tools": ["forge.get_editor_context", "forge.read_file", "forge.read_many_files", "forge.lsp_definition", "forge.lsp_hover", "forge.lsp_document_symbols", "forge.lsp_diagnostics", "forge.replace_file_content"],
         \\          "context_sources": ["forge.semantic"],
         \\          "eval_pack": "forge.basic-agent"
         \\        }

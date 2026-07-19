@@ -22,7 +22,10 @@ pub fn clampScrollY(scroll_y: f32, entry_count: usize, window_h: f32) f32 {
 }
 
 pub const Hit = union(enum) {
+    switch_branch,
     refresh,
+    push,
+    pull,
     commit,
     ai_generate,
     view_as_tree,
@@ -31,7 +34,8 @@ pub const Hit = union(enum) {
     toggle_staged_section,
     toggle_changes_section,
     toggle_file_staged: usize,
-    open_file: usize,
+    discard_file_changes: usize,
+    open_file: struct { index: usize, is_staged: bool },
 };
 
 pub fn hitTest(
@@ -53,9 +57,10 @@ pub fn hitTest(
     // Check header actions
     if (click_y >= header_y and click_y < header_y + 30) {
         if (click_x >= panel_x + panel_w - 24) return .more_actions;
-        if (click_x >= panel_x + panel_w - 48) return .refresh;
-        if (click_x >= panel_x + panel_w - 72) return .commit;
-        if (click_x >= panel_x + panel_w - 96) return .view_as_tree;
+        if (click_x >= panel_x + panel_w - 48) return .push;
+        if (click_x >= panel_x + panel_w - 72) return .pull;
+        if (click_x >= panel_x + panel_w - 96) return .refresh;
+        if (click_x >= panel_x + 8 and click_x < panel_x + 100) return .switch_branch;
     }
 
     // Commit message input
@@ -87,10 +92,13 @@ pub fn hitTest(
             for (entries, 0..) |e, i| {
                 if (!e.isStaged()) continue;
                 if (click_y >= y and click_y < y + 22) {
-                    if (click_x >= panel_x + panel_w - 40 and click_x < panel_x + panel_w - 16) {
+                    const sp: f32 = 14.0;
+                    if (click_x >= panel_x + panel_w - 24 - sp) {
                         return .{ .toggle_file_staged = i };
+                    } else if (click_x >= panel_x + panel_w - 48 - sp) {
+                        return .{ .open_file = .{ .index = i, .is_staged = true } };
                     }
-                    return .{ .open_file = i };
+                    return .{ .open_file = .{ .index = i, .is_staged = true } };
                 }
                 y += 22;
             }
@@ -104,10 +112,15 @@ pub fn hitTest(
             for (entries, 0..) |e, i| {
                 if (!e.isUnstaged()) continue;
                 if (click_y >= y and click_y < y + 22) {
-                    if (click_x >= panel_x + panel_w - 40 and click_x < panel_x + panel_w - 16) {
+                    const sp: f32 = 14.0;
+                    if (click_x >= panel_x + panel_w - 24 - sp) {
                         return .{ .toggle_file_staged = i };
+                    } else if (click_x >= panel_x + panel_w - 48 - sp) {
+                        return .{ .discard_file_changes = i };
+                    } else if (click_x >= panel_x + panel_w - 72 - sp) {
+                        return .{ .open_file = .{ .index = i, .is_staged = false } };
                     }
-                    return .{ .open_file = i };
+                    return .{ .open_file = .{ .index = i, .is_staged = false } };
                 }
                 y += 22;
             }

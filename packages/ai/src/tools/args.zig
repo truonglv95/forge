@@ -368,3 +368,133 @@ pub fn freeRememberArgs(allocator: std.mem.Allocator, args: RememberArgs) void {
     for (args.tags) |tag| allocator.free(tag);
     allocator.free(args.tags);
 }
+
+pub const ReadManyFilesArgs = struct {
+    files: []const FileToRead,
+
+    pub const FileToRead = struct {
+        path: []const u8,
+        start_line: ?u32,
+        end_line: ?u32,
+    };
+};
+
+pub fn parseReadManyFilesArgs(allocator: std.mem.Allocator, args_json: []const u8) !ReadManyFilesArgs {
+    const JsonFile = struct {
+        path: ?[]const u8 = null,
+        start_line: ?u32 = null,
+        end_line: ?u32 = null,
+    };
+    const Args = struct {
+        files: ?[]const JsonFile = null,
+    };
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const json_files = parsed.value.files orelse return error.MissingArg;
+    if (json_files.len == 0) return error.MissingArg;
+
+    const files = try allocator.alloc(ReadManyFilesArgs.FileToRead, json_files.len);
+    errdefer {
+        for (files) |f| allocator.free(f.path);
+        allocator.free(files);
+    }
+
+    for (json_files, 0..) |jf, fi| {
+        files[fi] = .{
+            .path = try allocator.dupe(u8, jf.path orelse return error.MissingArg),
+            .start_line = jf.start_line,
+            .end_line = jf.end_line,
+        };
+    }
+
+    return .{ .files = files };
+}
+
+pub fn freeReadManyFilesArgs(allocator: std.mem.Allocator, args_struct: ReadManyFilesArgs) void {
+    for (args_struct.files) |f| allocator.free(f.path);
+    allocator.free(args_struct.files);
+}
+
+pub const LspPositionArgs = struct {
+    path: []const u8,
+    line: u32,
+    character: u32,
+};
+
+pub fn parseLspPositionArgs(allocator: std.mem.Allocator, args_json: []const u8) !LspPositionArgs {
+    const Args = struct {
+        path: ?[]const u8 = null,
+        line: ?u32 = null,
+        character: ?u32 = null,
+    };
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return .{
+        .path = try allocator.dupe(u8, parsed.value.path orelse return error.MissingArg),
+        .line = parsed.value.line orelse return error.MissingArg,
+        .character = parsed.value.character orelse return error.MissingArg,
+    };
+}
+
+pub const LspDocumentArgs = struct {
+    path: []const u8,
+};
+
+pub fn parseLspDocumentArgs(allocator: std.mem.Allocator, args_json: []const u8) !LspDocumentArgs {
+    const Args = struct {
+        path: ?[]const u8 = null,
+    };
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return .{
+        .path = try allocator.dupe(u8, parsed.value.path orelse return error.MissingArg),
+    };
+}
+
+pub const GitStageArgs = struct {
+    paths: [][]const u8,
+};
+
+pub fn parseGitStageArgs(allocator: std.mem.Allocator, args_json: []const u8) !GitStageArgs {
+    const Args = struct {
+        paths: ?[][]const u8 = null,
+    };
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const json_paths = parsed.value.paths orelse return error.MissingArg;
+    if (json_paths.len == 0) return error.MissingArg;
+
+    const paths = try allocator.alloc([]const u8, json_paths.len);
+    errdefer {
+        for (paths) |p| allocator.free(p);
+        allocator.free(paths);
+    }
+
+    for (json_paths, 0..) |jp, i| {
+        paths[i] = try allocator.dupe(u8, jp);
+    }
+
+    return .{ .paths = paths };
+}
+
+pub fn freeGitStageArgs(allocator: std.mem.Allocator, args_struct: GitStageArgs) void {
+    for (args_struct.paths) |p| allocator.free(p);
+    allocator.free(args_struct.paths);
+}
+
+pub const GitCommitArgs = struct {
+    message: []const u8,
+};
+
+pub fn parseGitCommitArgs(allocator: std.mem.Allocator, args_json: []const u8) !GitCommitArgs {
+    const Args = struct {
+        message: ?[]const u8 = null,
+    };
+    var parsed = try std.json.parseFromSlice(Args, allocator, cleanJson(args_json), .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return .{
+        .message = try allocator.dupe(u8, parsed.value.message orelse return error.MissingArg),
+    };
+}

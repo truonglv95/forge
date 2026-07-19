@@ -139,6 +139,7 @@ pub const Command = union(enum) {
     ai_refresh_mcp: void,
     palette_open: void,
     palette_close: void,
+    palette_git_switch_branch: void,
     workspace_symbol_picker_open: void,
     workspace_symbol_picker_close: void,
     workspace_symbol_picker_select: void,

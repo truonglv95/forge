@@ -21,6 +21,8 @@ const UndoOp = union(enum) {
         col: usize,
         tail: []const u8,
     },
+    group_start,
+    group_end,
 };
 
 pub const Decoration = struct {
@@ -86,6 +88,7 @@ pub const Buffer = struct {
             .insert_text => |entry| self.allocator.free(entry.text),
             .delete_range => |entry| self.allocator.free(entry.deleted),
             .split_line => |entry| self.allocator.free(entry.tail),
+            .group_start, .group_end => {},
         }
     }
 
@@ -285,6 +288,50 @@ pub const Buffer = struct {
         return try out.toOwnedSlice(allocator);
     }
 
+    pub fn deleteSelection(self: *Buffer) !bool {
+        if (!self.hasSelection()) return false;
+        const ord = self.selectionOrdered();
+        self.selection_anchor = null;
+        self.cursor = ord.start;
+
+        if (ord.start.row == ord.end.row) {
+            const line_len = self.lines.items[ord.start.row].items.len;
+            const start_col = @min(ord.start.col, line_len);
+            const end_col = @min(ord.end.col, line_len);
+            try self.deleteRangeInternal(ord.start.row, start_col, end_col - start_col, true);
+            self.cursor = .{ .row = ord.start.row, .col = start_col };
+            return true;
+        }
+
+        const start_line = self.lines.items[ord.start.row].items;
+        const end_line = self.lines.items[ord.end.row].items;
+        const start_col = @min(ord.start.col, start_line.len);
+        const end_col = @min(ord.end.col, end_line.len);
+
+        const prefix = try self.allocator.dupe(u8, start_line[0..start_col]);
+        errdefer self.allocator.free(prefix);
+        const suffix = try self.allocator.dupe(u8, end_line[end_col..]);
+        errdefer self.allocator.free(suffix);
+
+        var row = ord.end.row;
+        while (row > ord.start.row) : (row -= 1) {
+            var removed = self.lines.orderedRemove(row);
+            removed.deinit(self.allocator);
+        }
+
+        var target = &self.lines.items[ord.start.row];
+        target.clearRetainingCapacity();
+        try target.appendSlice(self.allocator, prefix);
+        try target.appendSlice(self.allocator, suffix);
+        self.allocator.free(prefix);
+        self.allocator.free(suffix);
+
+        self.clearRedo();
+        self.revision += 1;
+        self.cursor = .{ .row = ord.start.row, .col = start_col };
+        return true;
+    }
+
     pub fn canUndo(self: *const Buffer) bool {
         return self.undo_stack.items.len > 0;
     }
@@ -381,8 +428,36 @@ pub const Buffer = struct {
         self.revision += 1;
     }
 
+    pub fn beginUndoGroup(self: *Buffer) !void {
+        try self.undo_stack.append(self.allocator, .group_start);
+        self.clearRedo();
+    }
+
+    pub fn endUndoGroup(self: *Buffer) !void {
+        try self.undo_stack.append(self.allocator, .group_end);
+        self.clearRedo();
+    }
+
     pub fn undo(self: *Buffer) !void {
         const op = self.undo_stack.pop() orelse return;
+        switch (op) {
+            .group_end => {
+                try self.redo_stack.append(self.allocator, .group_end);
+                while (self.undo_stack.items.len > 0) {
+                    const inner_op = self.undo_stack.pop() orelse break;
+                    if (inner_op == .group_start) {
+                        try self.redo_stack.append(self.allocator, .group_start);
+                        break;
+                    }
+                    try self.undoOne(inner_op);
+                }
+            },
+            .group_start => {}, // Should not happen without end, but safe to ignore
+            else => try self.undoOne(op),
+        }
+    }
+
+    fn undoOne(self: *Buffer, op: UndoOp) !void {
         switch (op) {
             .insert_text => |entry| {
                 try self.deleteRangeInternal(entry.row, entry.col, entry.text.len, false);
@@ -409,11 +484,30 @@ pub const Buffer = struct {
                 self.cursor = .{ .row = entry.row, .col = entry.col };
                 self.allocator.free(entry.tail);
             },
+            .group_start, .group_end => {},
         }
     }
 
     pub fn redo(self: *Buffer) !void {
         const op = self.redo_stack.pop() orelse return;
+        switch (op) {
+            .group_start => {
+                try self.undo_stack.append(self.allocator, .group_start);
+                while (self.redo_stack.items.len > 0) {
+                    const inner_op = self.redo_stack.pop() orelse break;
+                    if (inner_op == .group_end) {
+                        try self.undo_stack.append(self.allocator, .group_end);
+                        break;
+                    }
+                    try self.redoOne(inner_op);
+                }
+            },
+            .group_end => {}, // Should not happen without start
+            else => try self.redoOne(op),
+        }
+    }
+
+    fn redoOne(self: *Buffer, op: UndoOp) !void {
         switch (op) {
             .insert_text => |entry| {
                 try self.insertTextInternal(entry.row, entry.col, entry.text, false);
@@ -445,10 +539,13 @@ pub const Buffer = struct {
                 self.cursor = .{ .row = row + 1, .col = 0 };
                 self.allocator.free(entry.tail);
             },
+            .group_start, .group_end => {},
         }
     }
 
     pub fn insertString(self: *Buffer, text: []const u8) !void {
+        _ = try self.deleteSelection();
+
         var index: usize = 0;
         while (index < text.len) {
             if (text[index] == '\n') {
@@ -463,6 +560,8 @@ pub const Buffer = struct {
     }
 
     pub fn insertNewline(self: *Buffer) !void {
+        _ = try self.deleteSelection();
+
         const row = self.cursor.row;
         const col = self.cursor.col;
         var current = &self.lines.items[row];
@@ -483,6 +582,8 @@ pub const Buffer = struct {
     }
 
     pub fn backspace(self: *Buffer) !void {
+        if (try self.deleteSelection()) return;
+
         if (self.cursor.col > 0) {
             const row = self.cursor.row;
             const col = self.cursor.col - 1;
@@ -504,6 +605,24 @@ pub const Buffer = struct {
         }
     }
 
+    pub fn deleteForward(self: *Buffer) !void {
+        if (try self.deleteSelection()) return;
+
+        const row = self.cursor.row;
+        const col = self.cursor.col;
+        const line = &self.lines.items[row];
+        if (col < line.items.len) {
+            try self.deleteRangeInternal(row, col, 1, true);
+            self.cursor = .{ .row = row, .col = col };
+        } else if (row + 1 < self.lines.items.len) {
+            var next = self.lines.orderedRemove(row + 1);
+            defer next.deinit(self.allocator);
+            try self.pushUndoInsert(row, col, "\n");
+            try line.appendSlice(self.allocator, next.items);
+            self.cursor = .{ .row = row, .col = col };
+        }
+    }
+
     fn insertTextInternal(self: *Buffer, row: usize, col: usize, text: []const u8, record_undo: bool) !void {
         if (text.len == 0) return;
         if (record_undo) try self.pushUndoInsert(row, col, text);
@@ -521,6 +640,7 @@ pub const Buffer = struct {
         const slice = line.items[col .. col + len];
         if (record_undo) {
             const deleted = try self.allocator.dupe(u8, slice);
+            defer self.allocator.free(deleted);
             try self.pushUndoDelete(row, col, deleted);
         }
         const tail = line.items[col + len ..];
@@ -716,6 +836,37 @@ test "buffer newline and merge undo" {
     try buffer.backspace();
     try std.testing.expectEqual(@as(usize, 1), buffer.lineCount());
     try std.testing.expectEqualStrings("abcd", buffer.lineAt(0));
+}
+
+test "buffer deletes selection and forward character" {
+    const allocator = std.testing.allocator;
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    try buffer.insertString("hello");
+    buffer.selection_anchor = .{ .row = 0, .col = 1 };
+    buffer.cursor = .{ .row = 0, .col = 4 };
+    try buffer.backspace();
+    try std.testing.expectEqualStrings("ho", buffer.lineAt(0));
+    try std.testing.expect(!buffer.hasSelection());
+    try std.testing.expectEqual(@as(usize, 1), buffer.cursor.col);
+
+    try buffer.deleteForward();
+    try std.testing.expectEqualStrings("h", buffer.lineAt(0));
+    try std.testing.expectEqual(@as(usize, 1), buffer.cursor.col);
+}
+
+test "buffer delete forward joins next line" {
+    const allocator = std.testing.allocator;
+    var buffer = try Buffer.init(allocator);
+    defer buffer.deinit();
+
+    try buffer.loadFromSlice("ab\ncd");
+    buffer.cursor = .{ .row = 0, .col = 2 };
+    try buffer.deleteForward();
+    try std.testing.expectEqual(@as(usize, 1), buffer.lineCount());
+    try std.testing.expectEqualStrings("abcd", buffer.lineAt(0));
+    try std.testing.expectEqual(@as(usize, 2), buffer.cursor.col);
 }
 
 test "buffer handles CRLF and many lines" {

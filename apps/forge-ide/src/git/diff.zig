@@ -6,6 +6,7 @@ pub fn fileDiff(
     workspace_path: []const u8,
     path: []const u8,
     untracked: bool,
+    is_staged: bool,
 ) ![]u8 {
     if (untracked) {
         const abs = try std.fs.path.join(allocator, &.{ workspace_path, path });
@@ -13,6 +14,9 @@ pub fn fileDiff(
         return runCapture(allocator, workspace_path, &.{
             "git", "diff", "--no-index", "--", "/dev/null", abs,
         });
+    }
+    if (is_staged) {
+        return runCapture(allocator, workspace_path, &.{ "git", "diff", "--cached", "--", path });
     }
     return runCapture(allocator, workspace_path, &.{ "git", "diff", "--", path });
 }
@@ -28,7 +32,7 @@ fn runCapture(allocator: std.mem.Allocator, cwd: []const u8, args: []const []con
 
 test "file diff in repo" {
     const allocator = std.testing.allocator;
-    const diff = fileDiff(allocator, ".", "README.md", false) catch |err| {
+    const diff = fileDiff(allocator, ".", "README.md", false, false) catch |err| {
         if (err == error.FileNotFound) return;
         return err;
     };

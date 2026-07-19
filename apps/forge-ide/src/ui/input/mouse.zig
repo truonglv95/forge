@@ -289,6 +289,40 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
 
             if (ci_expanded) {
+                if (context_inspector_mod.hitEntryAction(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.prompt_buffer, ci_scroll_y, event.x, event.y)) |index| {
+                    wb.agent.lock();
+                    if (index < wb.agent.context_entries.items.len) {
+                        const entry = wb.agent.context_entries.items[index];
+                        const is_file = std.mem.eql(u8, entry.kind, "file");
+                        if (is_file) {
+                            var pinned = false;
+                            for (wb.agent.scope_files.items) |existing| {
+                                if (std.mem.eql(u8, existing, entry.name)) {
+                                    pinned = true;
+                                    break;
+                                }
+                            }
+                            if (pinned) {
+                                wb.agent.unlock();
+                                wb.agent.removeScopeFile(entry.name);
+                            } else {
+                                wb.agent.unlock();
+                                wb.agent.addScopeFile(entry.name) catch {};
+                            }
+                        } else {
+                            const name_dup = wb.allocator.dupe(u8, entry.name) catch "";
+                            wb.agent.unlock();
+                            if (name_dup.len > 0) {
+                                wb.agent.addExcludedEntry(name_dup) catch {};
+                                wb.allocator.free(name_dup);
+                            }
+                        }
+                    } else {
+                        wb.agent.unlock();
+                    }
+                    return;
+                }
+
                 if (context_inspector_mod.hitEntryRow(geo.agent_x, geo.agent_w, h, ci_entry_count, attachment_count, &wb.prompt_buffer, ci_scroll_y, event.x, event.y)) |index| {
                     wb.agent.lock();
                     wb.agent.context_selected_index = index;
