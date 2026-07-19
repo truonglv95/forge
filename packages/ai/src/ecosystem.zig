@@ -373,7 +373,7 @@ test "ecosystem manifest validates all seven foundation contracts" {
     defer parsed.deinit();
 
     const summary = summarize(&parsed.value);
-    try std.testing.expectEqual(@as(usize, 2), summary.tools);
+    try std.testing.expectEqual(@as(usize, 8), summary.tools);
     try std.testing.expectEqual(@as(usize, 1), summary.context_sources);
     try std.testing.expectEqual(@as(usize, 1), summary.skill_packs);
     try std.testing.expectEqual(@as(usize, 1), summary.workflows);
