@@ -192,6 +192,7 @@ pub fn handleSettingsModalClick(wb: anytype, hit: @import("../ui/settings_modal.
         .ai_edit_model => try wb.dispatch(.ai_edit_model),
         .ai_edit_embedding_provider => try wb.dispatch(.ai_edit_embedding_provider),
         .ai_edit_embedding_model => try wb.dispatch(.ai_edit_embedding_model),
+        .ai_set_embedding_model => |index| try wb.dispatch(.{ .ai_set_embedding_model = index }),
         .ai_toggle_hyde => try wb.dispatch(.ai_toggle_hyde),
         .none => {},
     }

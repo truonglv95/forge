@@ -45,7 +45,7 @@ pub const Host = struct {
         return .{
             .provider = ai.codebase_search.EmbeddingProvider.parse(self.ai_embedding_provider),
             .model = self.ai_embedding_model,
-            .url = self.ai_embedding_url orelse self.ai_ollama_url,
+            .url = if (ai.codebase_search.EmbeddingProvider.parse(self.ai_embedding_provider) == .ollama) (self.ai_embedding_url orelse self.ai_ollama_url) else self.ai_embedding_url,
         };
     }
 };
@@ -698,7 +698,7 @@ fn enqueueRunFailed(host: *const Host, err: anyerror) void {
 pub fn agentFailureMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.Cancelled => "Cancelled",
-        error.ProviderFailed => "Provider initialization failed. Please check your API key (e.g. export OPENROUTER_API_KEY or GEMINI_API_KEY) and model configuration.",
+        error.ProviderFailed => "Failed to communicate with the AI provider. If using a local model, ensure Ollama is running. If using a cloud model, check your API key (e.g. export OPENROUTER_API_KEY) and network connection.",
         error.AuthenticationFailed => ai.provider.Provider.errorMessage(error.AuthenticationFailed),
         error.RateLimitExceeded => ai.provider.Provider.errorMessage(error.RateLimitExceeded),
         error.ContextLengthExceeded => "Agent compacted context but the provider still rejected it. Resume the saved session, reduce attachments, or switch to a larger-context model.",

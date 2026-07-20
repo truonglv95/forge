@@ -30,6 +30,7 @@ pub const Hit = union(enum) {
     ai_edit_model,
     ai_edit_embedding_provider,
     ai_edit_embedding_model,
+    ai_set_embedding_model: usize,
     ai_toggle_hyde,
     none,
 };
@@ -145,7 +146,36 @@ pub fn draw(wb: *Workbench, window_w: f32, window_h: f32) void {
         cy += 44;
         drawValueRow(content_x + 32, cy, content_w - 64, "Embedding Provider", wb.agent_ui.embedding_provider orelse "default", theme);
         cy += 44;
-        drawValueRow(content_x + 32, cy, content_w - 64, "Embedding Model", wb.agent_ui.embedding_model orelse "default", theme);
+
+        // Draw the embedding model row
+        const embedding_model_label = "Embedding Model";
+        const embedding_model_value = wb.agent_ui.embedding_model orelse "default";
+        drawValueRow(content_x + 32, cy, content_w - 64, embedding_model_label, embedding_model_value, theme);
+
+        if (wb.settings_embedding_picker_open) {
+            const row_y = cy;
+            const dropdown_x = content_x + 32 + @max(220, (content_w - 64) * 0.48) - 10;
+            const dropdown_y = row_y + 35;
+
+            var max_w: f32 = 200;
+            for (wb.agent_ui.embedding_models) |opt| {
+                const w = renderer.Renderer.measureText(opt.label, 13.0) + 32;
+                if (w > max_w) max_w = w;
+            }
+            const dropdown_w = max_w;
+            const item_h: f32 = 30;
+            const dropdown_h = @as(f32, @floatFromInt(wb.agent_ui.embedding_models.len)) * item_h + 8;
+
+            renderer.Renderer.drawRoundedRect(dropdown_x, dropdown_y, dropdown_w, dropdown_h, 6, color(theme.colors.editor_bg));
+
+            var item_y = dropdown_y + 4;
+            for (wb.agent_ui.embedding_models) |opt| {
+                // If it matches the current, maybe highlight it? (simplified)
+                renderer.Renderer.drawText(opt.label, dropdown_x + 16, item_y + 6, 13.0, text_primary);
+                item_y += item_h;
+            }
+        }
+
         cy += 44;
         drawToggleRow(content_x + 32, cy, content_w - 64, "HyDE Search", "Use LLM to generate hypothetical snippet for better search accuracy.", wb.agent_ui.enable_hyde, theme);
     } else if (wb.settings_modal_tab == .permissions) {
@@ -271,6 +301,29 @@ pub fn hitTestPoint(wb: *Workbench, window_w: f32, window_h: f32, px: f32, py: f
             cy += 44;
             if (py >= cy and py <= cy + 40) return .ai_edit_embedding_provider;
             cy += 44;
+
+            if (wb.settings_embedding_picker_open) {
+                const dropdown_x = row_x + @max(220, row_w * 0.48) - 10;
+                var max_w: f32 = 200;
+                for (wb.agent_ui.embedding_models) |opt| {
+                    const w = renderer.Renderer.measureText(opt.label, 13.0) + 32;
+                    if (w > max_w) max_w = w;
+                }
+                const dropdown_w = max_w;
+                const dropdown_y = cy + 35;
+                const item_h: f32 = 30;
+                const dropdown_h = @as(f32, @floatFromInt(wb.agent_ui.embedding_models.len)) * item_h + 8;
+
+                if (px >= dropdown_x and px <= dropdown_x + dropdown_w and py >= dropdown_y and py <= dropdown_y + dropdown_h) {
+                    const index = @as(usize, @intFromFloat((py - dropdown_y - 4) / item_h));
+                    if (index < wb.agent_ui.embedding_models.len) {
+                        return .{ .ai_set_embedding_model = index };
+                    }
+                } else {
+                    // Close if clicked outside the dropdown box
+                    return .ai_edit_embedding_model;
+                }
+            }
             if (py >= cy and py <= cy + 40) return .ai_edit_embedding_model;
             cy += 44;
             if (py >= cy and py <= cy + 48) return .ai_toggle_hyde;

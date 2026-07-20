@@ -72,11 +72,34 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
 
     const composer_layout = agent_composer.computeLayout(agent_x, agent_w, h, snap.attachment_count, &wb.agent_ui.prompt_buffer);
     wb.clampPromptScroll(agent_w);
-    const chat_bottom = composer_layout.composer_top - chat_composer_gap;
+    const context_visible = context_inspector.isVisible(
+        snap.context_entry_count,
+        snap.context_used_bytes,
+        snap.scope_count > 0,
+        snap.has_routing_preview,
+    );
+    wb.agent_ui.session.lock();
+    const context_has_detail = wb.agent_ui.session.context_selected_index != null and snap.context_inspector_expanded;
+    wb.agent_ui.session.unlock();
+    const context_top = context_inspector.stripTop(
+        h,
+        snap.context_inspector_expanded,
+        snap.context_entry_count,
+        snap.attachment_count,
+        agent_w,
+        &wb.agent_ui.prompt_buffer,
+        context_has_detail,
+        snap.has_routing_preview,
+    );
+    const chat_bottom = if (context_visible)
+        @min(composer_layout.composer_top - chat_composer_gap, context_top - context_inspector.chat_gap)
+    else
+        composer_layout.composer_top - chat_composer_gap;
 
     const chat_top = agent_panel.chat_content_top + 8.0;
     const chat_viewport_h = @max(0, chat_bottom - chat_top);
-    var content_y: f32 = chat_top - wb.chat_scroll_y;
+    const empty_space = @max(0, chat_viewport_h - wb.chat_layout.content_h);
+    var content_y: f32 = chat_top - wb.chat_scroll_y + empty_space;
 
     {
         renderer.Renderer.pushClipRect(agent_x, chat_top, agent_w, chat_viewport_h);

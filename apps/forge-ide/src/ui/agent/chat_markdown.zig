@@ -207,6 +207,75 @@ fn paragraphLineCount(text: []const u8, max_w: f32) usize {
     return total;
 }
 
+const InlineMeasure = struct {
+    cursor_x: f32 = 0,
+    line_count: usize = 1,
+
+    fn addWrapped(self: *InlineMeasure, slice: []const u8, max_w: f32, font_size: f32) void {
+        var start: usize = 0;
+        while (start < slice.len) {
+            const end = word_wrap.breakAt(slice, start, max_w - self.cursor_x, font_size);
+            const part = slice[start..end];
+            if (part.len > 0) {
+                self.cursor_x += renderer.Renderer.measureText(part, font_size);
+            }
+            if (end >= slice.len) break;
+            self.line_count += 1;
+            self.cursor_x = 0;
+            start = end;
+            while (start < slice.len and slice[start] == ' ') start += 1;
+        }
+    }
+
+    fn addInlineCode(self: *InlineMeasure, slice: []const u8) void {
+        self.cursor_x += renderer.Renderer.measureText(slice, code_font_size) + 8;
+    }
+};
+
+fn inlineMarkdownLineHeight(line: []const u8, max_w: f32) f32 {
+    if (!lineHasInlineMarkup(line)) {
+        return @as(f32, @floatFromInt(word_wrap.segmentCount(line, max_w, body_font_size))) * body_line_h;
+    }
+
+    var measure = InlineMeasure{};
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == '`') {
+            const rest = line[i + 1 ..];
+            const close_rel = std.mem.indexOfScalar(u8, rest, '`') orelse {
+                measure.addWrapped(line[i..], max_w, body_font_size);
+                return @as(f32, @floatFromInt(measure.line_count)) * body_line_h;
+            };
+            measure.addInlineCode(rest[0..close_rel]);
+            i += close_rel + 2;
+            continue;
+        }
+        if (i + 1 < line.len and line[i] == '*' and line[i + 1] == '*') {
+            const rest = line[i + 2 ..];
+            const close_rel = std.mem.indexOfPos(u8, rest, 0, "**") orelse {
+                measure.addWrapped(line[i..], max_w, body_font_size);
+                return @as(f32, @floatFromInt(measure.line_count)) * body_line_h;
+            };
+            measure.addWrapped(rest[0..close_rel], max_w, body_font_size);
+            i += close_rel + 4;
+            continue;
+        }
+
+        const code_pos = std.mem.indexOfScalarPos(u8, line, i, '`');
+        const bold_pos = std.mem.indexOfPos(u8, line, i, "**");
+        const next = if (code_pos) |c|
+            if (bold_pos) |b| @min(c, b) else c
+        else if (bold_pos) |b|
+            b
+        else
+            line.len;
+        measure.addWrapped(line[i..next], max_w, body_font_size);
+        i = next;
+    }
+
+    return @as(f32, @floatFromInt(measure.line_count)) * body_line_h;
+}
+
 fn markdownLineHeight(line: []const u8, max_w: f32) f32 {
     if (line.len == 0) return body_line_h;
     if (headingBody(line)) |body| {
@@ -214,20 +283,17 @@ fn markdownLineHeight(line: []const u8, max_w: f32) f32 {
         return heading_gap_top + @as(f32, @floatFromInt(count)) * heading_line_h + heading_gap_bottom;
     }
     if (bulletBody(line)) |body| {
-        const count = @max(1, word_wrap.segmentCount(body, @max(20.0, max_w - list_indent), body_font_size));
-        return @as(f32, @floatFromInt(count)) * body_line_h;
+        return inlineMarkdownLineHeight(body, @max(20.0, max_w - list_indent));
     }
     if (numberedMarkerLen(line)) |marker_len| {
         const trimmed = trimLine(line);
         const body = std.mem.trim(u8, trimmed[marker_len..], " ");
-        const count = @max(1, word_wrap.segmentCount(body, @max(20.0, max_w - list_indent), body_font_size));
-        return @as(f32, @floatFromInt(count)) * body_line_h;
+        return inlineMarkdownLineHeight(body, @max(20.0, max_w - list_indent));
     }
     if (quoteBody(line)) |body| {
-        const count = @max(1, word_wrap.segmentCount(body, @max(20.0, max_w - quote_indent), body_font_size));
-        return @as(f32, @floatFromInt(count)) * body_line_h;
+        return inlineMarkdownLineHeight(body, @max(20.0, max_w - quote_indent));
     }
-    return @as(f32, @floatFromInt(word_wrap.segmentCount(line, max_w, body_font_size))) * body_line_h;
+    return inlineMarkdownLineHeight(line, max_w);
 }
 
 fn markdownTextHeight(text: []const u8, max_w: f32) f32 {
@@ -795,6 +861,11 @@ test "inline markdown parser keeps appended segment ownership" {
     const segments = try parseInlineLine(allocator, "hello **bold** and `code` tail");
     defer freeSegments(allocator, segments);
     try std.testing.expect(segments.len >= 5);
+}
+
+test "inline code height matches single-line rendering at narrow widths" {
+    const text = "`this_is_a_long_inline_code_identifier_that_scrolls_horizontally`";
+    try std.testing.expectEqual(body_line_h, contentHeight(text, 80));
 }
 
 pub fn hitTestContent(

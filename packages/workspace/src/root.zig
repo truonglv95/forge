@@ -90,11 +90,12 @@ pub const Config = struct {
     ai_model: ?[]const u8 = null,
     ai_ollama_url: ?[]const u8 = null,
     ai_openrouter_url: ?[]const u8 = null,
+    ai_custom_models: ?[]const u8 = null,
+    ai_custom_embedding_models: ?[]const u8 = null,
     ai_embedding_provider: ?[]const u8 = null,
     ai_embedding_model: ?[]const u8 = null,
     ai_embedding_url: ?[]const u8 = null,
     ai_mcp_enabled: bool = true,
-    ai_custom_models: ?[]const u8 = null,
     ai_enable_hyde: bool = false,
     theme: theme_mod.ThemeSettings = .{},
     pub fn parse(source: []const u8) error{ InvalidSyntax, InvalidValue, UnknownKey }!Config {
@@ -144,6 +145,8 @@ pub const Config = struct {
                 config.ai_embedding_url = try parseString(value);
             } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "custom_models")) {
                 config.ai_custom_models = try parseString(value);
+            } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "custom_embedding_models")) {
+                config.ai_custom_embedding_models = try parseString(value);
             } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "mcp")) {
                 config.ai_mcp_enabled = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
             } else if (std.mem.eql(u8, section, "ai") and std.mem.eql(u8, key, "enable_hyde")) {

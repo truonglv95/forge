@@ -131,6 +131,7 @@ pub const Session = struct {
     proposal_only_run_id: ?[]const u8 = null,
     run_active_file: ?[]const u8 = null,
     agent_steps: std.ArrayList(AgentStep),
+    agent_steps_revision: u32 = 0,
     attachments: std.ArrayList(Attachment),
     mode_menu_open: bool = false,
     model_menu_open: bool = false,

@@ -7,7 +7,8 @@ const chat_message_lines_mod = @import("../ui/agent/chat_message_lines.zig");
 const agent_session_mod = @import("../agent/session.zig");
 
 const chat_composer_gap: f32 = 6.0;
-const chat_bottom_padding: f32 = 32.0;
+const chat_bottom_padding: f32 = 56.0;
+const thinking_bottom_padding: f32 = 28.0;
 
 fn phaseShowsLive(phase: anytype) bool {
     return switch (phase) {
@@ -24,6 +25,7 @@ pub const Cache = struct {
     stream_len: usize = 0,
     thinking_len: usize = 0,
     steps_len: usize = 0,
+    steps_revision: u32 = 0,
     worker_running: bool = false,
     bottom_reserved: f32 = -1,
     history_content_h: f32 = 0,
@@ -56,6 +58,8 @@ fn agentChrome(wb: anytype) struct {
     has_detail: bool,
     attachment_count: usize,
     has_routing: bool,
+    has_scope: bool,
+    used_bytes: usize,
 } {
     wb.agent_ui.session.lock();
     defer wb.agent_ui.session.unlock();
@@ -66,6 +70,8 @@ fn agentChrome(wb: anytype) struct {
         .has_detail = wb.agent_ui.session.context_selected_index != null and expanded,
         .attachment_count = wb.agent_ui.session.attachments.items.len,
         .has_routing = wb.agent_ui.session.routing_task_intent.len > 0,
+        .has_scope = wb.agent_ui.session.scope_files.items.len > 0,
+        .used_bytes = wb.agent_ui.session.context_used_bytes,
     };
 }
 
@@ -73,16 +79,14 @@ fn liveContentHeight(wb: anytype, content_w: f32) f32 {
     wb.agent_ui.session.lock();
     defer wb.agent_ui.session.unlock();
     const worker_running = wb.agent_ui.session.worker_running or phaseShowsLive(wb.agent_ui.session.phase);
-    const steps_len = wb.agent_ui.session.agent_steps.items.len;
-    _ = steps_len;
     if (!worker_running) return 0;
 
     var h: f32 = 0;
     if (worker_running and wb.agent_ui.session.stream_text.items.len == 0) {
-        h += chat_bubble_mod.thinkingLineHeight();
+        h += chat_bubble_mod.thinkingLineHeight() + thinking_bottom_padding;
     }
     if (wb.agent_ui.session.stream_text.items.len > 0) {
-        h += chat_bubble_mod.agentMessageHeight(wb.agent_ui.session.stream_text.items, content_w);
+        h += chat_message_lines_mod.layoutHeight(wb.chat_layout.stream_entry, false, wb.agent_ui.session.stream_text.items, content_w);
     }
     return h;
 }
@@ -239,7 +243,8 @@ pub fn hitTestMessageOpen(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
     }
 
     const scroll_y = wb.chat_scroll_y;
-    const base_y = chat_top - scroll_y + history_prefix;
+    const empty_space = @max(0, cache.viewport_h - cache.content_h);
+    const base_y = chat_top - scroll_y + history_prefix + empty_space;
     const start_i = firstVisibleIndex(cache, scroll_y, history_prefix);
     const end_i = lastVisibleIndex(cache, scroll_y, history_prefix, cache.viewport_h);
 
@@ -287,7 +292,8 @@ pub fn hitTestMessageCopy(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
     }
 
     const scroll_y = wb.chat_scroll_y;
-    const base_y = chat_top - scroll_y + history_prefix;
+    const empty_space = @max(0, cache.viewport_h - cache.content_h);
+    const base_y = chat_top - scroll_y + history_prefix + empty_space;
     const start_i = firstVisibleIndex(cache, scroll_y, history_prefix);
     const end_i = lastVisibleIndex(cache, scroll_y, history_prefix, cache.viewport_h);
 
@@ -314,10 +320,28 @@ fn layoutChrome(wb: anytype, agent_h: f32) struct {
     _ = chrome.entry_count;
     _ = chrome.has_detail;
     _ = chrome.has_routing;
-    const bottom = agent_panel_mod.bottomReserved(chrome.attachment_count, wb.agent_panel_width, &wb.agent_ui.prompt_buffer);
+    var bottom = agent_panel_mod.bottomReserved(chrome.attachment_count, wb.agent_panel_width, &wb.agent_ui.prompt_buffer);
     const composer_top = @import("../ui/agent/agent_composer.zig").composerTop(agent_h, chrome.attachment_count, wb.agent_panel_width, &wb.agent_ui.prompt_buffer);
     const chat_top = agent_panel_mod.chat_content_top + 8.0;
-    const viewport = @max(0, composer_top - chat_composer_gap - chat_top);
+    const context_visible = context_inspector_mod.isVisible(chrome.entry_count, chrome.used_bytes, chrome.has_scope, chrome.has_routing);
+    const context_top = context_inspector_mod.stripTop(
+        agent_h,
+        chrome.expanded,
+        chrome.entry_count,
+        chrome.attachment_count,
+        wb.agent_panel_width,
+        &wb.agent_ui.prompt_buffer,
+        chrome.has_detail,
+        chrome.has_routing,
+    );
+    if (context_visible) {
+        bottom += context_inspector_mod.stripHeight(chrome.expanded, chrome.entry_count, chrome.has_detail, chrome.has_routing) + context_inspector_mod.chat_gap;
+    }
+    const chat_bottom = if (context_visible)
+        @min(composer_top - chat_composer_gap, context_top - context_inspector_mod.chat_gap)
+    else
+        composer_top - chat_composer_gap;
+    const viewport = @max(0, chat_bottom - chat_top);
     return .{ .bottom = bottom, .viewport = viewport };
 }
 
@@ -330,6 +354,7 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
     const stream_len = wb.agent_ui.session.stream_text.items.len;
     const thinking_len = wb.agent_ui.session.thinking_text.items.len;
     const steps_len = wb.agent_ui.session.agent_steps.items.len;
+    const steps_revision = wb.agent_ui.session.agent_steps_revision;
     const worker_running = wb.agent_ui.session.worker_running or phaseShowsLive(wb.agent_ui.session.phase);
     wb.agent_ui.session.unlock();
 
@@ -337,6 +362,7 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
         cache.agent_h == agent_h and
         cache.worker_running == worker_running and
         cache.steps_len == steps_len and
+        cache.steps_revision == steps_revision and
         cache.stream_len == stream_len and
         cache.thinking_len == thinking_len and
         cache.bottom_reserved == layoutChrome(wb, agent_h).bottom)
@@ -350,6 +376,7 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
         cache.stream_len != stream_len or
         cache.thinking_len != thinking_len or
         cache.steps_len != steps_len or
+        cache.steps_revision != steps_revision or
         cache.worker_running != worker_running;
     const chrome_dirty = cache.agent_h != agent_h or cache.bottom_reserved != chrome.bottom;
 
@@ -358,13 +385,6 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
     if (history_dirty) rebuildHistory(wb, cache, content_w);
 
     if (history_dirty or live_dirty) {
-        const live_h = liveContentHeight(wb, content_w);
-        cache.content_h = cache.history_content_h + live_h + chat_bottom_padding;
-        cache.stream_len = stream_len;
-        cache.thinking_len = thinking_len;
-        cache.steps_len = steps_len;
-        cache.worker_running = worker_running;
-
         if (stream_len != cache.stream_built_len) {
             cache.stream_entry.deinit(wb.allocator);
             wb.agent_ui.session.lock();
@@ -373,12 +393,28 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
             cache.stream_entry = chat_message_lines_mod.build(wb.allocator, stream_text, chat_bubble_mod.agentTextWidth(content_w)) catch .{};
             cache.stream_built_len = stream_len;
         }
+
+        const live_h = liveContentHeight(wb, content_w);
+        cache.content_h = cache.history_content_h + live_h + chat_bottom_padding;
+        cache.stream_len = stream_len;
+        cache.thinking_len = thinking_len;
+        cache.steps_len = steps_len;
+        cache.steps_revision = steps_revision;
+        cache.worker_running = worker_running;
     }
 
     cache.agent_h = agent_h;
     cache.bottom_reserved = chrome.bottom;
     cache.viewport_h = chrome.viewport;
+
+    const old_max_scroll = cache.max_scroll;
     cache.max_scroll = @max(0, cache.content_h - chrome.viewport);
+
+    // Auto-scroll if user was already at the bottom or the chat content grew while pinned
+    if (wb.chat_scroll_y >= old_max_scroll) {
+        wb.chat_scroll_y = cache.max_scroll;
+    }
+
     cache.chrome_prompt_lines = wb.agent_ui.prompt_buffer.lineCount();
 }
 
@@ -426,7 +462,8 @@ pub fn hitTestChatSelection(wb: anytype, agent_x: f32, agent_w: f32, event_x: f3
     }
 
     const scroll_y = wb.chat_scroll_y;
-    const base_y = chat_top - scroll_y + history_prefix;
+    const empty_space = @max(0, cache.viewport_h - cache.content_h);
+    const base_y = chat_top - scroll_y + history_prefix + empty_space;
     const start_i = firstVisibleIndex(cache, scroll_y, history_prefix);
     const end_i = lastVisibleIndex(cache, scroll_y, history_prefix, cache.viewport_h);
 

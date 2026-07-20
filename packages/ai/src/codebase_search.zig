@@ -12,11 +12,13 @@ pub const EmbeddingProvider = enum {
     gemini,
     ollama,
     local,
+    openrouter,
 
     pub fn parse(name: ?[]const u8) EmbeddingProvider {
         const value = name orelse return .auto;
         if (std.mem.eql(u8, value, "gemini")) return .gemini;
         if (std.mem.eql(u8, value, "ollama")) return .ollama;
+        if (std.mem.eql(u8, value, "openrouter")) return .openrouter;
         if (std.mem.eql(u8, value, "local")) return .local;
         if (std.mem.eql(u8, value, "auto")) return .auto;
         return .auto;
@@ -111,6 +113,10 @@ fn resolveEmbedBackend(
         return try resolveOllamaBackend(allocator, io, options);
     }
 
+    if (options.embedding.provider == .openrouter) {
+        return try resolveOpenrouterBackend(allocator, io, options);
+    }
+
     if (options.embedding.provider == .auto and options.embedding.url != null) {
         if (resolveOllamaBackend(allocator, io, options)) |backend| return backend else |_| {}
     }
@@ -136,6 +142,40 @@ fn resolveEmbedBackend(
         .provider_name = "local",
         .model_name = "hashed-token-vector",
         .embed = localEmbedAdapter,
+    };
+}
+
+const openrouter_embedder = @import("providers/openrouter/embedder.zig");
+fn resolveOpenrouterBackend(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: SearchOptions,
+) !EmbedBackend {
+    var creds = try credentials.Credentials.load(
+        allocator,
+        io,
+        options.environ_map orelse return error.MissingCredentials,
+        &[_][]const u8{"OPENROUTER_API_KEY"},
+        "forge-openrouter",
+        "default",
+    );
+    errdefer creds.deinit();
+
+    const host = if (options.embedding.url) |u| try allocator.dupe(u8, u) else try allocator.dupe(u8, openrouter_embedder.default_url);
+    errdefer allocator.free(host);
+
+    const model = options.embedding.model orelse openrouter_embedder.default_model;
+    const probe = try openrouter_embedder.embedAlloc(allocator, io, .{ .base_url = host, .model = model, .api_key = creds.api_key }, "forge embedding dimension probe");
+    defer allocator.free(probe);
+
+    return .{
+        .allocator = allocator,
+        .dim = @intCast(probe.len),
+        .provider_name = "openrouter",
+        .model_name = model,
+        .embed = openrouterEmbedAdapter,
+        .ollama_base_url = host,
+        .creds = creds,
     };
 }
 
@@ -196,6 +236,20 @@ fn ollamaEmbedAdapter(allocator: std.mem.Allocator, text: []const u8, out: []f32
     return ollama_embedder.embedInto(allocator, ctx.io, .{ .base_url = ctx.base_url, .model = ctx.model }, text, out);
 }
 
+const OpenrouterEmbedContext = struct {
+    io: std.Io,
+    base_url: []const u8,
+    model: []const u8,
+    api_key: []const u8,
+};
+
+threadlocal var openrouter_embed_ctx: ?OpenrouterEmbedContext = null;
+
+fn openrouterEmbedAdapter(allocator: std.mem.Allocator, text: []const u8, out: []f32) !void {
+    const ctx = openrouter_embed_ctx orelse return error.ProviderFailed;
+    return openrouter_embedder.embedInto(allocator, ctx.io, .{ .base_url = ctx.base_url, .model = ctx.model, .api_key = ctx.api_key }, text, out);
+}
+
 pub fn ensureIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, options: SearchOptions) !void {
     if (!options.allow_rebuild) return;
 
@@ -230,15 +284,27 @@ pub fn ensureIndex(allocator: std.mem.Allocator, io: std.Io, root: workspace.Wor
             .model = backend.model_name,
         };
         const force_full_rebuild = !embedding_matches;
-        if (backend.creds) |*owned| {
-            gemini_embed_ctx = .{ .io = io, .creds = owned };
+        if (std.mem.eql(u8, backend.provider_name, "gemini")) {
+            gemini_embed_ctx = .{ .io = io, .creds = &backend.creds.? };
             defer gemini_embed_ctx = null;
             _ = if (force_full_rebuild)
                 try workspace.codebase_index.buildWithMetadata(allocator, io, root, backend.dim, geminiEmbedAdapter, metadata)
             else
                 try workspace.codebase_index.refreshWithMetadata(allocator, io, root, backend.dim, geminiEmbedAdapter, metadata);
-        } else if (backend.ollama_base_url) |base_url| {
-            ollama_embed_ctx = .{ .io = io, .base_url = base_url, .model = backend.model_name };
+        } else if (std.mem.eql(u8, backend.provider_name, "openrouter")) {
+            openrouter_embed_ctx = .{
+                .io = io,
+                .base_url = backend.ollama_base_url orelse return error.InvalidProviderState,
+                .model = backend.model_name,
+                .api_key = backend.creds.?.api_key,
+            };
+            defer openrouter_embed_ctx = null;
+            _ = if (force_full_rebuild)
+                try workspace.codebase_index.buildWithMetadata(allocator, io, root, backend.dim, openrouterEmbedAdapter, metadata)
+            else
+                try workspace.codebase_index.refreshWithMetadata(allocator, io, root, backend.dim, openrouterEmbedAdapter, metadata);
+        } else if (std.mem.eql(u8, backend.provider_name, "ollama")) {
+            ollama_embed_ctx = .{ .io = io, .base_url = backend.ollama_base_url.?, .model = backend.model_name };
             defer ollama_embed_ctx = null;
             _ = if (force_full_rebuild)
                 try workspace.codebase_index.buildWithMetadata(allocator, io, root, backend.dim, ollamaEmbedAdapter, metadata)
@@ -700,12 +766,21 @@ fn embedQueryCached(
 
     // Use RETRIEVAL_QUERY task type for query embeddings so Gemini
     // optimises them for retrieval against RETRIEVAL_DOCUMENT chunks.
-    if (backend.creds) |*owned| {
-        gemini_embed_ctx = .{ .io = io, .creds = owned };
+    if (std.mem.eql(u8, backend.provider_name, "gemini")) {
+        gemini_embed_ctx = .{ .io = io, .creds = &backend.creds.? };
         defer gemini_embed_ctx = null;
         try geminiQueryEmbedAdapter(allocator, query, out);
-    } else if (backend.ollama_base_url) |base_url| {
-        ollama_embed_ctx = .{ .io = io, .base_url = base_url, .model = backend.model_name };
+    } else if (std.mem.eql(u8, backend.provider_name, "openrouter")) {
+        openrouter_embed_ctx = .{
+            .io = io,
+            .base_url = backend.ollama_base_url orelse return error.InvalidProviderState,
+            .model = backend.model_name,
+            .api_key = backend.creds.?.api_key,
+        };
+        defer openrouter_embed_ctx = null;
+        try openrouterEmbedAdapter(allocator, query, out);
+    } else if (std.mem.eql(u8, backend.provider_name, "ollama")) {
+        ollama_embed_ctx = .{ .io = io, .base_url = backend.ollama_base_url.?, .model = backend.model_name };
         defer ollama_embed_ctx = null;
         try ollamaEmbedAdapter(allocator, query, out);
     } else {

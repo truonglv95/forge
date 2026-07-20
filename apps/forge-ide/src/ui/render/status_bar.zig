@@ -159,14 +159,6 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
     // ---- RIGHT ITEMS ----
     var right_x = w - 8;
 
-    // Status message
-    if (wb.status_message.len > 0) {
-        const msg_w = estimateWidth(wb.status_message, font_size) + 16;
-        right_x -= msg_w;
-        renderer.Renderer.drawText(wb.status_message, right_x + 8, bar_y + 4, font_size, .{ .r = 0.9, .g = 0.9, .b = 0.6, .a = 1.0 });
-        right_x -= 8;
-    }
-
     // Agent model
     if (wb.agent_ui.model) |model| {
         const model_w = estimateWidth(model, font_size) + 16;
@@ -248,6 +240,15 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
             };
             wb.status_bar_item_count += 1;
             right_x -= 8;
+        }
+    }
+
+    // Status message in the middle (taking remaining space)
+    if (wb.status_message.len > 0) {
+        if (right_x > left_x + 16) {
+            renderer.Renderer.pushClipRect(left_x + 8, bar_y, right_x - left_x - 16, bar_height);
+            defer renderer.Renderer.popClipRect();
+            renderer.Renderer.drawText(wb.status_message, left_x + 12, bar_y + 4, font_size, .{ .r = 0.9, .g = 0.9, .b = 0.6, .a = 1.0 });
         }
     }
 }

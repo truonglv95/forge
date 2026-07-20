@@ -180,6 +180,7 @@ pub const Workbench = struct {
     settings_modal_scroll_y: f32 = 0,
     settings_modal_open: bool = false,
     settings_modal_tab: @import("ui/settings_modal.zig").Tab = .general,
+    settings_embedding_picker_open: bool = false,
 
     proposal_review_open: bool = false,
     proposal_review_scroll_y: f32 = 0,
@@ -426,55 +427,8 @@ pub const Workbench = struct {
         });
         self.editor.ghost.setEnvironMap(self.environ_map);
 
-        if (loadAiConfig(allocator, io, root)) |cfg| {
-            self.allocator.free(self.agent_ui.provider);
-            self.agent_ui.provider = cfg.provider;
-            if (self.agent_ui.model) |model| self.allocator.free(model);
-            self.agent_ui.model = cfg.model;
-            if (self.agent_ui.ollama_url) |url| self.allocator.free(url);
-            self.agent_ui.ollama_url = cfg.ollama_url;
-            if (self.agent_ui.openrouter_url) |url| self.allocator.free(url);
-            self.agent_ui.openrouter_url = cfg.openrouter_url;
-            if (self.agent_ui.embedding_provider) |provider| self.allocator.free(provider);
-            self.agent_ui.embedding_provider = cfg.embedding_provider;
-            if (self.agent_ui.embedding_model) |model| self.allocator.free(model);
-            self.agent_ui.embedding_model = cfg.embedding_model;
-            if (self.agent_ui.embedding_url) |url| self.allocator.free(url);
-            self.agent_ui.embedding_url = cfg.embedding_url;
-            self.agent_ui.mcp_enabled = cfg.mcp_enabled;
-            self.agent_ui.enable_hyde = cfg.enable_hyde;
-            var models_parsed = false;
-            if (cfg.custom_models) |custom_models_str| {
-                defer self.allocator.free(custom_models_str);
-                if (@import("ui/agent/agent_composer.zig").parseCustomModels(self.allocator, custom_models_str)) |models_list| {
-                    self.agent_ui.models = models_list;
-                    models_parsed = true;
-                } else |err| {
-                    std.debug.print("parseCustomModels error: {}\n", .{err});
-                }
-            }
-            if (!models_parsed) {
-                if (@import("ui/agent/agent_composer.zig").parseCustomModels(self.allocator, @import("ui/agent/agent_composer.zig").default_models_str)) |models_list| {
-                    self.agent_ui.models = models_list;
-                } else |err| {
-                    std.debug.print("parseCustomModels default error: {}\n", .{err});
-                }
-            }
-        } else |err| {
-            std.debug.print("global_store.loadConfig error: {}\n", .{err});
-            if (@import("ui/agent/agent_composer.zig").parseCustomModels(self.allocator, @import("ui/agent/agent_composer.zig").default_models_str)) |models_list| {
-                self.agent_ui.models = models_list;
-            } else |err2| {
-                std.debug.print("parseCustomModels default error 2: {}\n", .{err2});
-            }
-        }
-        std.debug.print("wb.agent_ui.models.len = {}\n", .{self.agent_ui.models.len});
-
-        if (self.agent_ui.model == null and self.agent_ui.models.len > 0) {
-            self.agent_ui.model = try self.allocator.dupe(u8, self.agent_ui.models[0].id);
-            self.allocator.free(self.agent_ui.provider);
-            self.agent_ui.provider = try self.allocator.dupe(u8, self.agent_ui.models[0].provider);
-        }
+        try self.reloadAiConfigFromDisk();
+        std.debug.print("wb.agent_ui.models.len = {}, embed_models.len = {}\n", .{ self.agent_ui.models.len, self.agent_ui.embedding_models.len });
 
         try self.restoreSessionTabs();
         if (self.editor.tabs.tabs.items.len == 0) {
@@ -958,12 +912,97 @@ pub const Workbench = struct {
         try self.setStatus("Theme reloaded");
     }
 
+    fn freeModelOptions(allocator: std.mem.Allocator, models: []const @import("ui/agent/agent_composer.zig").ModelOption) void {
+        for (models) |m| {
+            allocator.free(m.id);
+            allocator.free(m.label);
+            allocator.free(m.provider);
+        }
+        if (models.len > 0) allocator.free(models);
+    }
+
+    fn parseModelOptionsOrDefault(
+        allocator: std.mem.Allocator,
+        custom_models: ?[]const u8,
+        default_models: []const u8,
+        debug_label: []const u8,
+    ) ![]@import("ui/agent/agent_composer.zig").ModelOption {
+        const composer = @import("ui/agent/agent_composer.zig");
+        if (custom_models) |custom| {
+            if (composer.parseCustomModels(allocator, custom)) |models_list| {
+                return models_list;
+            } else |err| {
+                std.debug.print("parseCustomModels {s} error: {}\n", .{ debug_label, err });
+            }
+        }
+        return composer.parseCustomModels(allocator, default_models);
+    }
+
+    fn reloadAiConfigFromDisk(self: *Workbench) !void {
+        const composer = @import("ui/agent/agent_composer.zig");
+        const cfg = loadAiConfig(self.allocator, self.io, self.workspace_root) catch |err| {
+            std.debug.print("global_store.loadConfig error: {}\n", .{err});
+
+            const models_list = parseModelOptionsOrDefault(self.allocator, null, composer.default_models_str, "default") catch return;
+            const embed_models_list = parseModelOptionsOrDefault(self.allocator, null, composer.default_embedding_models_str, "embed default") catch {
+                freeModelOptions(self.allocator, models_list);
+                return;
+            };
+            freeModelOptions(self.allocator, self.agent_ui.models);
+            freeModelOptions(self.allocator, self.agent_ui.embedding_models);
+            self.agent_ui.models = models_list;
+            self.agent_ui.embedding_models = embed_models_list;
+            if (self.agent_ui.model == null and self.agent_ui.models.len > 0) {
+                self.agent_ui.model = try self.allocator.dupe(u8, self.agent_ui.models[0].id);
+                self.allocator.free(self.agent_ui.provider);
+                self.agent_ui.provider = try self.allocator.dupe(u8, self.agent_ui.models[0].provider);
+            }
+            return;
+        };
+        defer if (cfg.custom_models) |custom| self.allocator.free(custom);
+        defer if (cfg.custom_embedding_models) |custom| self.allocator.free(custom);
+
+        const models_list = try parseModelOptionsOrDefault(self.allocator, cfg.custom_models, composer.default_models_str, "agent");
+        errdefer freeModelOptions(self.allocator, models_list);
+        const embed_models_list = try parseModelOptionsOrDefault(self.allocator, cfg.custom_embedding_models, composer.default_embedding_models_str, "embed");
+        errdefer freeModelOptions(self.allocator, embed_models_list);
+
+        self.allocator.free(self.agent_ui.provider);
+        self.agent_ui.provider = cfg.provider;
+        if (self.agent_ui.model) |model| self.allocator.free(model);
+        self.agent_ui.model = cfg.model;
+        if (self.agent_ui.ollama_url) |url| self.allocator.free(url);
+        self.agent_ui.ollama_url = cfg.ollama_url;
+        if (self.agent_ui.openrouter_url) |url| self.allocator.free(url);
+        self.agent_ui.openrouter_url = cfg.openrouter_url;
+        if (self.agent_ui.embedding_provider) |provider| self.allocator.free(provider);
+        self.agent_ui.embedding_provider = cfg.embedding_provider;
+        if (self.agent_ui.embedding_model) |model| self.allocator.free(model);
+        self.agent_ui.embedding_model = cfg.embedding_model;
+        if (self.agent_ui.embedding_url) |url| self.allocator.free(url);
+        self.agent_ui.embedding_url = cfg.embedding_url;
+        self.agent_ui.mcp_enabled = cfg.mcp_enabled;
+        self.agent_ui.enable_hyde = cfg.enable_hyde;
+
+        freeModelOptions(self.allocator, self.agent_ui.models);
+        freeModelOptions(self.allocator, self.agent_ui.embedding_models);
+        self.agent_ui.models = models_list;
+        self.agent_ui.embedding_models = embed_models_list;
+
+        if (self.agent_ui.model == null and self.agent_ui.models.len > 0) {
+            self.agent_ui.model = try self.allocator.dupe(u8, self.agent_ui.models[0].id);
+            self.allocator.free(self.agent_ui.provider);
+            self.agent_ui.provider = try self.allocator.dupe(u8, self.agent_ui.models[0].provider);
+        }
+    }
+
     pub fn reloadUserSettings(self: *Workbench) !void {
         self.user_settings.deinit(self.allocator);
         self.user_settings = settings_mod.load(self.allocator, self.io, self.workspace_root) catch .{};
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
+        try self.reloadAiConfigFromDisk();
         try self.setStatus("Settings reloaded");
     }
 
@@ -1447,6 +1486,7 @@ pub const Workbench = struct {
         embedding_url: ?[]const u8,
         mcp_enabled: bool,
         custom_models: ?[]const u8,
+        custom_embedding_models: ?[]const u8,
         enable_hyde: bool,
     } {
         _ = root;
@@ -1470,6 +1510,7 @@ pub const Workbench = struct {
         const embedding_url = if (config.ai_embedding_url) |value| try allocator.dupe(u8, value) else null;
         errdefer if (embedding_url) |owned| allocator.free(owned);
         const custom_models = if (config.ai_custom_models) |value| try allocator.dupe(u8, value) else null;
+        const custom_embedding_models = if (config.ai_custom_embedding_models) |value| try allocator.dupe(u8, value) else null;
         errdefer if (custom_models) |owned| allocator.free(owned);
         return .{
             .provider = provider,
@@ -1481,6 +1522,7 @@ pub const Workbench = struct {
             .embedding_url = embedding_url,
             .mcp_enabled = config.ai_mcp_enabled,
             .custom_models = custom_models,
+            .custom_embedding_models = custom_embedding_models,
             .enable_hyde = config.ai_enable_hyde,
         };
     }

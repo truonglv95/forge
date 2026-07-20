@@ -21,9 +21,13 @@ pub fn drawActivityBar(wb: *Workbench, w: f32, alloc: std.mem.Allocator) void {
     root_node.align_items = .center;
     root_node.width = w;
     root_node.height = layout.activity_bar_height;
-    // Activity bar needs some padding to align center if we want to mimic the current logic
-    const total_w = @as(f32, @floatFromInt(sidebar_view.all.len)) * activity_bar.icon_w;
-    root_node.padding = @max(0, (w - total_w) / 2.0);
+    // Activity bar needs to align center, we'll use flex_grow spacers
+    // root_node.padding = @max(0, (w - total_w) / 2.0); // REMOVED: padding pushes Y axis down as well in this layout engine
+
+    var left_spacer = alloc.create(renderer.layout.Node) catch return;
+    left_spacer.* = renderer.layout.Node.init(alloc);
+    left_spacer.flex_grow = 1.0;
+    root_node.addChild(alloc, left_spacer) catch return;
 
     var root_view = alloc.create(renderer.view.View) catch return;
     root_view.* = renderer.view.View.init(.{ .x = 0, .y = 0, .w = 0, .h = 0 });
@@ -61,6 +65,11 @@ pub fn drawActivityBar(wb: *Workbench, w: f32, alloc: std.mem.Allocator) void {
 
         root_view.addChild(alloc, icon_view) catch return;
     }
+
+    var right_spacer = alloc.create(renderer.layout.Node) catch return;
+    right_spacer.* = renderer.layout.Node.init(alloc);
+    right_spacer.flex_grow = 1.0;
+    root_node.addChild(alloc, right_spacer) catch return;
 
     // Solve Layout Constraint
     root_node.calculateLayout(w, layout.activity_bar_height, 0, layout.header_height);

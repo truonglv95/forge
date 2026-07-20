@@ -191,7 +191,7 @@ pub fn drawStep(
         renderer.Renderer.drawRoundedRect(card_x + 10, dot_y, 6, 6, 3, accent);
     }
 
-    const is_parent = step.child_count > 0 or step.is_thought;
+    const is_parent = step.child_count > 0 or step.is_thought or step.content != null;
     if (is_parent) {
         const icon = if (step.expanded) renderer.icons.chevron_down else renderer.icons.chevron_right;
         renderer.Renderer.drawSvg(icon, card_x + card_w - 20, y + 6, 16, 16, .{ .r = 0.5, .g = 0.5, .b = 0.55, .a = 1.0 });
@@ -334,7 +334,7 @@ pub fn hitTestStep(
     if (step.parent_index != null) return null;
     if (x < inner_x or x > inner_x + content_w) return null;
 
-    const is_parent = step.child_count > 0 or step.is_thought;
+    const is_parent = step.child_count > 0 or step.is_thought or step.content != null;
     if (!is_parent) return null;
 
     if (y >= content_y and y < content_y + card_h) return step_i;

@@ -488,6 +488,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             if (index < wb.agent_ui.session.agent_steps.items.len) {
                 const step = &wb.agent_ui.session.agent_steps.items[index];
                 step.expanded = !step.expanded;
+                wb.agent_ui.session.agent_steps_revision += 1;
             }
             wb.agent_ui.session.unlock();
         },
@@ -748,7 +749,20 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             try @import("ai_config_io.zig").writeAiEmbeddingProvider(wb.allocator, wb.io, wb.workspace_root, next);
         },
         .ai_edit_embedding_model => {
-            try @import("../workbench/agent_ops.zig").openSettingsToml(wb);
+            wb.settings_embedding_picker_open = !wb.settings_embedding_picker_open;
+        },
+        .ai_set_embedding_model => |index| {
+            wb.settings_embedding_picker_open = false;
+            if (index < wb.agent_ui.embedding_models.len) {
+                const opt = wb.agent_ui.embedding_models[index];
+                if (wb.agent_ui.embedding_model) |old| wb.allocator.free(old);
+                wb.agent_ui.embedding_model = try wb.allocator.dupe(u8, opt.id);
+                try @import("ai_config_io.zig").writeAiEmbeddingModel(wb.allocator, wb.io, wb.workspace_root, opt.id);
+
+                if (wb.agent_ui.embedding_provider) |old| wb.allocator.free(old);
+                wb.agent_ui.embedding_provider = try wb.allocator.dupe(u8, opt.provider);
+                try @import("ai_config_io.zig").writeAiEmbeddingProvider(wb.allocator, wb.io, wb.workspace_root, opt.provider);
+            }
         },
         .toggle_sidebar => wb.sidebar_visible = !wb.sidebar_visible,
         .toggle_bottom_panel => wb.bottom_panel_visible = !wb.bottom_panel_visible,

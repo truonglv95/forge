@@ -34,6 +34,8 @@ pub const ModelOption = struct {
 
 pub const default_models_str = "qwen3.5:35b|Qwen 3.5 35B (Ollama)|ollama,qwen2.5-coder:7b|Qwen 2.5 Coder 7B (Ollama)|ollama,gemini-2.5-flash|Gemini 2.5 Flash|gemini,gemini-2.5-pro|Gemini 2.5 Pro|gemini,gemini-2.0-flash|Gemini 2.0 Flash|gemini,openai/gpt-4o-mini|GPT-4o Mini (OpenRouter)|openrouter,anthropic/claude-sonnet-4|Claude Sonnet 4 (OpenRouter)|openrouter,nvidia/nemotron-3-super-120b-a12b:free|NVIDIA Nemotron 3 Super 120B A12B Free (OpenRouter)|openrouter,qwen/qwen3-coder:free|Qwen3 Coder Free (OpenRouter)|openrouter,z-ai/glm-5.2|GLM-5.2 (OpenRouter)|openrouter,cohere/north-mini-code:free|Cohere North Mini Code Free (OpenRouter)|openrouter,z-ai/glm-5.2|GLM-5.2 (NVIDIA)|nvidia,meta/llama-3.1-70b-instruct|Llama 3.1 70B (NVIDIA)|nvidia";
 
+pub const default_embedding_models_str = "nomic-embed-text|Nomic Embed (Ollama)|ollama,text-embedding-004|Gemini Embedding 004|gemini,nvidia/llama-nemotron-embed-vl-1b-v2:free|NVIDIA Llama Nemotron Embed (OpenRouter)|openrouter";
+
 pub fn parseCustomModels(allocator: std.mem.Allocator, custom_str: []const u8) ![]ModelOption {
     var list: std.ArrayList(ModelOption) = .empty;
     defer list.deinit(allocator);

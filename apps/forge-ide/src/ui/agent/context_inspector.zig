@@ -9,6 +9,7 @@ const ai = @import("forge-ai");
 pub const composer_height = agent_composer.composer_base_h;
 pub const composer_pad = agent_composer.composer_pad;
 pub const strip_gap: f32 = 6;
+pub const chat_gap: f32 = 18;
 pub const header_h: f32 = 22;
 pub const row_h: f32 = 15;
 pub const max_visible_rows: usize = 5;
@@ -65,6 +66,10 @@ pub fn stripHeight(expanded: bool, entry_count: usize, has_detail: bool, has_rou
     if (has_routing) h += routing_row_h + 2;
     if (has_detail) h += detail_h + 4;
     return h;
+}
+
+pub fn isVisible(entry_count: usize, used_bytes: usize, has_scope: bool, has_routing: bool) bool {
+    return entry_count > 0 or used_bytes > 0 or has_scope or has_routing;
 }
 
 pub fn toggleRect(

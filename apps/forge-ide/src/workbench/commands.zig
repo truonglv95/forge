@@ -146,6 +146,7 @@ pub const Command = union(enum) {
     ai_edit_model: void,
     ai_edit_embedding_provider: void,
     ai_edit_embedding_model: void,
+    ai_set_embedding_model: usize,
     ai_toggle_hyde: void,
     palette_open: void,
     palette_close: void,

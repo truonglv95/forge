@@ -24,6 +24,7 @@ pub const AgentController = struct {
     mcp_enabled: bool = true,
     enable_hyde: bool = false,
     models: []const @import("../ui/agent/agent_composer.zig").ModelOption = &.{},
+    embedding_models: []const @import("../ui/agent/agent_composer.zig").ModelOption = &.{},
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !AgentController {
         var self = AgentController{
