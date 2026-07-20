@@ -470,6 +470,12 @@ pub const Workbench = struct {
         }
         std.debug.print("wb.agent_ui.models.len = {}\n", .{self.agent_ui.models.len});
 
+        if (self.agent_ui.model == null and self.agent_ui.models.len > 0) {
+            self.agent_ui.model = try self.allocator.dupe(u8, self.agent_ui.models[0].id);
+            self.allocator.free(self.agent_ui.provider);
+            self.agent_ui.provider = try self.allocator.dupe(u8, self.agent_ui.models[0].provider);
+        }
+
         try self.restoreSessionTabs();
         if (self.editor.tabs.tabs.items.len == 0) {
             try self.dispatch(.{ .open_file = "apps/forge-ide/src/main.zig" });
