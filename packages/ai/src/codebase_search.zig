@@ -42,6 +42,8 @@ pub const SearchOptions = struct {
     /// When 0 (default), an adaptive threshold of max(0.01, top_score * 0.20) is used.
     score_floor: f32 = 0,
     enable_hyde: bool = false,
+    hyde_text_generator: ?*const fn (allocator: std.mem.Allocator, ctx: ?*anyopaque, prompt: []const u8) anyerror![]u8 = null,
+    hyde_text_generator_ctx: ?*anyopaque = null,
 };
 
 pub const ScoredChunk = struct {
@@ -792,49 +794,15 @@ test "local semantic index achieves recall at one on symbol corpus" {
 }
 
 fn generateHydeQuery(allocator: std.mem.Allocator, io: std.Io, options: SearchOptions, query: []const u8) ![]u8 {
-    const map = options.environ_map orelse return error.MissingCredentials;
-    var creds = credentials.Credentials.load(allocator, io, map, &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" }, "forge-gemini", "default") catch return error.MissingCredentials;
-    defer creds.deinit();
+    _ = io;
+    if (options.hyde_text_generator) |generator| {
+        const prompt = try std.fmt.allocPrint(allocator, "Write a hypothetical code snippet that answers this query. Only return code, no markdown block, no explanation. Query: {s}", .{query});
+        defer allocator.free(prompt);
 
-    const Part = struct { text: []const u8 };
-    const Content = struct { parts: []const Part };
-    const Payload = struct {
-        contents: []const Content,
-        generationConfig: struct { temperature: f32 = 0.2 } = .{},
-    };
+        const text = generator(allocator, options.hyde_text_generator_ctx, prompt) catch return error.ProviderFailed;
+        defer allocator.free(text);
 
-    const prompt = try std.fmt.allocPrint(allocator, "Write a hypothetical code snippet that answers this query. Only return code, no markdown block, no explanation. Query: {s}", .{query});
-    defer allocator.free(prompt);
-
-    const parts = [_]Part{.{ .text = prompt }};
-    const contents = [_]Content{.{ .parts = &parts }};
-    const payload = Payload{ .contents = &contents };
-    const payload_str = try std.json.Stringify.valueAlloc(allocator, payload, .{});
-    defer allocator.free(payload_str);
-
-    var client = std.http.Client{ .allocator = allocator, .io = io };
-    defer client.deinit();
-
-    var response_alloc = std.Io.Writer.Allocating.init(allocator);
-    defer response_alloc.deinit();
-
-    const api_headers = [_]std.http.Header{.{ .name = "x-goog-api-key", .value = creds.api_key }};
-    const result = client.fetch(.{
-        .location = .{ .url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent" },
-        .method = .POST,
-        .payload = payload_str,
-        .headers = .{ .content_type = .{ .override = "application/json" } },
-        .extra_headers = &api_headers,
-        .response_writer = &response_alloc.writer,
-    }) catch return error.ProviderFailed;
-
-    if (result.status != .ok) return error.ProviderFailed;
-    const body = try response_alloc.toOwnedSlice();
-    defer allocator.free(body);
-
-    const gemini_provider = @import("providers/gemini/provider.zig");
-    const text = try gemini_provider.normalizeModelText(allocator, body);
-    defer allocator.free(text);
-
-    return try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ query, text });
+        return try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ query, text });
+    }
+    return error.HydeNotConfigured;
 }

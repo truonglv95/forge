@@ -60,6 +60,8 @@ pub const LoadOptions = struct {
     excluded_entries: []const []const u8 = &.{},
     cache: ?*context_cache.ContextCache = null,
     enable_hyde: bool = false,
+    hyde_text_generator: ?*const fn (allocator: std.mem.Allocator, ctx: ?*anyopaque, prompt: []const u8) anyerror![]u8 = null,
+    hyde_text_generator_ctx: ?*anyopaque = null,
 };
 
 pub const ManifestStatus = enum {
@@ -776,6 +778,8 @@ fn loadSemanticBlock(
         .environ_map = options.environ_map,
         .allow_rebuild = options.allow_rebuild,
         .enable_hyde = options.enable_hyde,
+        .hyde_text_generator = options.hyde_text_generator,
+        .hyde_text_generator_ctx = options.hyde_text_generator_ctx,
     }) catch return;
     defer codebase_search.freeResults(allocator, results);
 
