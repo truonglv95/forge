@@ -200,3 +200,41 @@ test "chat viewport bottom scroll reservation covers composer and thinking rows"
     try std.testing.expect(out.bottom_reserved >= out.composer.composer_h + metrics.chat.bottom_padding);
     try std.testing.expect(out.chat_bottom + metrics.chat.composer_gap <= out.composer.composer_top);
 }
+
+test "chat viewport resize matrix keeps last message above bottom chrome" {
+    var prompt = try editor.Buffer.init(std.testing.allocator);
+    defer prompt.deinit();
+    try prompt.insertString(
+        "a long live prompt that wraps several times when the AI panel is narrow and should still reserve stable composer chrome",
+    );
+
+    const widths = [_]f32{ 240, 280, 360, 520, 900 };
+    const heights = [_]f32{ 360, 460, 640, 820 };
+    const context_counts = [_]usize{ 0, 1, 8, 24 };
+
+    for (widths) |w| {
+        for (heights) |window_h| {
+            for (context_counts) |context_count| {
+                const out = compute(.{
+                    .agent_w = w,
+                    .window_h = window_h,
+                    .attachment_count = if (w < 300) 1 else 0,
+                    .context_entry_count = context_count,
+                    .context_used_bytes = context_count * 512,
+                    .context_expanded = context_count > 1,
+                    .context_has_detail = context_count > 8,
+                    .scope_count = if (context_count > 0) 1 else 0,
+                    .has_routing = context_count > 4,
+                    .prompt = &prompt,
+                });
+                out.assertValid();
+                try std.testing.expect(out.composer.composer_top >= out.chat_bottom + metrics.chat.composer_gap or out.chat_viewport_h == 0);
+                try std.testing.expect(out.composer.composer_top + out.composer.composer_h <= window_h - layout.status_height);
+                try std.testing.expect(out.bottom_reserved >= out.composer.composer_h + metrics.chat.bottom_padding);
+                if (out.context_visible) {
+                    try std.testing.expect(out.context_top + out.context_h <= out.composer.composer_top - context_inspector.strip_gap + 1);
+                }
+            }
+        }
+    }
+}

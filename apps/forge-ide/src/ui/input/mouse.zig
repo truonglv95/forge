@@ -254,8 +254,8 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .ai and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height) {
             wb.focused_panel = .agent;
-            if (ai_sidebar_panel.hitTest(geo.explorer_x, geo.explorer_w, h, wb.ai_mcp_scroll_y, event.x, event.y)) |hit| {
-                dispatchClick(wb, ai_sidebar_panel.commandForHit(hit), "Handle AI sidebar click");
+            if (ai_sidebar_panel.hitTest(wb, geo.explorer_x, geo.explorer_w, h, wb.ai_mcp_scroll_y, event.x, event.y)) |hit| {
+                ai_sidebar_panel.handleHit(wb, hit) catch |err| shared.reportInputError(wb, "Handle AI sidebar click", err);
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .run and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= debug_panel.list_top - 40) {
             wb.focused_panel = .run;

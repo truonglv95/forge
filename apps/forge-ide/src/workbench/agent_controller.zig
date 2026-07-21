@@ -25,6 +25,7 @@ pub const AgentController = struct {
     enable_hyde: bool = false,
     models: []const @import("../ui/agent/agent_composer.zig").ModelOption = &.{},
     embedding_models: []const @import("../ui/agent/agent_composer.zig").ModelOption = &.{},
+    mcp_collapsed_servers: std.StringHashMap(void),
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !AgentController {
         var self = AgentController{
@@ -35,12 +36,17 @@ pub const AgentController = struct {
             .prompt_buffer = try @import("forge-editor").Buffer.init(allocator),
             .chat_system_prompt = try @import("forge-editor").Buffer.init(allocator),
             .provider = try allocator.dupe(u8, "auto"),
+            .mcp_collapsed_servers = std.StringHashMap(void).init(allocator),
         };
         errdefer self.deinit();
         return self;
     }
 
     pub fn deinit(self: *AgentController) void {
+        var collapsed_iter = self.mcp_collapsed_servers.iterator();
+        while (collapsed_iter.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.mcp_collapsed_servers.deinit();
+
         self.prompt_buffer.deinit();
         self.chat_system_prompt.deinit();
         for (self.chat_history.items) |msg| {
@@ -77,5 +83,18 @@ pub const AgentController = struct {
         self.allocator.free(self.embedding_models);
 
         // Additional cleanup for session if necessary
+    }
+
+    pub fn isMcpServerCollapsed(self: *const AgentController, server_name: []const u8) bool {
+        return self.mcp_collapsed_servers.contains(server_name);
+    }
+
+    pub fn toggleMcpServerCollapsed(self: *AgentController, server_name: []const u8) !bool {
+        if (self.mcp_collapsed_servers.fetchRemove(server_name)) |entry| {
+            self.allocator.free(entry.key);
+            return false;
+        }
+        try self.mcp_collapsed_servers.put(try self.allocator.dupe(u8, server_name), {});
+        return true;
     }
 };

@@ -807,6 +807,8 @@ pub const Session = struct {
         context_inspector_expanded: bool,
         post_apply_visible: bool,
         validation_count: usize,
+        generation_elapsed_ms: ?i64,
+        first_token_latency_ms: ?i64,
         spec_pending: bool,
         last_checkpoint_id: ?u64,
         approval_pending: bool,
@@ -823,6 +825,15 @@ pub const Session = struct {
     } {
         self.lock();
         defer self.unlock();
+        const now_ts = telemetry.startSpan("", "").start_ts;
+        const generation_elapsed_ms: ?i64 = if (self.generation_start_ts) |start_ts|
+            @divTrunc(@max(@as(i64, 0), now_ts - start_ts), 1000)
+        else
+            null;
+        const first_token_latency_ms: ?i64 = if (self.generation_start_ts) |start_ts|
+            if (self.first_token_ts) |first_ts| @divTrunc(@max(@as(i64, 0), first_ts - start_ts), 1000) else null
+        else
+            null;
         const status_len = @min(self.status_line.len, if (status_out.len > 0) status_out.len - 1 else 0);
         if (status_len > 0) @memcpy(status_out[0..status_len], self.status_line[0..status_len]);
         if (status_out.len > 0) status_out[status_len] = 0;
@@ -850,6 +861,8 @@ pub const Session = struct {
             .context_inspector_expanded = self.context_inspector_expanded,
             .post_apply_visible = self.post_apply_visible,
             .validation_count = self.validation_results.items.len,
+            .generation_elapsed_ms = generation_elapsed_ms,
+            .first_token_latency_ms = first_token_latency_ms,
             .spec_pending = self.spec_pending,
             .last_checkpoint_id = self.last_checkpoint_id,
             .approval_pending = self.approval_decision == .pending,

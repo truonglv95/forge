@@ -3,6 +3,7 @@ const git_status_mod = @import("../git/status.zig");
 const git_diff_mod = @import("../git/diff.zig");
 const background_jobs = @import("background_jobs.zig");
 const renderer = @import("forge-renderer");
+const process_spawn = @import("forge-util").process_spawn;
 
 pub fn refreshGitStatus(wb: anytype) !void {
     scheduleGitStatusRefresh(wb);
@@ -36,10 +37,11 @@ pub fn scheduleGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) void
     wb.git.refresh_failed = false;
     wb.git.refresh_mutex.unlock();
 
-    background_jobs.spawnDetached("git-refresh", RefreshCtx, wb.allocator, .{ .wb = wb }, gitRefreshWorker) catch {
+    background_jobs.spawnDetached("git-refresh", RefreshCtx, wb.allocator, .{ .wb = wb }, gitRefreshWorker) catch |err| {
         wb.git.refresh_mutex.lock();
         wb.git.refresh_running = false;
         wb.git.refresh_mutex.unlock();
+        wb.logBackgroundError("Start git refresh", err);
         return;
     };
 }
@@ -73,10 +75,10 @@ pub fn scheduleGitPull(wb: *@import("../workbench.zig").Workbench) void {
     if (wb.git.pull_running or wb.git.push_running) return;
     wb.git.pull_running = true;
     wb.git.pull_done = false;
-    wb.setStatus("Git pull running...") catch {};
-    background_jobs.spawnDetached("git-pull", SyncCtx, wb.allocator, .{ .wb = wb }, gitPullWorker) catch {
+    wb.setStatus("Git pull running...") catch |err| wb.logBackgroundError("Update git pull status", err);
+    background_jobs.spawnDetached("git-pull", SyncCtx, wb.allocator, .{ .wb = wb }, gitPullWorker) catch |err| {
         wb.git.pull_running = false;
-        wb.setStatus("Git pull failed to start") catch {};
+        wb.logBackgroundError("Start git pull", err);
         return;
     };
 }
@@ -93,10 +95,10 @@ pub fn scheduleGitPush(wb: *@import("../workbench.zig").Workbench) void {
     if (wb.git.push_running or wb.git.pull_running) return;
     wb.git.push_running = true;
     wb.git.push_done = false;
-    wb.setStatus("Git push running...") catch {};
-    background_jobs.spawnDetached("git-push", SyncCtx, wb.allocator, .{ .wb = wb }, gitPushWorker) catch {
+    wb.setStatus("Git push running...") catch |err| wb.logBackgroundError("Update git push status", err);
+    background_jobs.spawnDetached("git-push", SyncCtx, wb.allocator, .{ .wb = wb }, gitPushWorker) catch |err| {
         wb.git.push_running = false;
-        wb.setStatus("Git push failed to start") catch {};
+        wb.logBackgroundError("Start git push", err);
         return;
     };
 }
@@ -110,7 +112,6 @@ fn gitPushWorker(ctx: *SyncCtx) void {
 }
 
 pub fn runGitWithOutput(wb: *@import("../workbench.zig").Workbench, args: []const []const u8, log_title: []const u8, open_panel_on_error: bool) !i32 {
-    const process_spawn = @import("forge-util").process_spawn;
     const result = process_spawn.runCapture(wb.allocator, args, .{ .cwd = wb.workspace_path }) catch return -1;
     defer wb.allocator.free(result.output);
 
@@ -138,6 +139,19 @@ pub fn runGitWithOutput(wb: *@import("../workbench.zig").Workbench, args: []cons
         }
     }
     return result.exit_code;
+}
+
+fn runGitAction(wb: *@import("../workbench.zig").Workbench, args: []const []const u8, action: []const u8) !void {
+    const exit_code = process_spawn.runWait(wb.allocator, args, .{ .cwd = wb.workspace_path }) catch |err| {
+        wb.logBackgroundError(action, err);
+        return err;
+    };
+    if (exit_code != 0) {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "{s} failed with exit {d}", .{ action, exit_code }) catch "Git action failed";
+        try wb.setStatus(msg);
+        return error.GitActionFailed;
+    }
 }
 
 pub fn flushGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) !bool {
@@ -189,13 +203,12 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
             const status = wb.git.status orelse return;
             if (index >= status.entries.len) return;
             const entry = status.entries[index];
-            const process_spawn = @import("forge-util").process_spawn;
             if (entry.isStaged() and !entry.isUnstaged()) {
                 // It is ONLY staged. Unstage it.
-                _ = process_spawn.runWait(wb.allocator, &.{ "git", "restore", "--staged", entry.path }, .{ .cwd = wb.workspace_path }) catch {};
+                try runGitAction(wb, &.{ "git", "restore", "--staged", entry.path }, "Unstage file");
             } else if (entry.isUnstaged()) {
                 // It is unstaged. Stage it.
-                _ = process_spawn.runWait(wb.allocator, &.{ "git", "add", entry.path }, .{ .cwd = wb.workspace_path }) catch {};
+                try runGitAction(wb, &.{ "git", "add", entry.path }, "Stage file");
             }
             try refreshGitStatus(wb);
         },
@@ -203,15 +216,14 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
             const status = wb.git.status orelse return;
             if (index >= status.entries.len) return;
             const entry = status.entries[index];
-            const process_spawn = @import("forge-util").process_spawn;
             if (entry.isUnstaged()) {
                 if (entry.status[1] == '?') {
                     // Untracked file
                     // We probably should delete the file? Or maybe let user handle it manually, but 'git clean' works.
                     // For now, let's use standard git checkout if tracked, or rm if untracked.
-                    _ = process_spawn.runWait(wb.allocator, &.{ "rm", entry.path }, .{ .cwd = wb.workspace_path }) catch {};
+                    try runGitAction(wb, &.{ "rm", entry.path }, "Discard untracked file");
                 } else {
-                    _ = process_spawn.runWait(wb.allocator, &.{ "git", "checkout", "--", entry.path }, .{ .cwd = wb.workspace_path }) catch {};
+                    try runGitAction(wb, &.{ "git", "checkout", "--", entry.path }, "Discard file changes");
                 }
             }
             try refreshGitStatus(wb);
@@ -226,19 +238,16 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
             try @import("../workbench/git_ops.zig").showGitDiff(wb, path, untracked, info.is_staged);
         },
         .stage_all => {
-            const process_spawn = @import("forge-util").process_spawn;
-            _ = process_spawn.runWait(wb.allocator, &.{ "git", "add", "-A" }, .{ .cwd = wb.workspace_path }) catch {};
+            try runGitAction(wb, &.{ "git", "add", "-A" }, "Stage all files");
             try refreshGitStatus(wb);
         },
         .unstage_all => {
-            const process_spawn = @import("forge-util").process_spawn;
-            _ = process_spawn.runWait(wb.allocator, &.{ "git", "reset" }, .{ .cwd = wb.workspace_path }) catch {};
+            try runGitAction(wb, &.{ "git", "reset" }, "Unstage all files");
             try refreshGitStatus(wb);
         },
         .discard_all => {
-            const process_spawn = @import("forge-util").process_spawn;
-            _ = process_spawn.runWait(wb.allocator, &.{ "git", "checkout", "--", "." }, .{ .cwd = wb.workspace_path }) catch {};
-            _ = process_spawn.runWait(wb.allocator, &.{ "git", "clean", "-fd" }, .{ .cwd = wb.workspace_path }) catch {};
+            try runGitAction(wb, &.{ "git", "checkout", "--", "." }, "Discard tracked changes");
+            try runGitAction(wb, &.{ "git", "clean", "-fd" }, "Discard untracked files");
             try refreshGitStatus(wb);
         },
     }
@@ -286,7 +295,6 @@ pub fn showGitDiff(wb: anytype, path: []const u8, untracked: bool, is_staged: bo
 }
 
 pub fn gitCheckout(wb: anytype, branch: []const u8) !void {
-    const process_spawn = @import("forge-util").process_spawn;
     const exit_code = process_spawn.runWait(wb.allocator, &.{ "git", "checkout", branch }, .{ .cwd = wb.workspace_path }) catch -1;
 
     if (exit_code == 0) {

@@ -55,7 +55,7 @@ pub fn runSearch(wb: anytype) !void {
         return err;
     };
     query_owned = false;
-    wb.setStatus("Search running...") catch {};
+    wb.setStatus("Search running...") catch |err| wb.logBackgroundError("Update search status", err);
 }
 
 const SearchCtx = struct {

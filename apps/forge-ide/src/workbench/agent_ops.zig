@@ -42,7 +42,9 @@ pub fn setAgentModelIndex(wb: anytype, index: usize) !void {
     wb.agent_ui.session.closeMenus();
     for (wb.editor.tabs.tabs.items) |*doc| {
         if (std.mem.endsWith(u8, doc.path, "settings.toml")) {
-            @import("../workspace_io.zig").loadDocument(wb.io, wb.workspace_root, doc) catch {};
+            @import("../workspace_io.zig").loadDocument(wb.io, wb.workspace_root, doc) catch |err| {
+                wb.logBackgroundError("Reload settings document", err);
+            };
         }
     }
     try wb.setStatus("Model saved to ~/.forge/settings.toml");
@@ -464,16 +466,25 @@ pub fn refreshAgentContextPreview(wb: anytype) void {
     };
     if (intent_owned) |intent| {
         defer wb.allocator.free(intent);
-        agent_workflow.refreshContextPreview(&host, intent, active_path) catch {};
+        agent_workflow.refreshContextPreview(&host, intent, active_path) catch |err| {
+            wb.logBackgroundError("Refresh AI context preview", err);
+        };
         return;
     }
-    const prompt = wb.agent_ui.prompt_buffer.content() catch return;
+    const prompt = wb.agent_ui.prompt_buffer.content() catch |err| {
+        wb.logBackgroundError("Read AI prompt for context preview", err);
+        return;
+    };
     defer wb.agent_ui.prompt_buffer.allocator.free(prompt);
     const trimmed = std.mem.trim(u8, prompt, &std.ascii.whitespace);
     if (trimmed.len == 0) {
-        agent_workflow.refreshContextPreview(&host, null, active_path) catch {};
+        agent_workflow.refreshContextPreview(&host, null, active_path) catch |err| {
+            wb.logBackgroundError("Refresh AI context preview", err);
+        };
     } else {
-        agent_workflow.refreshContextPreview(&host, trimmed, active_path) catch {};
+        agent_workflow.refreshContextPreview(&host, trimmed, active_path) catch |err| {
+            wb.logBackgroundError("Refresh AI context preview", err);
+        };
     }
 }
 
@@ -882,19 +893,20 @@ pub fn bridgeFreeConversationSnapshot(context: ?*anyopaque, allocator: std.mem.A
 pub fn bridgeAppendChat(context: ?*anyopaque, role: agent_workflow.ChatRole, content: []const u8) void {
     const wb: *Workbench = @ptrCast(@alignCast(context.?));
     const mapped: ChatRole = if (role == .user) .user else .agent;
-    appendChat(wb, mapped, content) catch {};
+    appendChat(wb, mapped, content) catch |err| wb.logBackgroundError("Append AI chat", err);
 }
 
 pub fn bridgeSetStatus(context: ?*anyopaque, message: []const u8) void {
     const wb: *Workbench = @ptrCast(@alignCast(context.?));
-    wb.setStatus(message) catch {};
+    wb.setStatus(message) catch |err| wb.logBackgroundError("Set AI status", err);
 }
 
 pub fn bridgeEnqueueAgentUi(context: ?*anyopaque, op: agent_ui_queue_mod.Op) void {
     const wb: *Workbench = @ptrCast(@alignCast(context.?));
-    wb.agent_ui.ui_queue.push(wb.allocator, op) catch {
+    wb.agent_ui.ui_queue.push(wb.allocator, op) catch |err| {
         var owned = op;
         owned.deinit(wb.allocator);
+        wb.logBackgroundError("Enqueue AI UI operation", err);
     };
 }
 
@@ -959,8 +971,8 @@ fn applyDirectAgentEdit(wb: anytype, path: []const u8, start_line: usize, end_li
     try wb.events.publish(.{ .file_saved = doc.path });
 
     wb.focused_panel = .editor;
-    wb.explorer.select(trimmed_path) catch {};
-    wb.lsp.diagnostics.setActivePath(trimmed_path) catch {};
+    wb.explorer.select(trimmed_path) catch |err| wb.logBackgroundError("Select edited file", err);
+    wb.lsp.diagnostics.setActivePath(trimmed_path) catch |err| wb.logBackgroundError("Update diagnostics file", err);
     if (@import("editor_ops.zig").lspSyncDocument(wb, doc)) |uri| {
         wb.allocator.free(uri);
     } else |_| {}
@@ -1045,7 +1057,9 @@ pub fn flushAgentUi(wb: anytype) !void {
                 wb.agent_ui.session.worker_running = false;
                 wb.agent_ui.session.unlock();
 
-                agent_workflow.applyManifestText(&host, payload.manifest_text) catch {};
+                agent_workflow.applyManifestText(&host, payload.manifest_text) catch |err| {
+                    wb.logBackgroundError("Apply AI run manifest", err);
+                };
                 if (payload.proposal_rel.len > 0 and wb.agent_ui.session.mode != .ask) {
                     if (agent_workflow.loadProposalPreview(&host, payload.proposal_rel)) {
                         openProposalReview(wb);
@@ -1065,7 +1079,9 @@ pub fn flushAgentUi(wb: anytype) !void {
                     try wb.agent_ui.session.setPhase(.idle, "Spec ready — approve to continue");
                     try wb.setStatus("Spec ready — approve to continue");
                 }
-                agent_workflow.refreshRunHistory(&host) catch {};
+                agent_workflow.refreshRunHistory(&host) catch |err| {
+                    wb.logBackgroundError("Refresh AI run history", err);
+                };
                 try appendAgentRunChat(wb, payload.chat_text, payload.plan_text, stream_snapshot, thinking_snapshot);
                 wb.allocator.free(stream_snapshot);
                 wb.allocator.free(thinking_snapshot);
@@ -1094,7 +1110,9 @@ pub fn flushAgentUi(wb: anytype) !void {
                     wb.io,
                     wb.workspace_root,
                     &wb.agent_ui.session.ephemeral_proposal.?,
-                ) catch {};
+                ) catch |err| {
+                    wb.logBackgroundError("Build proposal review", err);
+                };
 
                 openProposalReview(wb);
             },
@@ -1130,7 +1148,7 @@ pub fn appendChat(wb: anytype, role: ChatRole, content: []const u8) !void {
     wb.chat_history_revision += 1;
     wb.chat_follow_stream = true;
     wb.chat_scroll_to_end_on_ready = true;
-    wb.persistChatHistory() catch {};
+    wb.persistChatHistory() catch |err| wb.logBackgroundError("Persist chat history", err);
 }
 
 fn appendToolChatStep(
@@ -1159,7 +1177,7 @@ fn appendToolChatStep(
     wb.chat_history_revision += 1;
     wb.chat_follow_stream = true;
     wb.chat_scroll_to_end_on_ready = true;
-    wb.persistChatHistory() catch {};
+    wb.persistChatHistory() catch |err| wb.logBackgroundError("Persist chat history", err);
 }
 
 fn finishToolChatStep(wb: anytype, index: u32, kind: []const u8, summary: []const u8) !void {
@@ -1187,7 +1205,7 @@ fn finishToolChatStep(wb: anytype, index: u32, kind: []const u8, summary: []cons
         wb.chat_history_revision += 1;
         wb.chat_follow_stream = true;
         wb.chat_scroll_to_end_on_ready = true;
-        wb.persistChatHistory() catch {};
+        wb.persistChatHistory() catch |err| wb.logBackgroundError("Persist chat history", err);
         return;
     }
 
@@ -1315,10 +1333,10 @@ test "normalizes agent chat wrapper markdown content" {
 
 pub fn bridgeRefreshExplorer(context: ?*anyopaque) void {
     const wb: *Workbench = @ptrCast(@alignCast(context.?));
-    wb.explorer.rebuild(wb.io, wb.workspace_root) catch {};
+    wb.explorer.rebuild(wb.io, wb.workspace_root) catch |err| wb.logBackgroundError("Refresh explorer after AI edit", err);
 }
 
 pub fn bridgeOpenFile(context: ?*anyopaque, path: []const u8) void {
     const wb: *Workbench = @ptrCast(@alignCast(context.?));
-    wb.dispatch(.{ .open_file = path }) catch {};
+    wb.dispatch(.{ .open_file = path }) catch |err| wb.logBackgroundError("Open AI edited file", err);
 }

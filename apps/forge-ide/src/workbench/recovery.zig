@@ -14,7 +14,7 @@ pub fn snapshotDirtyDocs(
     defer allocator.free(session_dir);
     const recovery_dir = try std.fmt.allocPrint(allocator, "{s}/recovery", .{session_dir});
     defer allocator.free(recovery_dir);
-    std.Io.Dir.createDirPath(.cwd(), io, recovery_dir) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, recovery_dir);
 
     for (tabs.tabs.items) |*doc| {
         if (!doc.isDirty()) continue;

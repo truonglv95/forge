@@ -425,8 +425,13 @@ pub const Workbench = struct {
         }.log;
 
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
-        self.user_settings = settings_mod.load(allocator, io, root) catch .{};
-        settings_mod.writeAiPanelFontSize(allocator, io, root, self.user_settings.ai_panel_font_size) catch {};
+        self.user_settings = settings_mod.load(allocator, io, root) catch |err| blk: {
+            self.logBackgroundError("Load settings", err);
+            break :blk .{};
+        };
+        settings_mod.writeAiPanelFontSize(allocator, io, root, self.user_settings.ai_panel_font_size) catch |err| {
+            self.logBackgroundError("Persist AI panel font size", err);
+        };
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
@@ -456,7 +461,9 @@ pub const Workbench = struct {
             self.previous_focus = .editor;
             self.focused_panel = .recovery;
         }
-        agent_workflow.refreshRunHistory(&@import("workbench/agent_ops.zig").agentHost(self)) catch {};
+        agent_workflow.refreshRunHistory(&@import("workbench/agent_ops.zig").agentHost(self)) catch |err| {
+            self.logBackgroundError("Refresh AI run history", err);
+        };
         agent_workflow.scanResumableSession(&@import("workbench/agent_ops.zig").agentHost(self));
         try self.restoreChatHistory();
     }
@@ -475,8 +482,10 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
-        self.persistSessionState() catch {};
-        recovery_mod.snapshotDirtyDocs(self.allocator, self.io, self.workspace_root, &self.editor.tabs) catch {};
+        self.persistSessionState() catch |err| self.logBackgroundError("Persist session state", err);
+        recovery_mod.snapshotDirtyDocs(self.allocator, self.io, self.workspace_root, &self.editor.tabs) catch |err| {
+            self.logBackgroundError("Snapshot dirty documents", err);
+        };
         if (self.conflict_path) |path| self.allocator.free(path);
         if (self.status_message.len > 0) self.allocator.free(self.status_message);
         for (self.agent_ui.chat_history.items) |msg| freeChatMessage(self.allocator, msg);
@@ -690,6 +699,18 @@ pub const Workbench = struct {
         if (self.status_message.len > 0) self.allocator.free(self.status_message);
         self.status_message = try self.allocator.dupeZ(u8, message);
         try self.events.publish(.{ .status_message = self.status_message });
+    }
+
+    pub fn logBackgroundError(self: *Workbench, action: []const u8, err: anyerror) void {
+        std.debug.print("[forge] {s} failed: {s}\n", .{ action, @errorName(err) });
+        var line_buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&line_buf, "[warn] {s} failed: {s}\n", .{ action, @errorName(err) }) catch return;
+        if (self.getOrCreateOutputChannel("forge", "Forge") catch null) |chan| {
+            chan.output.appendChunk(line) catch {};
+        }
+        var status_buf: [128]u8 = undefined;
+        const status = std.fmt.bufPrint(&status_buf, "{s} failed: {s}", .{ action, @errorName(err) }) catch "Background task failed";
+        self.setStatus(status) catch {};
     }
 
     pub fn activeTerminal(self: *Workbench) *terminal_session_mod.TerminalSession {
@@ -1461,7 +1482,7 @@ pub const Workbench = struct {
             });
         }
         if (self.agent_ui.chat_history.items.len != loaded.len or normalized_history) {
-            self.persistChatHistory() catch {};
+            self.persistChatHistory() catch |err| self.logBackgroundError("Normalize chat history", err);
         }
         self.chat_history_revision += 1;
         self.invalidateChatLayout();

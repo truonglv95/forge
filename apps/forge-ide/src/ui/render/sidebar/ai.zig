@@ -30,6 +30,8 @@ pub const Hit = union(enum) {
     open_mcp_config,
     toggle_mcp,
     refresh_mcp,
+    toggle_server: usize,
+    copy_tool: usize,
 };
 
 fn viewportHeight(h: f32) f32 {
@@ -46,6 +48,7 @@ fn contentHeight(wb: *const Workbench) f32 {
                 h += server_header_h;
                 last_server = tool.server_name;
             }
+            if (wb.agent_ui.isMcpServerCollapsed(tool.server_name)) continue;
             h += tool_row_h;
         }
         if (reg.errors.len > 0) {
@@ -95,13 +98,14 @@ fn inRect(px: f32, py: f32, r: anytype) bool {
     return px >= r.x and px <= r.x + r.w and py >= r.y and py <= r.y + r.h;
 }
 
-pub fn hitTest(start_x: f32, w: f32, h: f32, scroll_y: f32, px: f32, py: f32) ?Hit {
+pub fn hitTest(wb: *const Workbench, start_x: f32, w: f32, h: f32, scroll_y: f32, px: f32, py: f32) ?Hit {
     if (px < start_x or px > start_x + w or py < panel_top or py > h - layout.status_height) return null;
     const rects = actionRects(start_x, w, h, scroll_y);
     if (inRect(px, py, rects.open_settings)) return .open_settings;
     if (inRect(px, py, rects.open_mcp_config)) return .open_mcp_config;
     if (inRect(px, py, rects.toggle_mcp)) return .toggle_mcp;
     if (inRect(px, py, rects.refresh_mcp)) return .refresh_mcp;
+    if (listHitTest(wb, start_x, w, h, scroll_y, px, py)) |hit| return hit;
     return null;
 }
 
@@ -111,7 +115,67 @@ pub fn commandForHit(hit: Hit) commands.Command {
         .open_mcp_config => .ai_open_mcp_config,
         .toggle_mcp => .ai_toggle_mcp,
         .refresh_mcp => .ai_refresh_mcp,
+        .toggle_server, .copy_tool => .agent_close_menus,
     };
+}
+
+pub fn handleHit(wb: *Workbench, hit: Hit) !void {
+    switch (hit) {
+        .open_settings, .open_mcp_config, .toggle_mcp, .refresh_mcp => try wb.dispatch(commandForHit(hit)),
+        .toggle_server => |server_index| {
+            const server_name = serverNameAt(wb, server_index) orelse return;
+            const collapsed = try wb.agent_ui.toggleMcpServerCollapsed(server_name);
+            try wb.setStatus(if (collapsed) "MCP server collapsed" else "MCP server expanded");
+        },
+        .copy_tool => |tool_index| {
+            const tool = toolAt(wb, tool_index) orelse return;
+            renderer.Renderer.setClipboardText(tool.qualified_name);
+            try wb.setStatus("MCP tool name copied");
+        },
+    }
+}
+
+fn serverNameAt(wb: *const Workbench, server_index: usize) ?[]const u8 {
+    const reg = wb.ai_mcp_registry orelse return null;
+    var current: usize = 0;
+    var last_server: ?[]const u8 = null;
+    for (reg.tools) |tool| {
+        if (last_server == null or !std.mem.eql(u8, last_server.?, tool.server_name)) {
+            if (current == server_index) return tool.server_name;
+            current += 1;
+            last_server = tool.server_name;
+        }
+    }
+    return null;
+}
+
+fn toolAt(wb: *const Workbench, tool_index: usize) ?@import("forge-ai").mcp_registry.RegisteredTool {
+    const reg = wb.ai_mcp_registry orelse return null;
+    if (tool_index >= reg.tools.len) return null;
+    return reg.tools[tool_index];
+}
+
+fn listHitTest(wb: *const Workbench, start_x: f32, w: f32, h: f32, scroll_y: f32, px: f32, py: f32) ?Hit {
+    const reg = wb.ai_mcp_registry orelse return null;
+    const content_x = start_x + inset;
+    const content_w = w - inset * 2;
+    var cy = panel_top + header_h + toolsTopOffset() - scroll_y;
+    var last_server: ?[]const u8 = null;
+    var server_index: usize = 0;
+    for (reg.tools, 0..) |tool, tool_index| {
+        if (last_server == null or !std.mem.eql(u8, last_server.?, tool.server_name)) {
+            const header_rect = .{ .x = content_x, .y = cy, .w = content_w, .h = server_header_h };
+            if (inRect(px, py, header_rect) and py <= h - layout.status_height) return .{ .toggle_server = server_index };
+            cy += server_header_h;
+            server_index += 1;
+            last_server = tool.server_name;
+        }
+        if (wb.agent_ui.isMcpServerCollapsed(tool.server_name)) continue;
+        const row_rect = .{ .x = content_x, .y = cy, .w = content_w, .h = tool_row_h };
+        if (inRect(px, py, row_rect) and py <= h - layout.status_height) return .{ .copy_tool = tool_index };
+        cy += tool_row_h;
+    }
+    return null;
 }
 
 fn drawUiText(text: []const u8, x: f32, y: f32, size: f32, c: renderer.Color) void {
@@ -194,19 +258,26 @@ fn drawTimelineCard(wb: *Workbench, x: f32, y: f32, w: f32) void {
     drawStrongText("AI RUN TIMELINE", x + 12, y + 10, 11.0, theme_loader.toColor(theme.colors.text_muted));
 
     var phase_buf: [192]u8 = undefined;
-    const phase_text = std.fmt.bufPrint(
-        &phase_buf,
-        "{s} · {s}",
-        .{ @tagName(snap.phase), if (snap.status_line.len > 0) snap.status_line else "idle" },
-    ) catch @tagName(snap.phase);
+    const phase_text = if (snap.provider_label.len > 0)
+        std.fmt.bufPrint(
+            &phase_buf,
+            "{s} · {s} · {s}",
+            .{ @tagName(snap.phase), snap.provider_label, if (snap.status_line.len > 0) snap.status_line else "idle" },
+        ) catch @tagName(snap.phase)
+    else
+        std.fmt.bufPrint(
+            &phase_buf,
+            "{s} · {s}",
+            .{ @tagName(snap.phase), if (snap.status_line.len > 0) snap.status_line else "idle" },
+        ) catch @tagName(snap.phase);
     drawTimelineDot(x + 14, y + 34, snap.worker_running, theme);
     drawClippedText(phase_text, x + 28, y + 29, w - 40, 18, 10.5, theme_loader.toColor(theme.colors.text_primary), false);
 
     var metrics_buf: [192]u8 = undefined;
     const metrics_text = std.fmt.bufPrint(
         &metrics_buf,
-        "{d} context entries · {d} stream bytes · {d} thinking bytes",
-        .{ snap.context_entry_count, snap.stream_len, snap.thinking_len },
+        "{d} context entries · {d} stream · {d} thinking · {d} validations",
+        .{ snap.context_entry_count, snap.stream_len, snap.thinking_len, snap.validation_count },
     ) catch "Run metrics unavailable";
     drawTimelineDot(x + 14, y + 54, snap.context_entry_count > 0, theme);
     drawClippedText(metrics_text, x + 28, y + 49, w - 40, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
@@ -225,8 +296,23 @@ fn drawTimelineCard(wb: *Workbench, x: f32, y: f32, w: f32) void {
     wb.agent_ui.session.lock();
     defer wb.agent_ui.session.unlock();
     const steps = wb.agent_ui.session.agent_steps.items;
-    const start = if (steps.len > 3) steps.len - 3 else 0;
-    var line_y = y + 94;
+    var running_steps: usize = 0;
+    for (steps) |step| {
+        if (step.running) running_steps += 1;
+    }
+    var timing_buf: [192]u8 = undefined;
+    const timing_text = if (snap.generation_elapsed_ms) |elapsed|
+        if (snap.first_token_latency_ms) |ttft|
+            std.fmt.bufPrint(&timing_buf, "Elapsed {d}ms · first token {d}ms · {d} active steps", .{ elapsed, ttft, running_steps }) catch "Timing unavailable"
+        else
+            std.fmt.bufPrint(&timing_buf, "Elapsed {d}ms · waiting first token · {d} active steps", .{ elapsed, running_steps }) catch "Timing unavailable"
+    else
+        std.fmt.bufPrint(&timing_buf, "{d} recorded steps · {d} active", .{ steps.len, running_steps }) catch "Timing unavailable";
+    drawTimelineDot(x + 14, y + 94, running_steps > 0, theme);
+    drawClippedText(timing_text, x + 28, y + 89, w - 40, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
+
+    const start = if (steps.len > 2) steps.len - 2 else 0;
+    var line_y = y + 114;
     var i = start;
     while (i < steps.len) : (i += 1) {
         const step = steps[i];
@@ -296,13 +382,14 @@ fn serverToolStats(reg: anytype, server_name: []const u8) ServerStats {
     return out;
 }
 
-fn drawServerHeader(reg: anytype, server_name: []const u8, x: f32, y: f32, w: f32, theme: anytype) void {
+fn drawServerHeader(reg: anytype, server_name: []const u8, collapsed: bool, x: f32, y: f32, w: f32, theme: anytype) void {
     const stats = serverToolStats(reg, server_name);
     renderer.Renderer.drawRect(x + 8, y + server_header_h - 1, w - 16, 1, theme_loader.toColor(theme.colors.border));
-    drawStrongText(server_name, x + 16, y + 8, 11.0, theme_loader.toColor(theme.colors.text_primary));
+    renderer.Renderer.drawSvg(if (collapsed) renderer.icons.chevron_right else renderer.icons.chevron_down, x + 12, y + 7, 14, 14, theme_loader.toColor(theme.colors.text_muted));
+    drawStrongText(server_name, x + 30, y + 8, 11.0, theme_loader.toColor(theme.colors.text_primary));
     var buf: [96]u8 = undefined;
     const summary = std.fmt.bufPrint(&buf, "{d} tools · {d} low · {d} med · {d} high", .{ stats.total, stats.low, stats.medium, stats.high }) catch "tools";
-    drawClippedText(summary, x + 112, y + 8, w - 128, 16, 10.0, theme_loader.toColor(theme.colors.text_muted), false);
+    drawClippedText(summary, x + 126, y + 8, w - 142, 16, 10.0, theme_loader.toColor(theme.colors.text_muted), false);
 }
 
 fn drawErrorRow(server_name: []const u8, message: []const u8, x: f32, y: f32, w: f32, theme: anytype) void {
@@ -328,11 +415,12 @@ fn drawMcpRows(wb: *Workbench, start_x: f32, cy_start: f32, w: f32, h: f32) void
         for (reg.tools) |tool| {
             if (last_server == null or !std.mem.eql(u8, last_server.?, tool.server_name)) {
                 if (cy + server_header_h >= visible_top and cy < visible_bottom) {
-                    drawServerHeader(reg, tool.server_name, start_x, cy, w, theme);
+                    drawServerHeader(reg, tool.server_name, wb.agent_ui.isMcpServerCollapsed(tool.server_name), start_x, cy, w, theme);
                 }
                 cy += server_header_h;
                 last_server = tool.server_name;
             }
+            if (wb.agent_ui.isMcpServerCollapsed(tool.server_name)) continue;
             if (cy + tool_row_h >= visible_top and cy < visible_bottom) {
                 drawToolRow(tool.server_name, tool.tool_name, tool.annotations_json, start_x, cy, w, theme);
             }
