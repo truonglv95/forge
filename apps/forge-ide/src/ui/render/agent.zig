@@ -3,6 +3,7 @@ const renderer = @import("forge-renderer");
 const state = @import("../core/state.zig");
 const layout = @import("../core/layout.zig");
 const context_inspector = @import("../agent/context_inspector.zig");
+const chat_viewport = @import("../agent/chat_viewport.zig");
 const chat_bubble = @import("../agent/chat_bubble.zig");
 const tool_step_card = @import("../agent/tool_step_card.zig");
 const agent_composer = @import("../agent/agent_composer.zig");
@@ -17,8 +18,6 @@ const metrics = @import("../agent/metrics.zig");
 const Workbench = @import("../../workbench.zig").Workbench;
 const chat_layout = @import("../../workbench/chat_layout.zig");
 const chat_message_lines = @import("../agent/chat_message_lines.zig");
-
-const chat_composer_gap: f32 = metrics.chat.composer_gap;
 
 fn phaseShowsLive(phase: anytype) bool {
     return switch (phase) {
@@ -71,34 +70,27 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     }
     renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx, icon_y, 16, 16, icon_c);
 
-    const composer_layout = agent_composer.computeLayout(agent_x, agent_w, h, snap.attachment_count, &wb.agent_ui.prompt_buffer);
     wb.clampPromptScroll(agent_w);
-    const context_visible = context_inspector.isVisible(
-        snap.context_entry_count,
-        snap.context_used_bytes,
-        snap.scope_count > 0,
-        snap.has_routing_preview,
-    );
     wb.agent_ui.session.lock();
     const context_has_detail = wb.agent_ui.session.context_selected_index != null and snap.context_inspector_expanded;
     wb.agent_ui.session.unlock();
-    const context_top = context_inspector.stripTop(
-        h,
-        snap.context_inspector_expanded,
-        snap.context_entry_count,
-        snap.attachment_count,
-        agent_w,
-        &wb.agent_ui.prompt_buffer,
-        context_has_detail,
-        snap.has_routing_preview,
-    );
-    const chat_bottom = if (context_visible)
-        @min(composer_layout.composer_top - chat_composer_gap, context_top - context_inspector.chat_gap)
-    else
-        composer_layout.composer_top - chat_composer_gap;
-
-    const chat_top = agent_panel.chat_content_top + metrics.panel.chat_top_gap;
-    const chat_viewport_h = @max(0, chat_bottom - chat_top);
+    const viewport = chat_viewport.compute(.{
+        .agent_x = agent_x,
+        .agent_w = agent_w,
+        .window_h = h,
+        .attachment_count = snap.attachment_count,
+        .context_entry_count = snap.context_entry_count,
+        .context_used_bytes = snap.context_used_bytes,
+        .context_expanded = snap.context_inspector_expanded,
+        .context_has_detail = context_has_detail,
+        .scope_count = snap.scope_count,
+        .has_routing = snap.has_routing_preview,
+        .prompt = &wb.agent_ui.prompt_buffer,
+    });
+    const composer_layout = viewport.composer;
+    const chat_bottom = viewport.chat_bottom;
+    const chat_top = viewport.chat_top;
+    const chat_viewport_h = viewport.chat_viewport_h;
     const empty_space = @max(0, chat_viewport_h - wb.chat_layout.content_h);
     var content_y: f32 = chat_top - wb.chat_scroll_y + empty_space;
 
@@ -290,18 +282,18 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         renderer.Renderer.drawText("Always Approve", actions.approve_always.x + 10, actions.approve_always.y + 6, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
     } else {
         const chat_top_scroll = chat_top;
-        const chat_viewport = @max(0, chat_bottom - chat_top_scroll);
+        const chat_scroll_viewport_h = @max(0, chat_bottom - chat_top_scroll);
         const chat_content = wb.chat_layout.content_h;
         const chat_max = wb.chat_layout.max_scroll;
-        const show_chat_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, chat_top_scroll, agent_w, chat_viewport);
+        const show_chat_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, agent_x, chat_top_scroll, agent_w, chat_scroll_viewport_h);
         scrollbar.drawVertical(
             agent_x + agent_w - scrollbar.track_w - 4,
             chat_top_scroll,
-            chat_viewport,
+            chat_scroll_viewport_h,
             wb.chat_scroll_y,
             chat_max,
             chat_content,
-            chat_viewport,
+            chat_scroll_viewport_h,
             show_chat_scroll,
         );
     }

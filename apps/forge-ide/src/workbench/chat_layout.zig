@@ -1,13 +1,12 @@
 const std = @import("std");
-const context_inspector_mod = @import("../ui/agent/context_inspector.zig");
 const agent_panel_mod = @import("../ui/agent/agent_panel.zig");
 const chat_bubble_mod = @import("../ui/agent/chat_bubble.zig");
 const tool_step_card_mod = @import("../ui/agent/tool_step_card.zig");
 const chat_message_lines_mod = @import("../ui/agent/chat_message_lines.zig");
 const agent_session_mod = @import("../agent/session.zig");
 const metrics = @import("../ui/agent/metrics.zig");
+const chat_viewport = @import("../ui/agent/chat_viewport.zig");
 
-const chat_composer_gap: f32 = metrics.chat.composer_gap;
 const chat_bottom_padding: f32 = metrics.chat.bottom_padding;
 const thinking_bottom_padding: f32 = metrics.chat.thinking_bottom_padding;
 const bottom_anchor_threshold: f32 = metrics.chat.bottom_anchor_threshold;
@@ -318,33 +317,19 @@ fn layoutChrome(wb: anytype, agent_h: f32, agent_w: f32) struct {
     viewport: f32,
 } {
     const chrome = agentChrome(wb);
-    _ = chrome.expanded;
-    _ = chrome.entry_count;
-    _ = chrome.has_detail;
-    _ = chrome.has_routing;
-    var bottom = agent_panel_mod.bottomReserved(chrome.attachment_count, agent_w, &wb.agent_ui.prompt_buffer);
-    const composer_top = @import("../ui/agent/agent_composer.zig").composerTop(agent_h, chrome.attachment_count, agent_w, &wb.agent_ui.prompt_buffer);
-    const chat_top = agent_panel_mod.chat_content_top + metrics.panel.chat_top_gap;
-    const context_visible = context_inspector_mod.isVisible(chrome.entry_count, chrome.used_bytes, chrome.has_scope, chrome.has_routing);
-    const context_top = context_inspector_mod.stripTop(
-        agent_h,
-        chrome.expanded,
-        chrome.entry_count,
-        chrome.attachment_count,
-        agent_w,
-        &wb.agent_ui.prompt_buffer,
-        chrome.has_detail,
-        chrome.has_routing,
-    );
-    if (context_visible) {
-        bottom += context_inspector_mod.stripHeight(chrome.expanded, chrome.entry_count, chrome.has_detail, chrome.has_routing) + context_inspector_mod.chat_gap;
-    }
-    const chat_bottom = if (context_visible)
-        @min(composer_top - chat_composer_gap, context_top - context_inspector_mod.chat_gap)
-    else
-        composer_top - chat_composer_gap;
-    const viewport = @max(0, chat_bottom - chat_top);
-    return .{ .bottom = bottom, .viewport = viewport };
+    const viewport = chat_viewport.compute(.{
+        .agent_w = agent_w,
+        .window_h = agent_h,
+        .attachment_count = chrome.attachment_count,
+        .context_entry_count = chrome.entry_count,
+        .context_used_bytes = chrome.used_bytes,
+        .context_expanded = chrome.expanded,
+        .context_has_detail = chrome.has_detail,
+        .scope_count = if (chrome.has_scope) 1 else 0,
+        .has_routing = chrome.has_routing,
+        .prompt = &wb.agent_ui.prompt_buffer,
+    });
+    return .{ .bottom = viewport.bottom_reserved, .viewport = viewport.chat_viewport_h };
 }
 
 pub fn ensureForWidth(wb: anytype, agent_h: f32, agent_w: f32) void {
