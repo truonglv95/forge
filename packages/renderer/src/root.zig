@@ -328,6 +328,28 @@ pub const Renderer = struct {
         backend.forge_backend_draw_styled_text(@ptrCast(text.ptr), text.len, x, y, font_size, @ptrCast(spans.ptr), spans.len);
     }
 
+    pub fn drawStyledTextWithStyle(text: []const u8, x: f32, y: f32, font_size: f32, spans: []const TextSpan, text_style: TextStyle) void {
+        if (text.len == 0) return;
+        if (spans.len == 0) {
+            drawTextWithStyle(text, x, y, font_size, .{ .r = 1, .g = 1, .b = 1, .a = 1 }, text_style);
+            return;
+        }
+
+        var cursor_x = x;
+        var previous_end: usize = 0;
+        for (spans) |span| {
+            const start = @min(@as(usize, @intCast(span.offset)), text.len);
+            const end = @min(start + @as(usize, @intCast(span.length)), text.len);
+            if (end <= start) continue;
+            if (start > previous_end) {
+                cursor_x += measureTextWithStyle(text[previous_end..start], font_size, text_style);
+            }
+            drawTextWithStyle(text[start..end], cursor_x, y, font_size, .{ .r = span.r, .g = span.g, .b = span.b, .a = span.a }, text_style);
+            cursor_x += measureTextWithStyle(text[start..end], font_size, text_style);
+            previous_end = end;
+        }
+    }
+
     pub fn drawSvg(svg_string: [:0]const u8, x: f32, y: f32, w: f32, h: f32, color: Color) void {
         backend.forge_backend_draw_svg(svg_string.ptr, x, y, w, h, 0, color.r, color.g, color.b, color.a);
     }

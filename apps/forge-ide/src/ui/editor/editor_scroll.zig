@@ -8,13 +8,14 @@ pub const breadcrumbs_height: f32 = 22;
 pub const editor_chrome_height: f32 = tab_bar_height + breadcrumbs_height;
 pub const content_top: f32 = 87;
 pub const text_inset_y: f32 = 5;
+pub const text_style = renderer.TextStyle.mono;
 
 pub fn firstLineY(_: *const workspace.Theme) f32 {
-    return content_top + text_inset_y;
+    return @round(content_top + text_inset_y);
 }
 
 pub fn lineHeight(theme: *const workspace.Theme) f32 {
-    return theme.lineHeight();
+    return @round(theme.lineHeight());
 }
 
 pub fn charWidth(theme: *const workspace.Theme) f32 {
@@ -52,7 +53,7 @@ pub fn viewportWidth(editor_w: f32, theme: *const workspace.Theme) f32 {
 }
 
 pub fn textWidth(text: []const u8, font_size: f32) f32 {
-    return renderer.Renderer.measureText(text, font_size);
+    return renderer.Renderer.measureTextWithStyle(text, font_size, text_style);
 }
 
 pub fn cursorX(line: []const u8, col: usize, font_size: f32) f32 {

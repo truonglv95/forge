@@ -1031,6 +1031,35 @@ pub const Workbench = struct {
         try self.setStatus(msg);
     }
 
+    pub fn setEditorFontSize(self: *Workbench, font_size: f32) !void {
+        const next = std.math.clamp(font_size, 8.0, 32.0);
+        self.user_settings.font_size = next;
+        self.applyEditorTypographyRuntime();
+        try settings_mod.writeEditorFontSize(self.allocator, self.io, self.workspace_root, next);
+        self.reloadOpenSettingsDocuments();
+        var buf: [96]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Editor font size set to {d:.1}px", .{next}) catch "Editor font size updated";
+        try self.setStatus(msg);
+    }
+
+    pub fn setEditorLineHeight(self: *Workbench, line_height: f32) !void {
+        const next = std.math.clamp(line_height, 1.0, 2.5);
+        self.user_settings.line_height = next;
+        self.applyEditorTypographyRuntime();
+        try settings_mod.writeEditorLineHeight(self.allocator, self.io, self.workspace_root, next);
+        self.reloadOpenSettingsDocuments();
+        var buf: [96]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Editor line height set to {d:.2}", .{next}) catch "Editor line height updated";
+        try self.setStatus(msg);
+    }
+
+    fn applyEditorTypographyRuntime(self: *Workbench) void {
+        settings_mod.applyToTheme(self.user_settings, &self.theme);
+        @import("theme_loader.zig").syncFontMetrics(&self.theme);
+        @import("theme_loader.zig").applyToRenderer(&self.theme);
+        self.invalidateChatLayout();
+    }
+
     fn reloadOpenSettingsDocuments(self: *Workbench) void {
         for (self.editor.tabs.tabs.items) |*doc| {
             if (std.mem.endsWith(u8, doc.path, "settings.toml")) {

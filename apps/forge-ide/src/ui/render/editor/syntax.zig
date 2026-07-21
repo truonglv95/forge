@@ -1,6 +1,7 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
 const render_theme = @import("../theme.zig");
+const editor_scroll = @import("../../editor/editor_scroll.zig");
 const Buffer = @import("forge-editor").Buffer;
 const lsp = @import("forge-lsp");
 
@@ -359,7 +360,7 @@ pub fn drawHighlightedLine(
             span_count += 1;
         }
         if (span_count > 0) {
-            renderer.Renderer.drawStyledText(line, x, y, font_size, spans[0..span_count]);
+            renderer.Renderer.drawStyledTextWithStyle(line, x, @round(y), font_size, spans[0..span_count], editor_scroll.text_style);
             return;
         }
     }
@@ -376,7 +377,7 @@ pub fn drawHighlightedLine(
         span_count += 1;
     }
     if (span_count == 0) return;
-    renderer.Renderer.drawStyledText(line, x, y, font_size, spans[0..span_count]);
+    renderer.Renderer.drawStyledTextWithStyle(line, x, @round(y), font_size, spans[0..span_count], editor_scroll.text_style);
 }
 
 test "detects editor syntax language from path" {

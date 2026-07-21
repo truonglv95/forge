@@ -4,6 +4,7 @@ const workspace = @import("forge-workspace");
 pub const Settings = struct {
     tab_width: u8 = 4,
     font_size: f32 = 14,
+    line_height: f32 = 1.5,
     ai_panel_font_size: f32 = @import("../ui/agent/metrics.zig").markdown.default_body_font_size,
     word_wrap: bool = false,
     format_on_save: bool = false,
@@ -103,6 +104,14 @@ fn parseSettingsContent(settings: *Settings, allocator: std.mem.Allocator, conte
                 if (settings.terminal_shell) |old| allocator.free(old);
                 settings.terminal_shell = try allocator.dupe(u8, unquoted);
             }
+        } else if (std.mem.eql(u8, section, "theme")) {
+            if (std.mem.eql(u8, key, "font_size")) {
+                const parsed = std.fmt.parseFloat(f32, value) catch continue;
+                if (parsed >= 8 and parsed <= 32) settings.font_size = parsed;
+            } else if (std.mem.eql(u8, key, "line_height")) {
+                const parsed = std.fmt.parseFloat(f32, value) catch continue;
+                if (parsed >= 1.0 and parsed <= 2.5) settings.line_height = parsed;
+            }
         } else if (std.mem.eql(u8, section, "ai_panel")) {
             if (std.mem.eql(u8, key, "font_size")) {
                 const parsed = std.fmt.parseFloat(f32, value) catch continue;
@@ -142,8 +151,67 @@ fn replaceStringSetting(allocator: std.mem.Allocator, field: *[]const u8, owned:
 
 pub fn applyToTheme(settings: Settings, theme: *workspace.Theme) void {
     theme.editor_font_size = settings.font_size;
+    theme.line_height_scale = settings.line_height;
     theme.tab_width = settings.tab_width;
     @import("../ui/agent/chat_markdown.zig").configureFontSize(settings.ai_panel_font_size);
+}
+
+pub fn writeEditorFontSize(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    font_size: f32,
+) !void {
+    const value = std.math.clamp(font_size, 8.0, 32.0);
+    const value_text = try std.fmt.allocPrint(allocator, "{d:.1}", .{value});
+    defer allocator.free(value_text);
+    try writeThemeValue(allocator, io, root, "font_size", value_text);
+}
+
+pub fn writeEditorLineHeight(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    line_height: f32,
+) !void {
+    const value = std.math.clamp(line_height, 1.0, 2.5);
+    const value_text = try std.fmt.allocPrint(allocator, "{d:.2}", .{value});
+    defer allocator.free(value_text);
+    try writeThemeValue(allocator, io, root, "line_height", value_text);
+}
+
+fn writeThemeValue(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    key: []const u8,
+    value_text: []const u8,
+) !void {
+    if (readWorkspaceSettings(allocator, io, root)) |workspace_content| {
+        defer allocator.free(workspace_content);
+        if (settingsContentHasKey(workspace_content, "theme", key)) {
+            const updated = try upsertTomlValue(allocator, workspace_content, "theme", key, value_text);
+            defer allocator.free(updated);
+            const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
+            try workspace.atomic.replaceFile(io, root, wp, updated);
+            return;
+        }
+    } else |_| {}
+
+    const home_settings = try workspace.global_store.joinHome(allocator, "settings.toml");
+    defer allocator.free(home_settings);
+
+    const content = workspace.global_store.readAbsoluteFile(allocator, io, home_settings) catch {
+        const default_content = try std.fmt.allocPrint(allocator, "[theme]\n{s} = {s}\n", .{ key, value_text });
+        defer allocator.free(default_content);
+        try workspace.global_store.replaceAbsoluteFile(io, home_settings, default_content);
+        return;
+    };
+    defer allocator.free(content);
+
+    const updated = try upsertTomlValue(allocator, content, "theme", key, value_text);
+    defer allocator.free(updated);
+    try workspace.global_store.replaceAbsoluteFile(io, home_settings, updated);
 }
 
 pub fn writeAiPanelFontSize(

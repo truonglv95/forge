@@ -28,6 +28,10 @@ pub const Hit = union(enum) {
     toggle_word_wrap,
     ai_panel_font_decrease,
     ai_panel_font_increase,
+    editor_font_decrease,
+    editor_font_increase,
+    editor_line_height_decrease,
+    editor_line_height_increase,
     ai_edit_provider,
     ai_edit_model,
     ai_edit_embedding_provider,
@@ -209,7 +213,12 @@ pub fn draw(wb: *Workbench, window_w: f32, window_h: f32) void {
 
         var editor_font_buf: [64:0]u8 = undefined;
         const editor_font_text = std.fmt.bufPrintZ(&editor_font_buf, "{d:.1}px", .{wb.user_settings.font_size}) catch "default";
-        drawValueRow(content_x + 32, cy, content_w - 64, "Editor Font Size", editor_font_text, theme);
+        drawStepperRow(content_x + 32, cy, content_w - 64, "Editor Font Size", "Controls code text size in editor panes.", editor_font_text, theme);
+        cy += 54;
+
+        var line_height_buf: [64:0]u8 = undefined;
+        const line_height_text = std.fmt.bufPrintZ(&line_height_buf, "{d:.2}", .{wb.user_settings.line_height}) catch "default";
+        drawStepperRow(content_x + 32, cy, content_w - 64, "Editor Line Height", "Controls vertical rhythm for code, cursor, and selections.", line_height_text, theme);
     } else if (wb.settings_modal_tab == .project_forge) {
         // Draw Project Header
         renderer.Renderer.drawText(wb.workspace_name, content_x + 32, cy, 20.0, text_primary);
@@ -323,7 +332,7 @@ pub fn hitTestPoint(wb: *Workbench, window_w: f32, window_h: f32, px: f32, py: f
         const content_x: f32 = modal_x + sidebar_w;
         const content_w: f32 = modal_w - sidebar_w;
         const row_x = content_x + 32;
-        const row_y = modal_y + 94;
+        var row_y = modal_y + 94;
         const row_w = content_w - 64;
         if (px >= row_x and px <= row_x + row_w and py >= row_y and py <= row_y + 44) {
             const button_w: f32 = 32;
@@ -333,6 +342,26 @@ pub fn hitTestPoint(wb: *Workbench, window_w: f32, window_h: f32, px: f32, py: f
             const hit_pad: f32 = 6;
             if (px >= minus_x - hit_pad and px <= minus_x + button_w + hit_pad) return .ai_panel_font_decrease;
             if (px >= plus_x - hit_pad and px <= plus_x + button_w + hit_pad) return .ai_panel_font_increase;
+        }
+        row_y += 54;
+        if (px >= row_x and px <= row_x + row_w and py >= row_y and py <= row_y + 44) {
+            const button_w: f32 = 32;
+            const gap: f32 = 8;
+            const plus_x = row_x + row_w - button_w;
+            const minus_x = plus_x - gap - button_w;
+            const hit_pad: f32 = 6;
+            if (px >= minus_x - hit_pad and px <= minus_x + button_w + hit_pad) return .editor_font_decrease;
+            if (px >= plus_x - hit_pad and px <= plus_x + button_w + hit_pad) return .editor_font_increase;
+        }
+        row_y += 54;
+        if (px >= row_x and px <= row_x + row_w and py >= row_y and py <= row_y + 44) {
+            const button_w: f32 = 32;
+            const gap: f32 = 8;
+            const plus_x = row_x + row_w - button_w;
+            const minus_x = plus_x - gap - button_w;
+            const hit_pad: f32 = 6;
+            if (px >= minus_x - hit_pad and px <= minus_x + button_w + hit_pad) return .editor_line_height_decrease;
+            if (px >= plus_x - hit_pad and px <= plus_x + button_w + hit_pad) return .editor_line_height_increase;
         }
     } else if (wb.settings_modal_tab == .models) {
         const content_x: f32 = modal_x + sidebar_w;

@@ -125,7 +125,8 @@ pub fn syncFontMetrics(theme: *workspace.Theme) void {
     var lh: f32 = 0;
     var baseline: f32 = 0;
     renderer.Renderer.getFontMetrics(theme.editor_font_size, &cw, &lh, &baseline);
-    theme.measured_char_width = cw;
+    const mono_cw = renderer.Renderer.measureTextWithStyle("M", theme.editor_font_size, renderer.TextStyle.mono);
+    theme.measured_char_width = if (mono_cw > 0) mono_cw else cw;
     theme.measured_line_height = lh;
     theme.measured_baseline = baseline;
 }

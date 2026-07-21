@@ -17,6 +17,14 @@ const overlays = @import("overlays.zig");
 const conflict_resolver = @import("../../../workbench/conflict_resolver.zig");
 const inlay_hints_render = @import("inlay_hints.zig");
 
+fn drawEditorText(text: []const u8, x: f32, y: f32, font_size: f32, color: renderer.Color) void {
+    renderer.Renderer.drawTextWithStyle(text, x, @round(y), font_size, color, editor_scroll.text_style);
+}
+
+fn measureEditorText(text: []const u8, font_size: f32) f32 {
+    return renderer.Renderer.measureTextWithStyle(text, font_size, editor_scroll.text_style);
+}
+
 pub fn drawEditorViewport(
     wb: *Workbench,
     editor_buf: *Buffer,
@@ -202,11 +210,11 @@ pub fn drawEditorViewport(
                         break :blk false;
                     };
                     if (debug_here) {
-                        renderer.Renderer.drawText("→", editor_x + 2, line_num_y, font_size, syntax.color(theme.colors.accent));
+                        drawEditorText("→", editor_x + 2, line_num_y, font_size, syntax.color(theme.colors.accent));
                     }
                     var num_buf: [16]u8 = undefined;
                     const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{seg.buf_line + 1}) catch "";
-                    renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, syntax.color(theme.colors.line_number));
+                    drawEditorText(line_str, editor_x + 10, line_num_y, font_size, syntax.color(theme.colors.line_number));
                     if (show_diags) {
                         if (diag_store.worstSeverityOnLine(wb.lsp.diagnostics.list, seg.buf_line)) |severity| {
                             const marker = switch (severity) {
@@ -219,7 +227,7 @@ pub fn drawEditorViewport(
                                 .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
                                 else => syntax.color(theme.colors.text_muted),
                             };
-                            renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
+                            drawEditorText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
                         }
                     }
                 }
@@ -243,11 +251,11 @@ pub fn drawEditorViewport(
                     break :blk false;
                 };
                 if (debug_here) {
-                    renderer.Renderer.drawText("→", editor_x + 2, line_num_y, font_size, syntax.color(theme.colors.accent));
+                    drawEditorText("→", editor_x + 2, line_num_y, font_size, syntax.color(theme.colors.accent));
                 }
                 var num_buf: [16]u8 = undefined;
                 const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{idx + 1}) catch "";
-                renderer.Renderer.drawText(line_str, editor_x + 10, line_num_y, font_size, syntax.color(theme.colors.line_number));
+                drawEditorText(line_str, editor_x + 10, line_num_y, font_size, syntax.color(theme.colors.line_number));
                 if (show_diags) {
                     if (diag_store.worstSeverityOnLine(wb.lsp.diagnostics.list, idx)) |severity| {
                         const marker = switch (severity) {
@@ -260,11 +268,11 @@ pub fn drawEditorViewport(
                             .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
                             else => syntax.color(theme.colors.text_muted),
                         };
-                        renderer.Renderer.drawText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
+                        drawEditorText(marker, editor_x + gutter - 14, line_num_y, font_size, marker_color);
                     }
                 }
                 if (review_overlay.reviewLineHasChange(resolved_hunks.slice(), idx)) {
-                    renderer.Renderer.drawText("±", editor_x + gutter - 14, line_num_y, font_size, .{ .r = 0.55, .g = 0.85, .b = 0.95, .a = 1.0 });
+                    drawEditorText("±", editor_x + gutter - 14, line_num_y, font_size, .{ .r = 0.55, .g = 0.85, .b = 0.95, .a = 1.0 });
                 }
             }
             line_num_y += line_h;
@@ -352,7 +360,7 @@ pub fn drawEditorViewport(
                     const line = editor_buf.lineAt(seg.buf_line);
                     const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
                     if (show_editor_cursor) {
-                        renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                        drawEditorText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
                     }
                     wb.editor.ghost.mutex.lock();
                     if (wb.editor.ghost.ghost_text) |gt| {
@@ -362,11 +370,11 @@ pub fn drawEditorViewport(
                             var is_first = true;
                             while (it.next()) |gline| {
                                 if (is_first) {
-                                    renderer.Renderer.drawText(gline, cursor_x, ghost_y, font_size, syntax.color(theme.colors.text_muted));
+                                    drawEditorText(gline, cursor_x, ghost_y, font_size, syntax.color(theme.colors.text_muted));
                                     is_first = false;
                                 } else {
                                     ghost_y += line_h;
-                                    renderer.Renderer.drawText(gline, text_x + editor_scroll.cursorX(line, 0, font_size), ghost_y, font_size, syntax.color(theme.colors.text_muted));
+                                    drawEditorText(gline, text_x + editor_scroll.cursorX(line, 0, font_size), ghost_y, font_size, syntax.color(theme.colors.text_muted));
                                 }
                             }
                         }
@@ -459,18 +467,18 @@ pub fn drawEditorViewport(
                     const line = editor_buf.lineAt(idx);
                     const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
                     if (wb.ime_text) |ime_text| {
-                        renderer.Renderer.drawText(ime_text, cursor_x, line_num_y, font_size, syntax.color(theme.colors.text_primary));
-                        const ime_w = renderer.Renderer.measureText(ime_text, font_size);
+                        drawEditorText(ime_text, cursor_x, line_num_y, font_size, syntax.color(theme.colors.text_primary));
+                        const ime_w = measureEditorText(ime_text, font_size);
                         renderer.Renderer.drawRect(cursor_x, line_num_y + line_h - 2, ime_w, 2, syntax.color(theme.colors.text_primary));
                         if (wb.ime_cursor >= 0 and wb.ime_cursor <= ime_text.len) {
-                            const sub_w = renderer.Renderer.measureText(ime_text[0..@intCast(wb.ime_cursor)], font_size);
-                            renderer.Renderer.drawText("|", cursor_x + sub_w, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                            const sub_w = measureEditorText(ime_text[0..@intCast(wb.ime_cursor)], font_size);
+                            drawEditorText("|", cursor_x + sub_w, line_num_y, font_size, syntax.color(theme.colors.cursor));
                             renderer.Renderer.setImeCursorRect(cursor_x + sub_w, line_num_y, 0, line_h);
                         } else {
                             renderer.Renderer.setImeCursorRect(cursor_x, line_num_y, ime_w, line_h);
                         }
                     } else if (show_editor_cursor) {
-                        renderer.Renderer.drawText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                        drawEditorText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
                         renderer.Renderer.setImeCursorRect(cursor_x, line_num_y, 0, line_h);
                     }
                     wb.editor.ghost.mutex.lock();
@@ -481,11 +489,11 @@ pub fn drawEditorViewport(
                             var is_first = true;
                             while (it.next()) |gline| {
                                 if (is_first) {
-                                    renderer.Renderer.drawText(gline, cursor_x, ghost_y, font_size, syntax.color(theme.colors.text_muted));
+                                    drawEditorText(gline, cursor_x, ghost_y, font_size, syntax.color(theme.colors.text_muted));
                                     is_first = false;
                                 } else {
                                     ghost_y += line_h;
-                                    renderer.Renderer.drawText(gline, text_x + editor_scroll.cursorX(line, 0, font_size), ghost_y, font_size, syntax.color(theme.colors.text_muted));
+                                    drawEditorText(gline, text_x + editor_scroll.cursorX(line, 0, font_size), ghost_y, font_size, syntax.color(theme.colors.text_muted));
                                 }
                             }
                         }

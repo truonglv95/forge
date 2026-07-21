@@ -6,6 +6,24 @@ const Workbench = @import("../../../workbench.zig").Workbench;
 const shared = @import("shared.zig");
 
 const git_panel = @import("../../sidebar/git_panel.zig");
+const ui_text_style = renderer.TextStyle.prose;
+const ui_strong_style = renderer.TextStyle.prose_semibold;
+
+fn drawUiText(text: []const u8, x: f32, y: f32, size: f32, c: renderer.Color) void {
+    renderer.Renderer.drawTextWithStyle(text, x, @round(y), size, c, ui_text_style);
+}
+
+fn drawStrongText(text: []const u8, x: f32, y: f32, size: f32, c: renderer.Color) void {
+    renderer.Renderer.drawTextWithStyle(text, x, @round(y), size, c, ui_strong_style);
+}
+
+fn measureUiText(text: []const u8, size: f32) f32 {
+    return renderer.Renderer.measureTextWithStyle(text, size, ui_text_style);
+}
+
+fn measureStrongText(text: []const u8, size: f32) f32 {
+    return renderer.Renderer.measureTextWithStyle(text, size, ui_strong_style);
+}
 
 fn gitStatusGlyph(entry: *const @import("../../../git/status.zig").Entry) []const u8 {
     if (entry.status[0] == '?' or entry.status[1] == '?') return "U";
@@ -47,7 +65,7 @@ fn drawGitEntryLabel(entry: *const @import("../../../git/status.zig").Entry, px:
     const path_color = renderer.Color{ .r = 0.58, .g = 0.59, .b = 0.64, .a = 1.0 };
     const status_color = gitStatusColor(entry);
 
-    renderer.Renderer.drawText("▰", px + 16, py + 2, 11.0, icon_color);
+    drawUiText("▰", px + 16, py + 2, 11.0, icon_color);
 
     const name_x = px + 30;
 
@@ -62,23 +80,22 @@ fn drawGitEntryLabel(entry: *const @import("../../../git/status.zig").Entry, px:
     const content_right = px + pw - right_margin;
     const name_max_w = @max(0, content_right - name_x - 8);
     renderer.Renderer.pushClipRect(name_x, py, name_max_w, 22);
-    renderer.Renderer.drawText(basename, name_x, py + 2, 11.5, name_color);
-    renderer.Renderer.drawText(basename, name_x + 0.35, py + 2, 11.5, name_color);
+    drawStrongText(basename, name_x, py + 2, 11.5, name_color);
     renderer.Renderer.popClipRect();
 
-    const name_w = renderer.Renderer.measureText(basename, 11.5);
+    const name_w = measureStrongText(basename, 11.5);
     const path_x = name_x + name_w + 7;
     const path_max_w = content_right - path_x - 8;
     if (dir_path.len > 0 and path_max_w > 12) {
         renderer.Renderer.pushClipRect(path_x, py, path_max_w, 22);
-        renderer.Renderer.drawText(dir_path, path_x, py + 3, 10.5, path_color);
+        drawUiText(dir_path, path_x, py + 3, 10.5, path_color);
         renderer.Renderer.popClipRect();
     }
 
     if (!is_hovered) {
         const status_x = px + pw - 18;
         const glyph = gitStatusGlyph(entry);
-        renderer.Renderer.drawText(glyph, status_x, py + 2, 11.0, status_color);
+        drawStrongText(glyph, status_x, py + 2, 11.0, status_color);
     }
 }
 
@@ -95,22 +112,22 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     // Header
     const branch_name = if (wb.git.status) |s| s.branch orelse "HEAD" else "CHANGES";
     renderer.Renderer.drawSvg(renderer.icons.repo, panel_x + 8, panel_y + 8, 16, 16, icon_c);
-    renderer.Renderer.drawText(branch_name, panel_x + 28, panel_y + 9, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
+    drawStrongText(branch_name, panel_x + 28, panel_y + 9, 11.0, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
 
     const header_action_y = panel_y + 5;
     // Draw ahead/behind counts and sync button next to branch name
-    const branch_name_w = renderer.Renderer.measureText(branch_name, 11.0);
+    const branch_name_w = measureStrongText(branch_name, 11.0);
     var sync_x = panel_x + 28 + branch_name_w + 10;
 
     if (wb.git.status) |status| {
         if (status.ahead > 0 or status.behind > 0) {
             var buf: [32]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "↑{d} ↓{d}", .{ status.ahead, status.behind }) catch "";
-            const text_w = renderer.Renderer.measureText(text, 11.0);
+            const text_w = measureUiText(text, 11.0);
             if (is_hovering_panel and my >= panel_y + 5 and my < panel_y + 25 and mx >= sync_x - 4 and mx < sync_x + text_w + 4) {
                 renderer.Renderer.drawRoundedRect(sync_x - 4, panel_y + 5, text_w + 8, 20, 4, hover_c);
             }
-            renderer.Renderer.drawText(text, sync_x, panel_y + 9, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+            drawUiText(text, sync_x, panel_y + 9, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
             sync_x += text_w + 10;
         }
     }
@@ -163,16 +180,16 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     defer if (msg.len > 0) wb.allocator.free(msg);
 
     if (msg.len == 0) {
-        renderer.Renderer.drawText("Message (Cmd+Enter to commit)", panel_x + 16, y + 8, 12.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
+        drawUiText("Message (Cmd+Enter to commit)", panel_x + 16, y + 8, 12.0, .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 });
     } else {
         const display_msg = if (msg.len > 120) msg[0..120] else msg;
         @memcpy(commit_msg_buf[0..display_msg.len], display_msg);
         commit_msg_buf[display_msg.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&commit_msg_buf), panel_x + 16, y + 8, 12.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+        drawUiText(@ptrCast(&commit_msg_buf), panel_x + 16, y + 8, 12.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
     }
 
     if (is_input_focused) {
-        const cursor_x = panel_x + 16 + renderer.Renderer.measureText(msg, 12.0);
+        const cursor_x = panel_x + 16 + measureUiText(msg, 12.0);
         if (@mod(state.time, 1.0) < 0.5) {
             renderer.Renderer.drawRect(cursor_x, y + 8, 2, 14, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
         }
@@ -186,15 +203,15 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const btn_bg = renderer.Color{ .r = 0.25, .g = 0.45, .b = 0.65, .a = 1.0 };
     renderer.Renderer.drawRoundedRect(panel_x + 8, y, panel_w - 16, 26, 4, btn_bg);
     renderer.Renderer.drawSvg(renderer.icons.check, panel_x + panel_w / 2 - 30, y + 5, 16, 16, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
-    renderer.Renderer.drawText("Commit", panel_x + panel_w / 2 - 16, y + 5, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
+    drawStrongText("Commit", panel_x + panel_w / 2 - 16, y + 5, 12.0, .{ .r = 1, .g = 1, .b = 1, .a = 1.0 });
 
     y += 34;
 
     if (wb.git.status) |status| {
         if (!status.is_repo) {
-            renderer.Renderer.drawText("Not a git repository.", panel_x + 16, y, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+            drawUiText("Not a git repository.", panel_x + 16, y, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
         } else if (status.entries.len == 0) {
-            renderer.Renderer.drawText("Working tree clean.", panel_x + 16, y, 12.0, .{ .r = 0.6, .g = 0.8, .b = 0.6, .a = 1.0 });
+            drawUiText("Working tree clean.", panel_x + 16, y, 12.0, .{ .r = 0.6, .g = 0.8, .b = 0.6, .a = 1.0 });
         } else {
             const staged_count: usize = status.staged_ptrs.len;
             const changes_count: usize = status.unstaged_ptrs.len;
@@ -210,7 +227,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
 
                     const svg = if (is_collapsed) renderer.icons.chevron_right else renderer.icons.chevron_down;
                     renderer.Renderer.drawSvg(svg, px + 8, py.* + 4, 16, 16, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
-                    renderer.Renderer.drawText(title, px + 22, py.* + 5, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+                    drawStrongText(title, px + 22, py.* + 5, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
 
                     var badge_buf: [16:0]u8 = undefined;
                     const badge_str = std.fmt.bufPrintZ(&badge_buf, "{d}", .{count}) catch "0";
@@ -230,7 +247,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
 
                     const badge_x = px + pw - badge_w - 12 - actions_w;
                     renderer.Renderer.drawRoundedRect(badge_x, py.* + 4, badge_w, 16, 8, .{ .r = 0.3, .g = 0.5, .b = 0.5, .a = 1.0 });
-                    renderer.Renderer.drawText(badge_str, badge_x + 4, py.* + 5, 10.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+                    drawStrongText(badge_str, badge_x + 4, py.* + 5, 10.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
 
                     py.* += 24;
 

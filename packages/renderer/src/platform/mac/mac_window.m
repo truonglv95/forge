@@ -982,8 +982,7 @@ static CTFontRef ForgeCreateFontForStyle(CGFloat pixelSize, int fontRole, int fo
         CTFontRef base = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, pixelSize, NULL);
         if (base) font = ForgeApplyWeight(base, pixelSize);
     } else if (fontRole == 2) {
-        CTFontRef base = CTFontCreateWithName(CFSTR("Menlo"), pixelSize, NULL);
-        if (base) font = ForgeApplyEditorFeatures(ForgeApplyWeight(base, pixelSize), pixelSize);
+        font = ForgeCreateFont(pixelSize);
     } else {
         font = ForgeCreateFont(pixelSize);
     }
