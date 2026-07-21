@@ -8,6 +8,7 @@ const shared = @import("shared.zig");
 const extensions_panel = @import("../../sidebar/extensions_panel.zig");
 const plugin = @import("forge-plugin");
 const agent_scope_picker_mod = @import("../../../agent/scope_picker.zig");
+const scroll_region = @import("../../core/scroll_region.zig");
 const scrollbar = @import("../../core/scrollbar.zig");
 
 const ui_text_style = renderer.TextStyle.prose;
@@ -156,12 +157,48 @@ fn drawMarketplaceRow(entry: *const plugin.MarketplaceEntry, x: f32, y: f32, w: 
     drawUiText("Details", x + w - 76, y + 11, 10.0, .{ .r = 0.6, .g = 0.72, .b = 0.9, .a = 1.0 });
 }
 
+fn drawMarketplaceRows(
+    catalog: *const plugin.MarketplaceCatalog,
+    filter: []const u8,
+    panel_x: f32,
+    panel_w: f32,
+    y_start: f32,
+    viewport_h: f32,
+    scroll_y: f32,
+    theme: anytype,
+) f32 {
+    var y = y_start;
+    const row_h = extensions_panel.marketplace_row_h;
+    if (filter.len == 0) {
+        const region = scroll_region.region(@as(f32, @floatFromInt(catalog.entries.len)) * row_h, viewport_h);
+        const range = region.visibleRange(@max(0, scroll_y - extensions_panel.footer_h - extensions_panel.section_h), row_h, catalog.entries.len);
+        y += @as(f32, @floatFromInt(range.first)) * row_h;
+        for (catalog.entries[range.first..range.last]) |*entry| {
+            drawMarketplaceRow(entry, panel_x, y, panel_w, row_h, theme);
+            y += row_h;
+        }
+        return y + @as(f32, @floatFromInt(catalog.entries.len - range.last)) * row_h;
+    }
+
+    const visible_top = extensions_panel.list_top;
+    const visible_bottom = extensions_panel.list_top + viewport_h;
+    for (catalog.entries) |*entry| {
+        if (!marketplaceMatches(filter, entry)) continue;
+        if (y + row_h >= visible_top and y < visible_bottom) {
+            drawMarketplaceRow(entry, panel_x, y, panel_w, row_h, theme);
+        }
+        y += row_h;
+    }
+    return y;
+}
+
 pub fn drawExtensionsPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
     const theme = &wb.theme;
     const host = &wb.extension_host;
     const panel_y = extensions_panel.panel_top;
     const filter = wb.extensionsFilterSlice();
     const catalog_ptr: ?*const plugin.MarketplaceCatalog = if (wb.marketplace_catalog) |*catalog| catalog else null;
+    const list_viewport = extensions_panel.viewportHeight(h);
 
     renderer.Renderer.setClipRect(panel_x, panel_y, panel_w, h - panel_y - layout.status_height);
 
@@ -236,15 +273,7 @@ pub fn drawExtensionsPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) v
         const count = marketplaceCount(catalog_ptr, filter);
         drawSectionHeader("RECOMMENDED", count, panel_x, y, panel_w);
         y += 32;
-        for (catalog.entries, 0..) |entry, index| {
-            if (!marketplaceMatches(filter, &entry)) continue;
-            const row_h = extensions_panel.marketplace_row_h;
-            if (y + row_h >= extensions_panel.list_top and y < h - layout.status_height) {
-                drawMarketplaceRow(&entry, panel_x, y, panel_w, row_h, theme);
-                _ = index;
-            }
-            y += row_h;
-        }
+        y = drawMarketplaceRows(&catalog, filter, panel_x, panel_w, y, list_viewport, wb.extensions_scroll_y, theme);
         if (count == 0) {
             drawUiText("No marketplace results.", panel_x + 16, y + 8, 11.5, .{ .r = 0.62, .g = 0.63, .b = 0.66, .a = 1.0 });
         }

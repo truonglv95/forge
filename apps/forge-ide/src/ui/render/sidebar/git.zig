@@ -217,7 +217,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
             const changes_count: usize = status.unstaged_ptrs.len;
 
             const drawSection = struct {
-                fn draw(py: *f32, count: usize, title: [:0]const u8, is_collapsed: bool, ptrs: []const *const @import("../../../git/status.zig").Entry, is_staged_section: bool, px: f32, pw: f32, ch: f32, my_y: f32, mx_x: f32, hc: renderer.Color) void {
+                fn draw(py: *f32, count: usize, title: [:0]const u8, is_collapsed: bool, ptrs: []const *const @import("../../../git/status.zig").Entry, is_staged_section: bool, px: f32, pw: f32, visible_top: f32, ch: f32, my_y: f32, mx_x: f32, hc: renderer.Color) void {
                     if (count == 0) return;
 
                     const is_header_hovered = mx_x >= px and mx_x < px + pw and my_y >= py.* and my_y < py.* + 24;
@@ -253,7 +253,6 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
 
                     if (!is_collapsed) {
                         const row_h: f32 = 22.0;
-                        const visible_top = 101.0; // panel_y (65) + 36
                         const visible_bottom = ch - layout.status_height;
 
                         // We compute which elements are within the visible bounds: [visible_top, visible_bottom]
@@ -296,8 +295,8 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
                 }
             };
 
-            drawSection.draw(&y, staged_count, "STAGED CHANGES", wb.git.staged_collapsed, status.staged_ptrs, true, panel_x, panel_w, h, my, mx, hover_c);
-            drawSection.draw(&y, changes_count, "CHANGES", wb.git.changes_collapsed, status.unstaged_ptrs, false, panel_x, panel_w, h, my, mx, hover_c);
+            drawSection.draw(&y, staged_count, "STAGED CHANGES", wb.git.staged_collapsed, status.staged_ptrs, true, panel_x, panel_w, scroll_y_start, h, my, mx, hover_c);
+            drawSection.draw(&y, changes_count, "CHANGES", wb.git.changes_collapsed, status.unstaged_ptrs, false, panel_x, panel_w, scroll_y_start, h, my, mx, hover_c);
         }
     }
 

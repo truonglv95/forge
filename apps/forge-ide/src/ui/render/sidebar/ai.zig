@@ -21,7 +21,9 @@ const action_h: f32 = 28;
 const status_card_h: f32 = 96;
 const timeline_card_h: f32 = 142;
 const section_h: f32 = 32;
+const server_header_h: f32 = 30;
 const tool_row_h: f32 = 58;
+const error_row_h: f32 = 42;
 
 pub const Hit = union(enum) {
     open_settings,
@@ -35,9 +37,23 @@ fn viewportHeight(h: f32) f32 {
 }
 
 fn contentHeight(wb: *const Workbench) f32 {
-    const tool_count = if (wb.ai_mcp_registry) |reg| reg.tools.len else 0;
-    const tool_h = if (tool_count == 0) 48.0 else @as(f32, @floatFromInt(tool_count)) * tool_row_h;
-    return toolsTopOffset() + tool_h + card_gap;
+    const list_h: f32 = if (wb.ai_mcp_registry) |reg| blk: {
+        if (reg.tools.len == 0 and reg.errors.len == 0) break :blk 48.0;
+        var h: f32 = 0;
+        var last_server: ?[]const u8 = null;
+        for (reg.tools) |tool| {
+            if (last_server == null or !std.mem.eql(u8, last_server.?, tool.server_name)) {
+                h += server_header_h;
+                last_server = tool.server_name;
+            }
+            h += tool_row_h;
+        }
+        if (reg.errors.len > 0) {
+            h += section_h + @as(f32, @floatFromInt(reg.errors.len)) * error_row_h;
+        }
+        break :blk h;
+    } else 48.0;
+    return toolsTopOffset() + list_h + card_gap;
 }
 
 fn toolsTopOffset() f32 {
@@ -258,6 +274,90 @@ fn drawToolRow(server_name: []const u8, tool_name: []const u8, annotations_json:
     drawRiskPill(risk_label, x + w - 82, y + 28, risk_color);
 }
 
+const ServerStats = struct {
+    total: usize = 0,
+    low: usize = 0,
+    medium: usize = 0,
+    high: usize = 0,
+};
+
+fn serverToolStats(reg: anytype, server_name: []const u8) ServerStats {
+    var out: ServerStats = .{};
+    for (reg.tools) |tool| {
+        if (!std.mem.eql(u8, tool.server_name, server_name)) continue;
+        out.total += 1;
+        const policy = mcp_capability.inferPolicy(tool.annotations_json);
+        switch (policy.risk) {
+            .low => out.low += 1,
+            .medium => out.medium += 1,
+            .high => out.high += 1,
+        }
+    }
+    return out;
+}
+
+fn drawServerHeader(reg: anytype, server_name: []const u8, x: f32, y: f32, w: f32, theme: anytype) void {
+    const stats = serverToolStats(reg, server_name);
+    renderer.Renderer.drawRect(x + 8, y + server_header_h - 1, w - 16, 1, theme_loader.toColor(theme.colors.border));
+    drawStrongText(server_name, x + 16, y + 8, 11.0, theme_loader.toColor(theme.colors.text_primary));
+    var buf: [96]u8 = undefined;
+    const summary = std.fmt.bufPrint(&buf, "{d} tools · {d} low · {d} med · {d} high", .{ stats.total, stats.low, stats.medium, stats.high }) catch "tools";
+    drawClippedText(summary, x + 112, y + 8, w - 128, 16, 10.0, theme_loader.toColor(theme.colors.text_muted), false);
+}
+
+fn drawErrorRow(server_name: []const u8, message: []const u8, x: f32, y: f32, w: f32, theme: anytype) void {
+    renderer.Renderer.drawRoundedRect(x + 6, y, w - 12, error_row_h - 7, 5, .{ .r = 0.24, .g = 0.13, .b = 0.13, .a = 1.0 });
+    drawClippedText(server_name, x + 16, y + 7, w - 32, 15, 10.5, theme_loader.toColor(theme.colors.diff_remove), true);
+    drawClippedText(message, x + 16, y + 24, w - 32, 14, 9.8, theme_loader.toColor(theme.colors.text_muted), false);
+}
+
+fn drawMcpRows(wb: *Workbench, start_x: f32, cy_start: f32, w: f32, h: f32) void {
+    const theme = &wb.theme;
+    const visible_top = panel_top + header_h;
+    const visible_bottom = h - layout.status_height;
+    const content_x = start_x + inset;
+
+    var cy = cy_start;
+    if (wb.ai_mcp_registry) |reg| {
+        if (reg.tools.len == 0 and reg.errors.len == 0) {
+            drawUiText("No MCP tools registered.", content_x, cy + 8, 11.5, theme_loader.toColor(theme.colors.text_muted));
+            return;
+        }
+
+        var last_server: ?[]const u8 = null;
+        for (reg.tools) |tool| {
+            if (last_server == null or !std.mem.eql(u8, last_server.?, tool.server_name)) {
+                if (cy + server_header_h >= visible_top and cy < visible_bottom) {
+                    drawServerHeader(reg, tool.server_name, start_x, cy, w, theme);
+                }
+                cy += server_header_h;
+                last_server = tool.server_name;
+            }
+            if (cy + tool_row_h >= visible_top and cy < visible_bottom) {
+                drawToolRow(tool.server_name, tool.tool_name, tool.annotations_json, start_x, cy, w, theme);
+            }
+            cy += tool_row_h;
+        }
+
+        if (reg.errors.len > 0) {
+            if (cy + section_h >= visible_top and cy < visible_bottom) {
+                renderer.Renderer.drawSvg(renderer.icons.chevron_down, start_x + 8, cy + 4, 16, 16, theme_loader.toColor(theme.colors.text_muted));
+                drawStrongText("SERVER ERRORS", start_x + 28, cy + 6, 11.0, theme_loader.toColor(theme.colors.text_muted));
+            }
+            cy += section_h;
+            for (reg.errors) |err_item| {
+                if (cy + error_row_h >= visible_top and cy < visible_bottom) {
+                    drawErrorRow(err_item.server_name, err_item.message, start_x, cy, w, theme);
+                }
+                cy += error_row_h;
+            }
+        }
+    } else {
+        drawUiText("MCP Registry not loaded.", content_x, cy + 8, 11.5, theme_loader.toColor(theme.colors.text_muted));
+        drawUiText("Refresh registry or open .mcp.json to configure tools.", content_x, cy + 28, 10.5, theme_loader.toColor(theme.colors.text_muted));
+    }
+}
+
 pub fn drawAiPanel(wb: *Workbench, start_x: f32, w: f32, h: f32) void {
     const theme = &wb.theme;
     const panel_h = h - panel_top - layout.status_height;
@@ -290,26 +390,11 @@ pub fn drawAiPanel(wb: *Workbench, start_x: f32, w: f32, h: f32) void {
     drawTimelineCard(wb, content_x, cy, content_w);
     cy += timeline_card_h + card_gap + 4;
 
-    if (wb.ai_mcp_registry) |reg| {
+    if (wb.ai_mcp_registry != null) {
         renderer.Renderer.drawSvg(renderer.icons.chevron_down, start_x + 8, cy + 4, 16, 16, icon_c);
         drawStrongText("MCP AUDIT LOG", start_x + 28, cy + 6, 11.0, theme_loader.toColor(theme.colors.text_muted));
         cy += section_h;
-
-        if (reg.tools.len == 0) {
-            drawUiText("No MCP tools registered.", content_x, cy + 8, 11.5, theme_loader.toColor(theme.colors.text_muted));
-        } else {
-            const row_scroll = @max(0, wb.ai_mcp_scroll_y - toolsTopOffset());
-            const range = scroll_region.region(@as(f32, @floatFromInt(reg.tools.len)) * tool_row_h, viewportHeight(h)).visibleRange(row_scroll, tool_row_h, reg.tools.len);
-            cy += @as(f32, @floatFromInt(range.first)) * tool_row_h;
-            var i = range.first;
-            while (i < range.last) : (i += 1) {
-                const tool = reg.tools[i];
-                if (cy + tool_row_h >= panel_top + header_h and cy < h - layout.status_height) {
-                    drawToolRow(tool.server_name, tool.tool_name, tool.annotations_json, start_x, cy, w, theme);
-                }
-                cy += tool_row_h;
-            }
-        }
+        drawMcpRows(wb, start_x, cy, w, h);
     } else {
         drawUiText("MCP Registry not loaded.", content_x, cy + 8, 11.5, theme_loader.toColor(theme.colors.text_muted));
         drawUiText("Refresh registry or open .mcp.json to configure tools.", content_x, cy + 28, 10.5, theme_loader.toColor(theme.colors.text_muted));
