@@ -256,13 +256,31 @@ pub fn drawExtensionsPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) v
         const count = installedCount(host, filter);
         drawSectionHeader("INSTALLED", count, panel_x, y, panel_w);
         y += 32;
+        const visible_top = extensions_panel.list_top;
+        const visible_bottom = extensions_panel.list_top + list_viewport;
+        var first_visible_index: usize = host.extensions.items.len;
+        var scan_y = y;
         for (host.extensions.items, 0..) |ext, index| {
             if (!installedMatches(filter, &ext)) continue;
             const block_h = extensions_panel.blockHeight(&ext);
-            if (y + block_h >= extensions_panel.list_top and y < h - layout.status_height) {
-                drawInstalledRow(wb, &ext, index, panel_x, y, panel_w, block_h);
+            if (scan_y + block_h >= visible_top) {
+                first_visible_index = index;
+                y = scan_y;
+                break;
             }
-            y += block_h;
+            scan_y += block_h;
+        }
+
+        if (first_visible_index < host.extensions.items.len) {
+            for (host.extensions.items[first_visible_index..], first_visible_index..) |ext, index| {
+                if (!installedMatches(filter, &ext)) continue;
+                const block_h = extensions_panel.blockHeight(&ext);
+                if (y >= visible_bottom) break;
+                drawInstalledRow(wb, &ext, index, panel_x, y, panel_w, block_h);
+                y += block_h;
+            }
+        } else {
+            y = scan_y;
         }
 
         if (count == 0) {

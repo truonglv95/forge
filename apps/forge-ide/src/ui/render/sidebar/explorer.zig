@@ -124,9 +124,7 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
 
     const active_path = wb.activeFilePath();
     const row_h = explorer_scroll.row_height;
-    const start_idx: usize = if (wb.explorer_scroll_y > 0) @as(usize, @intFromFloat(wb.explorer_scroll_y / row_h)) else 0;
-    const visual_count: usize = @as(usize, @intFromFloat((h - 65 - layout.status_height) / row_h)) + 2;
-    const end_idx = @min(wb.explorer.entries.len, start_idx + visual_count);
+    const range = shared.visibleRowRange(wb.explorer_scroll_y, explorer_scroll.viewportHeight(h), row_h, wb.explorer.entries.len);
 
     // Create Tree Root Node
     var tree_root_node = alloc.create(renderer.layout.Node) catch return;
@@ -140,7 +138,7 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
     // To handle hover logic inside loop, we capture mouse
     var action_overlay: ?struct { x: f32, y: f32, w: f32, h: f32, text: []const u8 } = null;
 
-    for (wb.explorer.entries[start_idx..end_idx], start_idx..) |row, row_index| {
+    for (wb.explorer.entries[range.first..range.last], range.first..) |row, row_index| {
         const row_selected = if (wb.explorer.selected_path) |sel| std.mem.eql(u8, sel, row.path) else false;
         const row_active = if (active_path) |act| std.mem.eql(u8, act, row.path) else false;
         const row_expanded = row.kind == .directory and wb.explorer.expanded_paths.contains(row.path);
@@ -321,7 +319,7 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
     }
 
     // Calculate Layout
-    const tree_y = explorer_scroll.list_top; // We don't use - wb.explorer.scroll_y because start_idx already offsets the slice
+    const tree_y = shared.visibleRowY(explorer_scroll.list_top, wb.explorer_scroll_y, row_h, range.first);
     tree_root_node.calculateLayout(explorer_panel_width, h - tree_y, explorer_x, tree_y);
 
     // Render Flexbox Tree

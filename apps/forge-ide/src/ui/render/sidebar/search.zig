@@ -50,12 +50,10 @@ pub fn drawSearchPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void 
 
     if (wb.search.results) |results| {
         const row_h = search_panel.row_h;
-        const start_idx: usize = @as(usize, @intFromFloat(wb.search.scroll_y / row_h));
-        const visual_count: usize = @as(usize, @intFromFloat(search_panel.viewportHeight(h) / row_h)) + 2;
-        const end_idx = @min(results.matches.len, start_idx + visual_count);
+        const range = shared.visibleRowRange(wb.search.scroll_y, search_panel.viewportHeight(h), row_h, results.matches.len);
 
-        var y = search_panel.list_top - wb.search.scroll_y + @as(f32, @floatFromInt(start_idx)) * row_h;
-        for (results.matches[start_idx..end_idx], start_idx..) |match, index| {
+        var y = shared.visibleRowY(search_panel.list_top, wb.search.scroll_y, row_h, range.first);
+        for (results.matches[range.first..range.last], range.first..) |match, index| {
             if (y + row_h >= search_panel.list_top and y < h - layout.status_height) {
                 renderer.Renderer.drawRoundedRect(panel_x + 8, y, panel_w - 16, row_h - 4, 4, shared.color(theme.colors.selection));
                 var path_buf: [256:0]u8 = undefined;

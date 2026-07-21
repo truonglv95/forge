@@ -63,7 +63,14 @@ pub fn drawDebugPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
         renderer.Renderer.drawText(@ptrCast(&bp_hdr), panel_x + 16, y, 10.0, .{ .r = 0.55, .g = 0.55, .b = 0.55, .a = 1.0 });
     }
     y += 18;
-    for (wb.debug.breakpoints.items.items) |bp| {
+    const bp_content_top = y + wb.run_scroll_y - debug_panel.list_top;
+    const bp_list_top = debug_panel.list_top + bp_content_top - wb.run_scroll_y;
+    const bp_count = wb.debug.breakpoints.items.items.len;
+    const bp_scroll_y = @max(0, wb.run_scroll_y - bp_content_top);
+    const bp_viewport_h = @max(0, h - layout.status_height - @max(debug_panel.list_top, bp_list_top));
+    const bp_range = shared.visibleRowRange(bp_scroll_y, bp_viewport_h, debug_panel.row_h, bp_count);
+    y = shared.visibleRowY(bp_list_top, bp_scroll_y, debug_panel.row_h, bp_range.first);
+    for (wb.debug.breakpoints.items.items[bp_range.first..bp_range.last]) |bp| {
         if (y + debug_panel.row_h >= 65 and y < h - layout.status_height) {
             renderer.Renderer.drawRoundedRect(panel_x + 14, y + 4, 8, 8, 4, shared.color(theme.colors.warning));
             var line_buf: [192:0]u8 = undefined;
@@ -74,7 +81,6 @@ pub fn drawDebugPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
         y += debug_panel.row_h;
     }
     renderer.Renderer.clearClipRect();
-    const bp_count = wb.debug.breakpoints.items.items.len;
     const debug_viewport = debug_panel.viewportHeight(h);
     const debug_content = debug_panel.contentHeight(bp_count, debug_active);
     const debug_max = debug_panel.maxScrollY(bp_count, h, debug_active);
