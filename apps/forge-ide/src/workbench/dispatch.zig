@@ -764,6 +764,10 @@ pub fn dispatch(wb: anytype, command: Command) !void {
                 try @import("ai_config_io.zig").writeAiEmbeddingProvider(wb.allocator, wb.io, wb.workspace_root, opt.provider);
             }
         },
+        .ai_model_select => |sel| try @import("ai_model_config.zig").select(wb, sel.kind, sel.index),
+        .ai_model_add => |kind| try @import("ai_model_config.zig").add(wb, kind),
+        .ai_model_edit => |sel| try @import("ai_model_config.zig").edit(wb, sel.kind, sel.index),
+        .ai_model_delete => |sel| try @import("ai_model_config.zig").delete(wb, sel.kind, sel.index),
         .toggle_sidebar => wb.sidebar_visible = !wb.sidebar_visible,
         .toggle_bottom_panel => wb.bottom_panel_visible = !wb.bottom_panel_visible,
         .toggle_agent_panel => wb.agent_panel_visible = !wb.agent_panel_visible,

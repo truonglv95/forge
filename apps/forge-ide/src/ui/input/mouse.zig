@@ -754,7 +754,8 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.clampProposalReviewScroll(geo.editor_h);
         } else if (wb.settings_modal_open) {
             wb.settings_modal_scroll_y += scroll_delta_y;
-            // TODO: clamp modal scroll if needed
+            const settings_modal = @import("../settings_modal.zig");
+            wb.settings_modal_scroll_y = std.math.clamp(wb.settings_modal_scroll_y, 0, settings_modal.maxScrollY(wb));
         } else if (geo.shell_mode == .ide and mx >= geo.explorer_x and mx < geo.explorer_splitter_x and my >= layout.header_height) {
             switch (wb.sidebar_view) {
                 .extensions => {

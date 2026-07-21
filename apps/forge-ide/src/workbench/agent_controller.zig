@@ -64,8 +64,17 @@ pub const AgentController = struct {
             self.allocator.free(m.id);
             self.allocator.free(m.label);
             self.allocator.free(m.provider);
+            if (m.base_url) |url| self.allocator.free(url);
         }
         self.allocator.free(self.models);
+
+        for (self.embedding_models) |m| {
+            self.allocator.free(m.id);
+            self.allocator.free(m.label);
+            self.allocator.free(m.provider);
+            if (m.base_url) |url| self.allocator.free(url);
+        }
+        self.allocator.free(self.embedding_models);
 
         // Additional cleanup for session if necessary
     }

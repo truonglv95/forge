@@ -5,6 +5,7 @@ const layout = @import("core/layout.zig");
 const state = @import("core/state.zig");
 const theme_loader = @import("../theme_loader.zig");
 const Workbench = @import("../workbench.zig").Workbench;
+pub const ModelKind = @import("../workbench/ai_model_config.zig").ModelKind;
 
 fn color(rgba: workspace.Rgba) renderer.Color {
     return theme_loader.toColor(rgba);
@@ -37,9 +38,37 @@ pub const Hit = union(enum) {
     ai_edit_embedding_provider,
     ai_edit_embedding_model,
     ai_set_embedding_model: usize,
+    ai_model_select: struct { kind: ModelKind, index: usize },
+    ai_model_add: ModelKind,
+    ai_model_edit: struct { kind: ModelKind, index: usize },
+    ai_model_delete: struct { kind: ModelKind, index: usize },
     ai_toggle_hyde,
     none,
 };
+
+pub fn maxScrollY(wb: *Workbench) f32 {
+    const modal_h: f32 = 620;
+    const visible_bottom: f32 = modal_h - 24;
+
+    const content_h = switch (wb.settings_modal_tab) {
+        .models => modelsContentHeight(wb),
+        else => modal_h,
+    };
+
+    return @max(0, content_h - visible_bottom);
+}
+
+fn modelsContentHeight(wb: *Workbench) f32 {
+    const row_h: f32 = 48;
+    const chat_rows = @max(wb.agent_ui.models.len, 1);
+    const embedding_rows = @max(wb.agent_ui.embedding_models.len, 1);
+    const section_chrome: f32 = 32 + 8;
+    const title_and_intro: f32 = 32 + 30 + 30;
+    const chat_h = section_chrome + @as(f32, @floatFromInt(chat_rows)) * row_h;
+    const embedding_h = section_chrome + @as(f32, @floatFromInt(embedding_rows)) * row_h;
+    const gaps_and_toggle: f32 = 18 + 18 + 54 + 32;
+    return title_and_intro + chat_h + embedding_h + gaps_and_toggle;
+}
 
 pub fn draw(wb: *Workbench, window_w: f32, window_h: f32) void {
     if (!wb.settings_modal_open) return;
@@ -146,48 +175,16 @@ pub fn draw(wb: *Workbench, window_w: f32, window_h: f32) void {
 
         drawValueRow(content_x + 32, cy, content_w - 64, "Format on Save", if (wb.user_settings.format_on_save) "enabled" else "disabled", theme);
     } else if (wb.settings_modal_tab == .models) {
+        cy -= wb.settings_modal_scroll_y;
         renderer.Renderer.drawText("Models", content_x + 32, cy, 20.0, text_primary);
         cy += 30;
-        renderer.Renderer.drawText("AI routing currently loaded by Forge.", content_x + 32, cy, 13.0, text_muted);
-        cy += 32;
+        renderer.Renderer.drawText("Manage chat and embedding model presets. Click a row to make it active.", content_x + 32, cy, 13.0, text_muted);
+        cy += 30;
 
-        drawValueRow(content_x + 32, cy, content_w - 64, "Chat Provider", wb.agent_ui.provider, theme);
-        cy += 44;
-        drawValueRow(content_x + 32, cy, content_w - 64, "Chat Model", wb.agent_ui.model orelse "default", theme);
-        cy += 44;
-        drawValueRow(content_x + 32, cy, content_w - 64, "Embedding Provider", wb.agent_ui.embedding_provider orelse "default", theme);
-        cy += 44;
-
-        // Draw the embedding model row
-        const embedding_model_label = "Embedding Model";
-        const embedding_model_value = wb.agent_ui.embedding_model orelse "default";
-        drawValueRow(content_x + 32, cy, content_w - 64, embedding_model_label, embedding_model_value, theme);
-
-        if (wb.settings_embedding_picker_open) {
-            const row_y = cy;
-            const dropdown_x = content_x + 32 + @max(220, (content_w - 64) * 0.48) - 10;
-            const dropdown_y = row_y + 35;
-
-            var max_w: f32 = 200;
-            for (wb.agent_ui.embedding_models) |opt| {
-                const w = renderer.Renderer.measureText(opt.label, 13.0) + 32;
-                if (w > max_w) max_w = w;
-            }
-            const dropdown_w = max_w;
-            const item_h: f32 = 30;
-            const dropdown_h = @as(f32, @floatFromInt(wb.agent_ui.embedding_models.len)) * item_h + 8;
-
-            renderer.Renderer.drawRoundedRect(dropdown_x, dropdown_y, dropdown_w, dropdown_h, 6, color(theme.colors.editor_bg));
-
-            var item_y = dropdown_y + 4;
-            for (wb.agent_ui.embedding_models) |opt| {
-                // If it matches the current, maybe highlight it? (simplified)
-                renderer.Renderer.drawText(opt.label, dropdown_x + 16, item_y + 6, 13.0, text_primary);
-                item_y += item_h;
-            }
-        }
-
-        cy += 44;
+        cy = drawModelSection(wb, content_x + 32, cy, content_w - 64, "Chat Models", .chat, wb.agent_ui.models, wb.agent_ui.model, theme);
+        cy += 18;
+        cy = drawModelSection(wb, content_x + 32, cy, content_w - 64, "Embedding Models", .embedding, wb.agent_ui.embedding_models, wb.agent_ui.embedding_model, theme);
+        cy += 18;
         drawToggleRow(content_x + 32, cy, content_w - 64, "HyDE Search", "Use LLM to generate hypothetical snippet for better search accuracy.", wb.agent_ui.enable_hyde, theme);
     } else if (wb.settings_modal_tab == .permissions) {
         renderer.Renderer.drawText("Permissions", content_x + 32, cy, 20.0, text_primary);
@@ -368,46 +365,127 @@ pub fn hitTestPoint(wb: *Workbench, window_w: f32, window_h: f32, px: f32, py: f
         const content_w: f32 = modal_w - sidebar_w;
         const row_x = content_x + 32;
         const row_w = content_w - 64;
-        var cy: f32 = modal_y + 94;
-        if (px >= row_x and px <= row_x + row_w) {
-            if (py >= cy and py <= cy + 40) return .ai_edit_provider;
-            cy += 44;
-            if (py >= cy and py <= cy + 40) return .ai_edit_model;
-            cy += 44;
-            if (py >= cy and py <= cy + 40) return .ai_edit_embedding_provider;
-            cy += 44;
-
-            if (wb.settings_embedding_picker_open) {
-                const dropdown_x = row_x + @max(220, row_w * 0.48) - 10;
-                var max_w: f32 = 200;
-                for (wb.agent_ui.embedding_models) |opt| {
-                    const w = renderer.Renderer.measureText(opt.label, 13.0) + 32;
-                    if (w > max_w) max_w = w;
-                }
-                const dropdown_w = max_w;
-                const dropdown_y = cy + 35;
-                const item_h: f32 = 30;
-                const dropdown_h = @as(f32, @floatFromInt(wb.agent_ui.embedding_models.len)) * item_h + 8;
-
-                if (px >= dropdown_x and px <= dropdown_x + dropdown_w and py >= dropdown_y and py <= dropdown_y + dropdown_h) {
-                    const index = @as(usize, @intFromFloat((py - dropdown_y - 4) / item_h));
-                    if (index < wb.agent_ui.embedding_models.len) {
-                        return .{ .ai_set_embedding_model = index };
-                    }
-                } else {
-                    // Close if clicked outside the dropdown box
-                    return .ai_edit_embedding_model;
-                }
-            }
-            if (py >= cy and py <= cy + 40) return .ai_edit_embedding_model;
-            cy += 44;
-            if (py >= cy and py <= cy + 48) return .ai_toggle_hyde;
-        }
+        var cy: f32 = modal_y + 92 - wb.settings_modal_scroll_y;
+        if (hitModelSection(.chat, wb.agent_ui.models.len, row_x, cy, row_w, px, py)) |hit| return hit;
+        cy += 32 + @as(f32, @floatFromInt(@max(wb.agent_ui.models.len, 1))) * 48 + 26;
+        if (hitModelSection(.embedding, wb.agent_ui.embedding_models.len, row_x, cy, row_w, px, py)) |hit| return hit;
+        cy += 32 + @as(f32, @floatFromInt(@max(wb.agent_ui.embedding_models.len, 1))) * 48 + 26;
+        if (px >= row_x and px <= row_x + row_w and py >= cy and py <= cy + 48) return .ai_toggle_hyde;
     }
 
     // Returning none because the click was inside the modal but not on anything interactive yet.
     // It prevents the click from falling through to the background.
     return .none;
+}
+
+fn modelBaseUrl(model: @import("agent/agent_composer.zig").ModelOption) []const u8 {
+    if (model.base_url) |url| return url;
+    if (std.mem.eql(u8, model.provider, "ollama")) return "http://127.0.0.1:11434";
+    if (std.mem.eql(u8, model.provider, "openrouter")) return "https://openrouter.ai/api/v1";
+    if (std.mem.eql(u8, model.provider, "nvidia")) return "https://integrate.api.nvidia.com/v1";
+    if (std.mem.eql(u8, model.provider, "openai")) return "https://api.openai.com/v1";
+    if (std.mem.eql(u8, model.provider, "gemini")) return "https://generativelanguage.googleapis.com/v1beta";
+    return "provider default";
+}
+
+fn hitModelSection(kind: ModelKind, count: usize, x: f32, y: f32, w: f32, px: f32, py: f32) ?Hit {
+    const add_x = x + w - 76;
+    if (px >= add_x and px <= add_x + 76 and py >= y and py <= y + 24) return .{ .ai_model_add = kind };
+
+    const row_h: f32 = 48;
+    var row_y = y + 32;
+    const rows = @max(count, 1);
+    var index: usize = 0;
+    while (index < rows) : (index += 1) {
+        if (py >= row_y - 2 and py <= row_y + row_h - 4 and px >= x - 4 and px <= x + w + 4) {
+            if (index >= count) return null;
+            const action_w: f32 = 104;
+            const edit_x = x + w - action_w;
+            const del_x = edit_x + 48;
+            if (px >= edit_x and px <= edit_x + 42 and py >= row_y + 11 and py <= row_y + 33) {
+                return .{ .ai_model_edit = .{ .kind = kind, .index = index } };
+            }
+            if (px >= del_x and px <= del_x + 42 and py >= row_y + 11 and py <= row_y + 33) {
+                return .{ .ai_model_delete = .{ .kind = kind, .index = index } };
+            }
+            return .{ .ai_model_select = .{ .kind = kind, .index = index } };
+        }
+        row_y += row_h;
+    }
+    return null;
+}
+
+fn drawClippedText(text: []const u8, x: f32, y: f32, w: f32, h: f32, size: f32, c: renderer.Color) void {
+    renderer.Renderer.pushClipRect(x, y - 2, @max(0, w), h);
+    renderer.Renderer.drawText(text, x, y, size, c);
+    renderer.Renderer.popClipRect();
+}
+
+fn drawModelSection(
+    wb: *Workbench,
+    x: f32,
+    y: f32,
+    w: f32,
+    title: []const u8,
+    kind: ModelKind,
+    models: []const @import("agent/agent_composer.zig").ModelOption,
+    active_model: ?[]const u8,
+    theme: *const workspace.Theme,
+) f32 {
+    _ = wb;
+    const text_primary = color(theme.colors.text_primary);
+    const text_muted = color(theme.colors.text_muted);
+    const border = color(theme.colors.border);
+    const surface = color(theme.colors.selection);
+    const accent = color(theme.colors.accent);
+
+    var cy = y;
+    renderer.Renderer.drawText(title, x, cy + 4, 14.0, text_primary);
+    const add_x = x + w - 76;
+    renderer.Renderer.drawRoundedRect(add_x, cy, 76, 24, 5, color(theme.colors.accent));
+    renderer.Renderer.drawText("+ Add", add_x + 18, cy + 6, 11.5, text_primary);
+    cy += 32;
+
+    const row_h: f32 = 48;
+    for (models, 0..) |model, index| {
+        const selected = if (active_model) |active| std.mem.eql(u8, active, model.id) else false;
+        if (selected) {
+            renderer.Renderer.drawRoundedRect(x - 4, cy - 2, w + 8, row_h - 4, 6, .{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 0.16 });
+        } else {
+            renderer.Renderer.drawRoundedRect(x - 4, cy - 2, w + 8, row_h - 4, 6, surface);
+        }
+
+        const action_w: f32 = 104;
+        const text_w = w - action_w - 14;
+        const name_w = text_w * 0.36;
+        const provider_w = 74.0;
+        const id_w = text_w * 0.28;
+        const url_w = text_w - name_w - provider_w - id_w - 24;
+
+        drawClippedText(model.label, x + 10, cy + 7, name_w, 16, 12.5, text_primary);
+        drawClippedText(model.provider, x + 10 + name_w + 8, cy + 7, provider_w, 16, 11.0, text_muted);
+        drawClippedText(model.id, x + 10, cy + 26, id_w + name_w, 14, 10.5, text_muted);
+        drawClippedText(modelBaseUrl(model), x + 10 + name_w + id_w + 16, cy + 26, url_w, 14, 10.5, text_muted);
+
+        const edit_x = x + w - action_w;
+        const del_x = edit_x + 48;
+        renderer.Renderer.drawRoundedRect(edit_x, cy + 11, 42, 22, 5, .{ .r = 0.2, .g = 0.22, .b = 0.26, .a = 1.0 });
+        renderer.Renderer.drawText("Edit", edit_x + 10, cy + 16, 10.5, text_primary);
+        renderer.Renderer.drawRoundedRect(del_x, cy + 11, 42, 22, 5, .{ .r = 0.26, .g = 0.16, .b = 0.16, .a = 1.0 });
+        renderer.Renderer.drawText("Del", del_x + 12, cy + 16, 10.5, .{ .r = 0.95, .g = 0.5, .b = 0.5, .a = 1.0 });
+        _ = kind;
+        _ = index;
+        cy += row_h;
+    }
+
+    if (models.len == 0) {
+        renderer.Renderer.drawRoundedRect(x - 4, cy - 2, w + 8, 38, 6, surface);
+        renderer.Renderer.drawText("No models configured.", x + 10, cy + 10, 12.0, text_muted);
+        cy += 42;
+    }
+
+    renderer.Renderer.drawRect(x, cy, w, 1, border);
+    return cy + 8;
 }
 
 fn drawValueRow(x: f32, y: f32, w: f32, label: []const u8, value: []const u8, theme: *const workspace.Theme) void {

@@ -37,15 +37,8 @@ pub fn applyScopePickerFilter(wb: anytype) !void {
 }
 
 pub fn setAgentModelIndex(wb: anytype, index: usize) !void {
-    if (index >= wb.agent_ui.models.len) return;
-    const option = wb.agent_ui.models[index];
-    if (wb.agent_ui.model) |old| wb.allocator.free(old);
-    wb.agent_ui.model = try wb.allocator.dupe(u8, option.id);
-    wb.allocator.free(wb.agent_ui.provider);
-    wb.agent_ui.provider = try wb.allocator.dupe(u8, option.provider);
+    try @import("ai_model_config.zig").select(wb, .chat, index);
     wb.agent_ui.session.closeMenus();
-    try ai_config_io.writeAiProvider(wb.allocator, wb.io, wb.workspace_root, option.provider);
-    try ai_config_io.writeAiModel(wb.allocator, wb.io, wb.workspace_root, option.id);
     for (wb.editor.tabs.tabs.items) |*doc| {
         if (std.mem.endsWith(u8, doc.path, "settings.toml")) {
             @import("../workspace_io.zig").loadDocument(wb.io, wb.workspace_root, doc) catch {};
@@ -186,6 +179,7 @@ pub fn handleSettingsModalClick(wb: anytype, hit: @import("../ui/settings_modal.
         .close_modal => closeSettingsModal(wb),
         .switch_tab => |tab| {
             wb.settings_modal_tab = tab;
+            wb.settings_modal_scroll_y = 0;
         },
         .toggle_word_wrap => try wb.dispatch(.settings_toggle_word_wrap),
         .ai_panel_font_decrease => try wb.setAiPanelFontSize(wb.user_settings.ai_panel_font_size - 0.5),
@@ -199,6 +193,10 @@ pub fn handleSettingsModalClick(wb: anytype, hit: @import("../ui/settings_modal.
         .ai_edit_embedding_provider => try wb.dispatch(.ai_edit_embedding_provider),
         .ai_edit_embedding_model => try wb.dispatch(.ai_edit_embedding_model),
         .ai_set_embedding_model => |index| try wb.dispatch(.{ .ai_set_embedding_model = index }),
+        .ai_model_select => |sel| try wb.dispatch(.{ .ai_model_select = .{ .kind = sel.kind, .index = sel.index } }),
+        .ai_model_add => |kind| try wb.dispatch(.{ .ai_model_add = kind }),
+        .ai_model_edit => |sel| try wb.dispatch(.{ .ai_model_edit = .{ .kind = sel.kind, .index = sel.index } }),
+        .ai_model_delete => |sel| try wb.dispatch(.{ .ai_model_delete = .{ .kind = sel.kind, .index = sel.index } }),
         .ai_toggle_hyde => try wb.dispatch(.ai_toggle_hyde),
         .none => {},
     }

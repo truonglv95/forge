@@ -105,3 +105,50 @@ pub fn writeAiEnableHyde(
     const value = if (enabled) "true" else "false";
     try writeTomlKey(allocator, io, root, "ai", "enable_hyde", value);
 }
+
+pub fn writeAiCustomModels(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    models: []const @import("../ui/agent/agent_composer.zig").ModelOption,
+) !void {
+    const serialized = try serializeModels(allocator, models);
+    defer allocator.free(serialized);
+    try writeTomlQuotedString(allocator, io, root, "ai", "custom_models", serialized);
+}
+
+pub fn writeAiCustomEmbeddingModels(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    models: []const @import("../ui/agent/agent_composer.zig").ModelOption,
+) !void {
+    const serialized = try serializeModels(allocator, models);
+    defer allocator.free(serialized);
+    try writeTomlQuotedString(allocator, io, root, "ai", "custom_embedding_models", serialized);
+}
+
+fn serializeModels(
+    allocator: std.mem.Allocator,
+    models: []const @import("../ui/agent/agent_composer.zig").ModelOption,
+) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    for (models, 0..) |model, index| {
+        if (index > 0) try out.append(allocator, ',');
+        try out.appendSlice(allocator, model.id);
+        try out.append(allocator, '|');
+        try out.appendSlice(allocator, model.label);
+        try out.append(allocator, '|');
+        try out.appendSlice(allocator, model.provider);
+        if (model.base_url) |url| {
+            if (url.len > 0) {
+                try out.append(allocator, '|');
+                try out.appendSlice(allocator, url);
+            }
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
+}

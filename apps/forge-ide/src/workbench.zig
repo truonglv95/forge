@@ -918,6 +918,7 @@ pub const Workbench = struct {
             allocator.free(m.id);
             allocator.free(m.label);
             allocator.free(m.provider);
+            if (m.base_url) |url| allocator.free(url);
         }
         if (models.len > 0) allocator.free(models);
     }
