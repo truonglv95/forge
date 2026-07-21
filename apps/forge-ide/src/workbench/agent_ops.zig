@@ -222,6 +222,12 @@ pub fn focusSettingsModelEditorField(wb: anytype, field: ai_model_config.ModelEd
     wb.settings_model_editor_field = field;
 }
 
+pub fn applySettingsModelProviderPreset(wb: anytype, preset: ai_model_config.ProviderPreset) void {
+    setModelEditorField(wb, .provider, ai_model_config.providerId(preset));
+    setModelEditorField(wb, .base_url, ai_model_config.providerBaseUrl(preset));
+    wb.settings_model_editor_field = .id;
+}
+
 pub fn focusNextSettingsModelEditorField(wb: anytype) void {
     wb.settings_model_editor_field = switch (wb.settings_model_editor_field) {
         .label => .id,
@@ -275,6 +281,17 @@ pub fn backspaceSettingsModelEditor(wb: anytype) void {
 }
 
 pub fn saveSettingsModelEditor(wb: anytype) !void {
+    const list = modelList(wb, wb.settings_model_editor_kind);
+    if (ai_model_config.validationMessage(
+        list,
+        wb.settings_model_editor_index,
+        modelEditorSlice(wb, .id),
+        modelEditorSlice(wb, .provider),
+        modelEditorSlice(wb, .base_url),
+    )) |message| {
+        try wb.setStatus(message);
+        return error.InvalidModelConfig;
+    }
     try ai_model_config.upsert(
         wb,
         wb.settings_model_editor_kind,
@@ -348,6 +365,7 @@ pub fn handleSettingsModalClick(wb: anytype, hit: @import("../ui/settings_modal.
         .ai_model_edit => |sel| try wb.dispatch(.{ .ai_model_edit = .{ .kind = sel.kind, .index = sel.index } }),
         .ai_model_delete => |sel| try wb.dispatch(.{ .ai_model_delete = .{ .kind = sel.kind, .index = sel.index } }),
         .ai_model_editor_field => |field| focusSettingsModelEditorField(wb, field),
+        .ai_model_editor_provider_preset => |preset| applySettingsModelProviderPreset(wb, preset),
         .ai_model_editor_save => try saveSettingsModelEditor(wb),
         .ai_model_editor_cancel => closeSettingsModelEditor(wb),
         .ai_toggle_hyde => try wb.dispatch(.ai_toggle_hyde),

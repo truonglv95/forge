@@ -4,6 +4,19 @@ const ai_config_io = @import("ai_config_io.zig");
 
 pub const ModelKind = enum { chat, embedding };
 pub const ModelEditorField = enum { label, id, provider, base_url };
+pub const ProviderPreset = enum { ollama, openrouter, nvidia, openai, gemini };
+
+pub const provider_presets = [_]struct {
+    preset: ProviderPreset,
+    id: []const u8,
+    base_url: []const u8,
+}{
+    .{ .preset = .ollama, .id = "ollama", .base_url = "http://127.0.0.1:11434" },
+    .{ .preset = .openrouter, .id = "openrouter", .base_url = "https://openrouter.ai/api/v1" },
+    .{ .preset = .nvidia, .id = "nvidia", .base_url = "https://integrate.api.nvidia.com/v1" },
+    .{ .preset = .openai, .id = "openai", .base_url = "https://api.openai.com/v1" },
+    .{ .preset = .gemini, .id = "gemini", .base_url = "https://generativelanguage.googleapis.com/v1beta" },
+};
 
 fn listFor(wb: anytype, kind: ModelKind) []const composer.ModelOption {
     return switch (kind) {
@@ -52,12 +65,31 @@ fn persist(wb: anytype, kind: ModelKind) !void {
 }
 
 pub fn baseUrlForProvider(provider: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, provider, "ollama")) return "http://127.0.0.1:11434";
-    if (std.mem.eql(u8, provider, "openrouter")) return "https://openrouter.ai/api/v1";
-    if (std.mem.eql(u8, provider, "nvidia")) return "https://integrate.api.nvidia.com/v1";
-    if (std.mem.eql(u8, provider, "openai")) return "https://api.openai.com/v1";
-    if (std.mem.eql(u8, provider, "gemini")) return "https://generativelanguage.googleapis.com/v1beta";
+    for (provider_presets) |preset| {
+        if (std.mem.eql(u8, provider, preset.id)) return preset.base_url;
+    }
     return null;
+}
+
+pub fn providerPresetById(id: []const u8) ?ProviderPreset {
+    for (provider_presets) |preset| {
+        if (std.mem.eql(u8, id, preset.id)) return preset.preset;
+    }
+    return null;
+}
+
+pub fn providerId(preset: ProviderPreset) []const u8 {
+    for (provider_presets) |entry| {
+        if (entry.preset == preset) return entry.id;
+    }
+    return "custom";
+}
+
+pub fn providerBaseUrl(preset: ProviderPreset) []const u8 {
+    for (provider_presets) |entry| {
+        if (entry.preset == preset) return entry.base_url;
+    }
+    return "";
 }
 
 fn containsModelId(models: []const composer.ModelOption, id: []const u8) bool {
@@ -65,6 +97,35 @@ fn containsModelId(models: []const composer.ModelOption, id: []const u8) bool {
         if (std.mem.eql(u8, model.id, id)) return true;
     }
     return false;
+}
+
+fn duplicateModelId(models: []const composer.ModelOption, edit_index: ?usize, id: []const u8) bool {
+    for (models, 0..) |model, i| {
+        if (edit_index) |idx| {
+            if (idx == i) continue;
+        }
+        if (std.mem.eql(u8, model.id, id)) return true;
+    }
+    return false;
+}
+
+pub fn validationMessage(
+    models: []const composer.ModelOption,
+    edit_index: ?usize,
+    id: []const u8,
+    provider: []const u8,
+    base_url: []const u8,
+) ?[]const u8 {
+    const clean_id = std.mem.trim(u8, id, &std.ascii.whitespace);
+    const clean_provider = std.mem.trim(u8, provider, &std.ascii.whitespace);
+    const clean_base_url = std.mem.trim(u8, base_url, &std.ascii.whitespace);
+    if (clean_id.len == 0) return "Model ID is required.";
+    if (clean_provider.len == 0) return "Provider is required.";
+    if (duplicateModelId(models, edit_index, clean_id)) return "Another preset already uses this Model ID.";
+    if (clean_base_url.len > 0 and !(std.mem.startsWith(u8, clean_base_url, "http://") or std.mem.startsWith(u8, clean_base_url, "https://"))) {
+        return "Base URL must start with http:// or https://.";
+    }
+    return null;
 }
 
 fn activeModelId(wb: anytype, kind: ModelKind) ?[]const u8 {
@@ -164,9 +225,9 @@ pub fn upsert(
     const clean_id = std.mem.trim(u8, id, &std.ascii.whitespace);
     const clean_provider = std.mem.trim(u8, provider, &std.ascii.whitespace);
     const clean_base_url = std.mem.trim(u8, base_url, &std.ascii.whitespace);
-    if (clean_id.len == 0 or clean_provider.len == 0) return error.InvalidModelConfig;
 
     const source = listFor(wb, kind);
+    if (validationMessage(source, index, clean_id, clean_provider, clean_base_url) != null) return error.InvalidModelConfig;
     const edit_existing = if (index) |i| i < source.len else false;
     const target_index = if (edit_existing) index.? else source.len;
     const next_len = if (edit_existing) source.len else source.len + 1;
@@ -239,4 +300,21 @@ pub fn delete(wb: anytype, kind: ModelKind, index: usize) !void {
     if (deleted_active and next.len > 0) {
         try select(wb, kind, 0);
     }
+}
+
+test "model validation rejects duplicate ids except edited row" {
+    const models = [_]composer.ModelOption{
+        .{ .id = "qwen3", .label = "Qwen", .provider = "ollama", .base_url = null },
+        .{ .id = "gpt", .label = "GPT", .provider = "openrouter", .base_url = null },
+    };
+    try std.testing.expect(validationMessage(&models, null, "qwen3", "ollama", "") != null);
+    try std.testing.expect(validationMessage(&models, 0, "qwen3", "ollama", "") == null);
+}
+
+test "model validation checks required provider and base url shape" {
+    const models = [_]composer.ModelOption{};
+    try std.testing.expect(validationMessage(&models, null, "", "ollama", "") != null);
+    try std.testing.expect(validationMessage(&models, null, "custom", "", "") != null);
+    try std.testing.expect(validationMessage(&models, null, "custom", "openrouter", "localhost:1234") != null);
+    try std.testing.expect(validationMessage(&models, null, "custom", "openrouter", "http://localhost:1234") == null);
 }

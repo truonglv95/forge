@@ -46,6 +46,7 @@ pub const Hit = union(enum) {
     ai_model_edit: struct { kind: ModelKind, index: usize },
     ai_model_delete: struct { kind: ModelKind, index: usize },
     ai_model_editor_field: ModelEditorField,
+    ai_model_editor_provider_preset: ai_model_config.ProviderPreset,
     ai_model_editor_save,
     ai_model_editor_cancel,
     ai_toggle_hyde,
@@ -445,6 +446,23 @@ fn modelEditorValue(wb: *Workbench, field: ModelEditorField) []const u8 {
     };
 }
 
+fn modelEditorList(wb: *Workbench) []const @import("agent/agent_composer.zig").ModelOption {
+    return switch (wb.settings_model_editor_kind) {
+        .chat => wb.agent_ui.models,
+        .embedding => wb.agent_ui.embedding_models,
+    };
+}
+
+fn modelEditorValidation(wb: *Workbench) ?[]const u8 {
+    return ai_model_config.validationMessage(
+        modelEditorList(wb),
+        wb.settings_model_editor_index,
+        modelEditorValue(wb, .id),
+        modelEditorValue(wb, .provider),
+        modelEditorValue(wb, .base_url),
+    );
+}
+
 fn drawInputRow(wb: *Workbench, x: f32, y: f32, w: f32, label: []const u8, field: ModelEditorField, theme: *const workspace.Theme) void {
     const active = wb.settings_model_editor_field == field;
     const bg: renderer.Color = if (active) color(theme.colors.selection) else .{ .r = 0.13, .g = 0.14, .b = 0.16, .a = 1.0 };
@@ -460,7 +478,7 @@ fn drawModelEditor(wb: *Workbench, modal_x: f32, modal_y: f32, modal_w: f32, mod
     renderer.Renderer.drawRect(modal_x, modal_y, 860, modal_h, .{ .r = 0, .g = 0, .b = 0, .a = 0.35 });
 
     const panel_w: f32 = 560;
-    const panel_h: f32 = 386;
+    const panel_h: f32 = 430;
     const x = modal_x + (860 - panel_w) / 2;
     const y = modal_y + (modal_h - panel_h) / 2;
     renderer.Renderer.drawRoundedRect(x - 1, y - 1, panel_w + 2, panel_h + 2, 10, color(theme.colors.border));
@@ -477,8 +495,16 @@ fn drawModelEditor(wb: *Workbench, modal_x: f32, modal_y: f32, modal_w: f32, mod
     drawInputRow(wb, x + 22, cy, row_w, "Model ID", .id, theme);
     cy += 62;
     drawInputRow(wb, x + 22, cy, row_w, "Provider", .provider, theme);
-    cy += 62;
+    cy += 56;
+    drawProviderPresets(wb, x + 22, cy, row_w, theme);
+    cy += 34;
     drawInputRow(wb, x + 22, cy, row_w, "Base URL", .base_url, theme);
+
+    if (modelEditorValidation(wb)) |message| {
+        renderer.Renderer.drawText(message, x + 22, y + panel_h - 78, 11.0, .{ .r = 0.95, .g = 0.58, .b = 0.52, .a = 1.0 });
+    } else {
+        renderer.Renderer.drawText("Ready to save. Changes apply immediately to this workspace.", x + 22, y + panel_h - 78, 11.0, color(theme.colors.text_muted));
+    }
 
     const btn_y = y + panel_h - 54;
     const cancel_x = x + panel_w - 184;
@@ -489,21 +515,45 @@ fn drawModelEditor(wb: *Workbench, modal_x: f32, modal_y: f32, modal_w: f32, mod
     renderer.Renderer.drawText("Save", save_x + 22, btn_y + 9, 12.0, color(theme.colors.text_primary));
 }
 
+fn drawProviderPresets(wb: *Workbench, x: f32, y: f32, w: f32, theme: *const workspace.Theme) void {
+    _ = w;
+    const current = modelEditorValue(wb, .provider);
+    renderer.Renderer.drawText("Presets", x, y, 10.5, color(theme.colors.text_muted));
+    var px = x + 62;
+    for (ai_model_config.provider_presets) |preset| {
+        const active = std.mem.eql(u8, current, preset.id);
+        const pill_w = renderer.Renderer.measureText(preset.id, 10.5) + 18;
+        const bg: renderer.Color = if (active) color(theme.colors.accent) else color(theme.colors.selection);
+        renderer.Renderer.drawRoundedRect(px, y - 4, pill_w, 22, 11, bg);
+        renderer.Renderer.drawText(preset.id, px + 9, y + 2, 10.5, color(theme.colors.text_primary));
+        px += pill_w + 6;
+    }
+}
+
 fn hitModelEditor(wb: *Workbench, modal_x: f32, modal_y: f32, modal_w: f32, modal_h: f32, px: f32, py: f32) ?Hit {
     _ = wb;
     _ = modal_w;
     const panel_w: f32 = 560;
-    const panel_h: f32 = 386;
+    const panel_h: f32 = 430;
     const x = modal_x + (860 - panel_w) / 2;
     const y = modal_y + (modal_h - panel_h) / 2;
     const row_w = panel_w - 44;
     var cy = y + 82;
     const fields = [_]ModelEditorField{ .label, .id, .provider, .base_url };
-    for (fields) |field| {
+    for (fields, 0..) |field, field_index| {
         if (px >= x + 22 and px <= x + 22 + row_w and py >= cy + 18 and py <= cy + 52) {
             return .{ .ai_model_editor_field = field };
         }
-        cy += 62;
+        cy += if (field_index == 2) @as(f32, 90) else @as(f32, 62);
+    }
+    var preset_x = x + 22 + 62;
+    const preset_y = y + 82 + 62 + 62 + 56;
+    for (ai_model_config.provider_presets) |preset| {
+        const pill_w = renderer.Renderer.measureText(preset.id, 10.5) + 18;
+        if (px >= preset_x and px <= preset_x + pill_w and py >= preset_y - 4 and py <= preset_y + 18) {
+            return .{ .ai_model_editor_provider_preset = preset.preset };
+        }
+        preset_x += pill_w + 6;
     }
     const btn_y = y + panel_h - 54;
     const cancel_x = x + panel_w - 184;

@@ -19,6 +19,7 @@ const inset: f32 = 14;
 const card_gap: f32 = 10;
 const action_h: f32 = 28;
 const status_card_h: f32 = 96;
+const timeline_card_h: f32 = 142;
 const section_h: f32 = 32;
 const tool_row_h: f32 = 58;
 
@@ -40,7 +41,7 @@ fn contentHeight(wb: *const Workbench) f32 {
 }
 
 fn toolsTopOffset() f32 {
-    return card_gap + status_card_h + card_gap + action_h + 8 + action_h + card_gap + 4 + section_h;
+    return card_gap + status_card_h + card_gap + action_h + 8 + action_h + card_gap + timeline_card_h + card_gap + 4 + section_h;
 }
 
 pub fn maxScrollY(wb: *const Workbench, h: f32) f32 {
@@ -161,6 +162,69 @@ fn drawStatusCard(wb: *Workbench, x: f32, y: f32, w: f32) void {
     drawClippedText(registry_text, x + 12, y + 69, w - 24, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
 }
 
+fn drawTimelineDot(x: f32, y: f32, active: bool, theme: anytype) void {
+    const c = if (active) theme_loader.toColor(theme.colors.accent) else theme_loader.toColor(theme.colors.text_muted);
+    renderer.Renderer.drawRoundedRect(x, y, 7, 7, 4, c);
+}
+
+fn drawTimelineCard(wb: *Workbench, x: f32, y: f32, w: f32) void {
+    const theme = &wb.theme;
+    renderer.Renderer.drawRoundedRect(x, y, w, timeline_card_h, 6, .{ .r = 0.12, .g = 0.13, .b = 0.15, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(x, y, w, 1.0, 0, theme_loader.toColor(theme.colors.border));
+
+    var status_buf: [128]u8 = undefined;
+    var provider_buf: [96]u8 = undefined;
+    const snap = wb.agent_ui.session.snapshot(&status_buf, &provider_buf);
+    drawStrongText("AI RUN TIMELINE", x + 12, y + 10, 11.0, theme_loader.toColor(theme.colors.text_muted));
+
+    var phase_buf: [192]u8 = undefined;
+    const phase_text = std.fmt.bufPrint(
+        &phase_buf,
+        "{s} · {s}",
+        .{ @tagName(snap.phase), if (snap.status_line.len > 0) snap.status_line else "idle" },
+    ) catch @tagName(snap.phase);
+    drawTimelineDot(x + 14, y + 34, snap.worker_running, theme);
+    drawClippedText(phase_text, x + 28, y + 29, w - 40, 18, 10.5, theme_loader.toColor(theme.colors.text_primary), false);
+
+    var metrics_buf: [192]u8 = undefined;
+    const metrics_text = std.fmt.bufPrint(
+        &metrics_buf,
+        "{d} context entries · {d} stream bytes · {d} thinking bytes",
+        .{ snap.context_entry_count, snap.stream_len, snap.thinking_len },
+    ) catch "Run metrics unavailable";
+    drawTimelineDot(x + 14, y + 54, snap.context_entry_count > 0, theme);
+    drawClippedText(metrics_text, x + 28, y + 49, w - 40, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
+
+    const approval_text = if (snap.approval_pending)
+        "Waiting for tool approval"
+    else if (snap.show_review)
+        "Proposal review ready"
+    else if (snap.validation_failed)
+        "Validation failed"
+    else
+        "No approval pending";
+    drawTimelineDot(x + 14, y + 74, snap.approval_pending or snap.show_review, theme);
+    drawClippedText(approval_text, x + 28, y + 69, w - 40, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
+
+    wb.agent_ui.session.lock();
+    defer wb.agent_ui.session.unlock();
+    const steps = wb.agent_ui.session.agent_steps.items;
+    const start = if (steps.len > 3) steps.len - 3 else 0;
+    var line_y = y + 94;
+    var i = start;
+    while (i < steps.len) : (i += 1) {
+        const step = steps[i];
+        if (step.parent_index != null and step.summary.len == 0) continue;
+        const active = step.running;
+        drawTimelineDot(x + 14, line_y + 5, active, theme);
+        var step_buf: [192]u8 = undefined;
+        const label = if (step.summary.len > 0) step.summary else step.kind;
+        const step_text = std.fmt.bufPrint(&step_buf, "{s}: {s}", .{ step.kind, label }) catch label;
+        drawClippedText(step_text, x + 28, line_y, w - 40, 16, 10.0, theme_loader.toColor(theme.colors.text_muted), false);
+        line_y += 16;
+    }
+}
+
 fn drawRiskPill(label: []const u8, x: f32, y: f32, color: renderer.Color) void {
     const pill_w = renderer.Renderer.measureTextWithStyle(label, 9.5, ui_strong_style) + 12;
     renderer.Renderer.drawRoundedRect(x, y, pill_w, 18, 9, .{ .r = color.r, .g = color.g, .b = color.b, .a = 0.18 });
@@ -221,7 +285,10 @@ pub fn drawAiPanel(wb: *Workbench, start_x: f32, w: f32, h: f32) void {
     cy += action_h + 8;
     drawAction(if (wb.agent_ui.mcp_enabled) "Disable MCP" else "Enable MCP", content_x, cy, action_w, wb.agent_ui.mcp_enabled, theme);
     drawAction("Refresh registry", content_x + action_w + 8, cy, action_w, false, theme);
-    cy += action_h + card_gap + 4;
+    cy += action_h + card_gap;
+
+    drawTimelineCard(wb, content_x, cy, content_w);
+    cy += timeline_card_h + card_gap + 4;
 
     if (wb.ai_mcp_registry) |reg| {
         renderer.Renderer.drawSvg(renderer.icons.chevron_down, start_x + 8, cy + 4, 16, 16, icon_c);
