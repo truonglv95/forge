@@ -432,6 +432,7 @@ pub const Workbench = struct {
         settings_mod.writeAiPanelFontSize(allocator, io, root, self.user_settings.ai_panel_font_size) catch |err| {
             self.logBackgroundError("Persist AI panel font size", err);
         };
+        self.agent_ui.edit_mode = self.user_settings.agent_edit_mode;
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
@@ -1036,6 +1037,7 @@ pub const Workbench = struct {
     pub fn reloadUserSettings(self: *Workbench) !void {
         self.user_settings.deinit(self.allocator);
         self.user_settings = settings_mod.load(self.allocator, self.io, self.workspace_root) catch .{};
+        self.agent_ui.edit_mode = self.user_settings.agent_edit_mode;
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
@@ -1064,6 +1066,16 @@ pub const Workbench = struct {
         self.reloadOpenSettingsDocuments();
         var buf: [96]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "AI panel font size set to {d:.1}px", .{next}) catch "AI panel font size updated";
+        try self.setStatus(msg);
+    }
+
+    pub fn setAgentEditMode(self: *Workbench, mode: @import("workbench/agent_edit_mode.zig").Mode) !void {
+        self.user_settings.agent_edit_mode = mode;
+        self.agent_ui.edit_mode = mode;
+        try settings_mod.writeAgentEditMode(self.allocator, self.io, self.workspace_root, mode);
+        self.reloadOpenSettingsDocuments();
+        var buf: [96]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Agent edit mode set to {s}", .{mode.label()}) catch "Agent edit mode updated";
         try self.setStatus(msg);
     }
 

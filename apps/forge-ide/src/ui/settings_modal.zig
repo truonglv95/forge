@@ -36,6 +36,7 @@ pub const Hit = union(enum) {
     editor_font_increase,
     editor_line_height_decrease,
     editor_line_height_increase,
+    agent_edit_mode_next,
     ai_edit_provider,
     ai_edit_model,
     ai_edit_embedding_provider,
@@ -204,6 +205,8 @@ pub fn draw(wb: *Workbench, window_w: f32, window_h: f32) void {
         drawValueRow(content_x + 32, cy, content_w - 64, "MCP Status", wb.ai_mcp_status orelse "not checked", theme);
         cy += 44;
         drawValueRow(content_x + 32, cy, content_w - 64, "Agent Mode", @tagName(wb.agent_ui.session.mode), theme);
+        cy += 44;
+        drawValueRow(content_x + 32, cy, content_w - 64, "Agent Edit Mode", wb.agent_ui.edit_mode.label(), theme);
     } else if (wb.settings_modal_tab == .appearance) {
         renderer.Renderer.drawText("Appearance", content_x + 32, cy, 20.0, text_primary);
         cy += 30;
@@ -387,6 +390,13 @@ pub fn hitTestPoint(wb: *Workbench, window_w: f32, window_h: f32, px: f32, py: f
         if (hitModelSection(.embedding, wb.agent_ui.embedding_models.len, row_x, cy, row_w, px, py)) |hit| return hit;
         cy += 32 + @as(f32, @floatFromInt(@max(wb.agent_ui.embedding_models.len, 1))) * 48 + 26;
         if (px >= row_x and px <= row_x + row_w and py >= cy and py <= cy + 48) return .ai_toggle_hyde;
+    } else if (wb.settings_modal_tab == .permissions) {
+        const content_x: f32 = modal_x + sidebar_w;
+        const content_w: f32 = modal_w - sidebar_w;
+        const row_x = content_x + 32;
+        const row_w = content_w - 64;
+        const edit_mode_y = modal_y + 94 + 44 * 3;
+        if (px >= row_x and px <= row_x + row_w and py >= edit_mode_y and py <= edit_mode_y + 40) return .agent_edit_mode_next;
     }
 
     // Returning none because the click was inside the modal but not on anything interactive yet.

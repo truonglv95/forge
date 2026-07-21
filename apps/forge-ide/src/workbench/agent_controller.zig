@@ -2,6 +2,7 @@ const std = @import("std");
 const agent_session = @import("../agent/session.zig");
 const agent_ui_queue_mod = @import("agent_ui_queue.zig");
 const kernel = @import("forge-kernel");
+const agent_edit_mode = @import("agent_edit_mode.zig");
 
 pub const AgentController = struct {
     allocator: std.mem.Allocator,
@@ -23,6 +24,7 @@ pub const AgentController = struct {
     embedding_url: ?[]const u8 = null,
     mcp_enabled: bool = true,
     enable_hyde: bool = false,
+    edit_mode: agent_edit_mode.Mode = .auto_edit,
     models: []const @import("../ui/agent/agent_composer.zig").ModelOption = &.{},
     embedding_models: []const @import("../ui/agent/agent_composer.zig").ModelOption = &.{},
     mcp_collapsed_servers: std.StringHashMap(void),

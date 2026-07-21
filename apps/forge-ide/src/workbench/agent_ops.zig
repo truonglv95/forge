@@ -357,6 +357,7 @@ pub fn handleSettingsModalClick(wb: anytype, hit: @import("../ui/settings_modal.
         .editor_font_increase => try wb.setEditorFontSize(wb.user_settings.font_size + 0.5),
         .editor_line_height_decrease => try wb.setEditorLineHeight(wb.user_settings.line_height - 0.05),
         .editor_line_height_increase => try wb.setEditorLineHeight(wb.user_settings.line_height + 0.05),
+        .agent_edit_mode_next => try wb.setAgentEditMode(wb.agent_ui.edit_mode.next()),
         .ai_edit_provider => try wb.dispatch(.ai_edit_provider),
         .ai_edit_model => try wb.dispatch(.ai_edit_model),
         .ai_edit_embedding_provider => try wb.dispatch(.ai_edit_embedding_provider),
@@ -1061,13 +1062,45 @@ pub fn flushAgentUi(wb: anytype) !void {
                     wb.logBackgroundError("Apply AI run manifest", err);
                 };
                 if (payload.proposal_rel.len > 0 and wb.agent_ui.session.mode != .ask) {
-                    if (agent_workflow.loadProposalPreview(&host, payload.proposal_rel)) {
-                        openProposalReview(wb);
-                        try wb.agent_ui.session.setPhase(.proposal_ready, "Proposal ready for review");
-                        try wb.setStatus("Proposal ready for review");
-                    } else |_| {
-                        try wb.agent_ui.session.setPhase(.idle, "Proposal preview unavailable");
-                        try wb.setStatus("Proposal preview unavailable");
+                    if (wb.agent_ui.edit_mode == .review) {
+                        if (agent_workflow.loadProposalPreview(&host, payload.proposal_rel)) {
+                            openProposalReview(wb);
+                            try wb.agent_ui.session.setPhase(.proposal_ready, "Proposal ready for review");
+                            try wb.setStatus("Proposal ready for review");
+                        } else |_| {
+                            try wb.agent_ui.session.setPhase(.idle, "Proposal preview unavailable");
+                            try wb.setStatus("Proposal preview unavailable");
+                        }
+                    } else {
+                        if (agent_workflow.loadProposalPreview(&host, payload.proposal_rel)) {
+                            if (agent_workflow.applyCurrentProposal(&host)) |tx_id| {
+                                closeProposalReview(wb);
+                                wb.agent_ui.session.lock();
+                                const validation_failed = wb.agent_ui.session.phase == .failed and wb.agent_ui.session.post_apply_visible;
+                                wb.agent_ui.session.unlock();
+                                var apply_buf: [96]u8 = undefined;
+                                const apply_msg = if (validation_failed)
+                                    std.fmt.bufPrint(&apply_buf, "Auto-applied transaction {d}; validation failed", .{tx_id}) catch "Auto-applied changes; validation failed"
+                                else
+                                    std.fmt.bufPrint(&apply_buf, "Auto-applied transaction {d}; validation passed", .{tx_id}) catch "Auto-applied changes";
+                                try wb.setStatus(apply_msg);
+                                try appendChat(
+                                    wb,
+                                    .agent,
+                                    if (validation_failed)
+                                        "Changes were auto-applied, but validation failed. Inspect the validation output or use Rollback."
+                                    else
+                                        "Changes were auto-applied and verified. Use Rollback if the result is not right.",
+                                );
+                            } else |err| {
+                                openProposalReview(wb);
+                                try wb.agent_ui.session.setPhase(.proposal_ready, agent_workflow.agentFailureMessage(err));
+                                try wb.setStatus(agent_workflow.agentFailureMessage(err));
+                            }
+                        } else |_| {
+                            try wb.agent_ui.session.setPhase(.idle, "Proposal preview unavailable");
+                            try wb.setStatus("Proposal preview unavailable");
+                        }
                     }
                 } else if (wb.agent_ui.session.mode == .ask) {
                     try wb.agent_ui.session.setPhase(.idle, "Answer ready");

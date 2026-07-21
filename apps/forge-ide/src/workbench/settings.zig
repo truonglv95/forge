@@ -1,5 +1,6 @@
 const std = @import("std");
 const workspace = @import("forge-workspace");
+const agent_edit_mode = @import("agent_edit_mode.zig");
 
 pub const Settings = struct {
     tab_width: u8 = 4,
@@ -8,6 +9,7 @@ pub const Settings = struct {
     ai_panel_font_size: f32 = @import("../ui/agent/metrics.zig").markdown.default_body_font_size,
     word_wrap: bool = false,
     format_on_save: bool = false,
+    agent_edit_mode: agent_edit_mode.Mode = .auto_edit,
     terminal_shell: ?[]const u8 = null,
     // Ghost text / inline AI completion settings ([ghost_completion] section)
     ghost_provider: []const u8 = "ai",
@@ -116,6 +118,11 @@ fn parseSettingsContent(settings: *Settings, allocator: std.mem.Allocator, conte
             if (std.mem.eql(u8, key, "font_size")) {
                 const parsed = std.fmt.parseFloat(f32, value) catch continue;
                 if (parsed >= 12 and parsed <= 20) settings.ai_panel_font_size = parsed;
+            }
+        } else if (std.mem.eql(u8, section, "ai")) {
+            if (std.mem.eql(u8, key, "edit_mode")) {
+                const unquoted = parseQuoted(value) orelse value;
+                if (agent_edit_mode.Mode.parse(unquoted)) |mode| settings.agent_edit_mode = mode;
             }
         } else if (std.mem.eql(u8, section, "ghost_completion")) {
             if (std.mem.eql(u8, key, "provider")) {
@@ -247,6 +254,32 @@ pub fn writeAiPanelFontSize(
     defer allocator.free(content);
 
     const updated = try upsertTomlValue(allocator, content, "ai_panel", "font_size", value_text);
+    defer allocator.free(updated);
+    try workspace.global_store.replaceAbsoluteFile(io, home_settings, updated);
+}
+
+pub fn writeAgentEditMode(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    mode: agent_edit_mode.Mode,
+) !void {
+    _ = root;
+    var value_buf: [64]u8 = undefined;
+    const value = try std.fmt.bufPrint(&value_buf, "\"{s}\"", .{@tagName(mode)});
+
+    const home_settings = try workspace.global_store.joinHome(allocator, "settings.toml");
+    defer allocator.free(home_settings);
+
+    const content = workspace.global_store.readAbsoluteFile(allocator, io, home_settings) catch {
+        const default_content = try std.fmt.allocPrint(allocator, "[ai]\nedit_mode = {s}\n", .{value});
+        defer allocator.free(default_content);
+        try workspace.global_store.replaceAbsoluteFile(io, home_settings, default_content);
+        return;
+    };
+    defer allocator.free(content);
+
+    const updated = try upsertTomlValue(allocator, content, "ai", "edit_mode", value);
     defer allocator.free(updated);
     try workspace.global_store.replaceAbsoluteFile(io, home_settings, updated);
 }
@@ -498,4 +531,17 @@ test "parseSettingsContent uses latest ai panel font size" {
 
     try parseSettingsContent(&settings, std.testing.allocator, input);
     try std.testing.expectEqual(@as(f32, 16.0), settings.ai_panel_font_size);
+}
+
+test "parseSettingsContent reads agent edit mode" {
+    const input =
+        \\[ai]
+        \\edit_mode = "review"
+        \\
+    ;
+    var settings: Settings = .{};
+    defer settings.deinit(std.testing.allocator);
+
+    try parseSettingsContent(&settings, std.testing.allocator, input);
+    try std.testing.expectEqual(agent_edit_mode.Mode.review, settings.agent_edit_mode);
 }
