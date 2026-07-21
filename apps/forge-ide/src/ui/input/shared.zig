@@ -43,6 +43,8 @@ pub fn pasteIntoActiveBuffer(wb: *Workbench) void {
         &wb.rename_bar.input
     else if (wb.focused_panel == .git)
         &wb.git.commit_msg
+    else if (wb.focused_panel == .search)
+        &wb.search_buffer
     else
         return;
 

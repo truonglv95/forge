@@ -5,11 +5,20 @@ const scope_picker = @import("../../agent/scope_picker.zig");
 
 pub const PanelMode = enum { installed, marketplace };
 
-pub const list_top: f32 = 163;
-pub const header_h: f32 = 52;
+pub const panel_top: f32 = layout.header_height + layout.activity_bar_height;
+pub const panel_inset: f32 = 12;
+pub const header_h: f32 = 38;
+pub const filter_top: f32 = panel_top + header_h + 6;
+pub const filter_h: f32 = 34;
+pub const dir_row_top: f32 = filter_top + filter_h + 10;
+pub const dir_row_h: f32 = 28;
+pub const tabs_top: f32 = dir_row_top + dir_row_h + 10;
+pub const tabs_h: f32 = 30;
+pub const list_top: f32 = tabs_top + tabs_h + 14;
+pub const section_h: f32 = 32;
 pub const cmd_row_h: f32 = 18;
-pub const footer_h: f32 = 72;
-pub const marketplace_row_h: f32 = 56;
+pub const footer_h: f32 = 8;
+pub const marketplace_row_h: f32 = 72;
 pub const detail_h: f32 = 220;
 
 pub fn blockHeight(ext: *const plugin.LoadedExtension) f32 {
@@ -32,7 +41,7 @@ fn catalogMatchesFilter(filter: []const u8, entry: *const plugin.MarketplaceEntr
 }
 
 pub fn installedContentHeight(host: *const plugin.Host, filter: []const u8) f32 {
-    var total: f32 = footer_h;
+    var total: f32 = footer_h + section_h;
     for (host.extensions.items) |*ext| {
         if (!extensionMatchesFilter(filter, ext)) continue;
         total += blockHeight(ext);
@@ -42,8 +51,8 @@ pub fn installedContentHeight(host: *const plugin.Host, filter: []const u8) f32 
 
 pub fn marketplaceContentHeight(catalog: ?*const plugin.MarketplaceCatalog, filter: []const u8) f32 {
     const catalog_ptr = catalog orelse return footer_h;
-    if (filter.len == 0) return footer_h + @as(f32, @floatFromInt(catalog_ptr.entries.len)) * marketplace_row_h;
-    var total: f32 = footer_h;
+    if (filter.len == 0) return footer_h + section_h + @as(f32, @floatFromInt(catalog_ptr.entries.len)) * marketplace_row_h;
+    var total: f32 = footer_h + section_h;
     for (catalog_ptr.entries) |*entry| {
         if (catalogMatchesFilter(filter, entry)) total += marketplace_row_h;
     }
@@ -119,21 +128,22 @@ pub fn hitTest(
     can_uninstall_fn: *const fn (ext_index: usize) bool,
 ) ?Hit {
     if (click_x < panel_x or click_x >= panel_x + panel_w) return null;
-    const local_y = click_y - list_top + scroll_y;
-    if (local_y < 0) return null;
 
     const btn_w = (panel_w - 44) / 2;
-    if (local_y >= 0 and local_y < 22) {
-        if (click_x < panel_x + 20 + btn_w) return .reload;
-        return .open_workspace_dir;
+    if (click_y >= panel_top + 8 and click_y < panel_top + 30) {
+        if (click_x >= panel_x + panel_w - 56 and click_x < panel_x + panel_w - 34) return .reload;
     }
-    if (local_y >= 22 and local_y < 44) {
-        return .open_user_dir;
+    if (click_y >= dir_row_top and click_y < dir_row_top + dir_row_h) {
+        if (click_x >= panel_x + 12 and click_x < panel_x + 12 + btn_w) return .open_workspace_dir;
+        if (click_x >= panel_x + 16 + btn_w and click_x < panel_x + 16 + btn_w + btn_w) return .open_user_dir;
     }
-    if (local_y >= 44 and local_y < 66) {
-        if (click_x < panel_x + 20 + btn_w) return .show_installed;
-        return .show_marketplace;
+    if (click_y >= tabs_top and click_y < tabs_top + tabs_h) {
+        if (click_x >= panel_x + 12 and click_x < panel_x + 12 + btn_w) return .show_installed;
+        if (click_x >= panel_x + 16 + btn_w and click_x < panel_x + 16 + btn_w + btn_w) return .show_marketplace;
     }
+
+    const local_y = click_y - list_top + scroll_y;
+    if (local_y < 0) return null;
 
     if (detail_index != null) {
         if (local_y >= footer_h and local_y < footer_h + 22) return .back_from_detail;
@@ -144,7 +154,7 @@ pub fn hitTest(
         return null;
     }
 
-    var y: f32 = footer_h;
+    var y: f32 = footer_h + section_h;
     if (mode == .installed) {
         for (host.extensions.items, 0..) |*ext, ext_index| {
             if (!extensionMatchesFilter(filter, ext)) continue;
@@ -167,8 +177,8 @@ pub fn hitTest(
             if (!catalogMatchesFilter(filter, &cat.entries[index])) continue;
             if (local_y >= y and local_y < y + marketplace_row_h) {
                 const row_inner = local_y - y;
-                if (row_inner >= marketplace_row_h - 20) return .{ .show_detail = index };
-                return .{ .install = index };
+                if (row_inner >= marketplace_row_h - 34) return .{ .install = index };
+                return .{ .show_detail = index };
             }
             y += marketplace_row_h;
         }

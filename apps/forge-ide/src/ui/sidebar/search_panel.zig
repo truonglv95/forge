@@ -2,8 +2,13 @@ const std = @import("std");
 const layout = @import("../core/layout.zig");
 const workspace = @import("forge-workspace");
 
-pub const list_top: f32 = 131;
-pub const query_box_h: f32 = 28;
+pub const panel_top: f32 = layout.header_height + layout.activity_bar_height;
+pub const header_h: f32 = 38;
+pub const query_top: f32 = panel_top + header_h + 4;
+pub const query_box_h: f32 = 34;
+pub const search_button_top: f32 = query_top + query_box_h + 10;
+pub const search_button_h: f32 = 28;
+pub const list_top: f32 = search_button_top + search_button_h + 18;
 pub const row_h: f32 = 34;
 
 pub fn contentHeight(result_count: usize) f32 {
@@ -36,13 +41,15 @@ pub fn hitTest(
     scroll_y: f32,
 ) ?Hit {
     if (click_x < panel_x or click_x >= panel_x + panel_w) return null;
-    const local_y = click_y - list_top + scroll_y;
 
-    if (local_y >= 0 and local_y < 22 and click_x >= panel_x + 12 and click_x < panel_x + panel_w - 12) {
+    if (click_y >= search_button_top and click_y < search_button_top + search_button_h and
+        click_x >= panel_x + 12 and click_x < panel_x + panel_w - 12)
+    {
         return .run_search;
     }
 
-    var y: f32 = 28;
+    const local_y = click_y - list_top + scroll_y;
+    var y: f32 = 0;
     for (results, 0..) |_, index| {
         if (local_y >= y and local_y < y + row_h) return .{ .open_result = index };
         y += row_h;

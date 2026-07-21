@@ -202,7 +202,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             if (activity_bar.hitTest(event.x, event.y, geo.explorer_w)) |view| {
                 wb.dispatch(.{ .set_sidebar_view = view }) catch {};
             }
-        } else if (geo.shell_mode == .ide and wb.sidebar_view == .extensions and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= extensions_panel.list_top) {
+        } else if (geo.shell_mode == .ide and wb.sidebar_view == .extensions and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= extensions_panel.panel_top) {
             wb.focused_panel = .extensions;
             const catalog_ptr: ?*const plugin.MarketplaceCatalog = if (wb.marketplace_catalog) |*catalog| catalog else null;
             if (extensions_panel.hitTest(
@@ -220,7 +220,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             )) |hit| {
                 @import("../../workbench/extensions_ops.zig").handleExtensionsClick(wb, hit) catch {};
             }
-        } else if (geo.shell_mode == .ide and wb.sidebar_view == .search and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= search_panel.list_top - 40) {
+        } else if (geo.shell_mode == .ide and wb.sidebar_view == .search and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= search_panel.panel_top) {
             wb.focused_panel = .search;
             if (search_panel.hitTest(
                 if (wb.search.results) |results| results.matches else &.{},

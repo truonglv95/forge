@@ -111,7 +111,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     }
 
     if (event.keycode == 9 and event.modifiers & shared.cmd_mask != 0) {
-        if (wb.focused_panel == .find or wb.focused_panel == .goto_line or wb.focused_panel == .rename or wb.focused_panel == .agent or wb.focused_panel == .editor) {
+        if (wb.focused_panel == .find or wb.focused_panel == .goto_line or wb.focused_panel == .rename or wb.focused_panel == .agent or wb.focused_panel == .editor or wb.focused_panel == .search) {
             shared.pasteIntoActiveBuffer(wb);
             return;
         }
@@ -182,8 +182,8 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
-    if (wb.focused_panel == .search) {
-        keys_sidebar.handleSearchKeys(wb, event);
+    if (wb.focused_panel == .search and event.keycode == 36) {
+        wb.dispatch(.search_run) catch {};
         return;
     }
 
@@ -311,6 +311,8 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         &wb.agent_ui.prompt_buffer
     else if (wb.focused_panel == .git)
         &wb.git.commit_msg
+    else if (wb.focused_panel == .search)
+        &wb.search_buffer
     else
         null;
 
@@ -356,7 +358,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         }
     }
 
-    const text_focus = wb.focused_panel == .editor or wb.focused_panel == .agent or wb.focused_panel == .git;
+    const text_focus = wb.focused_panel == .editor or wb.focused_panel == .agent or wb.focused_panel == .git or wb.focused_panel == .search;
     if (!(text_focus and isPlainPrintableText(event)) and keybindings_mod.Registry.dispatch(&wb.keybindings, &wb.palette, event, shared.dispatchWorkbenchCommand)) {
         return;
     }
@@ -435,7 +437,6 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
 
     if (wb.focused_panel == .explorer) return;
     if (wb.focused_panel == .extensions) return;
-    if (wb.focused_panel == .search) return;
     if (wb.focused_panel == .run) return;
 
     if (event.keycode == 51) {
@@ -492,6 +493,8 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
         &wb.agent_ui.prompt_buffer
     else if (wb.focused_panel == .git)
         &wb.git.commit_msg
+    else if (wb.focused_panel == .search)
+        &wb.search_buffer
     else
         return;
 
@@ -513,8 +516,10 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
 
         if (event.text.len > 0) {
             active_buffer.insertString(event.text) catch {};
-            if (wb.focused_panel == .editor) wb.editor.ghost.onBufferChanged(active_buffer.cursor.row, active_buffer.cursor.col);
-            wb.editor.fold_dirty = true;
+            if (wb.focused_panel == .editor) {
+                wb.editor.ghost.onBufferChanged(active_buffer.cursor.row, active_buffer.cursor.col);
+                wb.editor.fold_dirty = true;
+            }
             if (wb.editor.inline_edit.active and wb.focused_panel == .editor) {
                 wb.editor.inline_edit.appendSlice(event.text) catch {};
             }
