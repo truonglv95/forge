@@ -17,6 +17,7 @@ void forge_mac_set_cursor(int type);
 void forge_mac_draw_rect(float x, float y, float w, float h, float r, float g, float b, float a);
 void forge_mac_draw_rounded_rect(float x, float y, float w, float h, float r, float g, float b, float a, float cr);
 void forge_mac_draw_text_len(const char* text, size_t len, float x, float y, float fs, float r, float g, float b, float a);
+void forge_mac_draw_text_len_style(const char* text, size_t len, float x, float y, float fs, int role, int weight, float r, float g, float b, float a);
 void forge_mac_draw_styled_text(const char* text, size_t len, float x, float y, float fs, const ForgeTextSpan* spans, size_t n);
 void forge_mac_draw_svg(const char* svg, float x, float y, float w, float h, float angle, float r, float g, float b, float a);
 void forge_mac_set_text_style(const char* family, int weight);
@@ -24,6 +25,7 @@ void forge_mac_set_editor_text_metrics(float fs, float lh, float b);
 void forge_mac_get_resolved_font_name(char* buf, size_t cap);
 void forge_mac_get_font_metrics(float fs, float* cw, float* lh, float* bl);
 float forge_mac_measure_text_width(const char* text, size_t len, float fs);
+float forge_mac_measure_text_width_style(const char* text, size_t len, float fs, int role, int weight);
 void forge_mac_get_window_size(float* w, float* h);
 void forge_mac_set_clip_rect(float x, float y, float w, float h);
 void forge_mac_clear_clip_rect(void);
@@ -47,6 +49,7 @@ void forge_backend_set_cursor(int t) { forge_mac_set_cursor(t); }
 void forge_backend_draw_rect(float x, float y, float w, float h, float r, float g, float b, float a) { forge_mac_draw_rect(x, y, w, h, r, g, b, a); }
 void forge_backend_draw_rounded_rect(float x, float y, float w, float h, float r, float g, float b, float a, float cr) { forge_mac_draw_rounded_rect(x, y, w, h, r, g, b, a, cr); }
 void forge_backend_draw_text_len(const char* t, size_t l, float x, float y, float fs, float r, float g, float b, float a) { forge_mac_draw_text_len(t, l, x, y, fs, r, g, b, a); }
+void forge_backend_draw_text_len_style(const char* t, size_t l, float x, float y, float fs, int role, int weight, float r, float g, float b, float a) { forge_mac_draw_text_len_style(t, l, x, y, fs, role, weight, r, g, b, a); }
 void forge_backend_draw_styled_text(const char* t, size_t l, float x, float y, float fs, const ForgeTextSpan* s, size_t n) { forge_mac_draw_styled_text(t, l, x, y, fs, s, n); }
 void forge_backend_draw_svg(const char* svg, float x, float y, float w, float h, float angle, float r, float g, float b, float a) { forge_mac_draw_svg(svg, x, y, w, h, angle, r, g, b, a); }
 void forge_backend_set_text_style(const char* f, int w) { forge_mac_set_text_style(f, w); }
@@ -54,6 +57,7 @@ void forge_backend_set_editor_text_metrics(float fs, float lh, float b) { forge_
 void forge_backend_get_resolved_font_name(char* buf, size_t cap) { forge_mac_get_resolved_font_name(buf, cap); }
 void forge_backend_get_font_metrics(float fs, float* cw, float* lh, float* bl) { forge_mac_get_font_metrics(fs, cw, lh, bl); }
 float forge_backend_measure_text_width(const char* t, size_t l, float fs) { return forge_mac_measure_text_width(t, l, fs); }
+float forge_backend_measure_text_width_style(const char* t, size_t l, float fs, int role, int weight) { return forge_mac_measure_text_width_style(t, l, fs, role, weight); }
 void forge_backend_get_window_size(float* w, float* h) { forge_mac_get_window_size(w, h); }
 void forge_backend_set_clip_rect(float x, float y, float w, float h) { forge_mac_set_clip_rect(x, y, w, h); }
 void forge_backend_clear_clip_rect(void) { forge_mac_clear_clip_rect(); }

@@ -2,16 +2,22 @@ const std = @import("std");
 const renderer = @import("forge-renderer");
 const chat_markdown = @import("chat_markdown.zig");
 const chat_message_lines = @import("chat_message_lines.zig");
+const metrics = @import("metrics.zig");
 const tokens = @import("../tokens.zig");
 
-pub const font_size: f32 = chat_markdown.body_font_size;
-pub const line_h: f32 = chat_markdown.body_line_h;
-pub const bubble_pad_x: f32 = tokens.space.lg;
-pub const bubble_pad_y: f32 = tokens.space.md + 2.0;
-pub const title_h: f32 = 16.0;
-pub const bubble_gap: f32 = tokens.space.xl;
-pub const agent_icon_size: f32 = 20.0;
-pub const agent_header_h: f32 = agent_icon_size + tokens.space.sm;
+pub fn fontSize() f32 {
+    return chat_markdown.body_font_size;
+}
+
+pub fn lineH() f32 {
+    return chat_markdown.body_line_h;
+}
+pub const bubble_pad_x: f32 = metrics.bubble.pad_x;
+pub const bubble_pad_y: f32 = metrics.bubble.pad_y;
+pub const title_h: f32 = metrics.bubble.title_h;
+pub const bubble_gap: f32 = metrics.bubble.gap;
+pub const agent_icon_size: f32 = metrics.bubble.agent_icon_size;
+pub const agent_header_h: f32 = metrics.bubble.agent_header_h;
 
 pub fn agentTextWidth(content_w: f32) f32 {
     return @max(40.0, content_w);
@@ -33,7 +39,7 @@ fn userBubbleWidth(content_w: f32) f32 {
 
 pub fn visualLineCount(text: []const u8, content_w: f32) usize {
     const h = chat_markdown.contentHeight(text, textMaxWidth(content_w));
-    return @max(1, @as(usize, @intFromFloat(std.math.ceil(h / line_h))));
+    return @max(1, @as(usize, @intFromFloat(std.math.ceil(h / lineH()))));
 }
 
 pub fn bubbleHeight(text: []const u8, content_w: f32, with_title: bool) f32 {
@@ -115,7 +121,7 @@ pub fn drawBubbleWithCache(
         const n = @min(title_text.len, title_buf.len - 1);
         @memcpy(title_buf[0..n], title_text[0..n]);
         title_buf[n] = 0;
-        renderer.Renderer.drawText(title_buf[0..n], text_x, text_y, 11.0, style.title_fg);
+        renderer.Renderer.drawTextWithStyle(title_buf[0..n], text_x, text_y, 11.0, style.title_fg, metrics.typography.strong_style);
         text_y += title_h;
     }
 
@@ -310,15 +316,16 @@ pub fn hitTestMessageContent(
 }
 
 pub const agent_text_style = chat_markdown.Style{
-    .fg = .{ .r = 0.86, .g = 0.88, .b = 0.92, .a = 1.0 },
-    .bold_fg = .{ .r = 0.95, .g = 0.96, .b = 0.98, .a = 1.0 },
-    .inline_code_fg = .{ .r = 0.82, .g = 0.9, .b = 0.98, .a = 1.0 },
-    .code_block_fg = .{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 },
-    .code_block_bg = .{ .r = 0.085, .g = 0.095, .b = 0.12, .a = 1.0 },
-    .code_block_border = .{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 },
-    .quote_bg = .{ .r = 0.11, .g = 0.13, .b = 0.16, .a = 0.72 },
-    .quote_bar = .{ .r = 0.38, .g = 0.64, .b = 0.98, .a = 0.78 },
-    .list_marker = .{ .r = 0.38, .g = 0.78, .b = 0.82, .a = 0.9 },
+    .fg = .{ .r = 0.82, .g = 0.84, .b = 0.88, .a = 1.0 },
+    .bold_fg = .{ .r = 0.91, .g = 0.92, .b = 0.95, .a = 1.0 },
+    .inline_code_fg = .{ .r = 0.78, .g = 0.86, .b = 0.94, .a = 1.0 },
+    .inline_code_bg = .{ .r = 0.18, .g = 0.2, .b = 0.25, .a = 0.9 },
+    .code_block_fg = .{ .r = 0.84, .g = 0.86, .b = 0.9, .a = 1.0 },
+    .code_block_bg = .{ .r = 0.075, .g = 0.085, .b = 0.105, .a = 1.0 },
+    .code_block_border = .{ .r = 0.15, .g = 0.17, .b = 0.21, .a = 1.0 },
+    .quote_bg = .{ .r = 0.1, .g = 0.115, .b = 0.14, .a = 0.62 },
+    .quote_bar = .{ .r = 0.34, .g = 0.56, .b = 0.88, .a = 0.72 },
+    .list_marker = .{ .r = 0.34, .g = 0.72, .b = 0.76, .a = 0.82 },
 };
 
 pub const thinking_text_style = chat_markdown.Style{
@@ -346,7 +353,7 @@ pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) 
     renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 6, .{ .r = 0.03, .g = 0.24, .b = 0.43, .a = 1.0 });
     renderer.Renderer.drawRoundedRect(inner_x + 1, y + 1, pill_w - 2, pill_h - 2, 5, .{ .r = 0.07, .g = 0.12, .b = 0.18, .a = 1.0 });
     renderer.Renderer.drawSvg(renderer.icons.sparkle, inner_x + 14, y + 8, 14, 14, .{ .r = 0.18, .g = 0.58, .b = 0.95, .a = 1.0 });
-    renderer.Renderer.drawText(label_buf[0..label_len], inner_x + 34, y + 8, 12.0, .{ .r = 0.24, .g = 0.62, .b = 0.95, .a = 1.0 });
+    renderer.Renderer.drawTextWithStyle(label_buf[0..label_len], inner_x + 34, y + 8, 12.0, .{ .r = 0.24, .g = 0.62, .b = 0.95, .a = 1.0 }, metrics.typography.strong_style);
     return thinkingLineHeight();
 }
 
@@ -360,8 +367,8 @@ pub fn drawStatusLine(inner_x: f32, y: f32, text: []const u8) f32 {
     const n = @min(text.len, buf.len - 1);
     @memcpy(buf[0..n], text[0..n]);
     buf[n] = 0;
-    renderer.Renderer.drawText(buf[0..n], inner_x, y, 11.0, thinking_text_style.fg);
-    return line_h + bubble_gap;
+    renderer.Renderer.drawTextWithStyle(buf[0..n], inner_x, y, 11.0, thinking_text_style.fg, metrics.typography.prose_style);
+    return lineH() + bubble_gap;
 }
 
 pub fn historyMessageHeight(is_user: bool, text: []const u8, content_w: f32) f32 {

@@ -2,21 +2,32 @@ const std = @import("std");
 const renderer = @import("forge-renderer");
 const word_wrap = @import("../editor/word_wrap.zig");
 const diff_line_style = @import("../diff_line_style.zig");
+const metrics = @import("metrics.zig");
 const tokens = @import("../tokens.zig");
 
-pub const body_font_size: f32 = tokens.font.body;
-pub const body_line_h: f32 = tokens.font.body_line;
-pub const code_font_size: f32 = tokens.font.code;
-pub const code_line_h: f32 = tokens.font.code_line;
-pub const code_pad: f32 = tokens.space.md + 2.0;
-pub const code_gap: f32 = tokens.space.md;
-pub const heading_font_size: f32 = tokens.font.heading;
-pub const heading_line_h: f32 = tokens.font.heading_line;
-pub const list_indent: f32 = 18.0;
-pub const quote_indent: f32 = 14.0;
-pub const markdown_block_gap: f32 = tokens.space.sm;
-pub const heading_gap_top: f32 = tokens.space.md;
-pub const heading_gap_bottom: f32 = tokens.space.sm;
+pub var body_font_size: f32 = 14.5;
+pub var body_line_h: f32 = 24.0;
+pub var code_font_size: f32 = 12.5;
+pub var code_line_h: f32 = 21.0;
+pub var code_pad: f32 = 10.0;
+pub var code_gap: f32 = 8.0;
+pub var heading_font_size: f32 = 15.5;
+pub var heading_line_h: f32 = 25.0;
+pub var list_indent: f32 = 20.0;
+pub var quote_indent: f32 = 14.0;
+var paragraph_gap: f32 = 14.0;
+var list_item_gap: f32 = 6.0;
+var quote_pad_x: f32 = 10.0;
+var quote_pad_y: f32 = 8.0;
+var inline_code_pad_x: f32 = 3.5;
+var inline_code_gap: f32 = 4.0;
+pub var markdown_block_gap: f32 = 10.0;
+pub var heading_gap_top: f32 = 15.0;
+pub var heading_gap_bottom: f32 = 10.0;
+
+const prose_text_style = metrics.typography.prose_style;
+const bold_text_style = metrics.typography.strong_style;
+const code_text_style = metrics.typography.code_style;
 
 pub const Style = struct {
     fg: renderer.Color,
@@ -72,6 +83,34 @@ const HeightCacheSlot = struct {
 var height_cache: [512]HeightCacheSlot = [_]HeightCacheSlot{.{}} ** 512;
 var height_cache_hits: u64 = 0;
 var height_cache_misses: u64 = 0;
+
+pub fn configureFontSize(font_size: f32) void {
+    metrics.configureAiPanelFontSize(font_size);
+    body_font_size = metrics.markdown.body_font_size;
+    body_line_h = metrics.markdown.body_line_h;
+    code_font_size = metrics.markdown.code_font_size;
+    code_line_h = metrics.markdown.code_line_h;
+    code_pad = metrics.markdown.code_pad;
+    code_gap = metrics.markdown.code_gap;
+    heading_font_size = metrics.markdown.heading_font_size;
+    heading_line_h = metrics.markdown.heading_line_h;
+    list_indent = metrics.markdown.list_indent;
+    quote_indent = metrics.markdown.quote_indent;
+    paragraph_gap = metrics.markdown.paragraph_gap;
+    list_item_gap = metrics.markdown.list_item_gap;
+    quote_pad_x = metrics.markdown.quote_pad_x;
+    quote_pad_y = metrics.markdown.quote_pad_y;
+    inline_code_pad_x = metrics.markdown.inline_code_pad_x;
+    inline_code_gap = metrics.markdown.inline_code_gap;
+    markdown_block_gap = metrics.markdown.block_gap;
+    heading_gap_top = metrics.markdown.heading_gap_top;
+    heading_gap_bottom = metrics.markdown.heading_gap_bottom;
+    height_cache = [_]HeightCacheSlot{.{}} ** 512;
+}
+
+pub fn runtimeSafetyPad() f32 {
+    return metrics.markdown.runtime_safety_pad;
+}
 
 fn heightCacheKey(text: []const u8, content_w: f32) u64 {
     var hasher = std.hash.Wyhash.init(0x4652475f4d445f48);
@@ -193,6 +232,86 @@ fn codeBlockHeight(code: []const u8) f32 {
     return code_pad * 2 + @as(f32, @floatFromInt(lines)) * code_line_h + code_gap;
 }
 
+fn measureStyledText(text: []const u8, font_size: f32, text_style: renderer.TextStyle) f32 {
+    return renderer.Renderer.measureTextWithStyle(text, font_size, text_style);
+}
+
+fn isAsciiSlice(text: []const u8) bool {
+    for (text) |ch| {
+        if (ch >= 0x80) return false;
+    }
+    return true;
+}
+
+fn nextUtf8Boundary(text: []const u8, index: usize) usize {
+    if (index >= text.len) return text.len;
+    var next = index + 1;
+    while (next < text.len and (text[next] & 0xc0) == 0x80) : (next += 1) {}
+    return next;
+}
+
+fn breakAtStyled(line: []const u8, start: usize, max_w: f32, font_size: f32, text_style: renderer.TextStyle) usize {
+    if (start >= line.len) return start;
+    if (max_w <= 0) return @min(start + 1, line.len);
+
+    const rest = line[start..];
+    if (measureStyledText(rest, font_size, text_style) <= max_w) return line.len;
+
+    if (!isAsciiSlice(rest)) {
+        var end = start;
+        var last_space: ?usize = null;
+        var cursor = start;
+        while (cursor < line.len) {
+            const next = nextUtf8Boundary(line, cursor);
+            if (next <= cursor) break;
+            if (measureStyledText(line[start..next], font_size, text_style) > max_w) break;
+            if (line[cursor] == ' ') last_space = next;
+            end = next;
+            cursor = next;
+        }
+        if (end < line.len and end > start) {
+            if (last_space) |space_end| {
+                if (space_end > start) return space_end;
+            }
+            return end;
+        }
+        return nextUtf8Boundary(line, start);
+    }
+
+    var lo: usize = start + 1;
+    var hi: usize = line.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo + 1) / 2;
+        if (measureStyledText(line[start..mid], font_size, text_style) <= max_w) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    var end = lo;
+    if (end < line.len and end > start) {
+        if (std.mem.lastIndexOfScalar(u8, line[start..end], ' ')) |rel| {
+            const sp = start + rel + 1;
+            if (sp > start) end = sp;
+        }
+    }
+    return if (end > start) end else start + 1;
+}
+
+fn segmentCountStyled(line: []const u8, max_w: f32, font_size: f32, text_style: renderer.TextStyle) usize {
+    if (line.len == 0) return 1;
+    var count: usize = 0;
+    var start: usize = 0;
+    while (start < line.len) {
+        const end = breakAtStyled(line, start, max_w, font_size, text_style);
+        count += 1;
+        if (end >= line.len) break;
+        start = end;
+        while (start < line.len and line[start] == ' ') start += 1;
+    }
+    return @max(1, count);
+}
+
 fn paragraphLineCount(text: []const u8, max_w: f32) usize {
     if (text.len == 0) return 0;
     var total: usize = 0;
@@ -202,7 +321,7 @@ fn paragraphLineCount(text: []const u8, max_w: f32) usize {
             total += 1;
             continue;
         }
-        total += word_wrap.segmentCount(line, max_w, body_font_size);
+        total += segmentCountStyled(line, max_w, body_font_size, prose_text_style);
     }
     return total;
 }
@@ -211,13 +330,19 @@ const InlineMeasure = struct {
     cursor_x: f32 = 0,
     line_count: usize = 1,
 
-    fn addWrapped(self: *InlineMeasure, slice: []const u8, max_w: f32, font_size: f32) void {
+    fn addWrapped(self: *InlineMeasure, slice: []const u8, max_w: f32, font_size: f32, text_style: renderer.TextStyle) void {
         var start: usize = 0;
         while (start < slice.len) {
-            const end = word_wrap.breakAt(slice, start, max_w - self.cursor_x, font_size);
+            var remaining_w = max_w - self.cursor_x;
+            if (self.cursor_x > 0 and remaining_w < 20.0) {
+                self.line_count += 1;
+                self.cursor_x = 0;
+                remaining_w = max_w;
+            }
+            const end = breakAtStyled(slice, start, remaining_w, font_size, text_style);
             const part = slice[start..end];
             if (part.len > 0) {
-                self.cursor_x += renderer.Renderer.measureText(part, font_size);
+                self.cursor_x += measureStyledText(part, font_size, text_style);
             }
             if (end >= slice.len) break;
             self.line_count += 1;
@@ -227,14 +352,19 @@ const InlineMeasure = struct {
         }
     }
 
-    fn addInlineCode(self: *InlineMeasure, slice: []const u8) void {
-        self.cursor_x += renderer.Renderer.measureText(slice, code_font_size) + 8;
+    fn addInlineCode(self: *InlineMeasure, slice: []const u8, max_w: f32) void {
+        const w = measureStyledText(slice, code_font_size, code_text_style) + inline_code_pad_x * 2 + inline_code_gap;
+        if (self.cursor_x > 0 and self.cursor_x + w > max_w) {
+            self.line_count += 1;
+            self.cursor_x = 0;
+        }
+        self.cursor_x += w;
     }
 };
 
 fn inlineMarkdownLineHeight(line: []const u8, max_w: f32) f32 {
     if (!lineHasInlineMarkup(line)) {
-        return @as(f32, @floatFromInt(word_wrap.segmentCount(line, max_w, body_font_size))) * body_line_h;
+        return @as(f32, @floatFromInt(segmentCountStyled(line, max_w, body_font_size, prose_text_style))) * body_line_h;
     }
 
     var measure = InlineMeasure{};
@@ -243,20 +373,20 @@ fn inlineMarkdownLineHeight(line: []const u8, max_w: f32) f32 {
         if (line[i] == '`') {
             const rest = line[i + 1 ..];
             const close_rel = std.mem.indexOfScalar(u8, rest, '`') orelse {
-                measure.addWrapped(line[i..], max_w, body_font_size);
+                measure.addWrapped(line[i..], max_w, body_font_size, prose_text_style);
                 return @as(f32, @floatFromInt(measure.line_count)) * body_line_h;
             };
-            measure.addInlineCode(rest[0..close_rel]);
+            measure.addInlineCode(rest[0..close_rel], max_w);
             i += close_rel + 2;
             continue;
         }
         if (i + 1 < line.len and line[i] == '*' and line[i + 1] == '*') {
             const rest = line[i + 2 ..];
             const close_rel = std.mem.indexOfPos(u8, rest, 0, "**") orelse {
-                measure.addWrapped(line[i..], max_w, body_font_size);
+                measure.addWrapped(line[i..], max_w, body_font_size, prose_text_style);
                 return @as(f32, @floatFromInt(measure.line_count)) * body_line_h;
             };
-            measure.addWrapped(rest[0..close_rel], max_w, body_font_size);
+            measure.addWrapped(rest[0..close_rel], max_w, body_font_size, bold_text_style);
             i += close_rel + 4;
             continue;
         }
@@ -269,7 +399,7 @@ fn inlineMarkdownLineHeight(line: []const u8, max_w: f32) f32 {
             b
         else
             line.len;
-        measure.addWrapped(line[i..next], max_w, body_font_size);
+        measure.addWrapped(line[i..next], max_w, body_font_size, prose_text_style);
         i = next;
     }
 
@@ -277,21 +407,21 @@ fn inlineMarkdownLineHeight(line: []const u8, max_w: f32) f32 {
 }
 
 fn markdownLineHeight(line: []const u8, max_w: f32) f32 {
-    if (line.len == 0) return body_line_h;
+    if (line.len == 0) return paragraph_gap;
     if (headingBody(line)) |body| {
-        const count = @max(1, word_wrap.segmentCount(body, max_w, heading_font_size));
+        const count = @max(1, segmentCountStyled(body, max_w, heading_font_size, bold_text_style));
         return heading_gap_top + @as(f32, @floatFromInt(count)) * heading_line_h + heading_gap_bottom;
     }
     if (bulletBody(line)) |body| {
-        return inlineMarkdownLineHeight(body, @max(20.0, max_w - list_indent));
+        return inlineMarkdownLineHeight(body, @max(20.0, max_w - list_indent)) + list_item_gap;
     }
     if (numberedMarkerLen(line)) |marker_len| {
         const trimmed = trimLine(line);
         const body = std.mem.trim(u8, trimmed[marker_len..], " ");
-        return inlineMarkdownLineHeight(body, @max(20.0, max_w - list_indent));
+        return inlineMarkdownLineHeight(body, @max(20.0, max_w - list_indent)) + list_item_gap;
     }
     if (quoteBody(line)) |body| {
-        return inlineMarkdownLineHeight(body, @max(20.0, max_w - quote_indent));
+        return inlineMarkdownLineHeight(body, @max(20.0, max_w - quote_indent - quote_pad_x * 2)) + quote_pad_y * 2;
     }
     return inlineMarkdownLineHeight(line, max_w);
 }
@@ -420,14 +550,15 @@ fn drawPlainWrappedLineWith(
     font_size: f32,
     line_h: f32,
     fg: renderer.Color,
+    text_style: renderer.TextStyle,
 ) f32 {
     var line_y = y;
     var start: usize = 0;
     while (start < line.len) {
-        const end = word_wrap.breakAt(line, start, max_w, font_size);
+        const end = breakAtStyled(line, start, max_w, font_size, text_style);
         const part = line[start..end];
         if (part.len > 0) {
-            handleTextHitAndDraw(part, x, line_y, line_h, font_size, fg);
+            handleTextHitAndDraw(part, x, line_y, line_h, font_size, fg, text_style);
         }
         if (end >= line.len) break;
         line_y += line_h;
@@ -438,7 +569,7 @@ fn drawPlainWrappedLineWith(
 }
 
 fn drawPlainWrappedLine(line: []const u8, x: f32, y: f32, max_w: f32, fg: renderer.Color) f32 {
-    return drawPlainWrappedLineWith(line, x, y, max_w, body_font_size, body_line_h, fg);
+    return drawPlainWrappedLineWith(line, x, y, max_w, body_font_size, body_line_h, fg, prose_text_style);
 }
 
 fn drawInlineLine(
@@ -463,11 +594,17 @@ fn drawInlineLine(
             .text => |slice| {
                 var start: usize = 0;
                 while (start < slice.len) {
-                    const end = word_wrap.breakAt(slice, start, max_w - (cursor_x - x), body_font_size);
+                    var remaining_w = max_w - (cursor_x - x);
+                    if (cursor_x > x and remaining_w < 20.0) {
+                        line_y += body_line_h;
+                        cursor_x = x;
+                        remaining_w = max_w;
+                    }
+                    const end = breakAtStyled(slice, start, remaining_w, body_font_size, prose_text_style);
                     const part = slice[start..end];
                     if (part.len > 0) {
-                        handleTextHitAndDraw(part, cursor_x, line_y, body_line_h, body_font_size, style.fg);
-                        cursor_x += renderer.Renderer.measureText(part, body_font_size);
+                        handleTextHitAndDraw(part, cursor_x, line_y, body_line_h, body_font_size, style.fg, prose_text_style);
+                        cursor_x += measureStyledText(part, body_font_size, prose_text_style);
                     }
                     if (end >= slice.len) break;
                     line_y += body_line_h;
@@ -479,11 +616,17 @@ fn drawInlineLine(
             .bold => |slice| {
                 var start: usize = 0;
                 while (start < slice.len) {
-                    const end = word_wrap.breakAt(slice, start, max_w - (cursor_x - x), body_font_size);
+                    var remaining_w = max_w - (cursor_x - x);
+                    if (cursor_x > x and remaining_w < 20.0) {
+                        line_y += body_line_h;
+                        cursor_x = x;
+                        remaining_w = max_w;
+                    }
+                    const end = breakAtStyled(slice, start, remaining_w, body_font_size, bold_text_style);
                     const part = slice[start..end];
                     if (part.len > 0) {
-                        handleTextHitAndDraw(part, cursor_x, line_y, body_line_h, body_font_size, style.bold_fg);
-                        cursor_x += renderer.Renderer.measureText(part, body_font_size);
+                        handleTextHitAndDraw(part, cursor_x, line_y, body_line_h, body_font_size, style.bold_fg, bold_text_style);
+                        cursor_x += measureStyledText(part, body_font_size, bold_text_style);
                     }
                     if (end >= slice.len) break;
                     line_y += body_line_h;
@@ -493,12 +636,16 @@ fn drawInlineLine(
                 }
             },
             .code => |slice| {
-                const w = renderer.Renderer.measureText(slice, code_font_size) + 6;
-                if (current_render_context == null or current_render_context.?.hit_test == null) {
-                    renderer.Renderer.drawRoundedRect(cursor_x, line_y + 1, w, code_line_h - 2, 3, style.inline_code_bg);
+                const w = measureStyledText(slice, code_font_size, code_text_style) + inline_code_pad_x * 2;
+                if (cursor_x > x and (cursor_x - x) + w > max_w) {
+                    line_y += body_line_h;
+                    cursor_x = x;
                 }
-                handleTextHitAndDraw(slice, cursor_x + 3, line_y + 1, body_line_h, code_font_size, style.inline_code_fg);
-                cursor_x += w + 2;
+                if (current_render_context == null or current_render_context.?.hit_test == null) {
+                    renderer.Renderer.drawRoundedRect(cursor_x, line_y + 2, w, code_line_h - 4, 4, style.inline_code_bg);
+                }
+                handleTextHitAndDraw(slice, cursor_x + inline_code_pad_x, line_y + 1, body_line_h, code_font_size, style.inline_code_fg, code_text_style);
+                cursor_x += w + inline_code_gap;
             },
         }
     }
@@ -518,7 +665,7 @@ fn drawParagraph(
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) {
-            line_y += body_line_h;
+            line_y += paragraph_gap;
             continue;
         }
         const drawn = try drawInlineLine(allocator, line, x, line_y, max_w, style);
@@ -538,34 +685,35 @@ fn drawMarkdownLine(
     const max_w = word_wrap.maxWidth(content_w);
     if (headingBody(line)) |body| {
         const text_y = y + heading_gap_top;
-        const drawn = drawPlainWrappedLineWith(body, x, text_y, max_w, heading_font_size, heading_line_h, style.bold_fg);
-        const divider_y = text_y + drawn + 1.0;
+        const drawn = drawPlainWrappedLineWith(body, x, text_y, max_w, heading_font_size, heading_line_h, style.bold_fg, bold_text_style);
         if (current_render_context == null or current_render_context.?.hit_test == null) {
-            renderer.Renderer.drawRect(x, divider_y, @min(max_w, 220.0), 1.0, .{ .r = style.bold_fg.r, .g = style.bold_fg.g, .b = style.bold_fg.b, .a = 0.18 });
+            renderer.Renderer.drawRoundedRect(x, text_y + drawn + 1.0, @min(max_w, 44.0), 1.0, 0.5, .{ .r = style.quote_bar.r, .g = style.quote_bar.g, .b = style.quote_bar.b, .a = 0.42 });
         }
         return heading_gap_top + drawn + heading_gap_bottom;
     }
     if (bulletBody(line)) |body| {
         if (current_render_context == null or current_render_context.?.hit_test == null) {
-            renderer.Renderer.drawRoundedRect(x + 2.0, y + 7.0, 5.0, 5.0, 2.5, style.list_marker);
+            renderer.Renderer.drawRoundedRect(x + 4.0, y + 7.0, 4.0, 4.0, 2.0, style.list_marker);
         }
-        return try drawInlineLine(allocator, body, x + list_indent, y, @max(20.0, max_w - list_indent), style);
+        return try drawInlineLine(allocator, body, x + list_indent, y, @max(20.0, max_w - list_indent), style) + list_item_gap;
     }
     if (numberedMarkerLen(line)) |marker_len| {
         const trimmed = trimLine(line);
         const marker = trimmed[0..@min(marker_len, trimmed.len)];
         const body = std.mem.trim(u8, trimmed[marker_len..], " ");
-        renderer.Renderer.drawText(marker, x, y, body_font_size, style.bold_fg);
-        return try drawInlineLine(allocator, body, x + list_indent, y, @max(20.0, max_w - list_indent), style);
+        renderer.Renderer.drawTextWithStyle(marker, x, y, body_font_size, style.list_marker, prose_text_style);
+        return try drawInlineLine(allocator, body, x + list_indent, y, @max(20.0, max_w - list_indent), style) + list_item_gap;
     }
     if (quoteBody(line)) |body| {
-        const quote_w = @max(20.0, max_w - quote_indent);
         const h = markdownLineHeight(line, max_w);
+        const quote_x = x + quote_indent;
+        const quote_w = @max(20.0, max_w - quote_indent);
         if (current_render_context == null or current_render_context.?.hit_test == null) {
-            renderer.Renderer.drawRoundedRect(x, y, max_w, h, 5, style.quote_bg);
-            renderer.Renderer.drawRoundedRect(x, y + 2, 3, @max(4.0, h - 4), 2, style.quote_bar);
+            renderer.Renderer.drawRoundedRect(quote_x, y, quote_w, h, 6, style.quote_bg);
+            renderer.Renderer.drawRoundedRect(quote_x, y + 3, 3, @max(4.0, h - 6), 2, style.quote_bar);
         }
-        return try drawInlineLine(allocator, body, x + quote_indent, y, quote_w, style);
+        _ = try drawInlineLine(allocator, body, quote_x + quote_pad_x, y + quote_pad_y, @max(20.0, quote_w - quote_pad_x * 2), style);
+        return h;
     }
     return try drawParagraph(allocator, line, x, y, content_w, style);
 }
@@ -613,7 +761,7 @@ fn drawCodeBlockLine(
     const draw_x = x + code_pad - scroll_x;
     if (part.len > 0) {
         if (is_diff) {
-            handleTextHitAndDraw(part, draw_x, y, code_line_h, code_font_size, fg);
+            handleTextHitAndDraw(part, draw_x, y, code_line_h, code_font_size, fg, code_text_style);
         } else {
             var spans: [256]renderer.TextSpan = undefined;
             var span_count: usize = 0;
@@ -653,8 +801,8 @@ fn drawCodeBlockLine(
             }
             if (current_render_context) |ctx| {
                 if (ctx.isSelected(part.ptr, part.len)) |sel| {
-                    const pre_w = renderer.Renderer.measureText(part[0..sel.start], code_font_size);
-                    const sel_w = renderer.Renderer.measureText(part[sel.start..sel.end], code_font_size);
+                    const pre_w = measureStyledText(part[0..sel.start], code_font_size, code_text_style);
+                    const sel_w = measureStyledText(part[sel.start..sel.end], code_font_size, code_text_style);
                     renderer.Renderer.drawRect(draw_x + pre_w, y, sel_w, code_line_h, getSelectionColor(ctx.wb));
                 }
                 if (ctx.hit_test) |hit| {
@@ -665,7 +813,7 @@ fn drawCodeBlockLine(
                             var w: f32 = 0;
                             var found = false;
                             for (part, 0..) |_, j| {
-                                w = renderer.Renderer.measureText(part[0..j], code_font_size);
+                                w = measureStyledText(part[0..j], code_font_size, code_text_style);
                                 if (draw_x + w >= hit.x) {
                                     ctx.hit_result = @intFromPtr(part.ptr) - @intFromPtr(ctx.global_text.ptr) + j;
                                     found = true;
@@ -681,14 +829,19 @@ fn drawCodeBlockLine(
             }
             if (current_render_context == null or current_render_context.?.hit_test == null) {
                 if (span_count > 0) {
-                    renderer.Renderer.drawStyledText(part, draw_x, y, code_font_size, spans[0..span_count]);
+                    var span_x = draw_x;
+                    for (spans[0..span_count]) |span| {
+                        const span_text = part[span.offset .. span.offset + span.length];
+                        renderer.Renderer.drawTextWithStyle(span_text, span_x, y, code_font_size, .{ .r = span.r, .g = span.g, .b = span.b, .a = span.a }, code_text_style);
+                        span_x += measureStyledText(span_text, code_font_size, code_text_style);
+                    }
                 } else {
-                    renderer.Renderer.drawText(part, draw_x, y, code_font_size, fg);
+                    renderer.Renderer.drawTextWithStyle(part, draw_x, y, code_font_size, fg, code_text_style);
                 }
             }
         }
     }
-    return renderer.Renderer.measureText(part, code_font_size) + code_pad * 2;
+    return measureStyledText(part, code_font_size, code_text_style) + code_pad * 2;
 }
 
 pub fn drawCodeBlock(code: []const u8, x: f32, y: f32, content_w: f32, style: Style, lang: []const u8, scroll_x: f32, out_max_w: *f32) f32 {
@@ -771,7 +924,7 @@ pub fn drawContent(
                     var lines = std.mem.splitScalar(u8, para, '\n');
                     while (lines.next()) |line| {
                         if (line.len == 0) {
-                            cursor_y += body_line_h;
+                            cursor_y += paragraph_gap;
                             continue;
                         }
                         cursor_y += try drawMarkdownLine(allocator, line, x, cursor_y, content_w, style);
@@ -820,7 +973,7 @@ pub fn drawContent(
             var lines = std.mem.splitScalar(u8, tail, '\n');
             while (lines.next()) |line| {
                 if (line.len == 0) {
-                    cursor_y += body_line_h;
+                    cursor_y += paragraph_gap;
                     continue;
                 }
                 cursor_y += try drawMarkdownLine(allocator, line, x, cursor_y, content_w, style);
@@ -868,6 +1021,20 @@ test "inline code height matches single-line rendering at narrow widths" {
     try std.testing.expectEqual(body_line_h, contentHeight(text, 80));
 }
 
+test "inline code followed by text wraps instead of clipping tail" {
+    const text = "- Use `zig build test-<package>` for targeted package tests.";
+    try std.testing.expect(contentHeight(text, 230) >= body_line_h * 3);
+}
+
+test "markdown blank lines use compact paragraph gap" {
+    const text =
+        \\First paragraph
+        \\
+        \\Second paragraph
+    ;
+    try std.testing.expectEqual(body_line_h * 2 + paragraph_gap, contentHeight(text, 420));
+}
+
 pub fn hitTestContent(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -904,11 +1071,12 @@ fn handleTextHitAndDraw(
     line_h: f32,
     font_size: f32,
     fg: renderer.Color,
+    text_style: renderer.TextStyle,
 ) void {
     if (current_render_context) |ctx| {
         if (ctx.isSelected(part.ptr, part.len)) |sel| {
-            const pre_w = renderer.Renderer.measureText(part[0..sel.start], font_size);
-            const sel_w = renderer.Renderer.measureText(part[sel.start..sel.end], font_size);
+            const pre_w = measureStyledText(part[0..sel.start], font_size, text_style);
+            const sel_w = measureStyledText(part[sel.start..sel.end], font_size, text_style);
             renderer.Renderer.drawRect(draw_x + pre_w, line_y, sel_w, line_h, getSelectionColor(ctx.wb));
         }
         if (ctx.hit_test) |hit| {
@@ -919,7 +1087,7 @@ fn handleTextHitAndDraw(
                     var w: f32 = 0;
                     var found = false;
                     for (part, 0..) |_, i| {
-                        w = renderer.Renderer.measureText(part[0..i], font_size);
+                        w = measureStyledText(part[0..i], font_size, text_style);
                         if (draw_x + w >= hit.x) {
                             ctx.hit_result = @intFromPtr(part.ptr) - @intFromPtr(ctx.global_text.ptr) + i;
                             found = true;
@@ -934,6 +1102,6 @@ fn handleTextHitAndDraw(
         }
     }
     if (current_render_context == null or current_render_context.?.hit_test == null) {
-        renderer.Renderer.drawText(part, draw_x, line_y, font_size, fg);
+        renderer.Renderer.drawTextWithStyle(part, draw_x, line_y, font_size, fg, text_style);
     }
 }

@@ -26,6 +26,8 @@ pub const Hit = union(enum) {
     close_modal,
     switch_tab: Tab,
     toggle_word_wrap,
+    ai_panel_font_decrease,
+    ai_panel_font_increase,
     ai_edit_provider,
     ai_edit_model,
     ai_edit_embedding_provider,
@@ -123,6 +125,11 @@ pub fn draw(wb: *Workbench, window_w: f32, window_h: f32) void {
         drawToggleRow(content_x + 32, cy, content_w - 64, "Word Wrap", "Wrap long lines inside the editor viewport.", wb.user_settings.word_wrap, theme);
         cy += 54;
 
+        var ai_font_buf: [64:0]u8 = undefined;
+        const ai_font_text = std.fmt.bufPrintZ(&ai_font_buf, "{d:.1}px", .{wb.user_settings.ai_panel_font_size}) catch "default";
+        drawStepperRow(content_x + 32, cy, content_w - 64, "AI Panel Font Size", "Controls AI chat prose size and derived markdown spacing.", ai_font_text, theme);
+        cy += 54;
+
         var tab_buf: [64:0]u8 = undefined;
         const tab_text = std.fmt.bufPrintZ(&tab_buf, "{d} spaces", .{wb.user_settings.tab_width}) catch "default";
         drawValueRow(content_x + 32, cy, content_w - 64, "Tab Width", tab_text, theme);
@@ -189,6 +196,20 @@ pub fn draw(wb: *Workbench, window_w: f32, window_h: f32) void {
         drawValueRow(content_x + 32, cy, content_w - 64, "MCP Status", wb.ai_mcp_status orelse "not checked", theme);
         cy += 44;
         drawValueRow(content_x + 32, cy, content_w - 64, "Agent Mode", @tagName(wb.agent_ui.session.mode), theme);
+    } else if (wb.settings_modal_tab == .appearance) {
+        renderer.Renderer.drawText("Appearance", content_x + 32, cy, 20.0, text_primary);
+        cy += 30;
+        renderer.Renderer.drawText("Theme and typography settings.", content_x + 32, cy, 13.0, text_muted);
+        cy += 32;
+
+        var ai_font_buf: [64:0]u8 = undefined;
+        const ai_font_text = std.fmt.bufPrintZ(&ai_font_buf, "{d:.1}px", .{wb.user_settings.ai_panel_font_size}) catch "default";
+        drawStepperRow(content_x + 32, cy, content_w - 64, "AI Panel Font Size", "Applies immediately to chat prose, markdown spacing, and wrapping.", ai_font_text, theme);
+        cy += 54;
+
+        var editor_font_buf: [64:0]u8 = undefined;
+        const editor_font_text = std.fmt.bufPrintZ(&editor_font_buf, "{d:.1}px", .{wb.user_settings.font_size}) catch "default";
+        drawValueRow(content_x + 32, cy, content_w - 64, "Editor Font Size", editor_font_text, theme);
     } else if (wb.settings_modal_tab == .project_forge) {
         // Draw Project Header
         renderer.Renderer.drawText(wb.workspace_name, content_x + 32, cy, 20.0, text_primary);
@@ -288,6 +309,31 @@ pub fn hitTestPoint(wb: *Workbench, window_w: f32, window_h: f32, px: f32, py: f
         if (px >= row_x and px <= row_x + row_w and py >= row_y and py <= row_y + 40) {
             return .toggle_word_wrap;
         }
+        const font_row_y = row_y + 54;
+        if (px >= row_x and px <= row_x + row_w and py >= font_row_y and py <= font_row_y + 44) {
+            const button_w: f32 = 32;
+            const gap: f32 = 8;
+            const plus_x = row_x + row_w - button_w;
+            const minus_x = plus_x - gap - button_w;
+            const hit_pad: f32 = 6;
+            if (px >= minus_x - hit_pad and px <= minus_x + button_w + hit_pad) return .ai_panel_font_decrease;
+            if (px >= plus_x - hit_pad and px <= plus_x + button_w + hit_pad) return .ai_panel_font_increase;
+        }
+    } else if (wb.settings_modal_tab == .appearance) {
+        const content_x: f32 = modal_x + sidebar_w;
+        const content_w: f32 = modal_w - sidebar_w;
+        const row_x = content_x + 32;
+        const row_y = modal_y + 94;
+        const row_w = content_w - 64;
+        if (px >= row_x and px <= row_x + row_w and py >= row_y and py <= row_y + 44) {
+            const button_w: f32 = 32;
+            const gap: f32 = 8;
+            const plus_x = row_x + row_w - button_w;
+            const minus_x = plus_x - gap - button_w;
+            const hit_pad: f32 = 6;
+            if (px >= minus_x - hit_pad and px <= minus_x + button_w + hit_pad) return .ai_panel_font_decrease;
+            if (px >= plus_x - hit_pad and px <= plus_x + button_w + hit_pad) return .ai_panel_font_increase;
+        }
     } else if (wb.settings_modal_tab == .models) {
         const content_x: f32 = modal_x + sidebar_w;
         const content_w: f32 = modal_w - sidebar_w;
@@ -361,4 +407,27 @@ fn drawToggleRow(x: f32, y: f32, w: f32, label: []const u8, desc: []const u8, en
     renderer.Renderer.drawRoundedRect(toggle_x, toggle_y, toggle_w, toggle_h, toggle_h / 2, bg);
     const knob_x = if (enabled) toggle_x + toggle_w - 19 else toggle_x + 3;
     renderer.Renderer.drawRoundedRect(knob_x, toggle_y + 3, 16, 16, 8, text_primary);
+}
+
+fn drawStepperRow(x: f32, y: f32, w: f32, label: []const u8, desc: []const u8, value: []const u8, theme: *const workspace.Theme) void {
+    const text_primary = color(theme.colors.text_primary);
+    const text_muted = color(theme.colors.text_muted);
+    const border = color(theme.colors.border);
+    const surface = color(theme.colors.selection);
+    renderer.Renderer.drawRect(x, y + 43, w, 1, border);
+    renderer.Renderer.drawText(label, x, y + 4, 13.0, text_primary);
+    renderer.Renderer.drawText(desc, x, y + 23, 12.0, text_muted);
+
+    const button_w: f32 = 32;
+    const button_h: f32 = 24;
+    const gap: f32 = 8;
+    const plus_x = x + w - button_w;
+    const minus_x = plus_x - gap - button_w;
+    const value_x = minus_x - 74;
+    const button_y = y + 9;
+    renderer.Renderer.drawText(value, value_x, y + 13, 13.0, text_muted);
+    renderer.Renderer.drawRoundedRect(minus_x, button_y, button_w, button_h, 5, surface);
+    renderer.Renderer.drawRoundedRect(plus_x, button_y, button_w, button_h, 5, surface);
+    renderer.Renderer.drawText("-", minus_x + 12, button_y + 5, 13.0, text_primary);
+    renderer.Renderer.drawText("+", plus_x + 11, button_y + 5, 13.0, text_primary);
 }

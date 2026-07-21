@@ -5,10 +5,12 @@ const chat_bubble_mod = @import("../ui/agent/chat_bubble.zig");
 const tool_step_card_mod = @import("../ui/agent/tool_step_card.zig");
 const chat_message_lines_mod = @import("../ui/agent/chat_message_lines.zig");
 const agent_session_mod = @import("../agent/session.zig");
+const metrics = @import("../ui/agent/metrics.zig");
 
-const chat_composer_gap: f32 = 6.0;
-const chat_bottom_padding: f32 = 56.0;
-const thinking_bottom_padding: f32 = 28.0;
+const chat_composer_gap: f32 = metrics.chat.composer_gap;
+const chat_bottom_padding: f32 = metrics.chat.bottom_padding;
+const thinking_bottom_padding: f32 = metrics.chat.thinking_bottom_padding;
+const bottom_anchor_threshold: f32 = metrics.chat.bottom_anchor_threshold;
 
 fn phaseShowsLive(phase: anytype) bool {
     return switch (phase) {
@@ -214,14 +216,14 @@ pub fn historyYOffset(cache: *const Cache, index: usize) f32 {
 }
 
 pub fn hitTestMessageOpen(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32, event_y: f32) ?usize {
-    const pad: f32 = 20;
+    const pad: f32 = metrics.chat.outer_pad;
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
 
     if (event_x < inner_x or event_x > inner_x + content_w) return null;
 
     const cache = &wb.chat_layout;
-    const chat_top = agent_panel_mod.chat_content_top + 8.0;
+    const chat_top = agent_panel_mod.chat_content_top + metrics.panel.chat_top_gap;
 
     wb.agent_ui.session.lock();
     const post_apply_visible = wb.agent_ui.session.post_apply_visible;
@@ -263,14 +265,14 @@ pub fn hitTestMessageOpen(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
 }
 
 pub fn hitTestMessageCopy(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32, event_y: f32) ?usize {
-    const pad: f32 = 20;
+    const pad: f32 = metrics.chat.outer_pad;
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
 
     if (event_x < inner_x or event_x > inner_x + content_w) return null;
 
     const cache = &wb.chat_layout;
-    const chat_top = agent_panel_mod.chat_content_top + 8.0;
+    const chat_top = agent_panel_mod.chat_content_top + metrics.panel.chat_top_gap;
 
     wb.agent_ui.session.lock();
     const post_apply_visible = wb.agent_ui.session.post_apply_visible;
@@ -311,7 +313,7 @@ pub fn hitTestMessageCopy(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32,
     return null;
 }
 
-fn layoutChrome(wb: anytype, agent_h: f32) struct {
+fn layoutChrome(wb: anytype, agent_h: f32, agent_w: f32) struct {
     bottom: f32,
     viewport: f32,
 } {
@@ -320,16 +322,16 @@ fn layoutChrome(wb: anytype, agent_h: f32) struct {
     _ = chrome.entry_count;
     _ = chrome.has_detail;
     _ = chrome.has_routing;
-    var bottom = agent_panel_mod.bottomReserved(chrome.attachment_count, wb.agent_panel_width, &wb.agent_ui.prompt_buffer);
-    const composer_top = @import("../ui/agent/agent_composer.zig").composerTop(agent_h, chrome.attachment_count, wb.agent_panel_width, &wb.agent_ui.prompt_buffer);
-    const chat_top = agent_panel_mod.chat_content_top + 8.0;
+    var bottom = agent_panel_mod.bottomReserved(chrome.attachment_count, agent_w, &wb.agent_ui.prompt_buffer);
+    const composer_top = @import("../ui/agent/agent_composer.zig").composerTop(agent_h, chrome.attachment_count, agent_w, &wb.agent_ui.prompt_buffer);
+    const chat_top = agent_panel_mod.chat_content_top + metrics.panel.chat_top_gap;
     const context_visible = context_inspector_mod.isVisible(chrome.entry_count, chrome.used_bytes, chrome.has_scope, chrome.has_routing);
     const context_top = context_inspector_mod.stripTop(
         agent_h,
         chrome.expanded,
         chrome.entry_count,
         chrome.attachment_count,
-        wb.agent_panel_width,
+        agent_w,
         &wb.agent_ui.prompt_buffer,
         chrome.has_detail,
         chrome.has_routing,
@@ -345,8 +347,8 @@ fn layoutChrome(wb: anytype, agent_h: f32) struct {
     return .{ .bottom = bottom, .viewport = viewport };
 }
 
-pub fn ensure(wb: anytype, agent_h: f32) void {
-    const content_w = @max(40, wb.agent_panel_width - 40);
+pub fn ensureForWidth(wb: anytype, agent_h: f32, agent_w: f32) void {
+    const content_w = @max(metrics.chat.min_content_w, agent_w - metrics.chat.outer_pad * 2.0);
     const cache = &wb.chat_layout;
 
     const history_dirty = cache.content_w != content_w or cache.built_revision != wb.chat_history_revision;
@@ -365,12 +367,12 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
         cache.steps_revision == steps_revision and
         cache.stream_len == stream_len and
         cache.thinking_len == thinking_len and
-        cache.bottom_reserved == layoutChrome(wb, agent_h).bottom)
+        cache.bottom_reserved == layoutChrome(wb, agent_h, agent_w).bottom)
     {
         return;
     }
 
-    const chrome = layoutChrome(wb, agent_h);
+    const chrome = layoutChrome(wb, agent_h, agent_w);
 
     const live_dirty = history_dirty or
         cache.stream_len != stream_len or
@@ -408,11 +410,15 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
     cache.viewport_h = chrome.viewport;
 
     const old_max_scroll = cache.max_scroll;
+    const was_bottom_anchored = old_max_scroll <= bottom_anchor_threshold or
+        wb.chat_scroll_y >= old_max_scroll - bottom_anchor_threshold;
     cache.max_scroll = @max(0, cache.content_h - chrome.viewport);
 
-    // Auto-scroll if user was already at the bottom or the chat content grew while pinned
-    if (wb.chat_scroll_y >= old_max_scroll) {
+    // Keep the tail visible across stream growth and width-driven reflow.
+    if (was_bottom_anchored) {
         wb.chat_scroll_y = cache.max_scroll;
+    } else {
+        wb.chat_scroll_y = std.math.clamp(wb.chat_scroll_y, 0, cache.max_scroll);
     }
 
     cache.chrome_prompt_lines = wb.agent_ui.prompt_buffer.lineCount();
@@ -421,6 +427,10 @@ pub fn ensure(wb: anytype, agent_h: f32) void {
 pub fn clampScrollY(wb: anytype, agent_h: f32) void {
     ensure(wb, agent_h);
     wb.chat_scroll_y = std.math.clamp(wb.chat_scroll_y, 0, wb.chat_layout.max_scroll);
+}
+
+pub fn ensure(wb: anytype, agent_h: f32) void {
+    ensureForWidth(wb, agent_h, wb.agent_panel_width);
 }
 
 pub fn scrollToEnd(wb: anytype, agent_h: f32) void {
@@ -433,14 +443,14 @@ pub fn invalidate(wb: anytype) void {
 }
 
 pub fn hitTestChatSelection(wb: anytype, agent_x: f32, agent_w: f32, event_x: f32, event_y: f32) ?struct { msg_hash: u64, char_idx: usize } {
-    const pad: f32 = 20;
+    const pad: f32 = metrics.chat.outer_pad;
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
 
     if (event_x < inner_x or event_x > inner_x + content_w) return null;
 
     const cache = &wb.chat_layout;
-    const chat_top = agent_panel_mod.chat_content_top + 8.0;
+    const chat_top = agent_panel_mod.chat_content_top + metrics.panel.chat_top_gap;
 
     wb.agent_ui.session.lock();
     const post_apply_visible = wb.agent_ui.session.post_apply_visible;

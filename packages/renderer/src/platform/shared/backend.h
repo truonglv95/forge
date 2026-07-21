@@ -32,6 +32,7 @@ void forge_backend_set_cursor(int type);
 void forge_backend_draw_rect(float x, float y, float w, float h, float r, float g, float b, float a);
 void forge_backend_draw_rounded_rect(float x, float y, float w, float h, float r, float g, float b, float a, float corner_radius);
 void forge_backend_draw_text_len(const char* text, size_t len, float x, float y, float font_size, float r, float g, float b, float a);
+void forge_backend_draw_text_len_style(const char* text, size_t len, float x, float y, float font_size, int font_role, int font_weight, float r, float g, float b, float a);
 void forge_backend_draw_styled_text(const char* text, size_t len, float x, float y, float font_size, const ForgeTextSpan* spans, size_t span_count);
 void forge_backend_draw_svg(const char* svg_string, float x, float y, float w, float h, float angle, float r, float g, float b, float a);
 
@@ -40,6 +41,7 @@ void forge_backend_set_editor_text_metrics(float editor_font_size, float line_he
 void forge_backend_get_resolved_font_name(char* buf, size_t cap);
 void forge_backend_get_font_metrics(float font_size, float* char_width, float* line_height, float* baseline);
 float forge_backend_measure_text_width(const char* text, size_t len, float font_size);
+float forge_backend_measure_text_width_style(const char* text, size_t len, float font_size, int font_role, int font_weight);
 
 void forge_backend_get_window_size(float* w, float* h);
 void forge_backend_set_clip_rect(float x, float y, float w, float h);

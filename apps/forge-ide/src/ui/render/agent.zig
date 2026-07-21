@@ -12,12 +12,13 @@ const tokens = @import("../tokens.zig");
 const agent_scope_picker_mod = @import("../../agent/scope_picker.zig");
 const ai = @import("forge-ai");
 const diff_line_style = @import("../diff_line_style.zig");
+const metrics = @import("../agent/metrics.zig");
 
 const Workbench = @import("../../workbench.zig").Workbench;
 const chat_layout = @import("../../workbench/chat_layout.zig");
 const chat_message_lines = @import("../agent/chat_message_lines.zig");
 
-const chat_composer_gap: f32 = tokens.space.sm;
+const chat_composer_gap: f32 = metrics.chat.composer_gap;
 
 fn phaseShowsLive(phase: anytype) bool {
     return switch (phase) {
@@ -28,7 +29,7 @@ fn phaseShowsLive(phase: anytype) bool {
 
 pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     wb.rendered_code_blocks.clearRetainingCapacity();
-    const pad: f32 = tokens.space.xxl;
+    const pad: f32 = metrics.chat.outer_pad;
     const inner_x = agent_x + pad;
     const content_w = agent_w - pad * 2;
     renderer.Renderer.pushClipRect(agent_x, layout.header_height, agent_w, h - layout.header_height - layout.status_height);
@@ -37,7 +38,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     var status_copy: [320]u8 = undefined;
     var provider_copy: [128]u8 = undefined;
     const snap = wb.agent_ui.session.snapshot(&status_copy, &provider_copy);
-    chat_layout.ensure(wb, h);
+    chat_layout.ensureForWidth(wb, h, agent_w);
     if (wb.chat_scroll_to_end_on_ready) {
         wb.chat_scroll_to_end_on_ready = false;
         wb.chat_scroll_y = wb.chat_layout.max_scroll;
@@ -96,7 +97,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     else
         composer_layout.composer_top - chat_composer_gap;
 
-    const chat_top = agent_panel.chat_content_top + 8.0;
+    const chat_top = agent_panel.chat_content_top + metrics.panel.chat_top_gap;
     const chat_viewport_h = @max(0, chat_bottom - chat_top);
     const empty_space = @max(0, chat_viewport_h - wb.chat_layout.content_h);
     var content_y: f32 = chat_top - wb.chat_scroll_y + empty_space;
@@ -195,7 +196,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         }
 
         if (snap.show_review and wb.proposal_review_open) {
-            renderer.Renderer.drawRoundedRect(agent_x + 10, content_y, agent_w - 20, 48, 8, .{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 });
+            renderer.Renderer.drawRoundedRect(agent_x + metrics.panel.banner_surface_inset, content_y, agent_w - metrics.panel.banner_surface_inset * 2.0, 48, 8, .{ .r = 0.14, .g = 0.2, .b = 0.28, .a = 1.0 });
             renderer.Renderer.drawText("Proposal review open in editor panel", inner_x, content_y + 10, 12.0, .{ .r = 0.8, .g = 0.9, .b = 1.0, .a = 1.0 });
             renderer.Renderer.drawText("Toggle hunks and apply from the editor view", inner_x, content_y + 26, 10.0, .{ .r = 0.6, .g = 0.68, .b = 0.78, .a = 1.0 });
             content_y += 56;
@@ -318,6 +319,14 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         &wb.agent_ui.prompt_buffer,
         wb.agent_ui.session.context_inspector_scroll_y,
         wb.agent_ui.session.context_selected_index,
+    );
+
+    renderer.Renderer.drawRect(
+        agent_x,
+        chat_bottom,
+        agent_w,
+        h - chat_bottom - layout.status_height,
+        tokens.color.surface,
     );
 
     const show_prompt_cursor = @mod(state.time, 1.0) < 0.5 and wb.focused_panel == .agent;

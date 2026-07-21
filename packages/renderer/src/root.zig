@@ -85,9 +85,29 @@ var measure_cache: [1024]MeasureCacheSlot = [_]MeasureCacheSlot{.{}} ** 1024;
 var measure_cache_hits: u64 = 0;
 var measure_cache_misses: u64 = 0;
 
-fn measureCacheKey(text: []const u8, font_size: f32) u64 {
+pub const FontRole = enum(c_int) {
+    legacy = 0,
+    prose = 1,
+    mono = 2,
+};
+
+pub const TextStyle = struct {
+    role: FontRole = .legacy,
+    weight: Renderer.FontWeight = .regular,
+
+    pub const legacy: TextStyle = .{ .role = .legacy, .weight = .regular };
+    pub const prose: TextStyle = .{ .role = .prose, .weight = .regular };
+    pub const prose_semibold: TextStyle = .{ .role = .prose, .weight = .semibold };
+    pub const mono: TextStyle = .{ .role = .mono, .weight = .regular };
+};
+
+fn measureCacheKey(text: []const u8, font_size: f32, text_style: TextStyle) u64 {
     var hasher = std.hash.Wyhash.init(0x4652475f54455854);
     hasher.update(std.mem.asBytes(&text_style_generation));
+    const role_bits: c_int = @intFromEnum(text_style.role);
+    const weight_bits: c_int = @intFromEnum(text_style.weight);
+    hasher.update(std.mem.asBytes(&role_bits));
+    hasher.update(std.mem.asBytes(&weight_bits));
     const font_bits: u32 = @bitCast(font_size);
     hasher.update(std.mem.asBytes(&font_bits));
     hasher.update(text);
@@ -272,11 +292,31 @@ pub const Renderer = struct {
     }
 
     pub fn drawText(text: []const u8, x: f32, y: f32, font_size: f32, color: Color) void {
+        drawTextWithStyle(text, x, y, font_size, color, .legacy);
+    }
+
+    pub fn drawTextWithStyle(text: []const u8, x: f32, y: f32, font_size: f32, color: Color, text_style: TextStyle) void {
         if (text.len == 0) return;
         // Many UI call sites pass stack [:0] buffers via @ptrCast; truncate at first NUL.
         const len = std.mem.indexOfScalar(u8, text, 0) orelse text.len;
         if (len == 0) return;
-        backend.forge_backend_draw_text_len(@ptrCast(text.ptr), len, x, y, font_size, color.r, color.g, color.b, color.a);
+        if (text_style.role == .legacy and text_style.weight == .regular) {
+            backend.forge_backend_draw_text_len(@ptrCast(text.ptr), len, x, y, font_size, color.r, color.g, color.b, color.a);
+        } else {
+            backend.forge_backend_draw_text_len_style(
+                @ptrCast(text.ptr),
+                len,
+                x,
+                y,
+                font_size,
+                @intFromEnum(text_style.role),
+                @intFromEnum(text_style.weight),
+                color.r,
+                color.g,
+                color.b,
+                color.a,
+            );
+        }
     }
 
     pub fn drawStyledText(text: []const u8, x: f32, y: f32, font_size: f32, spans: []const TextSpan) void {
@@ -333,8 +373,12 @@ pub const Renderer = struct {
     }
 
     pub fn measureText(text: []const u8, font_size: f32) f32 {
+        return measureTextWithStyle(text, font_size, .legacy);
+    }
+
+    pub fn measureTextWithStyle(text: []const u8, font_size: f32, text_style: TextStyle) f32 {
         if (text.len == 0) return 0;
-        const raw_key = measureCacheKey(text, font_size);
+        const raw_key = measureCacheKey(text, font_size, text_style);
         const key = if (raw_key == 0) @as(u64, 1) else raw_key;
         const start = @as(usize, @intCast(key % measure_cache.len));
         var insert_idx = start;
@@ -352,7 +396,16 @@ pub const Renderer = struct {
             }
         }
 
-        const width = backend.forge_backend_measure_text_width(@ptrCast(text.ptr), text.len, font_size);
+        const width = if (text_style.role == .legacy and text_style.weight == .regular)
+            backend.forge_backend_measure_text_width(@ptrCast(text.ptr), text.len, font_size)
+        else
+            backend.forge_backend_measure_text_width_style(
+                @ptrCast(text.ptr),
+                text.len,
+                font_size,
+                @intFromEnum(text_style.role),
+                @intFromEnum(text_style.weight),
+            );
         measure_cache_misses += 1;
         measure_cache[insert_idx] = .{ .key = key, .width = width };
         return width;

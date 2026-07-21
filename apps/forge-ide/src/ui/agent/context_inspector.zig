@@ -4,17 +4,18 @@ const layout = @import("../core/layout.zig");
 const agent_session = @import("../../agent/session.zig");
 
 const agent_composer = @import("agent_composer.zig");
+const metrics = @import("metrics.zig");
 const ai = @import("forge-ai");
 
 pub const composer_height = agent_composer.composer_base_h;
 pub const composer_pad = agent_composer.composer_pad;
-pub const strip_gap: f32 = 6;
-pub const chat_gap: f32 = 18;
-pub const header_h: f32 = 22;
-pub const row_h: f32 = 15;
-pub const max_visible_rows: usize = 5;
-pub const detail_h: f32 = 36;
-pub const pill_h: f32 = 18;
+pub const strip_gap: f32 = metrics.context.strip_gap;
+pub const chat_gap: f32 = metrics.context.chat_gap;
+pub const header_h: f32 = metrics.context.header_h;
+pub const row_h: f32 = metrics.context.row_h;
+pub const max_visible_rows: usize = metrics.context.max_visible_rows;
+pub const detail_h: f32 = metrics.context.detail_h;
+pub const pill_h: f32 = metrics.context.pill_h;
 
 pub fn effectiveEntryCount(agent: *agent_session.Session, entry_count: usize) usize {
     if (entry_count > 0) return entry_count;
@@ -51,7 +52,7 @@ pub const ToggleRect = struct {
     }
 };
 
-pub const routing_row_h: f32 = 14;
+pub const routing_row_h: f32 = metrics.context.routing_row_h;
 
 pub fn stripHeight(expanded: bool, entry_count: usize, has_detail: bool, has_routing: bool) f32 {
     if (entry_count == 0 and !has_routing) return header_h;
@@ -82,9 +83,9 @@ pub fn toggleRect(
 ) ToggleRect {
     const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false, false);
     return .{
-        .x = agent_x + 10,
+        .x = agent_x + metrics.context.inset,
         .y = top,
-        .w = agent_w - 20,
+        .w = agent_w - metrics.context.inset * 2.0,
         .h = header_h,
     };
 }
@@ -101,7 +102,7 @@ pub fn hitToggle(
     y: f32,
 ) bool {
     const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, has_detail, false);
-    return x >= agent_x + 10 and x < agent_x + agent_w - 10 and y >= top and y < top + header_h;
+    return x >= agent_x + metrics.context.inset and x < agent_x + agent_w - metrics.context.inset and y >= top and y < top + header_h;
 }
 
 pub fn hitEntryRow(
@@ -116,8 +117,8 @@ pub fn hitEntryRow(
     y: f32,
 ) ?usize {
     if (entry_count == 0) return null;
-    const pad: f32 = 10;
-    const inner_x = agent_x + pad + 10;
+    const pad: f32 = metrics.context.inset;
+    const inner_x = agent_x + metrics.context.inner_pad;
     const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false, false);
     const list_top = top + header_h + pill_h + 8 - scroll_y;
     if (x < inner_x or x > agent_x + agent_w - pad) return null;
@@ -140,7 +141,7 @@ pub fn hitEntryAction(
     y: f32,
 ) ?usize {
     if (entry_count == 0) return null;
-    const pad: f32 = 10;
+    const pad: f32 = metrics.context.inset;
     const action_x = agent_x + agent_w - pad - 24;
     const top = stripTop(window_h, true, entry_count, attachment_count, agent_w, prompt, false, false);
     const list_top = top + header_h + pill_h + 8 - scroll_y;
@@ -227,9 +228,9 @@ pub fn draw(
     agent.unlock();
     if (entry_count == 0 and used_bytes == 0 and !has_scope and !has_routing) return;
 
-    const pad: f32 = 10;
-    const inner_x = agent_x + pad + 10;
-    const content_w = agent_w - pad * 2 - 20;
+    const pad: f32 = metrics.context.inset;
+    const inner_x = agent_x + metrics.context.inner_pad;
+    const content_w = agent_w - metrics.context.inner_pad * 2.0;
     const top = stripTop(window_h, expanded, entry_count, attachment_count, agent_w, prompt, has_detail, has_routing);
     const height = stripHeight(expanded, entry_count, has_detail, has_routing);
 

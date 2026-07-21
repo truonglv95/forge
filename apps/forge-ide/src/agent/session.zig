@@ -749,6 +749,9 @@ pub const Session = struct {
         self.clearProposalStateUnlocked();
         self.freeLinesUnlocked(&self.context_lines);
         self.clearContextEntriesUnlocked();
+        self.stream_text.clearRetainingCapacity();
+        self.thinking_text.clearRetainingCapacity();
+        self.stream_live = false;
         self.phase = .idle;
         self.worker_running = false;
         if (self.provider_label.len > 0) {

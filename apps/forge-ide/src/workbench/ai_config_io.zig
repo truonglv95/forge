@@ -21,54 +21,9 @@ pub fn writeTomlKey(
     };
     defer allocator.free(content);
 
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-
-    var in_section = false;
-    var wrote = false;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |raw_line| {
-        const trimmed = std.mem.trim(u8, raw_line, &std.ascii.whitespace);
-        if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
-            const name = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], &std.ascii.whitespace);
-            if (in_section and !wrote) {
-                try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{s} = {s}\n", .{ key, value }));
-                wrote = true;
-            }
-            in_section = std.mem.eql(u8, name, section_name);
-            try out.appendSlice(allocator, raw_line);
-            try out.append(allocator, '\n');
-            continue;
-        }
-        if (in_section and std.mem.startsWith(u8, trimmed, key)) {
-            const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse {
-                try out.appendSlice(allocator, raw_line);
-                try out.append(allocator, '\n');
-                continue;
-            };
-            const existing_key = std.mem.trim(u8, trimmed[0..eq], &std.ascii.whitespace);
-            if (std.mem.eql(u8, existing_key, key)) {
-                try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{s} = {s}\n", .{ key, value }));
-                wrote = true;
-                continue;
-            }
-        }
-        try out.appendSlice(allocator, raw_line);
-        try out.append(allocator, '\n');
-    }
-
-    if (!wrote) {
-        if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') {
-            try out.append(allocator, '\n');
-        }
-        if (in_section) {
-            try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{s} = {s}\n", .{ key, value }));
-        } else {
-            try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "\n[{s}]\n{s} = {s}\n", .{ section_name, key, value }));
-        }
-    }
-
-    try workspace.global_store.replaceAbsoluteFile(io, settings_abs, out.items);
+    const updated = try @import("settings.zig").upsertTomlValue(allocator, content, section_name, key, value);
+    defer allocator.free(updated);
+    try workspace.global_store.replaceAbsoluteFile(io, settings_abs, updated);
 }
 
 pub fn writeTomlQuotedString(

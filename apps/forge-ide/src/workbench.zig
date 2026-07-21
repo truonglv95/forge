@@ -412,6 +412,7 @@ pub const Workbench = struct {
 
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
         self.user_settings = settings_mod.load(allocator, io, root) catch .{};
+        settings_mod.writeAiPanelFontSize(allocator, io, root, self.user_settings.ai_panel_font_size) catch {};
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
@@ -837,8 +838,8 @@ pub const Workbench = struct {
         try self.setStatus("Terminal selection copied");
     }
 
-    pub fn clampChatScroll(self: *Workbench, agent_h: f32) void {
-        @import("workbench/scroll.zig").clampChatScroll(self, agent_h);
+    pub fn clampChatScroll(self: *Workbench, agent_h: f32, agent_w: f32) void {
+        @import("workbench/scroll.zig").clampChatScroll(self, agent_h, agent_w);
     }
 
     pub fn invalidateChatLayout(self: *Workbench) void {
@@ -1002,6 +1003,7 @@ pub const Workbench = struct {
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
+        self.invalidateChatLayout();
         try self.reloadAiConfigFromDisk();
         try self.setStatus("Settings reloaded");
     }
@@ -1009,9 +1011,32 @@ pub const Workbench = struct {
     pub fn toggleWordWrap(self: *Workbench) !void {
         const next = !self.user_settings.word_wrap;
         try settings_mod.writeWordWrap(self.allocator, self.io, self.workspace_root, next);
+        self.reloadOpenSettingsDocuments();
         try self.reloadUserSettings();
         const msg = if (next) "Word wrap enabled" else "Word wrap disabled";
         try self.setStatus(msg);
+    }
+
+    pub fn setAiPanelFontSize(self: *Workbench, font_size: f32) !void {
+        const next = std.math.clamp(font_size, 12.0, 20.0);
+        self.user_settings.ai_panel_font_size = next;
+        settings_mod.applyToTheme(self.user_settings, &self.theme);
+        self.invalidateChatLayout();
+        self.chat_scroll_to_end_on_ready = true;
+
+        try settings_mod.writeAiPanelFontSize(self.allocator, self.io, self.workspace_root, next);
+        self.reloadOpenSettingsDocuments();
+        var buf: [96]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "AI panel font size set to {d:.1}px", .{next}) catch "AI panel font size updated";
+        try self.setStatus(msg);
+    }
+
+    fn reloadOpenSettingsDocuments(self: *Workbench) void {
+        for (self.editor.tabs.tabs.items) |*doc| {
+            if (std.mem.endsWith(u8, doc.path, "settings.toml")) {
+                workspace_io.loadDocument(self.io, self.workspace_root, doc) catch {};
+            }
+        }
     }
 
     pub fn refreshRecentWorkspaces(self: *Workbench) !void {
@@ -1494,7 +1519,7 @@ pub const Workbench = struct {
         defer allocator.free(settings_abs);
         const content = try workspace.global_store.readAbsoluteFile(allocator, io, settings_abs);
         defer allocator.free(content);
-        const config = workspace.Config.parse(content) catch workspace.Config{};
+        const config = parseAiSettingsContent(content);
         const provider = try allocator.dupe(u8, config.ai_provider);
         errdefer allocator.free(provider);
         const model = if (config.ai_model) |value| try allocator.dupe(u8, value) else null;
@@ -1525,6 +1550,74 @@ pub const Workbench = struct {
             .custom_embedding_models = custom_embedding_models,
             .enable_hyde = config.ai_enable_hyde,
         };
+    }
+
+    const AiSettings = struct {
+        ai_provider: []const u8 = "auto",
+        ai_model: ?[]const u8 = null,
+        ai_ollama_url: ?[]const u8 = null,
+        ai_openrouter_url: ?[]const u8 = null,
+        ai_custom_models: ?[]const u8 = null,
+        ai_custom_embedding_models: ?[]const u8 = null,
+        ai_embedding_provider: ?[]const u8 = null,
+        ai_embedding_model: ?[]const u8 = null,
+        ai_embedding_url: ?[]const u8 = null,
+        ai_mcp_enabled: bool = true,
+        ai_enable_hyde: bool = false,
+    };
+
+    fn parseAiSettingsContent(content: []const u8) AiSettings {
+        var config: AiSettings = .{};
+        var section: []const u8 = "";
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |raw_line| {
+            const without_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |index|
+                raw_line[0..index]
+            else
+                raw_line;
+            const line = std.mem.trim(u8, &std.ascii.whitespace, without_comment);
+            if (line.len == 0) continue;
+            if (line[0] == '[') {
+                if (line.len < 3 or line[line.len - 1] != ']') continue;
+                section = std.mem.trim(u8, &std.ascii.whitespace, line[1 .. line.len - 1]);
+                continue;
+            }
+            if (!std.mem.eql(u8, section, "ai")) continue;
+
+            const equals = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+            const key = std.mem.trim(u8, &std.ascii.whitespace, line[0..equals]);
+            const value = std.mem.trim(u8, &std.ascii.whitespace, line[equals + 1 ..]);
+
+            if (std.mem.eql(u8, key, "provider")) {
+                config.ai_provider = parseTomlString(value) orelse config.ai_provider;
+            } else if (std.mem.eql(u8, key, "model")) {
+                config.ai_model = parseTomlString(value) orelse config.ai_model;
+            } else if (std.mem.eql(u8, key, "ollama_url")) {
+                config.ai_ollama_url = parseTomlString(value) orelse config.ai_ollama_url;
+            } else if (std.mem.eql(u8, key, "openrouter_url")) {
+                config.ai_openrouter_url = parseTomlString(value) orelse config.ai_openrouter_url;
+            } else if (std.mem.eql(u8, key, "embedding_provider")) {
+                config.ai_embedding_provider = parseTomlString(value) orelse config.ai_embedding_provider;
+            } else if (std.mem.eql(u8, key, "embedding_model")) {
+                config.ai_embedding_model = parseTomlString(value) orelse config.ai_embedding_model;
+            } else if (std.mem.eql(u8, key, "embedding_url")) {
+                config.ai_embedding_url = parseTomlString(value) orelse config.ai_embedding_url;
+            } else if (std.mem.eql(u8, key, "custom_models")) {
+                config.ai_custom_models = parseTomlString(value) orelse config.ai_custom_models;
+            } else if (std.mem.eql(u8, key, "custom_embedding_models")) {
+                config.ai_custom_embedding_models = parseTomlString(value) orelse config.ai_custom_embedding_models;
+            } else if (std.mem.eql(u8, key, "mcp")) {
+                config.ai_mcp_enabled = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+            } else if (std.mem.eql(u8, key, "enable_hyde")) {
+                config.ai_enable_hyde = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+            }
+        }
+        return config;
+    }
+
+    fn parseTomlString(value: []const u8) ?[]const u8 {
+        if (value.len < 2 or value[0] != '"' or value[value.len - 1] != '"') return null;
+        return value[1 .. value.len - 1];
     }
 
     pub fn openConflictDialog(self: *Workbench, path: []const u8) !void {
@@ -1796,4 +1889,32 @@ test "workbench opens workspace and loads extensions" {
     try std.testing.expect(wb.extension_host.extensionCount() >= 1);
     try std.testing.expect(wb.activeBuffer() != null);
     try std.testing.expect(wb.palette.entries.len >= 12);
+}
+
+test "ai settings parser ignores user settings sections and keeps latest ai values" {
+    const content =
+        \\[theme]
+        \\font_size = 14
+        \\
+        \\[ai]
+        \\provider = "ollama"
+        \\model = "qwen3.5:35b"
+        \\
+        \\[editor]
+        \\word_wrap = true
+        \\
+        \\[ai_panel]
+        \\font_size = 16.0
+        \\
+        \\[ai]
+        \\provider = "openrouter"
+        \\model = "nvidia/nemotron-3-super-120b-a12b:free"
+        \\embedding_provider = "openrouter"
+        \\
+    ;
+
+    const parsed = Workbench.parseAiSettingsContent(content);
+    try std.testing.expectEqualStrings("openrouter", parsed.ai_provider);
+    try std.testing.expectEqualStrings("nvidia/nemotron-3-super-120b-a12b:free", parsed.ai_model.?);
+    try std.testing.expectEqualStrings("openrouter", parsed.ai_embedding_provider.?);
 }

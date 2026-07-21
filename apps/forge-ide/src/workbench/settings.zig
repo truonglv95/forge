@@ -4,6 +4,7 @@ const workspace = @import("forge-workspace");
 pub const Settings = struct {
     tab_width: u8 = 4,
     font_size: f32 = 14,
+    ai_panel_font_size: f32 = @import("../ui/agent/metrics.zig").markdown.default_body_font_size,
     word_wrap: bool = false,
     format_on_save: bool = false,
     terminal_shell: ?[]const u8 = null,
@@ -102,6 +103,11 @@ fn parseSettingsContent(settings: *Settings, allocator: std.mem.Allocator, conte
                 if (settings.terminal_shell) |old| allocator.free(old);
                 settings.terminal_shell = try allocator.dupe(u8, unquoted);
             }
+        } else if (std.mem.eql(u8, section, "ai_panel")) {
+            if (std.mem.eql(u8, key, "font_size")) {
+                const parsed = std.fmt.parseFloat(f32, value) catch continue;
+                if (parsed >= 12 and parsed <= 20) settings.ai_panel_font_size = parsed;
+            }
         } else if (std.mem.eql(u8, section, "ghost_completion")) {
             if (std.mem.eql(u8, key, "provider")) {
                 const unquoted = parseQuoted(value) orelse value;
@@ -137,6 +143,44 @@ fn replaceStringSetting(allocator: std.mem.Allocator, field: *[]const u8, owned:
 pub fn applyToTheme(settings: Settings, theme: *workspace.Theme) void {
     theme.editor_font_size = settings.font_size;
     theme.tab_width = settings.tab_width;
+    @import("../ui/agent/chat_markdown.zig").configureFontSize(settings.ai_panel_font_size);
+}
+
+pub fn writeAiPanelFontSize(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    font_size: f32,
+) !void {
+    const value = std.math.clamp(font_size, 12.0, 20.0);
+    const value_text = try std.fmt.allocPrint(allocator, "{d:.1}", .{value});
+    defer allocator.free(value_text);
+
+    if (readWorkspaceSettings(allocator, io, root)) |workspace_content| {
+        defer allocator.free(workspace_content);
+        if (settingsContentHasKey(workspace_content, "ai_panel", "font_size")) {
+            const updated = try upsertTomlValue(allocator, workspace_content, "ai_panel", "font_size", value_text);
+            defer allocator.free(updated);
+            const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
+            try workspace.atomic.replaceFile(io, root, wp, updated);
+            return;
+        }
+    } else |_| {}
+
+    const home_settings = try workspace.global_store.joinHome(allocator, "settings.toml");
+    defer allocator.free(home_settings);
+
+    const content = workspace.global_store.readAbsoluteFile(allocator, io, home_settings) catch {
+        const default_content = try std.fmt.allocPrint(allocator, "[ai_panel]\nfont_size = {s}\n", .{value_text});
+        defer allocator.free(default_content);
+        try workspace.global_store.replaceAbsoluteFile(io, home_settings, default_content);
+        return;
+    };
+    defer allocator.free(content);
+
+    const updated = try upsertTomlValue(allocator, content, "ai_panel", "font_size", value_text);
+    defer allocator.free(updated);
+    try workspace.global_store.replaceAbsoluteFile(io, home_settings, updated);
 }
 
 pub fn writeWordWrap(
@@ -145,10 +189,21 @@ pub fn writeWordWrap(
     root: workspace.WorkspaceRoot,
     enabled: bool,
 ) !void {
-    _ = root;
+    const value = if (enabled) "true" else "false";
+
+    if (readWorkspaceSettings(allocator, io, root)) |workspace_content| {
+        defer allocator.free(workspace_content);
+        if (settingsContentHasKey(workspace_content, "editor", "word_wrap")) {
+            const updated = try upsertTomlValue(allocator, workspace_content, "editor", "word_wrap", value);
+            defer allocator.free(updated);
+            const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
+            try workspace.atomic.replaceFile(io, root, wp, updated);
+            return;
+        }
+    } else |_| {}
+
     const home_settings = try workspace.global_store.joinHome(allocator, "settings.toml");
     defer allocator.free(home_settings);
-    const value = if (enabled) "true" else "false";
 
     const content = workspace.global_store.readAbsoluteFile(allocator, io, home_settings) catch {
         const default_content = try std.fmt.allocPrint(allocator, "[editor]\nword_wrap = {s}\n", .{value});
@@ -158,43 +213,120 @@ pub fn writeWordWrap(
     };
     defer allocator.free(content);
 
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
+    const updated = try upsertTomlValue(allocator, content, "editor", "word_wrap", value);
+    defer allocator.free(updated);
+    try workspace.global_store.replaceAbsoluteFile(io, home_settings, updated);
+}
 
-    var in_editor = false;
-    var wrote = false;
+fn settingsContentHasKey(content: []const u8, section_name: []const u8, key_name: []const u8) bool {
+    var section: []const u8 = "";
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw_line| {
         const trimmed = std.mem.trim(u8, &std.ascii.whitespace, raw_line);
         if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
-            const name = std.mem.trim(u8, &std.ascii.whitespace, trimmed[1 .. trimmed.len - 1]);
-            if (in_editor and !wrote) {
-                try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "word_wrap = {s}\n", .{value}));
-                wrote = true;
+            section = std.mem.trim(u8, &std.ascii.whitespace, trimmed[1 .. trimmed.len - 1]);
+            continue;
+        }
+        if (std.mem.eql(u8, section, section_name) and lineKeyMatches(trimmed, key_name)) return true;
+    }
+    return false;
+}
+
+pub fn upsertTomlValue(
+    allocator: std.mem.Allocator,
+    content: []const u8,
+    section_name: []const u8,
+    key_name: []const u8,
+    value_text: []const u8,
+) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var in_target = false;
+    var skipping_duplicate_target = false;
+    var saw_target = false;
+    var wrote_key = false;
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, &std.ascii.whitespace, raw_line);
+        if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+            if (in_target and !wrote_key) {
+                try appendSettingLine(allocator, &out, key_name, value_text);
+                wrote_key = true;
             }
-            in_editor = std.mem.eql(u8, name, "editor");
-            try out.appendSlice(allocator, raw_line);
-            try out.append(allocator, '\n');
+
+            const name = std.mem.trim(u8, &std.ascii.whitespace, trimmed[1 .. trimmed.len - 1]);
+            if (std.mem.eql(u8, name, section_name)) {
+                if (saw_target) {
+                    in_target = false;
+                    skipping_duplicate_target = true;
+                    continue;
+                }
+                saw_target = true;
+                in_target = true;
+                skipping_duplicate_target = false;
+            } else {
+                in_target = false;
+                skipping_duplicate_target = false;
+            }
+
+            try appendRawLine(allocator, &out, raw_line);
             continue;
         }
-        if (in_editor and std.mem.startsWith(u8, trimmed, "word_wrap")) {
-            try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "word_wrap = {s}\n", .{value}));
-            wrote = true;
+
+        if (skipping_duplicate_target) continue;
+
+        if (in_target and lineKeyMatches(trimmed, key_name)) {
+            if (!wrote_key) {
+                try appendSettingLine(allocator, &out, key_name, value_text);
+                wrote_key = true;
+            }
             continue;
         }
-        try out.appendSlice(allocator, raw_line);
-        try out.append(allocator, '\n');
+
+        try appendRawLine(allocator, &out, raw_line);
     }
 
-    if (!wrote) {
+    if (in_target and !wrote_key) {
+        try appendSettingLine(allocator, &out, key_name, value_text);
+        wrote_key = true;
+    }
+
+    if (!saw_target) {
         if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') {
             try out.append(allocator, '\n');
         }
-        try out.appendSlice(allocator, "\n[editor]\n");
-        try out.appendSlice(allocator, try std.fmt.allocPrint(allocator, "word_wrap = {s}\n", .{value}));
+        if (out.items.len > 0) try out.append(allocator, '\n');
+        try out.append(allocator, '[');
+        try out.appendSlice(allocator, section_name);
+        try out.appendSlice(allocator, "]\n");
+        try appendSettingLine(allocator, &out, key_name, value_text);
     }
 
-    try workspace.global_store.replaceAbsoluteFile(io, home_settings, out.items);
+    while (out.items.len > 1 and out.items[out.items.len - 1] == '\n' and out.items[out.items.len - 2] == '\n') {
+        _ = out.pop();
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+fn appendRawLine(allocator: std.mem.Allocator, out: *std.ArrayList(u8), raw_line: []const u8) !void {
+    try out.appendSlice(allocator, raw_line);
+    try out.append(allocator, '\n');
+}
+
+fn appendSettingLine(allocator: std.mem.Allocator, out: *std.ArrayList(u8), key_name: []const u8, value_text: []const u8) !void {
+    try out.appendSlice(allocator, key_name);
+    try out.appendSlice(allocator, " = ");
+    try out.appendSlice(allocator, value_text);
+    try out.append(allocator, '\n');
+}
+
+fn lineKeyMatches(trimmed_line: []const u8, key_name: []const u8) bool {
+    if (trimmed_line.len == 0 or trimmed_line[0] == '#') return false;
+    const equals = std.mem.indexOfScalar(u8, trimmed_line, '=') orelse return false;
+    const key = std.mem.trim(u8, &std.ascii.whitespace, trimmed_line[0..equals]);
+    return std.mem.eql(u8, key, key_name);
 }
 
 pub fn mergeExtensionTheme(allocator: std.mem.Allocator, existing: []const u8, qualified: []const u8) ![]u8 {
@@ -240,4 +372,62 @@ pub fn mergeExtensionTheme(allocator: std.mem.Allocator, existing: []const u8, q
 fn parseQuoted(value: []const u8) ?[]const u8 {
     if (value.len < 2 or value[0] != '"' or value[value.len - 1] != '"') return null;
     return value[1 .. value.len - 1];
+}
+
+test "upsertTomlValue updates one section and removes duplicate target sections" {
+    const input =
+        \\[theme]
+        \\font_size = 14
+        \\
+        \\[ai_panel]
+        \\font_size = 14.5
+        \\
+        \\[editor]
+        \\word_wrap = true
+        \\
+        \\[ai_panel]
+        \\font_size = 15.0
+        \\
+    ;
+    const out = try upsertTomlValue(std.testing.allocator, input, "ai_panel", "font_size", "16.0");
+    defer std.testing.allocator.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "[theme]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "[editor]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "font_size = 16.0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "font_size = 14.5") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "font_size = 15.0") == null);
+
+    const first = std.mem.indexOf(u8, out, "[ai_panel]") orelse return error.TestExpectedEqual;
+    try std.testing.expect(std.mem.indexOfPos(u8, out, first + 1, "[ai_panel]") == null);
+}
+
+test "upsertTomlValue appends missing setting to existing section" {
+    const input =
+        \\[editor]
+        \\font_size = 14
+        \\
+    ;
+    const out = try upsertTomlValue(std.testing.allocator, input, "editor", "word_wrap", "true");
+    defer std.testing.allocator.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "[editor]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "font_size = 14") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "word_wrap = true") != null);
+}
+
+test "parseSettingsContent uses latest ai panel font size" {
+    const input =
+        \\[ai_panel]
+        \\font_size = 14.5
+        \\
+        \\[ai_panel]
+        \\font_size = 16.0
+        \\
+    ;
+    var settings: Settings = .{};
+    defer settings.deinit(std.testing.allocator);
+
+    try parseSettingsContent(&settings, std.testing.allocator, input);
+    try std.testing.expectEqual(@as(f32, 16.0), settings.ai_panel_font_size);
 }

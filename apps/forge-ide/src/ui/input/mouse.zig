@@ -181,7 +181,9 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.focused_panel = .settings_modal;
             const settings_modal = @import("../settings_modal.zig");
             const hit = settings_modal.hitTestPoint(wb, w, h, event.x, event.y);
-            @import("../../workbench/agent_ops.zig").handleSettingsModalClick(wb, hit) catch {};
+            @import("../../workbench/agent_ops.zig").handleSettingsModalClick(wb, hit) catch |err| {
+                wb.setStatus(@errorName(err)) catch {};
+            };
             return;
         }
         if (event.y < layout.header_height) {
@@ -835,7 +837,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     }
                     if (!scrolled_code_block) {
                         wb.chat_scroll_y += scroll_delta_y;
-                        wb.clampChatScroll(h);
+                        wb.clampChatScroll(h, geo.agent_w);
                     }
                 }
             }

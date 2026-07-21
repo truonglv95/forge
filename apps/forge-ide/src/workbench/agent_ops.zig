@@ -188,6 +188,8 @@ pub fn handleSettingsModalClick(wb: anytype, hit: @import("../ui/settings_modal.
             wb.settings_modal_tab = tab;
         },
         .toggle_word_wrap => try wb.dispatch(.settings_toggle_word_wrap),
+        .ai_panel_font_decrease => try wb.setAiPanelFontSize(wb.user_settings.ai_panel_font_size - 0.5),
+        .ai_panel_font_increase => try wb.setAiPanelFontSize(wb.user_settings.ai_panel_font_size + 0.5),
         .ai_edit_provider => try wb.dispatch(.ai_edit_provider),
         .ai_edit_model => try wb.dispatch(.ai_edit_model),
         .ai_edit_embedding_provider => try wb.dispatch(.ai_edit_embedding_provider),

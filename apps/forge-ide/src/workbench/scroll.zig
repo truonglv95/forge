@@ -149,9 +149,9 @@ pub fn clampBottomPanelScroll(wb: anytype, panel_h: f32) void {
     );
 }
 
-pub fn clampChatScroll(wb: anytype, agent_h: f32) void {
+pub fn clampChatScroll(wb: anytype, agent_h: f32, agent_w: f32) void {
     wb.chat_follow_stream = false;
-    @import("chat_layout.zig").ensure(wb, agent_h);
+    @import("chat_layout.zig").ensureForWidth(wb, agent_h, agent_w);
     wb.chat_scroll_y = std.math.clamp(wb.chat_scroll_y, 0, wb.chat_layout.max_scroll);
 }
 

@@ -3,6 +3,7 @@ const renderer = @import("forge-renderer");
 const word_wrap = @import("../editor/word_wrap.zig");
 const chat_markdown = @import("chat_markdown.zig");
 const diff_line_style = @import("../diff_line_style.zig");
+const metrics = @import("metrics.zig");
 
 pub const LineRange = struct {
     start: u32,
@@ -32,8 +33,8 @@ pub const Entry = struct {
     }
 };
 
-const bubble_pad_y: f32 = 10.0;
-const bubble_gap: f32 = 16.0;
+const bubble_pad_y: f32 = metrics.bubble.pad_y;
+const bubble_gap: f32 = metrics.bubble.gap;
 const layout_safety_pad: f32 = 8.0;
 
 fn lineHasInlineMarkup(line: []const u8) bool {
@@ -237,7 +238,7 @@ pub fn build(allocator: std.mem.Allocator, text: []const u8, content_w: f32) !En
             return .{
                 .markdown = true,
                 .markdown_runtime = true,
-                .height = chat_markdown.contentHeight(text, content_w),
+                .height = chat_markdown.contentHeight(text, content_w) + chat_markdown.runtimeSafetyPad(),
             };
         }
     }
@@ -256,7 +257,7 @@ pub fn drawPlain(text: []const u8, entry: *const Entry, x: f32, y: f32, fg: rend
     var line_y = y;
     for (entry.ranges) |range| {
         if (range.start < range.end) {
-            renderer.Renderer.drawText(text[range.start..range.end], x, line_y, chat_markdown.body_font_size, fg);
+            renderer.Renderer.drawTextWithStyle(text[range.start..range.end], x, line_y, chat_markdown.body_font_size, fg, metrics.typography.prose_style);
         }
         line_y += chat_markdown.body_line_h;
     }
@@ -278,7 +279,7 @@ pub fn drawCached(
                 .text_lines => |lines| {
                     for (lines) |range| {
                         if (range.start < range.end) {
-                            renderer.Renderer.drawText(text[range.start..range.end], x, line_y, chat_markdown.body_font_size, style.fg);
+                            renderer.Renderer.drawTextWithStyle(text[range.start..range.end], x, line_y, chat_markdown.body_font_size, style.fg, metrics.typography.prose_style);
                         }
                         line_y += chat_markdown.body_line_h;
                     }
@@ -300,7 +301,7 @@ pub fn drawCached(
                             renderer.Renderer.drawRect(x + 1, code_y - 1, @max(1.0, content_w - 2), chat_markdown.code_line_h, bg);
                         }
                         if (slice.len > 0) {
-                            renderer.Renderer.drawText(slice, x + 1 + chat_markdown.code_pad, code_y, chat_markdown.code_font_size, fg);
+                            renderer.Renderer.drawTextWithStyle(slice, x + 1 + chat_markdown.code_pad, code_y, chat_markdown.code_font_size, fg, metrics.typography.code_style);
                         }
                         code_y += chat_markdown.code_line_h;
                     }

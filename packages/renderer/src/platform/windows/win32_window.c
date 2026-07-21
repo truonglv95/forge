@@ -234,6 +234,12 @@ void forge_backend_draw_text_len(const char* text, size_t len, float x, float y,
     SelectObject(g_back_dc, old_font);
 }
 
+void forge_backend_draw_text_len_style(const char* text, size_t len, float x, float y, float font_size, int role, int weight, float r, float g, float b, float a) {
+    (void)role;
+    (void)weight;
+    forge_backend_draw_text_len(text, len, x, y, font_size, r, g, b, a);
+}
+
 void forge_backend_draw_styled_text(const char* text, size_t len, float x, float y, float font_size, const ForgeTextSpan* spans, size_t span_count) {
     // For styled text, we draw each span segment separately with its color.
     if (!g_back_dc || len == 0) return;
@@ -307,6 +313,12 @@ float forge_backend_measure_text_width(const char* text, size_t len, float font_
     if (!g_back_dc) ReleaseDC(NULL, dc);
 
     return (float)size.cx;
+}
+
+float forge_backend_measure_text_width_style(const char* text, size_t len, float font_size, int role, int weight) {
+    (void)role;
+    (void)weight;
+    return forge_backend_measure_text_width(text, len, font_size);
 }
 
 // --- Window / clip ---

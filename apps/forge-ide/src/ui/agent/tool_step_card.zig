@@ -2,13 +2,14 @@ const std = @import("std");
 const renderer = @import("forge-renderer");
 const agent_session = @import("../../agent/session.zig");
 const chat_markdown = @import("chat_markdown.zig");
+const metrics = @import("metrics.zig");
 const tokens = @import("../tokens.zig");
 
-pub const card_h: f32 = 28;
-pub const card_gap: f32 = tokens.space.xs;
-pub const child_h: f32 = 20;
-pub const child_indent: f32 = 28;
-pub const expanded_content_pad: f32 = tokens.space.md;
+pub const card_h: f32 = metrics.tool_step.card_h;
+pub const card_gap: f32 = metrics.tool_step.card_gap;
+pub const child_h: f32 = metrics.tool_step.child_h;
+pub const child_indent: f32 = metrics.tool_step.child_indent;
+pub const expanded_content_pad: f32 = metrics.tool_step.expanded_content_pad;
 
 fn drawClippedText(text: []const u8, x: f32, y: f32, max_w: f32, font_size: f32, color: renderer.Color) void {
     if (max_w <= 0 or text.len == 0) return;

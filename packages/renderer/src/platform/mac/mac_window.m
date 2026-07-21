@@ -973,9 +973,35 @@ static CTFontRef ForgeCreateFont(CGFloat pixelSize) {
     return ForgeApplyEditorFeatures(ForgeApplyWeight(fallback, pixelSize), pixelSize);
 }
 
+static CTFontRef ForgeCreateFontForStyle(CGFloat pixelSize, int fontRole, int fontWeight) {
+    int previousWeight = g_fontWeight;
+    g_fontWeight = fontWeight;
+
+    CTFontRef font = NULL;
+    if (fontRole == 1) {
+        CTFontRef base = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, pixelSize, NULL);
+        if (base) font = ForgeApplyWeight(base, pixelSize);
+    } else if (fontRole == 2) {
+        CTFontRef base = CTFontCreateWithName(CFSTR("Menlo"), pixelSize, NULL);
+        if (base) font = ForgeApplyEditorFeatures(ForgeApplyWeight(base, pixelSize), pixelSize);
+    } else {
+        font = ForgeCreateFont(pixelSize);
+    }
+
+    g_fontWeight = previousWeight;
+    if (!font) {
+        CTFontRef fallback = CTFontCreateWithName(CFSTR("Menlo"), pixelSize, NULL);
+        if (fallback) font = ForgeApplyEditorFeatures(ForgeApplyWeight(fallback, pixelSize), pixelSize);
+    }
+    return font;
+}
+
 static CTFontRef g_fontCache[12];
 static CGFloat g_fontCacheSizes[12];
 static int g_fontCacheCount = 0;
+static CTFontRef g_styleFontCache[3][4][12];
+static CGFloat g_styleFontCacheSizes[3][4][12];
+static int g_styleFontCacheCounts[3][4];
 
 static void ForgeInvalidateFontCache(void) {
     [g_fontToCache removeAllObjects];
@@ -985,6 +1011,16 @@ static void ForgeInvalidateFontCache(void) {
         g_fontCacheSizes[i] = 0;
     }
     g_fontCacheCount = 0;
+    for (int role = 0; role < 3; role++) {
+        for (int weight = 0; weight < 4; weight++) {
+            for (int i = 0; i < g_styleFontCacheCounts[role][weight]; i++) {
+                if (g_styleFontCache[role][weight][i]) CFRelease(g_styleFontCache[role][weight][i]);
+                g_styleFontCache[role][weight][i] = NULL;
+                g_styleFontCacheSizes[role][weight][i] = 0;
+            }
+            g_styleFontCacheCounts[role][weight] = 0;
+        }
+    }
     if (g_renderer && g_renderer.atlas) {
         [g_renderer.atlas resetGlyphs];
     }
@@ -1012,6 +1048,38 @@ static CTFontRef ForgeGetFont(CGFloat pixelSize) {
     }
     g_fontCache[11] = font;
     g_fontCacheSizes[11] = pixelSize;
+    return font;
+}
+
+static CTFontRef ForgeGetFontForStyle(CGFloat pixelSize, int fontRole, int fontWeight) {
+    int role = fontRole;
+    if (role < 0 || role > 2) role = 0;
+    int weight = fontWeight;
+    if (weight < 0 || weight > 3) weight = 0;
+    if (role == 0 && weight == g_fontWeight) return ForgeGetFont(pixelSize);
+
+    int count = g_styleFontCacheCounts[role][weight];
+    for (int i = 0; i < count; i++) {
+        if (g_styleFontCacheSizes[role][weight][i] == pixelSize) return g_styleFontCache[role][weight][i];
+    }
+
+    CTFontRef font = ForgeCreateFontForStyle(pixelSize, role, weight);
+    if (!font) return NULL;
+
+    if (count < 12) {
+        g_styleFontCache[role][weight][count] = font;
+        g_styleFontCacheSizes[role][weight][count] = pixelSize;
+        g_styleFontCacheCounts[role][weight] = count + 1;
+        return font;
+    }
+
+    CFRelease(g_styleFontCache[role][weight][0]);
+    for (int i = 1; i < 12; i++) {
+        g_styleFontCache[role][weight][i - 1] = g_styleFontCache[role][weight][i];
+        g_styleFontCacheSizes[role][weight][i - 1] = g_styleFontCacheSizes[role][weight][i];
+    }
+    g_styleFontCache[role][weight][11] = font;
+    g_styleFontCacheSizes[role][weight][11] = pixelSize;
     return font;
 }
 
@@ -1421,6 +1489,23 @@ float forge_mac_measure_text_width(const char* text, size_t len, float fontSize)
     }
 }
 
+float forge_mac_measure_text_width_style(const char* text, size_t len, float fontSize, int fontRole, int fontWeight) {
+    if (!text || len == 0) return 0.0f;
+    @autoreleasepool {
+        CGFloat scale = ForgeBackingScale();
+        CTFontRef font = ForgeGetFontForStyle(fontSize * scale, fontRole, fontWeight);
+        if (!font) return 0.0f;
+
+        NSString *nsText = [[NSString alloc] initWithBytes:text length:len encoding:NSUTF8StringEncoding];
+        if (!nsText) return 0.0f;
+
+        CTLineRef line = ForgeGetCachedCTLine(nsText, font);
+        double width = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
+        CFRelease(line);
+        return (float)(width / scale);
+    }
+}
+
 void forge_mac_draw_text(const char* text, float x, float y, float fontSize, float r, float g, float b, float a) {
     if (!text) return;
     forge_mac_draw_text_len(text, strlen(text), x, y, fontSize, r, g, b, a);
@@ -1440,6 +1525,41 @@ void forge_mac_draw_text_len(const char* text, size_t len, float x, float y, flo
         if (!nsText || nsText.length == 0) return;
 
         CTFontRef font = ForgeGetFont(fontSize * scale);
+        if (!font) return;
+
+        NSArray<NSString*> *lines = [nsText componentsSeparatedByString:@"\n"];
+        float currentY = y;
+        float lineHeight = ForgeLineHeightForFont(fontSize);
+        vector_float4 color = {r, g, b, a};
+
+        for (NSString *lineStr in lines) {
+            if (lineStr.length == 0) {
+                currentY += lineHeight;
+                continue;
+            }
+
+            CTLineRef line = ForgeGetCachedCTLine(lineStr, font);
+            ForgeDrawGlyphsFromCTLine(line, font, x, currentY, scale, color);
+            CFRelease(line);
+            currentY += lineHeight;
+        }
+    }
+}
+
+void forge_mac_draw_text_len_style(const char* text, size_t len, float x, float y, float fontSize, int fontRole, int fontWeight, float r, float g, float b, float a) {
+    if (g_renderer && g_renderer.currentTexture != g_renderer.atlas.texture) {
+        forge_mac_flush_batch();
+        g_renderer.currentTexture = g_renderer.atlas.texture;
+    }
+
+    if (!g_renderer || !g_renderer.currentEncoder || !text || len == 0) return;
+    @autoreleasepool {
+        CGFloat scale = ForgeBackingScale();
+
+        NSString *nsText = [[NSString alloc] initWithBytes:text length:len encoding:NSUTF8StringEncoding];
+        if (!nsText || nsText.length == 0) return;
+
+        CTFontRef font = ForgeGetFontForStyle(fontSize * scale, fontRole, fontWeight);
         if (!font) return;
 
         NSArray<NSString*> *lines = [nsText componentsSeparatedByString:@"\n"];

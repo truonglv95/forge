@@ -220,6 +220,12 @@ void forge_backend_draw_text_len(const char* text, size_t len, float x, float y,
     if (text && len > 0) render_text_run(text, len, x, y, fs, r, g, b, a);
 }
 
+void forge_backend_draw_text_len_style(const char* text, size_t len, float x, float y, float fs, int role, int weight, float r, float g, float b, float a) {
+    (void)role;
+    (void)weight;
+    forge_backend_draw_text_len(text, len, x, y, fs, r, g, b, a);
+}
+
 void forge_backend_draw_styled_text(const char* text, size_t len, float x, float y, float fs, const ForgeTextSpan* spans, size_t n) {
     if (!text || len == 0) return;
     if (n == 0) { forge_backend_draw_text_len(text, len, x, y, fs, 1, 1, 1, 1); return; }
@@ -257,6 +263,12 @@ float forge_backend_measure_text_width(const char* text, size_t len, float font_
     }
     pthread_mutex_unlock(&g_ft_lock);
     return width;
+}
+
+float forge_backend_measure_text_width_style(const char* text, size_t len, float font_size, int role, int weight) {
+    (void)role;
+    (void)weight;
+    return forge_backend_measure_text_width(text, len, font_size);
 }
 
 void forge_backend_set_text_style(const char* family, int weight) {
