@@ -118,3 +118,55 @@ test "agent window uses full width for agent panel" {
     try std.testing.expectEqual(@as(f32, 0), geo.agent_x);
     try std.testing.expectEqual(@as(f32, 1200), geo.agent_w);
 }
+
+test "ide visual smoke matrix keeps panels non-overlapping" {
+    const windows = [_]struct { w: f32, h: f32 }{
+        .{ .w = 860, .h = 520 },
+        .{ .w = 1180, .h = 720 },
+        .{ .w = 1540, .h = 940 },
+        .{ .w = 2048, .h = 1152 },
+    };
+    const sidebars = [_]f32{ 180, 260, 420 };
+    const agents = [_]f32{ 240, 420, 760 };
+    const bottoms = [_]f32{ 0, 160, 320 };
+
+    for (windows) |win| {
+        for (sidebars) |sidebar_w| {
+            for (agents) |agent_w| {
+                for (bottoms) |bottom_h| {
+                    const bottom_visible = bottom_h > 0;
+                    const geo = compute(.ide, win.w, win.h, sidebar_w, agent_w, bottom_h, true, true, bottom_visible);
+                    try std.testing.expect(geo.content_h == win.h - header_height - status_height);
+                    try std.testing.expect(geo.explorer_x == 0);
+                    try std.testing.expect(geo.explorer_w >= 0);
+                    try std.testing.expect(geo.editor_x >= geo.explorer_x + geo.explorer_w);
+                    try std.testing.expect(geo.editor_w >= 120);
+                    try std.testing.expect(geo.editor_x + geo.editor_w <= geo.agent_x + 1);
+                    try std.testing.expect(geo.agent_x + geo.agent_w == win.w);
+                    try std.testing.expect(geo.task_panel_y + geo.task_panel_h <= win.h - status_height + 1);
+                    try std.testing.expect(geo.editor_h + geo.task_panel_h <= geo.content_h + 1);
+                    if (bottom_visible) {
+                        try std.testing.expect(geo.task_panel_h >= 80);
+                    } else {
+                        try std.testing.expectEqual(@as(f32, 0), geo.task_panel_h);
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "agent visual smoke keeps full-width shell clear of status bar" {
+    const sizes = [_]struct { w: f32, h: f32 }{
+        .{ .w = 360, .h = 520 },
+        .{ .w = 900, .h = 760 },
+        .{ .w = 1440, .h = 1000 },
+    };
+    for (sizes) |size| {
+        const geo = compute(.agent_window, size.w, size.h, 250, 400, task_panel_height, true, true, true);
+        try std.testing.expectEqual(@as(f32, 0), geo.agent_x);
+        try std.testing.expectEqual(size.w, geo.agent_w);
+        try std.testing.expect(geo.task_panel_y <= size.h - status_height + 1);
+        try std.testing.expectEqual(@as(f32, 0), geo.task_panel_h);
+    }
+}

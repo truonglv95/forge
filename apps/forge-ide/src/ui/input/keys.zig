@@ -38,7 +38,7 @@ fn applyMultiCursor(wb: *Workbench, active_buffer: *editor.Buffer, action: Curso
     var all_cursors_buf: [256]editor.Cursor = undefined;
     const cursors = wb.editor.multi_cursor.allCursorsBottomUp(primary, &all_cursors_buf);
 
-    active_buffer.beginUndoGroup() catch {};
+    active_buffer.beginUndoGroup() catch |err| shared.reportInputError(wb, "Begin editor edit", err);
     wb.editor.multi_cursor.clear();
 
     var new_primary: ?editor.Cursor = null;
@@ -47,10 +47,10 @@ fn applyMultiCursor(wb: *Workbench, active_buffer: *editor.Buffer, action: Curso
         active_buffer.cursor = cursor;
 
         switch (action) {
-            .insert_string => |str| active_buffer.insertString(str) catch {},
-            .insert_newline => active_buffer.insertNewline() catch {},
-            .backspace => active_buffer.backspace() catch {},
-            .delete_forward => active_buffer.deleteForward() catch {},
+            .insert_string => |str| active_buffer.insertString(str) catch |err| shared.reportInputError(wb, "Insert text", err),
+            .insert_newline => active_buffer.insertNewline() catch |err| shared.reportInputError(wb, "Insert newline", err),
+            .backspace => active_buffer.backspace() catch |err| shared.reportInputError(wb, "Backspace", err),
+            .delete_forward => active_buffer.deleteForward() catch |err| shared.reportInputError(wb, "Delete forward", err),
             .move_left => {
                 active_buffer.clearSelection();
                 active_buffer.moveLeft();
@@ -74,14 +74,14 @@ fn applyMultiCursor(wb: *Workbench, active_buffer: *editor.Buffer, action: Curso
         if (is_primary) {
             new_primary = active_buffer.cursor;
         } else {
-            wb.editor.multi_cursor.add(active_buffer.cursor) catch {};
+            wb.editor.multi_cursor.add(active_buffer.cursor) catch |err| shared.reportInputError(wb, "Add cursor", err);
         }
     }
 
     if (new_primary) |np| {
         active_buffer.cursor = np;
     }
-    active_buffer.endUndoGroup() catch {};
+    active_buffer.endUndoGroup() catch |err| shared.reportInputError(wb, "End editor edit", err);
 }
 
 pub fn onKeyEvent(event: renderer.KeyEvent) void {
@@ -141,7 +141,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             }
             if (event.keycode == 36) {
                 agent_ops.saveSettingsModelEditor(wb) catch |err| {
-                    wb.setStatus(@errorName(err)) catch {};
+                    shared.reportInputError(wb, "Save model settings", err);
                 };
                 return;
             }
@@ -160,29 +160,29 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             return;
         }
         if (event.keycode == 53) {
-            wb.dispatch(.close_settings_modal) catch {};
+            shared.dispatchOrReport(wb, .close_settings_modal, "Close settings");
             return;
         }
     }
 
     if (wb.lsp.rename_preview.active and wb.bottom_panel_mode == .output) {
         if (event.keycode == 53) {
-            wb.dispatch(.rename_reject) catch {};
+            shared.dispatchOrReport(wb, .rename_reject, "Reject rename");
             return;
         }
         if (event.keycode == 36) {
-            wb.dispatch(.rename_accept) catch {};
+            shared.dispatchOrReport(wb, .rename_accept, "Accept rename");
             return;
         }
     }
 
     if (wb.lsp.completions.visible and (event.keycode == 48 or event.keycode == 36)) {
-        wb.dispatch(.completion_accept) catch {};
+        shared.dispatchOrReport(wb, .completion_accept, "Accept completion");
         return;
     }
 
     if (wb.lsp.completions.visible and event.keycode == 53) {
-        wb.dispatch(.completion_dismiss) catch {};
+        shared.dispatchOrReport(wb, .completion_dismiss, "Dismiss completion");
         return;
     }
 
@@ -205,7 +205,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         const menus_open = wb.agent_ui.session.mode_menu_open or wb.agent_ui.session.model_menu_open;
         wb.agent_ui.session.unlock();
         if (menus_open) {
-            wb.dispatch(.agent_close_menus) catch {};
+            shared.dispatchOrReport(wb, .agent_close_menus, "Close agent menus");
             return;
         }
     }
@@ -216,7 +216,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     }
 
     if (wb.focused_panel == .search and event.keycode == 36) {
-        wb.dispatch(.search_run) catch {};
+        shared.dispatchOrReport(wb, .search_run, "Run search");
         return;
     }
 
@@ -237,7 +237,10 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
 
     if (wb.proposal_review_open) {
         if (event.keycode == 126 or event.keycode == 125) { // Up or Down
-            var files = @import("../editor/proposal_review_panel.zig").collectFiles(wb.allocator, wb.agent_ui.session.review.hunks) catch return;
+            var files = @import("../editor/proposal_review_panel.zig").collectFiles(wb.allocator, wb.agent_ui.session.review.hunks) catch |err| {
+                shared.reportInputError(wb, "Collect proposal files", err);
+                return;
+            };
             defer files.deinit(wb.allocator);
             if (files.items.len > 0) {
                 if (event.keycode == 126) {
@@ -253,7 +256,10 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             return;
         }
         if (event.keycode == 49 and event.modifiers == 0) { // Space
-            var files = @import("../editor/proposal_review_panel.zig").collectFiles(wb.allocator, wb.agent_ui.session.review.hunks) catch return;
+            var files = @import("../editor/proposal_review_panel.zig").collectFiles(wb.allocator, wb.agent_ui.session.review.hunks) catch |err| {
+                shared.reportInputError(wb, "Collect proposal files", err);
+                return;
+            };
             defer files.deinit(wb.allocator);
             if (wb.proposal_review_file_index < files.items.len) {
                 const path = files.items[wb.proposal_review_file_index].path;
@@ -266,22 +272,22 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             return;
         }
         if (event.keycode == 36 and event.modifiers & shared.cmd_mask != 0) { // Cmd+Enter
-            wb.dispatch(.agent_apply) catch {};
+            shared.dispatchOrReport(wb, .agent_apply, "Apply agent proposal");
             return;
         }
         if (event.keycode == 53) { // Escape
-            wb.dispatch(.agent_reject) catch {};
+            shared.dispatchOrReport(wb, .agent_reject, "Reject agent proposal");
             return;
         }
     }
 
     if (wb.focused_panel == .agent and wb.agent_ui.session.show_review) {
         if (event.keycode == 36 and event.modifiers & shared.cmd_mask != 0) {
-            wb.dispatch(.agent_apply) catch {};
+            shared.dispatchOrReport(wb, .agent_apply, "Apply agent proposal");
             return;
         }
         if (event.keycode == 53) {
-            wb.dispatch(.agent_reject) catch {};
+            shared.dispatchOrReport(wb, .agent_reject, "Reject agent proposal");
             return;
         }
         if (event.keycode == 126 or event.keycode == 125) {
@@ -299,17 +305,17 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
 
     const ctrl_mask: i32 = 0x01;
     if (event.keycode == 49 and event.modifiers & ctrl_mask != 0 and wb.focused_panel == .editor) {
-        wb.dispatch(.editor_completion) catch {};
+        shared.dispatchOrReport(wb, .editor_completion, "Open completion");
         return;
     }
 
     if (event.keycode == 120 and wb.focused_panel == .editor) {
-        wb.dispatch(.editor_rename_symbol) catch {};
+        shared.dispatchOrReport(wb, .editor_rename_symbol, "Rename symbol");
         return;
     }
 
     if (event.keycode == 47 and event.modifiers & shared.cmd_mask != 0 and wb.focused_panel == .editor) {
-        wb.dispatch(.editor_show_quick_fixes) catch {};
+        shared.dispatchOrReport(wb, .editor_show_quick_fixes, "Show quick fixes");
         return;
     }
 
@@ -329,12 +335,12 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     }
 
     if (event.keycode == 17 and event.modifiers & shared.cmd_mask != 0) { // 17 is T
-        wb.dispatch(.workspace_symbol_picker_open) catch {};
+        shared.dispatchOrReport(wb, .workspace_symbol_picker_open, "Open symbol picker");
         return;
     }
 
     if (event.keycode == 35 and (event.modifiers & (shared.cmd_mask | shared.shift_mask)) == (shared.cmd_mask | shared.shift_mask)) {
-        wb.dispatch(.palette_open) catch {};
+        shared.dispatchOrReport(wb, .palette_open, "Open palette");
         return;
     }
 
@@ -374,7 +380,9 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
                     renderer.Renderer.setClipboardText(text);
                     return;
                 }
-            } else |_| {}
+            } else |err| {
+                shared.reportInputError(wb, "Copy selection", err);
+            }
         }
 
         if (event.modifiers & (shared.cmd_mask | shared.ctrl_mask | shared.alt_mask) == 0) {
@@ -397,12 +405,12 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     }
 
     if (event.keycode == 4 and event.modifiers & shared.cmd_mask != 0) {
-        wb.dispatch(.{ .run_extension_command = "hello.say" }) catch {};
+        shared.dispatchOrReport(wb, .{ .run_extension_command = "hello.say" }, "Run extension command");
         return;
     }
 
     if (event.keycode == 8 and event.modifiers & shared.cmd_mask != 0 and wb.focused_panel == .agent and wb.agent_ui.session.worker_running) {
-        wb.dispatch(.agent_cancel) catch {};
+        shared.dispatchOrReport(wb, .agent_cancel, "Cancel agent run");
         return;
     }
 
@@ -411,34 +419,34 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             wb.editor.multi_cursor.clear();
             return;
         }
-        wb.dispatch(.palette_close) catch {};
+        shared.dispatchOrReport(wb, .palette_close, "Close palette");
     }
 
     if (event.keycode == 120 and wb.focused_panel == .explorer) {
-        wb.dispatch(.explorer_begin_rename) catch {};
+        shared.dispatchOrReport(wb, .explorer_begin_rename, "Begin explorer rename");
         return;
     }
 
     const active_buffer = active_buffer_opt orelse return;
 
     if (event.keycode == 13 and event.modifiers & shared.cmd_mask != 0) {
-        wb.dispatch(.close_active_tab) catch {};
+        shared.dispatchOrReport(wb, .close_active_tab, "Close active tab");
         return;
     }
 
     if (event.keycode == 1 and event.modifiers & shared.cmd_mask != 0) {
         if (wb.focused_panel == .editor) {
-            wb.dispatch(.save_active) catch {};
+            shared.dispatchOrReport(wb, .save_active, "Save active file");
         } else if (wb.focused_panel == .explorer) {
             var name_buf: [32]u8 = undefined;
             const name = wb.nextUntitledName(&name_buf);
-            wb.dispatch(.{ .explorer_create_file = name }) catch {};
+            shared.dispatchOrReport(wb, .{ .explorer_create_file = name }, "Create explorer file");
         }
         return;
     }
 
     if (wb.focused_panel == .explorer and event.keycode == 51) {
-        wb.dispatch(.explorer_delete_selected) catch {};
+        shared.dispatchOrReport(wb, .explorer_delete_selected, "Delete explorer item");
         return;
     }
 
@@ -446,9 +454,9 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         if (wb.explorer.selected_path) |path| {
             if (wb.explorerKind(path)) |kind| {
                 switch (kind) {
-                    .directory => wb.dispatch(.{ .explorer_toggle = path }) catch {},
+                    .directory => shared.dispatchOrReport(wb, .{ .explorer_toggle = path }, "Toggle explorer folder"),
                     .file => {
-                        wb.dispatch(.{ .open_file = path }) catch {};
+                        shared.dispatchOrReport(wb, .{ .open_file = path }, "Open explorer file");
                         wb.focused_panel = .editor;
                     },
                     else => {},
@@ -459,12 +467,12 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     }
 
     if (event.keycode == 6 and event.modifiers & shared.cmd_mask != 0 and wb.focused_panel == .editor) {
-        active_buffer.undo() catch {};
+        active_buffer.undo() catch |err| shared.reportInputError(wb, "Undo", err);
         return;
     }
 
     if (event.keycode == 6 and event.modifiers & (shared.cmd_mask | shared.shift_mask) == (shared.cmd_mask | shared.shift_mask) and wb.focused_panel == .editor) {
-        active_buffer.redo() catch {};
+        active_buffer.redo() catch |err| shared.reportInputError(wb, "Redo", err);
         return;
     }
 
@@ -504,7 +512,7 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
             // P0-2: If inline edit prompt is active, append to it instead
             // of the editor buffer.
             if (wb.editor.inline_edit.active) {
-                wb.editor.inline_edit.appendSlice(event.chars) catch {};
+                wb.editor.inline_edit.appendSlice(event.chars) catch |err| shared.reportInputError(wb, "Edit inline prompt", err);
             }
         }
     }
@@ -543,18 +551,18 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
             // Delete characters before the cursor
             var i: i32 = 0;
             while (i < event.replace_len) : (i += 1) {
-                active_buffer.backspace() catch {};
+                active_buffer.backspace() catch |err| shared.reportInputError(wb, "Apply IME replacement", err);
             }
         }
 
         if (event.text.len > 0) {
-            active_buffer.insertString(event.text) catch {};
+            active_buffer.insertString(event.text) catch |err| shared.reportInputError(wb, "Commit IME text", err);
             if (wb.focused_panel == .editor) {
                 wb.editor.ghost.onBufferChanged(active_buffer.cursor.row, active_buffer.cursor.col);
                 wb.editor.fold_dirty = true;
             }
             if (wb.editor.inline_edit.active and wb.focused_panel == .editor) {
-                wb.editor.inline_edit.appendSlice(event.text) catch {};
+                wb.editor.inline_edit.appendSlice(event.text) catch |err| shared.reportInputError(wb, "Edit inline prompt", err);
             }
         }
     } else {
@@ -567,12 +575,15 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
             // Delete characters before the cursor to make room for composition
             var i: i32 = 0;
             while (i < event.replace_len) : (i += 1) {
-                active_buffer.backspace() catch {};
+                active_buffer.backspace() catch |err| shared.reportInputError(wb, "Apply IME composition", err);
             }
         }
 
         if (event.text.len > 0) {
-            wb.ime_text = wb.allocator.dupe(u8, event.text) catch null;
+            wb.ime_text = wb.allocator.dupe(u8, event.text) catch |err| blk: {
+                shared.reportInputError(wb, "Store IME text", err);
+                break :blk null;
+            };
         } else {
             wb.ime_text = null;
         }

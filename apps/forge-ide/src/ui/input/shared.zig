@@ -25,6 +25,10 @@ pub fn reportInputError(wb: *Workbench, action: []const u8, err: anyerror) void 
     wb.setStatus(msg) catch {};
 }
 
+pub fn dispatchOrReport(wb: *Workbench, command: @import("../../workbench/commands.zig").Command, action: []const u8) void {
+    wb.dispatch(command) catch |err| reportInputError(wb, action, err);
+}
+
 pub fn pasteIntoActiveBuffer(wb: *Workbench) void {
     if (wb.focused_panel == .agent) {
         @import("../../workbench/agent_ops.zig").pasteIntoAgent(wb) catch |err| {
@@ -33,7 +37,10 @@ pub fn pasteIntoActiveBuffer(wb: *Workbench) void {
         return;
     }
 
-    const text = renderer.Renderer.clipboardText(state.gpa) catch return;
+    const text = renderer.Renderer.clipboardText(state.gpa) catch |err| {
+        reportInputError(wb, "Read clipboard", err);
+        return;
+    };
     defer state.gpa.free(text);
     if (text.len == 0) return;
 

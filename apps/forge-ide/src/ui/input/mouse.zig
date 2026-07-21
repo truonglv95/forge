@@ -24,6 +24,7 @@ const shared = @import("shared.zig");
 const editor_hit = @import("editor_hit.zig");
 const keys_agent = @import("keys_agent.zig");
 const editor_mod = @import("forge-editor");
+const Workbench = @import("../../workbench.zig").Workbench;
 
 fn isDefinitionClick(modifiers: i32) bool {
     return modifiers & (shared.cmd_mask | shared.ctrl_mask) != 0;
@@ -54,6 +55,10 @@ fn selectWordAt(buf: *editor_mod.Buffer, row: usize, col: usize) bool {
     buf.selection_anchor = .{ .row = row, .col = start };
     buf.cursor = .{ .row = row, .col = end };
     return true;
+}
+
+fn dispatchClick(wb: *Workbench, command: @import("../../workbench/commands.zig").Command, action: []const u8) void {
+    shared.dispatchOrReport(wb, command, action);
 }
 
 pub fn onMouseEvent(event: renderer.MouseEvent) void {
@@ -172,7 +177,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             // If the click is inside the editor area, open the editor
             // context menu at the click position.
             if (event.x >= geo.editor_x and event.x < geo.agent_splitter_x and event.y >= layout.header_height and event.y < geo.task_panel_y) {
-                wb.context_menu.openEditor(event.x, event.y) catch {};
+                wb.context_menu.openEditor(event.x, event.y) catch |err| shared.reportInputError(wb, "Open context menu", err);
                 return;
             }
             // Otherwise (e.g. in agent panel), fall through to normal handling.
@@ -183,13 +188,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             const settings_modal = @import("../settings_modal.zig");
             const hit = settings_modal.hitTestPoint(wb, w, h, event.x, event.y);
             @import("../../workbench/agent_ops.zig").handleSettingsModalClick(wb, hit) catch |err| {
-                wb.setStatus(@errorName(err)) catch {};
+                shared.reportInputError(wb, "Handle settings click", err);
             };
             return;
         }
         if (event.y < layout.header_height) {
             if (header_toolbar.hitTest(w, wb.headerToolbarState(), event.x, event.y)) |action| {
-                wb.handleHeaderAction(action) catch {};
+                wb.handleHeaderAction(action) catch |err| shared.reportInputError(wb, "Handle header action", err);
             }
             return;
         }
@@ -201,7 +206,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             state.is_dragging_bottom_panel_splitter = true;
         } else if (event.x < geo.explorer_w and event.y >= layout.header_height and event.y < layout.header_height + layout.activity_bar_height) {
             if (activity_bar.hitTest(event.x, event.y, geo.explorer_w)) |view| {
-                wb.dispatch(.{ .set_sidebar_view = view }) catch {};
+                dispatchClick(wb, .{ .set_sidebar_view = view }, "Switch sidebar view");
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .extensions and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= extensions_panel.panel_top) {
             wb.focused_panel = .extensions;
@@ -219,7 +224,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.extensions_detail_index,
                 shared.canUninstallExtensionIndex,
             )) |hit| {
-                @import("../../workbench/extensions_ops.zig").handleExtensionsClick(wb, hit) catch {};
+                @import("../../workbench/extensions_ops.zig").handleExtensionsClick(wb, hit) catch |err| shared.reportInputError(wb, "Handle extensions click", err);
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .search and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= search_panel.panel_top) {
             wb.focused_panel = .search;
@@ -231,7 +236,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 event.y,
                 wb.search.scroll_y,
             )) |hit| {
-                @import("../../workbench/search_ops.zig").handleSearchClick(wb, hit) catch {};
+                @import("../../workbench/search_ops.zig").handleSearchClick(wb, hit) catch |err| shared.reportInputError(wb, "Handle search click", err);
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .git and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height) {
             wb.focused_panel = .git;
@@ -245,12 +250,12 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 event.y,
                 wb.git.scroll_y,
             )) |hit| {
-                @import("../../workbench/git_ops.zig").handleGitClick(wb, hit.action) catch {};
+                @import("../../workbench/git_ops.zig").handleGitClick(wb, hit.action) catch |err| shared.reportInputError(wb, "Handle git click", err);
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .ai and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height) {
             wb.focused_panel = .agent;
             if (ai_sidebar_panel.hitTest(geo.explorer_x, geo.explorer_w, h, wb.ai_mcp_scroll_y, event.x, event.y)) |hit| {
-                wb.dispatch(ai_sidebar_panel.commandForHit(hit)) catch {};
+                dispatchClick(wb, ai_sidebar_panel.commandForHit(hit), "Handle AI sidebar click");
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .run and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= debug_panel.list_top - 40) {
             wb.focused_panel = .run;
@@ -263,7 +268,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.debug.breakpoints.items.items.len,
                 wb.debug.lldb.isActive(),
             )) |hit| {
-                @import("../../workbench/debug_ops.zig").handleDebugClick(wb, hit) catch {};
+                @import("../../workbench/debug_ops.zig").handleDebugClick(wb, hit) catch |err| shared.reportInputError(wb, "Handle debug click", err);
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .explorer and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height and event.y < explorer_scroll.list_top) {
             wb.focused_panel = .explorer;
@@ -275,7 +280,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             const float_row = (event.y - explorer_scroll.list_top + wb.explorer_scroll_y) / explorer_scroll.row_height;
             if (float_row >= 0) {
                 const click_row: usize = @intFromFloat(float_row);
-                wb.handleExplorerClick(click_row, event.x, geo.explorer_x) catch {};
+                wb.handleExplorerClick(click_row, event.x, geo.explorer_x) catch |err| shared.reportInputError(wb, "Handle explorer click", err);
             }
         } else if (geo.shell_mode == .ide and event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
@@ -286,33 +291,33 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.agent_ui.session.unlock();
             const composer_layout = agent_panel.composerLayout(geo.agent_x, geo.agent_w, h, attachment_count, &wb.agent_ui.prompt_buffer);
             if (agent_composer_mod.hitAttachmentRemove(&wb.agent_ui.session, composer_layout, event.x, event.y)) |index| {
-                wb.dispatch(.{ .agent_remove_attachment = index }) catch {};
+                dispatchClick(wb, .{ .agent_remove_attachment = index }, "Remove agent attachment");
                 return;
             }
             const hit = agent_composer_mod.hitTest(&wb.agent_ui.session, composer_layout, wb.agent_ui.models, event.x, event.y);
             switch (hit) {
                 .mode_menu => {
-                    wb.dispatch(.agent_toggle_mode_menu) catch {};
+                    dispatchClick(wb, .agent_toggle_mode_menu, "Toggle agent mode menu");
                     return;
                 },
                 .model_menu => {
-                    wb.dispatch(.agent_toggle_model_menu) catch {};
+                    dispatchClick(wb, .agent_toggle_model_menu, "Toggle agent model menu");
                     return;
                 },
                 .mode_item => {
                     if (agent_composer_mod.modeIndexAt(&wb.agent_ui.session, composer_layout, event.x, event.y)) |index| {
-                        wb.dispatch(.{ .agent_set_mode = agent_composer_mod.modes[index].mode }) catch {};
+                        dispatchClick(wb, .{ .agent_set_mode = agent_composer_mod.modes[index].mode }, "Set agent mode");
                     }
                     return;
                 },
                 .model_item => {
                     if (agent_composer_mod.modelIndexAt(&wb.agent_ui.session, composer_layout, wb.agent_ui.models, event.x, event.y)) |index| {
-                        wb.dispatch(.{ .agent_set_model = index }) catch {};
+                        dispatchClick(wb, .{ .agent_set_model = index }, "Set agent model");
                     }
                     return;
                 },
                 .scope => {
-                    wb.dispatch(.agent_scope_picker_open) catch {};
+                    dispatchClick(wb, .agent_scope_picker_open, "Open agent scope picker");
                     return;
                 },
                 .send => {
@@ -361,13 +366,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                                 wb.agent_ui.session.removeScopeFile(entry.name);
                             } else {
                                 wb.agent_ui.session.unlock();
-                                wb.agent_ui.session.addScopeFile(entry.name) catch {};
+                                wb.agent_ui.session.addScopeFile(entry.name) catch |err| shared.reportInputError(wb, "Pin context file", err);
                             }
                         } else {
                             const name_dup = wb.allocator.dupe(u8, entry.name) catch "";
                             wb.agent_ui.session.unlock();
                             if (name_dup.len > 0) {
-                                wb.agent_ui.session.addExcludedEntry(name_dup) catch {};
+                                wb.agent_ui.session.addExcludedEntry(name_dup) catch |err| shared.reportInputError(wb, "Exclude context entry", err);
                                 wb.allocator.free(name_dup);
                             }
                         }
@@ -395,9 +400,9 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             if (approval_pending) {
                 if (agent_panel.hitApprovalAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.agent_ui.prompt_buffer, event.x, event.y)) |action| {
                     switch (action) {
-                        .approve => wb.dispatch(.agent_approve_tool) catch {},
-                        .reject => wb.dispatch(.agent_reject_tool) catch {},
-                        .approve_always => wb.dispatch(.agent_approve_always_tool) catch {},
+                        .approve => dispatchClick(wb, .agent_approve_tool, "Approve agent tool"),
+                        .reject => dispatchClick(wb, .agent_reject_tool, "Reject agent tool"),
+                        .approve_always => dispatchClick(wb, .agent_approve_always_tool, "Always approve agent tool"),
                     }
                     return;
                 }
@@ -420,8 +425,8 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 const banner_y = agent_panel.chat_content_top + 8 - wb.chat_scroll_y;
                 if (agent_panel.hitApplyBanner(geo.agent_x, banner_y, event.x, event.y, validation_failed, validation_count)) |action| {
                     switch (action) {
-                        .primary => wb.dispatch(.agent_dismiss_apply) catch {},
-                        .undo => wb.dispatch(.agent_rollback) catch {},
+                        .primary => dispatchClick(wb, .agent_dismiss_apply, "Dismiss apply banner"),
+                        .undo => dispatchClick(wb, .agent_rollback, "Rollback agent changes"),
                     }
                     return;
                 }
@@ -434,8 +439,8 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 }
                 if (agent_panel.hitResumeBanner(geo.agent_x, geo.agent_w, banner_y, event.x, event.y, intent, resume_state)) |action| {
                     switch (action) {
-                        .primary => wb.dispatch(.agent_continue_session) catch {},
-                        .dismiss => wb.dispatch(.agent_dismiss_resume) catch {},
+                        .primary => dispatchClick(wb, .agent_continue_session, "Continue agent session"),
+                        .dismiss => dispatchClick(wb, .agent_dismiss_resume, "Dismiss resume banner"),
                     }
                     return;
                 }
@@ -444,10 +449,10 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             if ((show_review and !wb.proposal_review_open) or show_approve_spec or show_rollback) {
                 if (agent_panel.hitReviewAction(geo.agent_x, geo.agent_w, h, attachment_count, &wb.agent_ui.prompt_buffer, show_rollback, show_approve_spec, event.x, event.y)) |action| {
                     switch (action) {
-                        .apply => wb.dispatch(.agent_apply) catch {},
-                        .reject => wb.dispatch(.agent_reject) catch {},
-                        .rollback => wb.dispatch(.agent_rollback) catch {},
-                        .approve_spec => wb.dispatch(.agent_approve_spec) catch {},
+                        .apply => dispatchClick(wb, .agent_apply, "Apply agent proposal"),
+                        .reject => dispatchClick(wb, .agent_reject, "Reject agent proposal"),
+                        .rollback => dispatchClick(wb, .agent_rollback, "Rollback agent changes"),
+                        .approve_spec => dispatchClick(wb, .agent_approve_spec, "Approve agent spec"),
                     }
                     return;
                 }
@@ -465,7 +470,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
 
             // Actually, we can add a toggleAgentStep method to workbench that iterates chat history and steps.
             if (agent_panel.hitTestSteps(wb, geo.agent_x, geo.agent_w, event.x, event.y)) |step_idx| {
-                wb.dispatch(.{ .agent_toggle_step = step_idx }) catch {};
+                dispatchClick(wb, .{ .agent_toggle_step = step_idx }, "Toggle agent step");
                 return;
             }
 
@@ -496,23 +501,23 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             if (wb.proposal_review_open) {
                 wb.focused_panel = .proposal_review;
                 if (proposal_review_panel.hitCloseTab(geo.editor_x, event.x, event.y)) {
-                    wb.dispatch(.close_proposal_review) catch {};
+                    dispatchClick(wb, .close_proposal_review, "Close proposal review");
                 }
             } else {
                 wb.focused_panel = .editor;
                 var tab_layouts: std.ArrayList(tabs_ui.TabLayout) = .empty;
                 defer tab_layouts.deinit(state.gpa);
-                tabs_ui.collectLayouts(wb, geo.editor_x, geo.editor_w, &tab_layouts) catch {};
+                tabs_ui.collectLayouts(wb, geo.editor_x, geo.editor_w, &tab_layouts) catch |err| shared.reportInputError(wb, "Collect tab layouts", err);
                 switch (tabs_ui.hitTest(tab_layouts.items, event.x, event.y)) {
-                    .close => |index| wb.dispatch(.{ .close_tab = index }) catch {},
-                    .activate => |index| wb.dispatch(.{ .activate_tab = index }) catch {},
+                    .close => |index| dispatchClick(wb, .{ .close_tab = index }, "Close tab"),
+                    .activate => |index| dispatchClick(wb, .{ .activate_tab = index }, "Activate tab"),
                     .none => {},
                 }
             }
         } else if (geo.shell_mode == .ide and editor_hit.isEditorContentArea(geo, event.x, event.y)) {
             for (wb.conflict_action_rects.items) |rect| {
                 if (event.x >= rect.x and event.x < rect.x + rect.w and event.y >= rect.y and event.y < rect.y + rect.h) {
-                    wb.dispatch(rect.cmd) catch {};
+                    dispatchClick(wb, rect.cmd, "Run conflict action");
                     return;
                 }
             }
@@ -530,8 +535,11 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     wb.proposal_review_file_index,
                     event.x,
                     event.y,
-                ) catch null) |hit| {
-                    @import("../../workbench/agent_ops.zig").handleProposalReviewClick(wb, hit) catch {};
+                ) catch |err| blk: {
+                    shared.reportInputError(wb, "Hit-test proposal review", err);
+                    break :blk null;
+                }) |hit| {
+                    @import("../../workbench/agent_ops.zig").handleProposalReviewClick(wb, hit) catch |err| shared.reportInputError(wb, "Handle proposal review click", err);
                 }
                 return;
             }
@@ -550,7 +558,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         doc.buffer.cursor.col = pos.col;
                         doc.buffer.clearSelection();
                         @import("../../workbench/editor_ops.zig").scrollEditorToCursor(wb);
-                        wb.goToDefinition() catch {};
+                        wb.goToDefinition() catch |err| shared.reportInputError(wb, "Go to definition", err);
                         return;
                     }
                     if (event.click_count >= 2) {
@@ -567,7 +575,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
         } else if (geo.shell_mode == .ide and event.y >= geo.task_panel_y) {
             if (bottom_panel.hitTab(geo.editor_x, geo.task_panel_y, event.x, event.y)) |mode| {
-                wb.dispatch(.{ .set_bottom_panel_mode = mode }) catch {};
+                dispatchClick(wb, .{ .set_bottom_panel_mode = mode }, "Switch bottom panel");
             } else if (wb.bottom_panel_mode == .output) {
                 const rx = geo.editor_x + geo.editor_w;
                 const top_y = bottom_panel.tabBarTop(geo.task_panel_y) + 3;
@@ -582,7 +590,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
 
                     const text_w = renderer.Renderer.measureText(@ptrCast(&buf_btn), 11.0);
                     if (event.x >= rx - text_w - 10 and event.x <= rx - 10) {
-                        wb.dispatch(.select_output_channel) catch {};
+                        dispatchClick(wb, .select_output_channel, "Select output channel");
                         return;
                     }
                 }
@@ -590,8 +598,8 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.focused_panel = .terminal;
                 if (terminal_panel.hitSessionTab(geo.editor_x, geo.editor_w, geo.task_panel_y, event.x, event.y, wb.terminals.sessions.items.len)) |hit| {
                     switch (hit) {
-                        .new => wb.dispatch(.terminal_new) catch {},
-                        .activate => |index| wb.dispatch(.{ .terminal_activate = index }) catch {},
+                        .new => dispatchClick(wb, .terminal_new, "Create terminal"),
+                        .activate => |index| dispatchClick(wb, .{ .terminal_activate = index }, "Activate terminal"),
                     }
                     return;
                 }
@@ -626,7 +634,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         wb.task_scroll_y,
                         wb.lsp.references.items.len,
                     )) |index| {
-                        wb.dispatch(.{ .references_goto = index }) catch {};
+                        dispatchClick(wb, .{ .references_goto = index }, "Go to reference");
                     }
                 } else if (wb.bottom_panel_mode == .problems) {
                     const problems_panel = @import("../panel/problems_panel.zig");
@@ -639,7 +647,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         wb.task_scroll_y,
                         wb.lsp.diagnostics.list.items.len,
                     )) |index| {
-                        wb.handleProblemsClick(index) catch {};
+                        wb.handleProblemsClick(index) catch |err| shared.reportInputError(wb, "Open problem", err);
                     }
                 } else if (wb.bottom_panel_mode == .debug_variables) {
                     const debug_variables = @import("../../workbench/debug_variables.zig");
@@ -652,7 +660,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         wb.task_scroll_y,
                         wb.debug.variables.items.items.len,
                     )) |index| {
-                        wb.dispatch(.{ .debug_copy_variable = index }) catch {};
+                        dispatchClick(wb, .{ .debug_copy_variable = index }, "Copy debug variable");
                     }
                 } else if (wb.bottom_panel_mode == .debug_callstack) {
                     const debug_callstack = @import("../../workbench/debug_callstack.zig");
@@ -665,7 +673,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                         wb.task_scroll_y,
                         wb.debug.callstack.items.items.len,
                     )) |index| {
-                        wb.dispatch(.{ .debug_stack_goto = index }) catch {};
+                        dispatchClick(wb, .{ .debug_stack_goto = index }, "Open debug stack frame");
                     }
                 }
                 wb.focused_panel = .editor;
