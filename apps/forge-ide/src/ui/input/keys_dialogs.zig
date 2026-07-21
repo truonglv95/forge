@@ -1,33 +1,34 @@
 const renderer = @import("forge-renderer");
 const Workbench = @import("../../workbench.zig").Workbench;
+const shared = @import("shared.zig");
 
 pub fn handleConflictKeys(wb: *Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 36) {
-        wb.dispatch(.reload_active_from_disk) catch {};
+        wb.dispatch(.reload_active_from_disk) catch |err| shared.reportInputError(wb, "Reload external change", err);
         return;
     }
     if (event.keycode == 53) {
-        wb.dispatch(.dismiss_external_conflict) catch {};
+        wb.dispatch(.dismiss_external_conflict) catch |err| shared.reportInputError(wb, "Dismiss external change", err);
     }
 }
 
 pub fn handleRecoveryKeys(wb: *Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 36) {
-        wb.dispatch(.restore_recovery_snapshots) catch {};
+        wb.dispatch(.restore_recovery_snapshots) catch |err| shared.reportInputError(wb, "Restore recovery snapshots", err);
         return;
     }
     if (event.keycode == 53) {
-        wb.dispatch(.discard_recovery_snapshots) catch {};
+        wb.dispatch(.discard_recovery_snapshots) catch |err| shared.reportInputError(wb, "Discard recovery snapshots", err);
     }
 }
 
 pub fn handlePaletteKeys(wb: *Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
-        wb.dispatch(.palette_close) catch {};
+        wb.dispatch(.palette_close) catch |err| shared.reportInputError(wb, "Close palette", err);
         return;
     }
     if (event.keycode == 36) {
-        wb.executePaletteSelection() catch {};
+        wb.executePaletteSelection() catch |err| shared.reportInputError(wb, "Execute palette item", err);
         return;
     }
     if (event.keycode == 125) {
@@ -39,22 +40,22 @@ pub fn handlePaletteKeys(wb: *Workbench, event: renderer.KeyEvent) void {
         return;
     }
     if (event.keycode == 51) {
-        wb.palette.backspace() catch {};
+        wb.palette.backspace() catch |err| shared.reportInputError(wb, "Edit palette", err);
         return;
     }
     if (event.chars.len > 0 and event.chars[0] >= 32) {
-        wb.palette.insertChar(event.chars) catch {};
+        wb.palette.insertChar(event.chars) catch |err| shared.reportInputError(wb, "Edit palette", err);
     }
 }
 
 pub fn handleWorkspaceSymbolPickerKeys(wb: *Workbench, event: renderer.KeyEvent) void {
     if (event.keycode == 53) {
-        wb.dispatch(.workspace_symbol_picker_close) catch {};
+        wb.dispatch(.workspace_symbol_picker_close) catch |err| shared.reportInputError(wb, "Close symbol picker", err);
         return;
     }
 
     if (event.keycode == 36) {
-        wb.dispatch(.workspace_symbol_picker_select) catch {};
+        wb.dispatch(.workspace_symbol_picker_select) catch |err| shared.reportInputError(wb, "Select symbol", err);
         return;
     }
 
@@ -69,12 +70,12 @@ pub fn handleWorkspaceSymbolPickerKeys(wb: *Workbench, event: renderer.KeyEvent)
     }
 
     if (event.keycode == 51) {
-        wb.workspace_symbol_picker.backspace() catch {};
+        wb.workspace_symbol_picker.backspace() catch |err| shared.reportInputError(wb, "Edit symbol picker", err);
         return;
     }
 
     if (event.chars.len > 0 and event.chars[0] >= 32) {
-        wb.workspace_symbol_picker.insertChar(event.chars) catch {};
+        wb.workspace_symbol_picker.insertChar(event.chars) catch |err| shared.reportInputError(wb, "Edit symbol picker", err);
         return;
     }
 }
@@ -90,7 +91,7 @@ pub fn handleGitBranchPickerKeys(wb: *Workbench, event: renderer.KeyEvent) void 
         if (wb.git_branch_picker.filtered.items.len > 0) {
             const selected_idx = wb.git_branch_picker.filtered.items[wb.git_branch_picker.selected];
             const branch_name = wb.git_branch_picker.entries.items[selected_idx].name;
-            @import("../../workbench/git_ops.zig").gitCheckout(wb, branch_name) catch {};
+            @import("../../workbench/git_ops.zig").gitCheckout(wb, branch_name) catch |err| shared.reportInputError(wb, "Checkout branch", err);
         }
         wb.git_branch_picker.close();
         wb.focused_panel = wb.previous_focus;
@@ -108,12 +109,12 @@ pub fn handleGitBranchPickerKeys(wb: *Workbench, event: renderer.KeyEvent) void 
     }
 
     if (event.keycode == 51) {
-        wb.git_branch_picker.backspace() catch {};
+        wb.git_branch_picker.backspace() catch |err| shared.reportInputError(wb, "Edit branch picker", err);
         return;
     }
 
     if (event.chars.len > 0 and event.chars[0] >= 32) {
-        wb.git_branch_picker.insertChar(event.chars) catch {};
+        wb.git_branch_picker.insertChar(event.chars) catch |err| shared.reportInputError(wb, "Edit branch picker", err);
         return;
     }
 }
@@ -158,12 +159,12 @@ pub fn handleOutputChannelPickerKeys(wb: *Workbench, event: renderer.KeyEvent) v
     }
 
     if (event.keycode == 51) {
-        wb.output_channel_picker.backspace() catch {};
+        wb.output_channel_picker.backspace() catch |err| shared.reportInputError(wb, "Edit output picker", err);
         return;
     }
 
     if (event.chars.len > 0 and event.chars[0] >= 32) {
-        wb.output_channel_picker.insertChar(event.chars) catch {};
+        wb.output_channel_picker.insertChar(event.chars) catch |err| shared.reportInputError(wb, "Edit output picker", err);
         return;
     }
 }

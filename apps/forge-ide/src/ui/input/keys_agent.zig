@@ -1,15 +1,16 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
 const Workbench = @import("../../workbench.zig").Workbench;
+const shared = @import("shared.zig");
 
 pub fn handleScopePickerKeys(wb: *Workbench, event: renderer.KeyEvent) void {
     const scope_picker_mod = @import("../../agent/scope_picker.zig");
     if (event.keycode == 53) {
-        wb.dispatch(.agent_scope_picker_close) catch {};
+        wb.dispatch(.agent_scope_picker_close) catch |err| shared.reportInputError(wb, "Close scope picker", err);
         return;
     }
     if (event.keycode == 36) {
-        wb.dispatch(.agent_scope_picker_select) catch {};
+        wb.dispatch(.agent_scope_picker_select) catch |err| shared.reportInputError(wb, "Select scope item", err);
         return;
     }
     if (event.keycode == 125) {
@@ -35,7 +36,7 @@ pub fn handleScopePickerKeys(wb: *Workbench, event: renderer.KeyEvent) void {
         wb.agent_ui.session.lock();
         if (wb.agent_ui.session.scope_query_len > 0) wb.agent_ui.session.scope_query_len -= 1;
         wb.agent_ui.session.unlock();
-        @import("../../workbench/agent_ops.zig").applyScopePickerFilter(wb) catch {};
+        @import("../../workbench/agent_ops.zig").applyScopePickerFilter(wb) catch |err| shared.reportInputError(wb, "Filter scope picker", err);
         return;
     }
     if (event.chars.len > 0 and event.chars[0] >= 32) {
@@ -45,21 +46,24 @@ pub fn handleScopePickerKeys(wb: *Workbench, event: renderer.KeyEvent) void {
             wb.agent_ui.session.scope_query_len += 1;
         }
         wb.agent_ui.session.unlock();
-        @import("../../workbench/agent_ops.zig").applyScopePickerFilter(wb) catch {};
+        @import("../../workbench/agent_ops.zig").applyScopePickerFilter(wb) catch |err| shared.reportInputError(wb, "Filter scope picker", err);
     }
 }
 
 pub fn submitAgentPrompt(wb: *Workbench) void {
     if (wb.agent_ui.session.worker_running) {
-        wb.setStatus("Agent is already running") catch {};
+        wb.setStatus("Agent is already running") catch |err| shared.reportInputError(wb, "Set agent status", err);
         return;
     }
 
-    const prompt_text = wb.agent_ui.prompt_buffer.content() catch return;
+    const prompt_text = wb.agent_ui.prompt_buffer.content() catch |err| {
+        shared.reportInputError(wb, "Read agent prompt", err);
+        return;
+    };
     defer wb.agent_ui.prompt_buffer.allocator.free(prompt_text);
     const trimmed = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);
     if (trimmed.len == 0) return;
 
     wb.focused_panel = .agent;
-    wb.dispatch(.agent_submit) catch {};
+    wb.dispatch(.agent_submit) catch |err| shared.reportInputError(wb, "Submit agent prompt", err);
 }

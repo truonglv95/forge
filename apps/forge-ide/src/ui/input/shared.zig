@@ -18,9 +18,18 @@ pub fn dispatchWorkbenchCommand(command: @import("../../workbench/commands.zig")
     const wb = state.wb orelse return;
     try wb.dispatch(command);
 }
+
+pub fn reportInputError(wb: *Workbench, action: []const u8, err: anyerror) void {
+    var buf: [160]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "{s} failed: {s}", .{ action, @errorName(err) }) catch @errorName(err);
+    wb.setStatus(msg) catch {};
+}
+
 pub fn pasteIntoActiveBuffer(wb: *Workbench) void {
     if (wb.focused_panel == .agent) {
-        @import("../../workbench/agent_ops.zig").pasteIntoAgent(wb) catch {};
+        @import("../../workbench/agent_ops.zig").pasteIntoAgent(wb) catch |err| {
+            reportInputError(wb, "Paste into agent", err);
+        };
         return;
     }
 
@@ -48,5 +57,7 @@ pub fn pasteIntoActiveBuffer(wb: *Workbench) void {
     else
         return;
 
-    buffer.insertString(text) catch {};
+    buffer.insertString(text) catch |err| {
+        reportInputError(wb, "Paste text", err);
+    };
 }

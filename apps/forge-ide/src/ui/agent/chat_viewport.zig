@@ -149,3 +149,54 @@ test "chat viewport survives tall prompt without negative viewport" {
     try std.testing.expect(out.chat_viewport_h >= 0);
     try std.testing.expect(out.chat_bottom >= out.chat_top or out.chat_viewport_h == 0);
 }
+
+test "chat viewport visual regression matrix keeps input overlay clear" {
+    var prompt = try editor.Buffer.init(std.testing.allocator);
+    defer prompt.deinit();
+    try prompt.insertString(
+        "review the latest Forge AI workflow, explain bottlenecks, then propose changes with enough detail that the input grows and wraps across several visual lines",
+    );
+
+    const widths = [_]f32{ 260, 320, 480, 760, 1180 };
+    const heights = [_]f32{ 420, 580, 760, 980 };
+    for (widths) |w| {
+        for (heights) |window_h| {
+            const out = compute(.{
+                .agent_w = w,
+                .window_h = window_h,
+                .attachment_count = 2,
+                .context_entry_count = 18,
+                .context_used_bytes = 7 * 1024 * 1024,
+                .context_expanded = true,
+                .context_has_detail = true,
+                .scope_count = 4,
+                .has_routing = true,
+                .prompt = &prompt,
+            });
+            out.assertValid();
+            try std.testing.expect(out.composer.box_w >= metrics.chat.min_content_w);
+            try std.testing.expect(out.composer.composer_top >= layout.header_height);
+            try std.testing.expect(out.composer.composer_top >= out.chat_bottom + metrics.chat.hit_pad or out.chat_viewport_h == 0);
+            try std.testing.expect(out.context_top + out.context_h <= out.composer.composer_top - context_inspector.strip_gap + 1);
+            try std.testing.expect(out.composer.composer_top + out.composer.composer_h <= window_h - layout.status_height);
+        }
+    }
+}
+
+test "chat viewport bottom scroll reservation covers composer and thinking rows" {
+    var prompt = try editor.Buffer.init(std.testing.allocator);
+    defer prompt.deinit();
+    try prompt.insertString("short prompt");
+
+    const out = compute(.{
+        .agent_w = 360,
+        .window_h = 620,
+        .context_entry_count = 3,
+        .context_used_bytes = 2048,
+        .context_expanded = false,
+        .has_routing = true,
+        .prompt = &prompt,
+    });
+    try std.testing.expect(out.bottom_reserved >= out.composer.composer_h + metrics.chat.bottom_padding);
+    try std.testing.expect(out.chat_bottom + metrics.chat.composer_gap <= out.composer.composer_top);
+}
