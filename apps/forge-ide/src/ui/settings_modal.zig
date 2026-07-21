@@ -6,7 +6,9 @@ const scroll_region = @import("core/scroll_region.zig");
 const state = @import("core/state.zig");
 const theme_loader = @import("../theme_loader.zig");
 const Workbench = @import("../workbench.zig").Workbench;
-pub const ModelKind = @import("../workbench/ai_model_config.zig").ModelKind;
+const ai_model_config = @import("../workbench/ai_model_config.zig");
+pub const ModelKind = ai_model_config.ModelKind;
+pub const ModelEditorField = ai_model_config.ModelEditorField;
 
 fn color(rgba: workspace.Rgba) renderer.Color {
     return theme_loader.toColor(rgba);
@@ -43,6 +45,9 @@ pub const Hit = union(enum) {
     ai_model_add: ModelKind,
     ai_model_edit: struct { kind: ModelKind, index: usize },
     ai_model_delete: struct { kind: ModelKind, index: usize },
+    ai_model_editor_field: ModelEditorField,
+    ai_model_editor_save,
+    ai_model_editor_cancel,
     ai_toggle_hyde,
     none,
 };
@@ -248,6 +253,10 @@ pub fn draw(wb: *Workbench, window_w: f32, window_h: f32) void {
 
     renderer.Renderer.clearClipRect();
 
+    if (wb.settings_model_editor_open) {
+        drawModelEditor(wb, modal_x, modal_y, modal_w, modal_h, theme);
+    }
+
     // Close button
     const close_btn_x = modal_x + modal_w - 40;
     const close_btn_y = modal_y + 16;
@@ -272,6 +281,11 @@ pub fn hitTestPoint(wb: *Workbench, window_w: f32, window_h: f32, px: f32, py: f
     const close_btn_y = modal_y + 16;
     if (px >= close_btn_x and px <= close_btn_x + 32 and py >= close_btn_y and py <= close_btn_y + 32) {
         return .close_modal;
+    }
+
+    if (wb.settings_model_editor_open) {
+        if (hitModelEditor(wb, modal_x, modal_y, modal_w, modal_h, px, py)) |hit| return hit;
+        return .none;
     }
 
     // Check Sidebar Tabs
@@ -420,6 +434,83 @@ fn drawClippedText(text: []const u8, x: f32, y: f32, w: f32, h: f32, size: f32, 
     renderer.Renderer.pushClipRect(x, y - 2, @max(0, w), h);
     renderer.Renderer.drawText(text, x, y, size, c);
     renderer.Renderer.popClipRect();
+}
+
+fn modelEditorValue(wb: *Workbench, field: ModelEditorField) []const u8 {
+    return switch (field) {
+        .label => wb.settings_model_editor_label[0..wb.settings_model_editor_label_len],
+        .id => wb.settings_model_editor_id[0..wb.settings_model_editor_id_len],
+        .provider => wb.settings_model_editor_provider[0..wb.settings_model_editor_provider_len],
+        .base_url => wb.settings_model_editor_base_url[0..wb.settings_model_editor_base_url_len],
+    };
+}
+
+fn drawInputRow(wb: *Workbench, x: f32, y: f32, w: f32, label: []const u8, field: ModelEditorField, theme: *const workspace.Theme) void {
+    const active = wb.settings_model_editor_field == field;
+    const bg: renderer.Color = if (active) color(theme.colors.selection) else .{ .r = 0.13, .g = 0.14, .b = 0.16, .a = 1.0 };
+    const border = if (active) color(theme.colors.accent) else color(theme.colors.border);
+    renderer.Renderer.drawText(label, x, y, 11.0, color(theme.colors.text_muted));
+    renderer.Renderer.drawRoundedRect(x, y + 18, w, 34, 6, bg);
+    renderer.Renderer.drawRoundedRect(x, y + 18, w, 1, 0, border);
+    drawClippedText(modelEditorValue(wb, field), x + 10, y + 28, w - 20, 18, 12.0, color(theme.colors.text_primary));
+}
+
+fn drawModelEditor(wb: *Workbench, modal_x: f32, modal_y: f32, modal_w: f32, modal_h: f32, theme: *const workspace.Theme) void {
+    _ = modal_w;
+    renderer.Renderer.drawRect(modal_x, modal_y, 860, modal_h, .{ .r = 0, .g = 0, .b = 0, .a = 0.35 });
+
+    const panel_w: f32 = 560;
+    const panel_h: f32 = 386;
+    const x = modal_x + (860 - panel_w) / 2;
+    const y = modal_y + (modal_h - panel_h) / 2;
+    renderer.Renderer.drawRoundedRect(x - 1, y - 1, panel_w + 2, panel_h + 2, 10, color(theme.colors.border));
+    renderer.Renderer.drawRoundedRect(x, y, panel_w, panel_h, 10, color(theme.colors.editor_bg));
+
+    const title = if (wb.settings_model_editor_index == null) "Add model preset" else "Edit model preset";
+    renderer.Renderer.drawText(title, x + 22, y + 20, 17.0, color(theme.colors.text_primary));
+    renderer.Renderer.drawText("Saved presets apply immediately to the AI panel.", x + 22, y + 46, 12.0, color(theme.colors.text_muted));
+
+    var cy = y + 82;
+    const row_w = panel_w - 44;
+    drawInputRow(wb, x + 22, cy, row_w, "Name", .label, theme);
+    cy += 62;
+    drawInputRow(wb, x + 22, cy, row_w, "Model ID", .id, theme);
+    cy += 62;
+    drawInputRow(wb, x + 22, cy, row_w, "Provider", .provider, theme);
+    cy += 62;
+    drawInputRow(wb, x + 22, cy, row_w, "Base URL", .base_url, theme);
+
+    const btn_y = y + panel_h - 54;
+    const cancel_x = x + panel_w - 184;
+    const save_x = x + panel_w - 94;
+    renderer.Renderer.drawRoundedRect(cancel_x, btn_y, 76, 30, 6, color(theme.colors.selection));
+    renderer.Renderer.drawText("Cancel", cancel_x + 18, btn_y + 9, 12.0, color(theme.colors.text_primary));
+    renderer.Renderer.drawRoundedRect(save_x, btn_y, 72, 30, 6, color(theme.colors.accent));
+    renderer.Renderer.drawText("Save", save_x + 22, btn_y + 9, 12.0, color(theme.colors.text_primary));
+}
+
+fn hitModelEditor(wb: *Workbench, modal_x: f32, modal_y: f32, modal_w: f32, modal_h: f32, px: f32, py: f32) ?Hit {
+    _ = wb;
+    _ = modal_w;
+    const panel_w: f32 = 560;
+    const panel_h: f32 = 386;
+    const x = modal_x + (860 - panel_w) / 2;
+    const y = modal_y + (modal_h - panel_h) / 2;
+    const row_w = panel_w - 44;
+    var cy = y + 82;
+    const fields = [_]ModelEditorField{ .label, .id, .provider, .base_url };
+    for (fields) |field| {
+        if (px >= x + 22 and px <= x + 22 + row_w and py >= cy + 18 and py <= cy + 52) {
+            return .{ .ai_model_editor_field = field };
+        }
+        cy += 62;
+    }
+    const btn_y = y + panel_h - 54;
+    const cancel_x = x + panel_w - 184;
+    const save_x = x + panel_w - 94;
+    if (px >= cancel_x and px <= cancel_x + 76 and py >= btn_y and py <= btn_y + 30) return .ai_model_editor_cancel;
+    if (px >= save_x and px <= save_x + 72 and py >= btn_y and py <= btn_y + 30) return .ai_model_editor_save;
+    return null;
 }
 
 fn drawModelSection(

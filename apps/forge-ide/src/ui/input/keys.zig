@@ -132,6 +132,39 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
+    if (wb.settings_modal_open) {
+        const agent_ops = @import("../../workbench/agent_ops.zig");
+        if (wb.settings_model_editor_open) {
+            if (event.keycode == 53) {
+                agent_ops.closeSettingsModelEditor(wb);
+                return;
+            }
+            if (event.keycode == 36) {
+                agent_ops.saveSettingsModelEditor(wb) catch |err| {
+                    wb.setStatus(@errorName(err)) catch {};
+                };
+                return;
+            }
+            if (event.keycode == 48) {
+                agent_ops.focusNextSettingsModelEditorField(wb);
+                return;
+            }
+            if (event.keycode == 51) {
+                agent_ops.backspaceSettingsModelEditor(wb);
+                return;
+            }
+            if (isPlainPrintableText(event)) {
+                agent_ops.appendSettingsModelEditorText(wb, event.chars);
+                return;
+            }
+            return;
+        }
+        if (event.keycode == 53) {
+            wb.dispatch(.close_settings_modal) catch {};
+            return;
+        }
+    }
+
     if (wb.lsp.rename_preview.active and wb.bottom_panel_mode == .output) {
         if (event.keycode == 53) {
             wb.dispatch(.rename_reject) catch {};
