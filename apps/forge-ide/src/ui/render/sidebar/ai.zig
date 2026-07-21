@@ -230,8 +230,8 @@ fn drawStatusCard(wb: *Workbench, x: f32, y: f32, w: f32) void {
     var agent_buf: [192]u8 = undefined;
     const agent_text = std.fmt.bufPrint(
         &agent_buf,
-        "Agent {s} · {d}/{d} context · {d} runs",
-        .{ @tagName(snap.phase), snap.context_used_bytes, snap.context_max_bytes, snap.run_count },
+        "Agent {s} · {s} · {d}/{d} context · {d} runs",
+        .{ @tagName(snap.phase), wb.agent_ui.edit_mode.label(), snap.context_used_bytes, snap.context_max_bytes, snap.run_count },
     ) catch "Agent timeline unavailable";
     drawClippedText(agent_text, x + 12, y + 51, w - 24, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
 
@@ -282,14 +282,15 @@ fn drawTimelineCard(wb: *Workbench, x: f32, y: f32, w: f32) void {
     drawTimelineDot(x + 14, y + 54, snap.context_entry_count > 0, theme);
     drawClippedText(metrics_text, x + 28, y + 49, w - 40, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
 
+    var approval_buf: [160]u8 = undefined;
     const approval_text = if (snap.approval_pending)
-        "Waiting for tool approval"
+        std.fmt.bufPrint(&approval_buf, "{s} · waiting for tool approval", .{wb.agent_ui.edit_mode.label()}) catch "Waiting for tool approval"
     else if (snap.show_review)
-        "Proposal review ready"
+        std.fmt.bufPrint(&approval_buf, "{s} · proposal review ready", .{wb.agent_ui.edit_mode.label()}) catch "Proposal review ready"
     else if (snap.validation_failed)
-        "Validation failed"
+        std.fmt.bufPrint(&approval_buf, "{s} · validation failed", .{wb.agent_ui.edit_mode.label()}) catch "Validation failed"
     else
-        "No approval pending";
+        std.fmt.bufPrint(&approval_buf, "{s} · no approval pending", .{wb.agent_ui.edit_mode.label()}) catch "No approval pending";
     drawTimelineDot(x + 14, y + 74, snap.approval_pending or snap.show_review, theme);
     drawClippedText(approval_text, x + 28, y + 69, w - 40, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
 

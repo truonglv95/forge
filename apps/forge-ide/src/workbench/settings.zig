@@ -1,6 +1,6 @@
 const std = @import("std");
 const workspace = @import("forge-workspace");
-const agent_edit_mode = @import("agent_edit_mode.zig");
+const agent_edit_mode = @import("../agent/edit_mode.zig");
 
 pub const Settings = struct {
     tab_width: u8 = 4,

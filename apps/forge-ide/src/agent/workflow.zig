@@ -4,6 +4,7 @@ const workspace = @import("forge-workspace");
 const kernel = @import("forge-kernel");
 const session_mod = @import("session.zig");
 const review_store = @import("review_store.zig");
+const agent_edit_mode = @import("edit_mode.zig");
 const agent_ui_queue = @import("../workbench/agent_ui_queue.zig");
 
 pub const ChatRole = enum { user, agent };
@@ -21,6 +22,7 @@ pub const Host = struct {
     ai_embedding_url: ?[]const u8,
     ai_mcp_enabled: bool,
     ai_enable_hyde: bool,
+    edit_mode: agent_edit_mode.Mode,
     workspace_root: workspace.WorkspaceRoot,
     workspace_path: []const u8,
     agent: *session_mod.Session,
@@ -1229,6 +1231,7 @@ fn approvalBridge(context: ?*anyopaque, tool_name: []const u8, args_json: []cons
     // In agent mode, auto-run observation tools (search, read_file, remember, …).
     // Only high-risk execution tools (run_command) still require explicit approval.
     if (agent_mode and policy.approval == .every_time and policy.risk != .high) return true;
+    if (agent_mode and host.edit_mode == .trusted) return true;
     return host.agent.requestToolApproval(tool_name, args_json, @tagName(policy.risk), policy.approval);
 }
 

@@ -1069,7 +1069,7 @@ pub const Workbench = struct {
         try self.setStatus(msg);
     }
 
-    pub fn setAgentEditMode(self: *Workbench, mode: @import("workbench/agent_edit_mode.zig").Mode) !void {
+    pub fn setAgentEditMode(self: *Workbench, mode: @import("agent/edit_mode.zig").Mode) !void {
         self.user_settings.agent_edit_mode = mode;
         self.agent_ui.edit_mode = mode;
         try settings_mod.writeAgentEditMode(self.allocator, self.io, self.workspace_root, mode);

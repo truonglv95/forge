@@ -2,7 +2,7 @@ const std = @import("std");
 const agent_session = @import("../agent/session.zig");
 const agent_ui_queue_mod = @import("agent_ui_queue.zig");
 const kernel = @import("forge-kernel");
-const agent_edit_mode = @import("agent_edit_mode.zig");
+const agent_edit_mode = @import("../agent/edit_mode.zig");
 
 pub const AgentController = struct {
     allocator: std.mem.Allocator,
