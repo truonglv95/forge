@@ -4,8 +4,11 @@ const mcp_capability = @import("forge-ai").mcp_capability;
 const Workbench = @import("../../../workbench.zig").Workbench;
 
 const layout = @import("../../core/layout.zig");
+const scroll_region = @import("../../core/scroll_region.zig");
+const scrollbar = @import("../../core/scrollbar.zig");
 const shared = @import("shared.zig");
 const theme_loader = @import("../../../theme_loader.zig");
+const commands = @import("../../../workbench/commands.zig");
 
 const ui_text_style = renderer.TextStyle.prose;
 const ui_strong_style = renderer.TextStyle.prose_semibold;
@@ -15,9 +18,84 @@ const header_h: f32 = 42;
 const inset: f32 = 14;
 const card_gap: f32 = 10;
 const action_h: f32 = 28;
-const status_card_h: f32 = 74;
+const status_card_h: f32 = 96;
 const section_h: f32 = 32;
 const tool_row_h: f32 = 58;
+
+pub const Hit = union(enum) {
+    open_settings,
+    open_mcp_config,
+    toggle_mcp,
+    refresh_mcp,
+};
+
+fn viewportHeight(h: f32) f32 {
+    return @max(0, h - panel_top - layout.status_height - header_h);
+}
+
+fn contentHeight(wb: *const Workbench) f32 {
+    const tool_count = if (wb.ai_mcp_registry) |reg| reg.tools.len else 0;
+    const tool_h = if (tool_count == 0) 48.0 else @as(f32, @floatFromInt(tool_count)) * tool_row_h;
+    return toolsTopOffset() + tool_h + card_gap;
+}
+
+fn toolsTopOffset() f32 {
+    return card_gap + status_card_h + card_gap + action_h + 8 + action_h + card_gap + 4 + section_h;
+}
+
+pub fn maxScrollY(wb: *const Workbench, h: f32) f32 {
+    return scroll_region.region(contentHeight(wb), viewportHeight(h)).maxScrollY();
+}
+
+pub fn clampScrollY(wb: *const Workbench, scroll_y: f32, h: f32) f32 {
+    return scroll_region.region(contentHeight(wb), viewportHeight(h)).clamp(scroll_y);
+}
+
+fn actionRects(start_x: f32, w: f32, h: f32, scroll_y: f32) struct {
+    open_settings: struct { x: f32, y: f32, w: f32, h: f32 },
+    open_mcp_config: struct { x: f32, y: f32, w: f32, h: f32 },
+    toggle_mcp: struct { x: f32, y: f32, w: f32, h: f32 },
+    refresh_mcp: struct { x: f32, y: f32, w: f32, h: f32 },
+} {
+    _ = h;
+    const content_x = start_x + inset;
+    const content_w = w - inset * 2;
+    const action_w = (content_w - 8) / 2;
+    var y = panel_top + header_h + card_gap - scroll_y;
+    y += status_card_h + card_gap;
+    const row1 = y;
+    y += action_h + 8;
+    const row2 = y;
+    return .{
+        .open_settings = .{ .x = content_x, .y = row1, .w = action_w, .h = action_h },
+        .open_mcp_config = .{ .x = content_x + action_w + 8, .y = row1, .w = action_w, .h = action_h },
+        .toggle_mcp = .{ .x = content_x, .y = row2, .w = action_w, .h = action_h },
+        .refresh_mcp = .{ .x = content_x + action_w + 8, .y = row2, .w = action_w, .h = action_h },
+    };
+}
+
+fn inRect(px: f32, py: f32, r: anytype) bool {
+    return px >= r.x and px <= r.x + r.w and py >= r.y and py <= r.y + r.h;
+}
+
+pub fn hitTest(start_x: f32, w: f32, h: f32, scroll_y: f32, px: f32, py: f32) ?Hit {
+    if (px < start_x or px > start_x + w or py < panel_top or py > h - layout.status_height) return null;
+    const rects = actionRects(start_x, w, h, scroll_y);
+    if (inRect(px, py, rects.open_settings)) return .open_settings;
+    if (inRect(px, py, rects.open_mcp_config)) return .open_mcp_config;
+    if (inRect(px, py, rects.toggle_mcp)) return .toggle_mcp;
+    if (inRect(px, py, rects.refresh_mcp)) return .refresh_mcp;
+    return null;
+}
+
+pub fn commandForHit(hit: Hit) commands.Command {
+    return switch (hit) {
+        .open_settings => .open_settings_modal,
+        .open_mcp_config => .ai_open_mcp_config,
+        .toggle_mcp => .ai_toggle_mcp,
+        .refresh_mcp => .ai_refresh_mcp,
+    };
+}
 
 fn drawUiText(text: []const u8, x: f32, y: f32, size: f32, c: renderer.Color) void {
     renderer.Renderer.drawTextWithStyle(text, x, @round(y), size, c, ui_text_style);
@@ -65,11 +143,22 @@ fn drawStatusCard(wb: *Workbench, x: f32, y: f32, w: f32) void {
     const status = wb.ai_mcp_status orelse "Registry not checked";
     drawClippedText(status, x + 12, y + 33, w - 24, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
 
+    var status_buf: [96]u8 = undefined;
+    var provider_buf: [96]u8 = undefined;
+    const snap = wb.agent_ui.session.snapshot(&status_buf, &provider_buf);
+    var agent_buf: [192]u8 = undefined;
+    const agent_text = std.fmt.bufPrint(
+        &agent_buf,
+        "Agent {s} · {d}/{d} context · {d} runs",
+        .{ @tagName(snap.phase), snap.context_used_bytes, snap.context_max_bytes, snap.run_count },
+    ) catch "Agent timeline unavailable";
+    drawClippedText(agent_text, x + 12, y + 51, w - 24, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
+
     const registry_text = if (wb.ai_mcp_registry) |reg| blk: {
         var buf: [64]u8 = undefined;
         break :blk std.fmt.bufPrint(&buf, "{d} tools registered", .{reg.tools.len}) catch "Registry loaded";
     } else "Registry not loaded";
-    drawClippedText(registry_text, x + 12, y + 51, w - 24, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
+    drawClippedText(registry_text, x + 12, y + 69, w - 24, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
 }
 
 fn drawRiskPill(label: []const u8, x: f32, y: f32, color: renderer.Color) void {
@@ -117,10 +206,12 @@ pub fn drawAiPanel(wb: *Workbench, start_x: f32, w: f32, h: f32) void {
     renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, start_x + w - 30, panel_top + 11, 16, 16, icon_c);
     renderer.Renderer.drawRect(start_x, panel_top + header_h, w, 1, theme_loader.toColor(theme.colors.border));
 
-    var cy = panel_top + header_h + card_gap;
+    wb.ai_mcp_scroll_y = clampScrollY(wb, wb.ai_mcp_scroll_y, h);
+    var cy = panel_top + header_h + card_gap - wb.ai_mcp_scroll_y;
     const content_x = start_x + inset;
     const content_w = w - inset * 2;
 
+    renderer.Renderer.setClipRect(start_x, panel_top + header_h, w, viewportHeight(h));
     drawStatusCard(wb, content_x, cy, content_w);
     cy += status_card_h + card_gap;
 
@@ -132,7 +223,6 @@ pub fn drawAiPanel(wb: *Workbench, start_x: f32, w: f32, h: f32) void {
     drawAction("Refresh registry", content_x + action_w + 8, cy, action_w, false, theme);
     cy += action_h + card_gap + 4;
 
-    renderer.Renderer.setClipRect(start_x, cy, w, h - cy - layout.status_height);
     if (wb.ai_mcp_registry) |reg| {
         renderer.Renderer.drawSvg(renderer.icons.chevron_down, start_x + 8, cy + 4, 16, 16, icon_c);
         drawStrongText("MCP AUDIT LOG", start_x + 28, cy + 6, 11.0, theme_loader.toColor(theme.colors.text_muted));
@@ -141,8 +231,13 @@ pub fn drawAiPanel(wb: *Workbench, start_x: f32, w: f32, h: f32) void {
         if (reg.tools.len == 0) {
             drawUiText("No MCP tools registered.", content_x, cy + 8, 11.5, theme_loader.toColor(theme.colors.text_muted));
         } else {
-            for (reg.tools) |tool| {
-                if (cy + tool_row_h >= panel_top and cy < h - layout.status_height) {
+            const row_scroll = @max(0, wb.ai_mcp_scroll_y - toolsTopOffset());
+            const range = scroll_region.region(@as(f32, @floatFromInt(reg.tools.len)) * tool_row_h, viewportHeight(h)).visibleRange(row_scroll, tool_row_h, reg.tools.len);
+            cy += @as(f32, @floatFromInt(range.first)) * tool_row_h;
+            var i = range.first;
+            while (i < range.last) : (i += 1) {
+                const tool = reg.tools[i];
+                if (cy + tool_row_h >= panel_top + header_h and cy < h - layout.status_height) {
                     drawToolRow(tool.server_name, tool.tool_name, tool.annotations_json, start_x, cy, w, theme);
                 }
                 cy += tool_row_h;
@@ -154,4 +249,26 @@ pub fn drawAiPanel(wb: *Workbench, start_x: f32, w: f32, h: f32) void {
     }
 
     renderer.Renderer.clearClipRect();
+    const region = scroll_region.region(contentHeight(wb), viewportHeight(h));
+    if (region.maxScrollY() > 0) {
+        const show = scrollbar.hovered(stateMouseX(), stateMouseY(), start_x, panel_top + header_h, w, region.viewport_h);
+        scrollbar.drawVertical(
+            start_x + w - scrollbar.track_w - 2,
+            panel_top + header_h,
+            region.viewport_h,
+            wb.ai_mcp_scroll_y,
+            region.maxScrollY(),
+            region.content_h,
+            region.viewport_h,
+            show,
+        );
+    }
+}
+
+fn stateMouseX() f32 {
+    return @import("../../core/state.zig").last_mouse_x;
+}
+
+fn stateMouseY() f32 {
+    return @import("../../core/state.zig").last_mouse_y;
 }

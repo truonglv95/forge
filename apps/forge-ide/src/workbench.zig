@@ -187,6 +187,7 @@ pub const Workbench = struct {
     proposal_review_file_index: usize = 0,
     ai_mcp_status: ?[]const u8 = null,
     ai_mcp_registry: ?ai.mcp_registry.Registry = null,
+    ai_mcp_scroll_y: f32 = 0,
     sidebar_view: @import("ui/sidebar/sidebar_view.zig").SidebarView = .explorer,
     selected_extension_index: ?usize = null,
     chat_scroll_y: f32 = 0,

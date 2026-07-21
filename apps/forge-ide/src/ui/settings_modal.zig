@@ -2,6 +2,7 @@ const std = @import("std");
 const renderer = @import("forge-renderer");
 const workspace = @import("forge-workspace");
 const layout = @import("core/layout.zig");
+const scroll_region = @import("core/scroll_region.zig");
 const state = @import("core/state.zig");
 const theme_loader = @import("../theme_loader.zig");
 const Workbench = @import("../workbench.zig").Workbench;
@@ -55,7 +56,7 @@ pub fn maxScrollY(wb: *Workbench) f32 {
         else => modal_h,
     };
 
-    return @max(0, content_h - visible_bottom);
+    return scroll_region.region(content_h, visible_bottom).maxScrollY();
 }
 
 fn modelsContentHeight(wb: *Workbench) f32 {
@@ -447,7 +448,26 @@ fn drawModelSection(
     cy += 32;
 
     const row_h: f32 = 48;
-    for (models, 0..) |model, index| {
+    const visible_top: f32 = 0;
+    const visible_bottom: f32 = 10000;
+    var start_index: usize = 0;
+    var end_index: usize = models.len;
+    if (models.len > 0) {
+        const first_row_y = cy;
+        const first_float = @floor(@max(0, visible_top - first_row_y) / row_h);
+        start_index = @min(models.len, @as(usize, @intFromFloat(first_float)));
+        end_index = @min(models.len, start_index + 28);
+        cy += @as(f32, @floatFromInt(start_index)) * row_h;
+    }
+
+    var index = start_index;
+    while (index < end_index) : (index += 1) {
+        const model = models[index];
+        if (cy + row_h < visible_top) {
+            cy += row_h;
+            continue;
+        }
+        if (cy > visible_bottom) break;
         const selected = if (active_model) |active| std.mem.eql(u8, active, model.id) else false;
         if (selected) {
             renderer.Renderer.drawRoundedRect(x - 4, cy - 2, w + 8, row_h - 4, 6, .{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 0.16 });
@@ -474,8 +494,10 @@ fn drawModelSection(
         renderer.Renderer.drawRoundedRect(del_x, cy + 11, 42, 22, 5, .{ .r = 0.26, .g = 0.16, .b = 0.16, .a = 1.0 });
         renderer.Renderer.drawText("Del", del_x + 12, cy + 16, 10.5, .{ .r = 0.95, .g = 0.5, .b = 0.5, .a = 1.0 });
         _ = kind;
-        _ = index;
         cy += row_h;
+    }
+    if (end_index < models.len) {
+        cy += @as(f32, @floatFromInt(models.len - end_index)) * row_h;
     }
 
     if (models.len == 0) {

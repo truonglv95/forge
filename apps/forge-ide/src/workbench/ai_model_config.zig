@@ -59,6 +59,20 @@ fn baseUrlForProvider(provider: []const u8) ?[]const u8 {
     return null;
 }
 
+fn containsModelId(models: []const composer.ModelOption, id: []const u8) bool {
+    for (models) |model| {
+        if (std.mem.eql(u8, model.id, id)) return true;
+    }
+    return false;
+}
+
+fn activeModelId(wb: anytype, kind: ModelKind) ?[]const u8 {
+    return switch (kind) {
+        .chat => wb.agent_ui.model,
+        .embedding => wb.agent_ui.embedding_model,
+    };
+}
+
 fn nextProvider(provider: []const u8) []const u8 {
     if (std.mem.eql(u8, provider, "ollama")) return "openrouter";
     if (std.mem.eql(u8, provider, "openrouter")) return "nvidia";
@@ -117,9 +131,15 @@ pub fn add(wb: anytype, kind: ModelKind) !void {
 
     const next_index = source.len + 1;
     const provider = if (kind == .chat) "openrouter" else "ollama";
-    const id = if (kind == .chat) "custom/model" else "custom-embed-model";
+    var id_buf: [96]u8 = undefined;
+    var suffix = next_index;
+    var id = try std.fmt.bufPrint(&id_buf, "{s}-{d}", .{ if (kind == .chat) "custom/model" else "custom-embed-model", suffix });
+    while (containsModelId(source, id)) {
+        suffix += 1;
+        id = try std.fmt.bufPrint(&id_buf, "{s}-{d}", .{ if (kind == .chat) "custom/model" else "custom-embed-model", suffix });
+    }
     var label_buf: [64]u8 = undefined;
-    const label = try std.fmt.bufPrint(&label_buf, "Custom {s} Model {d}", .{ @tagName(kind), next_index });
+    const label = try std.fmt.bufPrint(&label_buf, "Custom {s} Model {d}", .{ @tagName(kind), suffix });
     next[source.len] = .{
         .id = try wb.allocator.dupe(u8, id),
         .label = try wb.allocator.dupe(u8, label),
@@ -155,6 +175,8 @@ pub fn edit(wb: anytype, kind: ModelKind, index: usize) !void {
 pub fn delete(wb: anytype, kind: ModelKind, index: usize) !void {
     const source = listFor(wb, kind);
     if (index >= source.len or source.len == 0) return;
+    const deleted_id = source[index].id;
+    const deleted_active = if (activeModelId(wb, kind)) |active| std.mem.eql(u8, active, deleted_id) else false;
     var next = try wb.allocator.alloc(composer.ModelOption, source.len - 1);
     errdefer wb.allocator.free(next);
     var out_i: usize = 0;
@@ -165,4 +187,7 @@ pub fn delete(wb: anytype, kind: ModelKind, index: usize) !void {
     }
     replaceList(wb, kind, next);
     try persist(wb, kind);
+    if (deleted_active and next.len > 0) {
+        try select(wb, kind, 0);
+    }
 }

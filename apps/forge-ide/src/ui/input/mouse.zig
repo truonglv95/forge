@@ -9,6 +9,7 @@ const search_panel = @import("../sidebar/search_panel.zig");
 const debug_panel = @import("../sidebar/debug_panel.zig");
 const git_panel = @import("../sidebar/git_panel.zig");
 const extensions_panel = @import("../sidebar/extensions_panel.zig");
+const ai_sidebar_panel = @import("../render/sidebar/ai.zig");
 
 const chat_layout = @import("../../workbench/chat_layout.zig");
 const proposal_review_panel = @import("../editor/proposal_review_panel.zig");
@@ -245,6 +246,11 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 wb.git.scroll_y,
             )) |hit| {
                 @import("../../workbench/git_ops.zig").handleGitClick(wb, hit.action) catch {};
+            }
+        } else if (geo.shell_mode == .ide and wb.sidebar_view == .ai and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height) {
+            wb.focused_panel = .agent;
+            if (ai_sidebar_panel.hitTest(geo.explorer_x, geo.explorer_w, h, wb.ai_mcp_scroll_y, event.x, event.y)) |hit| {
+                wb.dispatch(ai_sidebar_panel.commandForHit(hit)) catch {};
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .run and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= debug_panel.list_top - 40) {
             wb.focused_panel = .run;
@@ -762,7 +768,6 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     wb.extensions_scroll_y += scroll_delta_y;
                     wb.clampExtensionsScroll(h);
                 },
-                .ai => {},
                 .search => {
                     wb.search.scroll_y += scroll_delta_y;
                     wb.clampSearchScroll(h);
@@ -770,6 +775,10 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 .git => {
                     wb.git.scroll_y += scroll_delta_y;
                     wb.clampGitScroll(h);
+                },
+                .ai => {
+                    wb.ai_mcp_scroll_y += scroll_delta_y;
+                    wb.ai_mcp_scroll_y = ai_sidebar_panel.clampScrollY(wb, wb.ai_mcp_scroll_y, h);
                 },
                 .run => {
                     wb.run_scroll_y += scroll_delta_y;
