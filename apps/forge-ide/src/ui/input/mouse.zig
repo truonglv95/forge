@@ -187,7 +187,7 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.focused_panel = .settings_modal;
             const settings_modal = @import("../settings_modal.zig");
             const hit = settings_modal.hitTestPoint(wb, w, h, event.x, event.y);
-            @import("../../workbench/agent_ops.zig").handleSettingsModalClick(wb, hit) catch |err| {
+            @import("../../workbench/settings_modal_ops.zig").handleSettingsModalClick(wb, hit) catch |err| {
                 shared.reportInputError(wb, "Handle settings click", err);
             };
             return;

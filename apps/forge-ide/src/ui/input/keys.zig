@@ -133,28 +133,28 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     }
 
     if (wb.settings_modal_open) {
-        const agent_ops = @import("../../workbench/agent_ops.zig");
+        const settings_modal_ops = @import("../../workbench/settings_modal_ops.zig");
         if (wb.settings_model_editor_open) {
             if (event.keycode == 53) {
-                agent_ops.closeSettingsModelEditor(wb);
+                settings_modal_ops.closeSettingsModelEditor(wb);
                 return;
             }
             if (event.keycode == 36) {
-                agent_ops.saveSettingsModelEditor(wb) catch |err| {
+                settings_modal_ops.saveSettingsModelEditor(wb) catch |err| {
                     shared.reportInputError(wb, "Save model settings", err);
                 };
                 return;
             }
             if (event.keycode == 48) {
-                agent_ops.focusNextSettingsModelEditorField(wb);
+                settings_modal_ops.focusNextSettingsModelEditorField(wb);
                 return;
             }
             if (event.keycode == 51) {
-                agent_ops.backspaceSettingsModelEditor(wb);
+                settings_modal_ops.backspaceSettingsModelEditor(wb);
                 return;
             }
             if (isPlainPrintableText(event)) {
-                agent_ops.appendSettingsModelEditorText(wb, event.chars);
+                settings_modal_ops.appendSettingsModelEditorText(wb, event.chars);
                 return;
             }
             return;

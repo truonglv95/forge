@@ -612,7 +612,7 @@ pub const Workbench = struct {
                 self.agent_panel_visible = !self.agent_panel_visible;
                 try self.setStatus(if (self.agent_panel_visible) "Agent panel shown" else "Agent panel hidden");
             },
-            .open_settings => try @import("workbench/agent_ops.zig").openSettingsModal(self),
+            .open_settings => try @import("workbench/settings_modal_ops.zig").openSettingsModal(self),
             .toggle_agent_window => try self.dispatch(.toggle_shell_mode),
         }
     }

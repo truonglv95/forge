@@ -108,7 +108,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .reload_extensions => try @import("../workbench/extensions_ops.zig").reloadExtensions(wb),
         .set_sidebar_view => |view| {
             if (view == .run) {
-                try @import("../workbench/agent_ops.zig").openSettingsModal(wb);
+                try @import("../workbench/settings_modal_ops.zig").openSettingsModal(wb);
                 return;
             }
             wb.sidebar_view = view;
@@ -723,9 +723,9 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .debug_stack_goto => |index| try @import("../workbench/debug_ops.zig").gotoDebugStackFrame(wb, index),
         .debug_copy_variable => |index| try @import("../workbench/debug_ops.zig").copyDebugVariable(wb, index),
         .ai_open_settings_toml => try @import("../workbench/agent_ops.zig").openSettingsToml(wb),
-        .ai_open_mcp_config => try @import("../workbench/agent_ops.zig").openMcpConfig(wb),
-        .ai_toggle_mcp => try @import("../workbench/agent_ops.zig").toggleAiMcp(wb),
-        .ai_refresh_mcp => try @import("../workbench/agent_ops.zig").refreshAiMcpStatus(wb),
+        .ai_open_mcp_config => try @import("../workbench/ai_mcp_ops.zig").openMcpConfig(wb),
+        .ai_toggle_mcp => try @import("../workbench/ai_mcp_ops.zig").toggleAiMcp(wb),
+        .ai_refresh_mcp => try @import("../workbench/ai_mcp_ops.zig").refreshAiMcpStatus(wb),
         .ai_toggle_hyde => {
             wb.agent_ui.enable_hyde = !wb.agent_ui.enable_hyde;
             try @import("ai_config_io.zig").writeAiEnableHyde(wb.allocator, wb.io, wb.workspace_root, wb.agent_ui.enable_hyde);
@@ -765,16 +765,16 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             }
         },
         .ai_model_select => |sel| try @import("ai_model_config.zig").select(wb, sel.kind, sel.index),
-        .ai_model_add => |kind| try @import("../workbench/agent_ops.zig").openSettingsModelEditor(wb, kind, null),
-        .ai_model_edit => |sel| try @import("../workbench/agent_ops.zig").openSettingsModelEditor(wb, sel.kind, sel.index),
+        .ai_model_add => |kind| try @import("../workbench/settings_modal_ops.zig").openSettingsModelEditor(wb, kind, null),
+        .ai_model_edit => |sel| try @import("../workbench/settings_modal_ops.zig").openSettingsModelEditor(wb, sel.kind, sel.index),
         .ai_model_delete => |sel| try @import("ai_model_config.zig").delete(wb, sel.kind, sel.index),
         .toggle_sidebar => wb.sidebar_visible = !wb.sidebar_visible,
         .toggle_bottom_panel => wb.bottom_panel_visible = !wb.bottom_panel_visible,
         .toggle_agent_panel => wb.agent_panel_visible = !wb.agent_panel_visible,
         .chat_clear_history => try wb.clearChatHistory(),
         .close_proposal_review => @import("../workbench/agent_ops.zig").closeProposalReview(wb),
-        .close_settings_modal => @import("../workbench/agent_ops.zig").closeSettingsModal(wb),
-        .open_settings_modal => try @import("../workbench/agent_ops.zig").openSettingsModal(wb),
+        .close_settings_modal => @import("../workbench/settings_modal_ops.zig").closeSettingsModal(wb),
+        .open_settings_modal => try @import("../workbench/settings_modal_ops.zig").openSettingsModal(wb),
         .nav_back => try wb.navBack(),
         .nav_forward => try wb.navForward(),
         .focus_agent => {

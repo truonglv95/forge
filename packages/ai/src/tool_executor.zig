@@ -8,64 +8,24 @@ const context_retrieval = @import("context_retrieval.zig");
 const web_fetcher = @import("web_fetcher.zig");
 const tool_cache_mod = @import("tool_cache.zig");
 const args_mod = @import("tools/args.zig");
+const command_policy = @import("tools/command_policy.zig");
+const executor_types = @import("tools/executor_types.zig");
+const edit_executor = @import("tools/edit_executor.zig");
+const subagent_executor = @import("tools/subagent_executor.zig");
+const lsp_executor = @import("tools/lsp_executor.zig");
 
-pub const ToolCache = tool_cache_mod.Cache;
+pub const ToolCache = executor_types.ToolCache;
+pub const allowedCommandArgv = command_policy.allowedCommandArgv;
+pub const allowedCommandArgvWithExtra = command_policy.allowedCommandArgvWithExtra;
 
-pub const AgentToolError = error{
-    Cancelled,
-    NotAllowed,
-    WorkspaceFailed,
-    TaskFailed,
-};
+pub const AgentToolError = executor_types.AgentToolError;
+pub const Context = executor_types.Context;
+pub const Outcome = executor_types.Outcome;
+pub const SearchOutcome = executor_types.SearchOutcome;
+pub const CodebaseSearchOutcome = executor_types.CodebaseSearchOutcome;
 
-pub const Context = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    root: workspace.WorkspaceRoot,
-    cwd: []const u8,
-    profile: tools.CapabilityProfile,
-    cancel_token: ?*const kernel.cancellation.CancellationToken = null,
-    environ_map: ?*const std.process.Environ.Map = null,
-    edit_callback: ?*const fn (?*anyopaque, edit: workspace.edit.WorkspaceEdit) void = null,
-    edit_context: ?*anyopaque = null,
-    direct_apply_edits: bool = false,
-    lsp_request_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) ?[]const u8 = null,
-    lsp_context: ?*anyopaque = null,
-    editor_context_callback: ?*const fn (?*anyopaque, std.mem.Allocator) ?[]const u8 = null,
-    editor_context: ?*anyopaque = null,
-    cache: ?*tool_cache_mod.Cache = null,
-    extra_allowed_commands: []const []const u8 = &.{},
-    stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
-    stream_context: ?*anyopaque = null,
-    wasm_run_callback: ?*const fn (?*anyopaque, allocator: std.mem.Allocator, wasm_file: []const u8, args: [][]const u8) AgentToolError![]const u8 = null,
-    wasm_run_context: ?*anyopaque = null,
-    enable_hyde: bool = false,
-};
-
-pub const Outcome = struct {
-    summary: []const u8,
-};
-
-pub const SearchOutcome = struct {
-    summary: []const u8,
-    first_match_path: ?[]const u8,
-    observation: []const u8,
-};
-
-pub const CodebaseSearchOutcome = struct {
-    summary: []const u8,
-    formatted: ?[]const u8,
-};
-
-fn checkCancel(ctx: Context) AgentToolError!void {
-    if (ctx.cancel_token) |token| {
-        if (token.isCancelled()) return error.Cancelled;
-    }
-}
-
-fn requireTool(ctx: Context, tool: tools.ToolId) AgentToolError!void {
-    if (!tools.isAllowed(ctx.profile, tool)) return error.NotAllowed;
-}
+const checkCancel = executor_types.checkCancel;
+const requireTool = executor_types.requireTool;
 
 pub fn getEditorContext(ctx: Context) AgentToolError!Outcome {
     try requireTool(ctx, .get_editor_context);
@@ -668,23 +628,8 @@ pub fn runCommand(ctx: Context, command: []const u8) AgentToolError!Outcome {
     return runCommandUnchecked(ctx, command);
 }
 
-const mac_sandbox_profile_template =
-    \\(version 1)
-    \\(deny default)
-    \\(allow file-read*)
-    \\(allow process-exec*)
-    \\(allow process-fork)
-    \\(allow network*)
-    \\(allow file-write*
-    \\    (subpath "/tmp")
-    \\    (subpath "/private/tmp")
-    \\    (subpath "/var/folders")
-    \\    (subpath "{s}")
-    \\)
-;
-
 fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome {
-    const mac_sandbox_profile = std.fmt.allocPrint(ctx.allocator, mac_sandbox_profile_template, .{ctx.root.path}) catch return error.WorkspaceFailed;
+    const mac_sandbox_profile = std.fmt.allocPrint(ctx.allocator, command_policy.mac_sandbox_profile_template, .{ctx.root.path}) catch return error.WorkspaceFailed;
     defer ctx.allocator.free(mac_sandbox_profile);
     if (std.mem.startsWith(u8, command, "wasm-run ")) {
         if (ctx.wasm_run_callback) |cb| {
@@ -710,11 +655,11 @@ fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome
         }
     }
 
-    const checkout_path = parseGitCheckoutPath(command);
+    const checkout_path = command_policy.parseGitCheckoutPath(command);
     var checkout_argv: [4][]const u8 = undefined;
-    const grep_args = parseGrepNCommand(command);
+    const grep_args = command_policy.parseGrepNCommand(command);
     var grep_argv: [4][]const u8 = undefined;
-    const argv = allowedCommandArgvWithExtra(command, ctx.extra_allowed_commands) orelse blk: {
+    const argv = command_policy.allowedCommandArgvWithExtra(command, ctx.extra_allowed_commands) orelse blk: {
         if (checkout_path) |path| {
             _ = workspace.WorkspacePath.parse(path) catch return error.NotAllowed;
             checkout_argv = .{ "git", "checkout", "--", path };
@@ -764,513 +709,20 @@ fn runCommandUnchecked(ctx: Context, command: []const u8) AgentToolError!Outcome
     return .{ .summary = summary };
 }
 
-fn parseGitCheckoutPath(command: []const u8) ?[]const u8 {
-    const prefix = "git checkout ";
-    if (!std.mem.startsWith(u8, command, prefix)) return null;
-    const path = std.mem.trim(u8, command[prefix.len..], &std.ascii.whitespace);
-    if (path.len == 0) return null;
-    if (std.mem.indexOfAny(u8, path, " \t\r\n") != null) return null;
-    if (std.mem.startsWith(u8, path, "-")) return null;
-    return path;
-}
-
-const GrepNCommand = struct {
-    pattern: []const u8,
-    path: []const u8,
-};
-
-fn parseGrepNCommand(command: []const u8) ?GrepNCommand {
-    const prefix = "grep -n ";
-    if (!std.mem.startsWith(u8, command, prefix)) return null;
-    var rest = std.mem.trim(u8, command[prefix.len..], &std.ascii.whitespace);
-    if (rest.len == 0) return null;
-
-    var pattern: []const u8 = "";
-    if (rest[0] == '"' or rest[0] == '\'') {
-        const quote = rest[0];
-        var end: usize = 1;
-        while (end < rest.len and rest[end] != quote) : (end += 1) {}
-        if (end >= rest.len) return null;
-        pattern = rest[1..end];
-        rest = std.mem.trim(u8, rest[end + 1 ..], &std.ascii.whitespace);
-    } else {
-        const split = std.mem.indexOfAny(u8, rest, " \t\r\n") orelse return null;
-        pattern = rest[0..split];
-        rest = std.mem.trim(u8, rest[split..], &std.ascii.whitespace);
-    }
-
-    const path = rest;
-    if (pattern.len == 0 or path.len == 0) return null;
-    if (std.mem.indexOfAny(u8, pattern, "\r\n\x00") != null) return null;
-    if (std.mem.indexOfAny(u8, path, " \t\r\n\x00") != null) return null;
-    if (std.mem.indexOf(u8, path, "..") != null) return null;
-    if (std.mem.startsWith(u8, pattern, "-") or std.mem.startsWith(u8, path, "-")) return null;
-    return .{ .pattern = pattern, .path = path };
-}
-
 pub fn replaceFileContent(ctx: Context, args: @import("tools/args.zig").ReplaceFileContentArgs) AgentToolError!Outcome {
-    try checkCancel(ctx);
-    try requireTool(ctx, .propose_edit);
-
-    const wp = workspace.WorkspacePath.parse(args.path) catch return error.WorkspaceFailed;
-    var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return error.WorkspaceFailed;
-    defer snap.deinit();
-
-    var text_edits: std.ArrayList(workspace.edit.TextEdit) = .empty;
-    defer text_edits.deinit(ctx.allocator);
-    for (args.edits) |e| {
-        text_edits.append(ctx.allocator, .{
-            .start = 0,
-            .end = 0,
-            .search = e.search,
-            .replacement = e.replace,
-        }) catch return error.WorkspaceFailed;
-    }
-
-    const file_edit = workspace.edit.FileEdit{
-        .path = args.path,
-        .operation = .modify,
-        .expected_hash = workspace.edit.contentHash(snap.content),
-        .edits = text_edits.items,
-    };
-
-    const ws_edit = workspace.edit.WorkspaceEdit{
-        .files = &.{file_edit},
-    };
-
-    var applied_tx: ?u64 = null;
-    if (ctx.direct_apply_edits) {
-        const proposal_json = formatInlineProposalJson(ctx.allocator, ws_edit) catch return error.WorkspaceFailed;
-        defer ctx.allocator.free(proposal_json);
-        applied_tx = workspace.execution.applyApprovedContent(ctx.allocator, ctx.io, ctx.root, ws_edit, "agent-inline", proposal_json) catch return error.WorkspaceFailed;
-    } else if (ctx.edit_callback) |cb| {
-        cb(ctx.edit_context, ws_edit);
-    }
-
-    const summary = blk: {
-        const first = if (args.edits.len > 0) summarizeEditPreview(args.edits[0].replace) else "";
-        if (applied_tx) |tx_id| {
-            break :blk std.fmt.allocPrint(
-                ctx.allocator,
-                "Applied edit `{s}` tx={d} blocks={d}: {s}",
-                .{ args.path, tx_id, args.edits.len, first },
-            ) catch return error.WorkspaceFailed;
-        }
-        if (first.len > 0) {
-            break :blk std.fmt.allocPrint(
-                ctx.allocator,
-                "Write `{s}` hash={x} blocks={d}: {s}",
-                .{ args.path, snap.hash, args.edits.len, first },
-            ) catch return error.WorkspaceFailed;
-        }
-        break :blk std.fmt.allocPrint(ctx.allocator, "Write `{s}` hash={x} blocks={d}", .{ args.path, snap.hash, args.edits.len }) catch return error.WorkspaceFailed;
-    };
-    return .{ .summary = summary };
+    return edit_executor.replaceFileContent(ctx, args);
 }
 
 pub fn multiEdit(ctx: Context, args: @import("tools/args.zig").MultiEditArgs) AgentToolError!Outcome {
-    try checkCancel(ctx);
-    try requireTool(ctx, .multi_edit);
-
-    if (args.files.len == 0) return error.WorkspaceFailed;
-
-    var file_edits: std.ArrayList(workspace.edit.FileEdit) = .empty;
-    defer file_edits.deinit(ctx.allocator);
-    var owned_text_edits: std.ArrayList([]workspace.edit.TextEdit) = .empty;
-    defer {
-        for (owned_text_edits.items) |slice| ctx.allocator.free(slice);
-        owned_text_edits.deinit(ctx.allocator);
-    }
-
-    for (args.files) |fe| {
-        const wp = workspace.WorkspacePath.parse(fe.path) catch return error.WorkspaceFailed;
-        var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return error.WorkspaceFailed;
-        defer snap.deinit();
-        const expected_hash = workspace.edit.contentHash(snap.content);
-
-        const text_edits = ctx.allocator.alloc(workspace.edit.TextEdit, fe.edits.len) catch return error.WorkspaceFailed;
-        for (fe.edits, 0..) |e, i| {
-            text_edits[i] = .{ .start = 0, .end = 0, .search = e.search, .replacement = e.replace };
-        }
-        owned_text_edits.append(ctx.allocator, text_edits) catch return error.WorkspaceFailed;
-        file_edits.append(ctx.allocator, .{
-            .path = fe.path,
-            .operation = .modify,
-            .expected_hash = expected_hash,
-            .edits = text_edits,
-        }) catch return error.WorkspaceFailed;
-    }
-
-    var applied_tx: ?u64 = null;
-    if (ctx.direct_apply_edits) {
-        const ws_edit = workspace.edit.WorkspaceEdit{ .files = file_edits.items };
-        const proposal_json = formatInlineProposalJson(ctx.allocator, ws_edit) catch return error.WorkspaceFailed;
-        defer ctx.allocator.free(proposal_json);
-        applied_tx = workspace.execution.applyApprovedContent(ctx.allocator, ctx.io, ctx.root, ws_edit, "agent-inline", proposal_json) catch return error.WorkspaceFailed;
-    } else if (ctx.edit_callback) |cb| {
-        cb(ctx.edit_context, .{ .files = file_edits.items });
-    }
-
-    var total_edits: usize = 0;
-    for (args.files) |fe| total_edits += fe.edits.len;
-    const summary = if (applied_tx) |tx_id|
-        std.fmt.allocPrint(ctx.allocator, "Applied multi-edit tx={d}: {d} file(s), {d} block(s) total: {s}", .{ tx_id, args.files.len, total_edits, args.files[0].path }) catch return error.WorkspaceFailed
-    else
-        std.fmt.allocPrint(ctx.allocator, "Multi-edit {d} file(s), {d} block(s) total: {s}", .{ args.files.len, total_edits, args.files[0].path }) catch return error.WorkspaceFailed;
-    return .{ .summary = summary };
-}
-
-fn formatInlineProposalJson(allocator: std.mem.Allocator, ws_edit: workspace.edit.WorkspaceEdit) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try out.appendSlice(allocator, "{\"schema_version\":1,\"summary\":\"agent inline edit\",\"files\":[");
-    for (ws_edit.files, 0..) |file, file_index| {
-        if (file_index > 0) try out.append(allocator, ',');
-        try out.appendSlice(allocator, "{\"path\":");
-        try appendJsonString(allocator, &out, file.path);
-        try out.appendSlice(allocator, ",\"operation\":");
-        try appendJsonString(allocator, &out, @tagName(file.operation));
-        if (file.expected_hash) |hash| {
-            const hash_text = try std.fmt.allocPrint(allocator, ",\"expected_hash\":{d}", .{hash});
-            defer allocator.free(hash_text);
-            try out.appendSlice(allocator, hash_text);
-        } else {
-            try out.appendSlice(allocator, ",\"expected_hash\":null");
-        }
-        try out.appendSlice(allocator, ",\"edits\":[");
-        for (file.edits, 0..) |edit, edit_index| {
-            if (edit_index > 0) try out.append(allocator, ',');
-            try out.appendSlice(allocator, "{\"start\":");
-            const range_text = try std.fmt.allocPrint(allocator, "{d},\"end\":{d},", .{ edit.start, edit.end });
-            defer allocator.free(range_text);
-            try out.appendSlice(allocator, range_text);
-            if (edit.search) |search_text| {
-                try out.appendSlice(allocator, "\"search\":");
-                try appendJsonString(allocator, &out, search_text);
-                try out.append(allocator, ',');
-            }
-            try out.appendSlice(allocator, "\"replacement\":");
-            try appendJsonString(allocator, &out, edit.replacement);
-            try out.append(allocator, '}');
-        }
-        try out.appendSlice(allocator, "]}");
-    }
-    try out.appendSlice(allocator, "]}");
-    return out.toOwnedSlice(allocator);
-}
-
-fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
-    const encoded = try std.json.Stringify.valueAlloc(allocator, text, .{});
-    defer allocator.free(encoded);
-    try out.appendSlice(allocator, encoded);
+    return edit_executor.multiEdit(ctx, args);
 }
 
 pub fn spawnSubagent(ctx: Context, role: []const u8, prompt: []const u8) AgentToolError!Outcome {
-    try checkCancel(ctx);
-    try requireTool(ctx, .spawn_subagent);
-
-    // P1-6: Spawn a sub-agent on a background thread. The sub-agent runs
-    // a focused agent.run with a small step budget and read-only capability.
-    // The result is delivered via the stream_callback (if set) or
-    // summarized synchronously.
-    //
-    // We can't block here waiting for the thread (the caller is the main
-    // agent loop), so we return an immediate "scheduled" summary and let
-    // the sub-agent's output stream back via stream_callback.
-    //
-    // For synchronous contexts (e.g. CLI), the caller can pass a
-    // completion_event in the context and wait on it.
-
-    const SubagentContext = struct {
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        root: workspace.WorkspaceRoot,
-        environ_map: ?*const std.process.Environ.Map,
-        role: []const u8,
-        prompt: []const u8,
-        stream_callback: ?*const fn (?*anyopaque, []const u8) void,
-        stream_context: ?*anyopaque,
-    };
-
-    const sub_ctx = ctx.allocator.create(SubagentContext) catch {
-        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to allocate context", .{role}) catch return error.WorkspaceFailed;
-        return .{ .summary = summary };
-    };
-
-    const role_owned = ctx.allocator.dupe(u8, role) catch {
-        ctx.allocator.destroy(sub_ctx);
-        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to dupe role", .{role}) catch return error.WorkspaceFailed;
-        return .{ .summary = summary };
-    };
-    const prompt_owned = ctx.allocator.dupe(u8, prompt) catch {
-        ctx.allocator.free(role_owned);
-        ctx.allocator.destroy(sub_ctx);
-        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to dupe prompt", .{role}) catch return error.WorkspaceFailed;
-        return .{ .summary = summary };
-    };
-
-    sub_ctx.* = .{
-        .allocator = ctx.allocator,
-        .io = ctx.io,
-        .root = ctx.root,
-        .environ_map = ctx.environ_map,
-        .role = role_owned,
-        .prompt = prompt_owned,
-        .stream_callback = ctx.stream_callback,
-        .stream_context = ctx.stream_context,
-    };
-
-    const thread = std.Thread.spawn(.{}, subagentWorker, .{sub_ctx}) catch {
-        ctx.allocator.free(role_owned);
-        ctx.allocator.free(prompt_owned);
-        ctx.allocator.destroy(sub_ctx);
-        const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}': failed to spawn thread (running synchronously)", .{role}) catch return error.WorkspaceFailed;
-        return .{ .summary = summary };
-    };
-    thread.detach();
-
-    const summary = std.fmt.allocPrint(ctx.allocator, "Sub-agent '{s}' spawned on background thread. Prompt: {s:.120}", .{ role, prompt }) catch return error.WorkspaceFailed;
-    return .{ .summary = summary };
-}
-
-fn subagentWorker(sub_ctx: anytype) void {
-    defer {
-        sub_ctx.allocator.free(sub_ctx.role);
-        sub_ctx.allocator.free(sub_ctx.prompt);
-        sub_ctx.allocator.destroy(sub_ctx);
-    }
-
-    // Run a focused agent with read-only capability and small budget.
-    // We use the fake provider if no real provider is available, to avoid
-    // blocking on network calls in the sub-agent.
-    const agent_mod = @import("agent.zig");
-    const provider_factory = @import("provider_factory.zig");
-
-    var provider_handle = provider_factory.create(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, .{
-        .provider_name = "fake",
-        .fake_response = "Sub-agent completed (no real provider configured).",
-    }) catch {
-        if (sub_ctx.stream_callback) |cb| {
-            const msg = "Sub-agent failed: provider creation error";
-            cb(sub_ctx.stream_context, msg);
-        }
-        return;
-    };
-    defer provider_handle.deinit(sub_ctx.allocator);
-
-    var result = agent_mod.run(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, sub_ctx.root, sub_ctx.prompt, .{
-        .max_steps = 3,
-        .provider_options = .{
-            .provider_name = "fake",
-            .fake_response = "Sub-agent completed (no real provider configured).",
-        },
-        .mode = .ask,
-        .capability_profile = .read_only,
-        .max_repair_attempts = 0,
-    }) catch {
-        if (sub_ctx.stream_callback) |cb| {
-            const msg = "Sub-agent failed: agent.run error";
-            cb(sub_ctx.stream_context, msg);
-        }
-        return;
-    };
-    defer agent_mod.deinitResult(sub_ctx.allocator, &result);
-
-    // Stream the response back to the main agent via stream_callback.
-    if (sub_ctx.stream_callback) |cb| {
-        if (result.response_text) |text| {
-            cb(sub_ctx.stream_context, text);
-        } else {
-            const fallback = "Sub-agent completed (no response text)";
-            cb(sub_ctx.stream_context, fallback);
-        }
-    }
+    return subagent_executor.spawnSubagent(ctx, role, prompt);
 }
 
 pub fn diffPreview(ctx: Context, path: []const u8, search_block: []const u8, replace_block: []const u8) AgentToolError!Outcome {
-    try checkCancel(ctx);
-    try requireTool(ctx, .diff_preview);
-
-    const diff_text = @import("diff_tool.zig").previewSearchReplace(ctx.allocator, ctx.io, ctx.root, path, search_block, replace_block) catch {
-        const summary = std.fmt.allocPrint(ctx.allocator, "diff_preview: search block not found in {s}", .{path}) catch return error.WorkspaceFailed;
-        return .{ .summary = summary };
-    };
-    defer ctx.allocator.free(diff_text);
-
-    const summary = std.fmt.allocPrint(ctx.allocator, "Diff preview for {s}:\n{s}", .{ path, diff_text }) catch return error.WorkspaceFailed;
-    return .{ .summary = summary };
-}
-
-fn summarizeEditPreview(text: []const u8) []const u8 {
-    const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
-    if (trimmed.len == 0) return "";
-    var end: usize = 0;
-    while (end < trimmed.len and trimmed[end] != '\n' and trimmed[end] != '\r') : (end += 1) {}
-    return trimmed[0..@min(end, 96)];
-}
-
-fn unsafeEditShrinkReason(
-    ctx: Context,
-    path: []const u8,
-    start_line: usize,
-    end_line: usize,
-    replacement: []const u8,
-) AgentToolError!?[]u8 {
-    const wp = workspace.WorkspacePath.parse(path) catch return null;
-    var snap = workspace.FileSnapshot.read(ctx.allocator, ctx.io, ctx.root, wp) catch return null;
-    defer snap.deinit();
-
-    const old_lines = countLines(snap.content);
-    if (old_lines == 0) return null;
-    const replacement_lines = countLines(replacement);
-    const removed_lines = if (start_line == 0 and end_line == 0)
-        old_lines
-    else if (end_line >= start_line)
-        end_line - start_line + 1
-    else
-        0;
-
-    if (removed_lines < 20) return null;
-    if (replacement_lines * 2 + 10 >= removed_lines) return null;
-
-    return std.fmt.allocPrint(
-        ctx.allocator,
-        "Edit rejected for safety: requested replacement of {d} line(s) in `{s}` with only {d} line(s). Read the exact target range and retry with a narrower line range.",
-        .{ removed_lines, path, replacement_lines },
-    ) catch return error.WorkspaceFailed;
-}
-
-fn countLines(text: []const u8) usize {
-    if (text.len == 0) return 0;
-    var count: usize = 1;
-    for (text) |byte| {
-        if (byte == '\n') count += 1;
-    }
-    if (text[text.len - 1] == '\n' and count > 0) count -= 1;
-    return count;
-}
-
-/// Maps a deliberately small set of read-only or validation commands to argv.
-/// Never pass model text through a shell: prefix checks do not prevent command
-/// separators, substitutions, redirects, or path traversal.
-///
-/// In addition to the hardcoded list, projects can declare extra allowlisted
-/// commands in `forge.toml` under `[ai.allowed_commands]` as a list of exact
-/// command strings. The `Context.extra_allowed_commands` field carries those
-/// project-specific entries so the agent can run `just test`, `pnpm dev`, etc.
-/// without modifying Forge source.
-pub fn allowedCommandArgv(command: []const u8) ?[]const []const u8 {
-    return allowedCommandArgvWithExtra(command, &.{});
-}
-
-/// Like `allowedCommandArgv` but also checks project-specific commands.
-/// Extra commands are matched by exact string equality; argv is built by
-/// splitting on whitespace (safe because we only accept exact matches).
-pub fn allowedCommandArgvWithExtra(command: []const u8, extra: []const []const u8) ?[]const []const u8 {
-    // Check hardcoded list first.
-    if (allowedCommandArgvBuiltin(command)) |argv| return argv;
-
-    // Check project-specific extras.
-    for (extra) |allowed| {
-        if (std.mem.eql(u8, command, allowed)) {
-            // Split on whitespace into argv. We allocate into a thread-local
-            // static buffer to avoid heap allocation per call.
-            return splitCommandToArgv(command);
-        }
-    }
-    return null;
-}
-
-/// Thread-local storage for split argv from extra-allowlist commands.
-/// `splitCommandToArgv` writes into this buffer and returns a slice into it.
-/// The buffer is overwritten on each call, so callers must use the returned
-/// slice immediately.
-threadlocal var tl_argv_buf: [16][]const u8 = undefined;
-
-fn splitCommandToArgv(command: []const u8) []const []const u8 {
-    var count: usize = 0;
-    var it = std.mem.tokenizeAny(u8, command, " \t");
-    while (it.next()) |part| {
-        if (count >= tl_argv_buf.len) break;
-        tl_argv_buf[count] = part;
-        count += 1;
-    }
-    return tl_argv_buf[0..count];
-}
-
-fn allowedCommandArgvBuiltin(command: []const u8) ?[]const []const u8 {
-    // --- Zig ---
-    if (std.mem.eql(u8, command, "zig build")) return &.{ "zig", "build" };
-    if (std.mem.eql(u8, command, "zig build test")) return &.{ "zig", "build", "test" };
-    if (std.mem.eql(u8, command, "zig fmt --check .")) return &.{ "zig", "fmt", "--check", "." };
-    if (std.mem.eql(u8, command, "zig test src/main.zig")) return &.{ "zig", "test", "src/main.zig" };
-    // --- Git ---
-    if (std.mem.eql(u8, command, "git status")) return &.{ "git", "status" };
-    if (std.mem.eql(u8, command, "git status --short")) return &.{ "git", "status", "--short" };
-    if (std.mem.eql(u8, command, "git diff")) return &.{ "git", "--no-pager", "diff", "--no-ext-diff" };
-    if (std.mem.eql(u8, command, "git diff --stat")) return &.{ "git", "--no-pager", "diff", "--no-ext-diff", "--stat" };
-    if (std.mem.eql(u8, command, "git log --oneline")) return &.{ "git", "--no-pager", "log", "--oneline" };
-    if (std.mem.eql(u8, command, "git log --oneline -10")) return &.{ "git", "--no-pager", "log", "--oneline", "-10" };
-    if (std.mem.eql(u8, command, "git stash list")) return &.{ "git", "--no-pager", "stash", "list" };
-    // --- Node / npm / bun ---
-    if (std.mem.eql(u8, command, "npm test")) return &.{ "npm", "test" };
-    if (std.mem.eql(u8, command, "npm run build")) return &.{ "npm", "run", "build" };
-    if (std.mem.eql(u8, command, "npm run lint")) return &.{ "npm", "run", "lint" };
-    if (std.mem.eql(u8, command, "npm run typecheck")) return &.{ "npm", "run", "typecheck" };
-    if (std.mem.eql(u8, command, "npm install")) return &.{ "npm", "install" };
-    if (std.mem.eql(u8, command, "npx tsc --noEmit")) return &.{ "npx", "tsc", "--noEmit" };
-    if (std.mem.eql(u8, command, "npx eslint .")) return &.{ "npx", "eslint", "." };
-    if (std.mem.eql(u8, command, "bun test")) return &.{ "bun", "test" };
-    if (std.mem.eql(u8, command, "bun run build")) return &.{ "bun", "run", "build" };
-    if (std.mem.eql(u8, command, "bun install")) return &.{ "bun", "install" };
-    // --- Rust / Cargo ---
-    if (std.mem.eql(u8, command, "cargo build")) return &.{ "cargo", "build" };
-    if (std.mem.eql(u8, command, "cargo test")) return &.{ "cargo", "test" };
-    if (std.mem.eql(u8, command, "cargo check")) return &.{ "cargo", "check" };
-    if (std.mem.eql(u8, command, "cargo clippy")) return &.{ "cargo", "clippy" };
-    if (std.mem.eql(u8, command, "cargo fmt --check")) return &.{ "cargo", "fmt", "--check" };
-    if (std.mem.eql(u8, command, "cargo build --release")) return &.{ "cargo", "build", "--release" };
-    // --- Go ---
-    if (std.mem.eql(u8, command, "go build ./...")) return &.{ "go", "build", "./..." };
-    if (std.mem.eql(u8, command, "go test ./...")) return &.{ "go", "test", "./..." };
-    if (std.mem.eql(u8, command, "go vet ./...")) return &.{ "go", "vet", "./..." };
-    if (std.mem.eql(u8, command, "go build .")) return &.{ "go", "build", "." };
-    if (std.mem.eql(u8, command, "gofmt -l .")) return &.{ "gofmt", "-l", "." };
-    // --- Python ---
-    if (std.mem.eql(u8, command, "python -m pytest")) return &.{ "python", "-m", "pytest" };
-    if (std.mem.eql(u8, command, "python -m pytest -v")) return &.{ "python", "-m", "pytest", "-v" };
-    if (std.mem.eql(u8, command, "python -m mypy .")) return &.{ "python", "-m", "mypy", "." };
-    if (std.mem.eql(u8, command, "python -m ruff check .")) return &.{ "python", "-m", "ruff", "check", "." };
-    if (std.mem.eql(u8, command, "python -m ruff format --check .")) return &.{ "python", "-m", "ruff", "format", "--check", "." };
-    if (std.mem.eql(u8, command, "uv run pytest")) return &.{ "uv", "run", "pytest" };
-    if (std.mem.eql(u8, command, "uv run mypy .")) return &.{ "uv", "run", "mypy", "." };
-    // --- Make ---
-    if (std.mem.eql(u8, command, "make")) return &.{"make"};
-    if (std.mem.eql(u8, command, "make test")) return &.{ "make", "test" };
-    if (std.mem.eql(u8, command, "make build")) return &.{ "make", "build" };
-    if (std.mem.eql(u8, command, "make check")) return &.{ "make", "check" };
-    if (std.mem.eql(u8, command, "make lint")) return &.{ "make", "lint" };
-    // --- Dart / Flutter ---
-    if (std.mem.eql(u8, command, "dart test")) return &.{ "dart", "test" };
-    if (std.mem.eql(u8, command, "dart analyze")) return &.{ "dart", "analyze" };
-    if (std.mem.eql(u8, command, "flutter test")) return &.{ "flutter", "test" };
-    if (std.mem.eql(u8, command, "flutter analyze")) return &.{ "flutter", "analyze" };
-    // --- Java / Kotlin / JVM ---
-    if (std.mem.eql(u8, command, "mvn test")) return &.{ "mvn", "test" };
-    if (std.mem.eql(u8, command, "mvn compile")) return &.{ "mvn", "compile" };
-    if (std.mem.eql(u8, command, "gradle test")) return &.{ "gradle", "test" };
-    if (std.mem.eql(u8, command, "gradle build")) return &.{ "gradle", "build" };
-    if (std.mem.eql(u8, command, "./gradlew test")) return &.{ "./gradlew", "test" };
-    if (std.mem.eql(u8, command, "./gradlew build")) return &.{ "./gradlew", "build" };
-    // --- C/C++ ---
-    if (std.mem.eql(u8, command, "cmake --build .")) return &.{ "cmake", "--build", "." };
-    if (std.mem.eql(u8, command, "ctest")) return &.{"ctest"};
-    if (std.mem.eql(u8, command, "ninja")) return &.{"ninja"};
-    // --- System ---
-    if (std.mem.eql(u8, command, "pwd")) return &.{"pwd"};
-    if (std.mem.eql(u8, command, "ls")) return &.{"ls"};
-    if (std.mem.eql(u8, command, "ls -la")) return &.{ "ls", "-la" };
-    return null;
+    return edit_executor.diffPreview(ctx, path, search_block, replace_block);
 }
 
 pub fn runTask(ctx: Context, task_name: []const u8) AgentToolError!Outcome {
@@ -1455,29 +907,6 @@ test "replace_file_content can direct-apply through transaction history" {
     try std.testing.expect(std.mem.indexOf(u8, outcome.summary, "Applied edit") != null);
 }
 
-test "run command allowlist produces argv without a shell" {
-    const argv = allowedCommandArgv("git diff --stat").?;
-    try std.testing.expectEqualStrings("git", argv[0]);
-    try std.testing.expectEqualStrings("--no-pager", argv[1]);
-    for (argv) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "sh"));
-}
-
-test "run command parses simple approved grep without a shell" {
-    const parsed = parseGrepNCommand("grep -n \"mouse_click\\|click_event\" apps/forge-ide/src/ui").?;
-    try std.testing.expectEqualStrings("mouse_click\\|click_event", parsed.pattern);
-    try std.testing.expectEqualStrings("apps/forge-ide/src/ui", parsed.path);
-    try std.testing.expect(parseGrepNCommand("grep -n \"x\" apps/forge-ide/src/ui; rm -rf .") == null);
-    try std.testing.expect(parseGrepNCommand("grep -n \"x\" ../../.ssh") == null);
-}
-
-test "run command rejects shell injection and path-reading commands" {
-    try std.testing.expect(allowedCommandArgv("git status; rm -rf .") == null);
-    try std.testing.expect(allowedCommandArgv("git status && echo exposed") == null);
-    try std.testing.expect(allowedCommandArgv("git diff $(touch owned)") == null);
-    try std.testing.expect(allowedCommandArgv("cat ../../.ssh/id_rsa") == null);
-    try std.testing.expect(allowedCommandArgv("find . -exec sh {} ;") == null);
-}
-
 pub fn readManyFiles(ctx: Context, args: @import("tools/args.zig").ReadManyFilesArgs) AgentToolError!Outcome {
     try requireTool(ctx, .read_many_files);
     try checkCancel(ctx);
@@ -1509,63 +938,17 @@ pub fn readManyFiles(ctx: Context, args: @import("tools/args.zig").ReadManyFiles
 }
 
 pub fn lspDefinition(ctx: Context, path: []const u8, line: u32, character: u32) AgentToolError!Outcome {
-    try requireTool(ctx, .lsp_definition);
-    try checkCancel(ctx);
-
-    if (ctx.lsp_request_callback) |callback| {
-        const params_json = std.fmt.allocPrint(ctx.allocator, "{{\"textDocument\":{{\"uri\":\"{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}", .{ path, line, character }) catch return error.WorkspaceFailed;
-        defer ctx.allocator.free(params_json);
-
-        if (callback(ctx.lsp_context, ctx.allocator, "textDocument/definition", params_json)) |res| {
-            return .{ .summary = res };
-        }
-    }
-    return .{ .summary = ctx.allocator.dupe(u8, "Language server definition not available") catch return error.WorkspaceFailed };
+    return lsp_executor.definition(ctx, path, line, character);
 }
 
 pub fn lspHover(ctx: Context, path: []const u8, line: u32, character: u32) AgentToolError!Outcome {
-    try requireTool(ctx, .lsp_hover);
-    try checkCancel(ctx);
-
-    if (ctx.lsp_request_callback) |callback| {
-        const params_json = std.fmt.allocPrint(ctx.allocator, "{{\"textDocument\":{{\"uri\":\"{s}\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}", .{ path, line, character }) catch return error.WorkspaceFailed;
-        defer ctx.allocator.free(params_json);
-
-        if (callback(ctx.lsp_context, ctx.allocator, "textDocument/hover", params_json)) |res| {
-            return .{ .summary = res };
-        }
-    }
-    return .{ .summary = ctx.allocator.dupe(u8, "Language server hover not available") catch return error.WorkspaceFailed };
+    return lsp_executor.hover(ctx, path, line, character);
 }
 
 pub fn lspDocumentSymbols(ctx: Context, path: []const u8) AgentToolError!Outcome {
-    try requireTool(ctx, .lsp_document_symbols);
-    try checkCancel(ctx);
-
-    if (ctx.lsp_request_callback) |callback| {
-        const params_json = std.fmt.allocPrint(ctx.allocator, "{{\"textDocument\":{{\"uri\":\"{s}\"}}}}", .{path}) catch return error.WorkspaceFailed;
-        defer ctx.allocator.free(params_json);
-
-        if (callback(ctx.lsp_context, ctx.allocator, "textDocument/documentSymbol", params_json)) |res| {
-            return .{ .summary = res };
-        }
-    }
-    return .{ .summary = ctx.allocator.dupe(u8, "Language server document symbols not available") catch return error.WorkspaceFailed };
+    return lsp_executor.documentSymbols(ctx, path);
 }
 
 pub fn lspDiagnostics(ctx: Context, path: []const u8) AgentToolError!Outcome {
-    try requireTool(ctx, .lsp_diagnostics);
-    try checkCancel(ctx);
-
-    // Some LSPs push diagnostics instead of pull. We may need to query the workspace store instead of making an LSP request.
-    // For now, let's return a stub if pullDiagnostics is not supported natively.
-    if (ctx.lsp_request_callback) |callback| {
-        const params_json = std.fmt.allocPrint(ctx.allocator, "{{\"textDocument\":{{\"uri\":\"{s}\"}}}}", .{path}) catch return error.WorkspaceFailed;
-        defer ctx.allocator.free(params_json);
-
-        if (callback(ctx.lsp_context, ctx.allocator, "textDocument/diagnostic", params_json)) |res| {
-            return .{ .summary = res };
-        }
-    }
-    return .{ .summary = ctx.allocator.dupe(u8, "Language server diagnostics not available (or uses push diagnostics)") catch return error.WorkspaceFailed };
+    return lsp_executor.diagnostics(ctx, path);
 }

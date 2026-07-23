@@ -16,7 +16,6 @@ const conversation = @import("conversation.zig");
 const multimodal = @import("multimodal.zig");
 const context_phase = @import("agent/context_phase.zig");
 const tool_phase = @import("agent/tool_phase.zig");
-const agent_compaction = @import("agent/compaction.zig");
 const agent_loop = @import("agent/loop.zig");
 const mcp_registry = @import("mcp_registry.zig");
 const progress = @import("progress.zig");
@@ -29,8 +28,8 @@ const routing = @import("routing.zig");
 const route_resolver = @import("route_resolver.zig");
 const context_manifest = @import("context_manifest.zig");
 const context_budget = @import("context_budget.zig");
-const agent_event = @import("agent_event.zig");
-const task_ledger = @import("task_ledger.zig");
+const EventLogger = @import("agent/event_logger.zig").EventLogger;
+const session_docs = @import("agent/session_docs.zig");
 const adaptive_budget = @import("adaptive_budget.zig");
 
 pub const Config = struct {
@@ -398,7 +397,7 @@ pub fn run(
 
             fn onCheckpoint(ctx: ?*anyopaque, conversation_json: []const u8, next_step_index: u32, pending_tool: []const u8, pending_args_json: []const u8) bool {
                 const self: *@This() = @ptrCast(@alignCast(ctx.?));
-                const body = formatCheckpointSessionJson(
+                const body = session_docs.formatCheckpointSessionJson(
                     self.allocator,
                     self.session_id,
                     self.intent,
@@ -535,7 +534,7 @@ pub fn run(
         const owned_steps = steps.toOwnedSlice(allocator) catch return error.WorkspaceFailed;
         const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
         const owned_response = allocator.dupe(u8, explore_text orelse "Exploration complete.") catch return error.WorkspaceFailed;
-        const completed_json = formatCheckpointSessionJson(
+        const completed_json = session_docs.formatCheckpointSessionJson(
             allocator,
             session_id,
             intent,
@@ -551,7 +550,7 @@ pub fn run(
         defer allocator.free(completed_json);
         workspace.sessions.persistSession(io, effective_config.workspace_cwd, session_id, completed_json) catch return error.WorkspaceFailed;
         event_logger.finalAnswer(owned_response) catch {};
-        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = owned_response, .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
+        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = @as(?[]const u8, owned_response), .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
@@ -575,7 +574,7 @@ pub fn run(
         const owned_response = allocator.dupe(u8, explore_text orelse "Edited files directly.") catch return error.WorkspaceFailed;
 
         event_logger.finalAnswer(owned_response) catch {};
-        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = owned_response, .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
+        event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = @as(?[]const u8, owned_response), .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
@@ -679,7 +678,7 @@ pub fn run(
         const prepared = proposal_precondition.fillMissingExpectedHashes(allocator, io, root, normalized) catch normalized;
         defer if (prepared.ptr != normalized.ptr) allocator.free(prepared);
 
-        const evidence_issue = validateProposalEvidenceForSteps(allocator, prepared, steps.items) catch return error.InvalidProposal;
+        const evidence_issue = session_docs.validateProposalEvidenceForSteps(allocator, prepared, steps.items) catch return error.InvalidProposal;
         defer if (evidence_issue) |issue| allocator.free(issue);
         if (evidence_issue) |issue| {
             if (evidence_retry_reads < 4 and tools.isAllowed(effective_config.capability_profile, .read_file)) {
@@ -872,7 +871,7 @@ pub fn run(
     const owned_proposal = allocator.dupe(u8, proposal_abs) catch return error.WorkspaceFailed;
     const owned_session = allocator.dupe(u8, session_id) catch return error.WorkspaceFailed;
 
-    const session_json = formatSessionJson(
+    const session_json = session_docs.formatSessionJson(
         allocator,
         owned_session,
         intent,
@@ -889,7 +888,7 @@ pub fn run(
     event_logger.proposalCreated(owned_proposal) catch {};
     event_logger.runCompleted(.{
         .steps = owned_steps,
-        .proposal_rel = owned_proposal,
+        .proposal_rel = @as(?[]const u8, owned_proposal),
         .response_text = null,
         .repair_attempts = repair_attempt,
         .usage = llm.usage(),
@@ -1264,289 +1263,6 @@ fn mapToolError(err: tool_executor.AgentToolError) AgentError {
     };
 }
 
-const EventLogger = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    session_id: []const u8,
-
-    fn init(allocator: std.mem.Allocator, io: std.Io, session_id: []const u8) EventLogger {
-        return .{ .allocator = allocator, .io = io, .session_id = session_id };
-    }
-
-    fn deinit(_: *EventLogger) void {}
-
-    fn appendJson(self: *EventLogger, json: []const u8) !void {
-        try workspace.sessions.appendEvent(self.allocator, self.io, self.session_id, json);
-    }
-
-    fn sessionStarted(self: *EventLogger, config: Config, intent: []const u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.session_started),
-            intent: []const u8,
-            mode: []const u8,
-            capability: []const u8,
-            max_steps: u32,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .intent = intent,
-            .mode = @tagName(config.mode),
-            .capability = @tagName(config.capability_profile),
-            .max_steps = config.max_steps,
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn contextManifestBuilt(self: *EventLogger, builder: *const context.ContextBuilder) !void {
-        var has_import_neighbors = false;
-        for (builder.blocks.items) |block| {
-            if (block.block_type == .imports) {
-                has_import_neighbors = true;
-                break;
-            }
-        }
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.context_manifest_built),
-            budget_bytes: usize,
-            used_bytes: usize,
-            blocks: usize,
-            has_import_neighbors: bool,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .budget_bytes = builder.max_bytes,
-            .used_bytes = builder.used_bytes,
-            .blocks = builder.blocks.items.len,
-            .has_import_neighbors = has_import_neighbors,
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn telemetry(self: *EventLogger, payload: struct {
-        phase: []const u8,
-        duration_ms: i64,
-        bytes: usize = 0,
-        items: usize = 0,
-        detail: []const u8 = "",
-    }) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.telemetry),
-            phase: []const u8,
-            duration_ms: i64,
-            bytes: usize,
-            items: usize,
-            detail: []const u8,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .phase = payload.phase,
-            .duration_ms = payload.duration_ms,
-            .bytes = payload.bytes,
-            .items = payload.items,
-            .detail = payload.detail,
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn contextCompacted(self: *EventLogger, reason: []const u8, before_bytes: usize, after_bytes: usize, step_index: u32, attempt: u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.context_compacted),
-            reason: []const u8,
-            step: u32,
-            attempt: u8,
-            before_bytes: usize,
-            after_bytes: usize,
-            saved_bytes: usize,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .reason = reason,
-            .step = step_index,
-            .attempt = attempt,
-            .before_bytes = before_bytes,
-            .after_bytes = after_bytes,
-            .saved_bytes = if (before_bytes > after_bytes) before_bytes - after_bytes else 0,
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn toolCall(self: *EventLogger, step: u32, tool: []const u8, args_json: []const u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.tool_call),
-            step: u32,
-            tool: []const u8,
-            reason: []const u8,
-            args_preview: []const u8,
-            args_json: []const u8,
-        };
-        const preview = argsPreview(args_json);
-        const reason = toolReason(tool);
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .step = step,
-            .tool = tool,
-            .reason = reason,
-            .args_preview = preview,
-            .args_json = args_json,
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn toolResult(self: *EventLogger, step: u32, kind: []const u8, summary: []const u8, run_id: ?[]const u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.tool_result),
-            step: u32,
-            kind: []const u8,
-            summary: []const u8,
-            run_id: []const u8,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .step = step,
-            .kind = kind,
-            .summary = summary,
-            .run_id = run_id orelse "",
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn proposalCreated(self: *EventLogger, proposal_path: []const u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.proposal_created),
-            proposal_path: []const u8,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{ .proposal_path = proposal_path }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn validationStarted(self: *EventLogger, attempt: u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.validation_started),
-            attempt: u8,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{ .attempt = attempt }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn validationResult(self: *EventLogger, attempt: u8, passed: bool, task_count: u32, failed_count: u32, hint_paths: []const []const u8, report: []const u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.validation_result),
-            attempt: u8,
-            passed: bool,
-            task_count: u32,
-            failed_count: u32,
-            hint_paths: []const []const u8,
-            report: []const u8,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .attempt = attempt,
-            .passed = passed,
-            .task_count = task_count,
-            .failed_count = failed_count,
-            .hint_paths = hint_paths,
-            .report = if (report.len > 2048) report[0..2048] else report,
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn subagentStarted(self: *EventLogger, role: []const u8, label: []const u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.subagent_started),
-            role: []const u8,
-            label: []const u8,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .role = role,
-            .label = label,
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn subagentResult(self: *EventLogger, role: []const u8, label: []const u8, text: []const u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.subagent_result),
-            role: []const u8,
-            label: []const u8,
-            text_preview: []const u8,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .role = role,
-            .label = label,
-            .text_preview = if (text.len > 2048) text[0..2048] else text,
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn finalAnswer(self: *EventLogger, text: []const u8) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.final_answer),
-            text: []const u8,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{ .text = text }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-
-    fn runCompleted(self: *EventLogger, payload: struct {
-        steps: []const Step,
-        proposal_rel: ?[]const u8,
-        response_text: ?[]const u8,
-        repair_attempts: u8,
-        usage: provider_mod.TokenUsage,
-    }) !void {
-        const Json = struct {
-            schema_version: u32 = agent_event.schema_version,
-            type: []const u8 = agent_event.typeName(.run_completed),
-            steps: usize,
-            repair_attempts: u8,
-            proposal_path: []const u8,
-            response_text: []const u8,
-            reported_tokens: provider_mod.TokenUsage,
-        };
-        const json = try std.json.Stringify.valueAlloc(self.allocator, Json{
-            .steps = payload.steps.len,
-            .repair_attempts = payload.repair_attempts,
-            .proposal_path = payload.proposal_rel orelse "",
-            .response_text = payload.response_text orelse "",
-            .reported_tokens = payload.usage,
-        }, .{});
-        defer self.allocator.free(json);
-        try self.appendJson(json);
-    }
-};
-
-fn toolReason(tool: []const u8) []const u8 {
-    if (std.mem.eql(u8, tool, "read_file")) return "Gather line-level evidence from a specific file.";
-    if (std.mem.eql(u8, tool, "codebase_search")) return "Semantic retrieval to find relevant symbols/files.";
-    if (std.mem.eql(u8, tool, "search")) return "Keyword search to locate relevant lines quickly.";
-    if (std.mem.eql(u8, tool, "list_tree")) return "Inspect workspace structure to find likely files.";
-    if (std.mem.eql(u8, tool, "run_command")) return "Run a command to validate or gather runtime evidence.";
-    if (std.mem.eql(u8, tool, "apply_proposal")) return "Apply a proposed change via transaction.";
-    return "Execute a tool to gather missing evidence.";
-}
-
-fn argsPreview(args_json: []const u8) []const u8 {
-    const trimmed = std.mem.trim(u8, args_json, &std.ascii.whitespace);
-    return if (trimmed.len > 160) trimmed[0..160] else trimmed;
-}
-
 fn clipText(text: []const u8, max: usize) []const u8 {
     return if (text.len > max) text[0..max] else text;
 }
@@ -1585,233 +1301,6 @@ fn emitProgress(config: Config, phase: progress.Phase) void {
     } else {
         progress.emit(phase, config.progress_writer);
     }
-}
-
-fn formatCheckpointSessionJson(
-    allocator: std.mem.Allocator,
-    session_id: []const u8,
-    intent: []const u8,
-    config: Config,
-    steps: []const Step,
-    conversation_json: []const u8,
-    next_step_index: u32,
-    pending_tool: []const u8,
-    pending_tool_args: []const u8,
-    provider_kind: []const u8,
-    execution_state: []const u8,
-) ![]u8 {
-    const StoredStep = struct {
-        index: u32,
-        kind: []const u8,
-        summary: []const u8,
-        run_id: []const u8,
-    };
-    var stored_steps = try allocator.alloc(StoredStep, steps.len);
-    defer allocator.free(stored_steps);
-    for (steps, 0..) |step, index| {
-        stored_steps[index] = .{
-            .index = step.index,
-            .kind = step.kind,
-            .summary = step.summary,
-            .run_id = step.run_id orelse "",
-        };
-    }
-
-    const CheckpointDoc = struct {
-        schema_version: u32 = 3,
-        session_id: []const u8,
-        intent: []const u8,
-        workspace_path: []const u8,
-        capability_profile: []const u8,
-        max_steps: u32,
-        run_ids: []const []const u8 = &.{},
-        proposal_path: []const u8 = "",
-        steps: []StoredStep,
-        execution_state: []const u8,
-        next_step_index: u32,
-        pending_tool: []const u8,
-        pending_tool_args: []const u8,
-        conversation_json: []const u8,
-        compact_summary: []const u8,
-        task_ledger_json: []const u8,
-        provider_kind: []const u8,
-    };
-    const compact_summary = try buildCompactSummary(allocator, intent, steps, null, conversation_json);
-    defer allocator.free(compact_summary);
-    const task_ledger_json = try buildTaskLedgerJson(allocator, intent, steps, phaseFromExecutionState(execution_state));
-    defer allocator.free(task_ledger_json);
-    return std.json.Stringify.valueAlloc(allocator, CheckpointDoc{
-        .session_id = session_id,
-        .intent = intent,
-        .workspace_path = config.workspace_cwd,
-        .capability_profile = @tagName(config.capability_profile),
-        .max_steps = config.max_steps,
-        .steps = stored_steps,
-        .execution_state = execution_state,
-        .next_step_index = next_step_index,
-        .pending_tool = pending_tool,
-        .pending_tool_args = pending_tool_args,
-        .conversation_json = conversation_json,
-        .compact_summary = compact_summary,
-        .task_ledger_json = task_ledger_json,
-        .provider_kind = provider_kind,
-    }, .{});
-}
-
-fn formatSessionJson(
-    allocator: std.mem.Allocator,
-    session_id: []const u8,
-    intent: []const u8,
-    config: Config,
-    steps: []Step,
-    run_id: []const u8,
-    proposal_rel: []const u8,
-    conversation_json: []const u8,
-    provider_kind: []const u8,
-) ![]u8 {
-    const SessionStep = struct {
-        index: u32,
-        kind: []const u8,
-        summary: []const u8,
-        run_id: []const u8,
-    };
-
-    const ToolCall = struct {
-        index: u32,
-        tool: []const u8,
-        summary: []const u8,
-    };
-
-    var step_items = try allocator.alloc(SessionStep, steps.len);
-    defer allocator.free(step_items);
-    var tool_items = try allocator.alloc(ToolCall, steps.len);
-    defer allocator.free(tool_items);
-    for (steps, 0..) |step, index| {
-        step_items[index] = .{
-            .index = step.index,
-            .kind = step.kind,
-            .summary = step.summary,
-            .run_id = step.run_id orelse "",
-        };
-        tool_items[index] = .{
-            .index = step.index,
-            .tool = step.kind,
-            .summary = step.summary,
-        };
-    }
-
-    const SessionDoc = struct {
-        schema_version: u32 = 3,
-        session_id: []const u8,
-        intent: []const u8,
-        workspace_path: []const u8,
-        capability_profile: []const u8,
-        max_steps: u32,
-        run_ids: []const []const u8,
-        proposal_path: []const u8,
-        tool_calls: []ToolCall,
-        steps: []SessionStep,
-        execution_state: []const u8,
-        next_step_index: u32,
-        pending_tool: []const u8,
-        pending_tool_args: []const u8,
-        conversation_json: []const u8,
-        compact_summary: []const u8,
-        task_ledger_json: []const u8,
-        provider_kind: []const u8,
-    };
-
-    const run_ids = try allocator.alloc([]const u8, 1);
-    defer allocator.free(run_ids);
-    run_ids[0] = run_id;
-    const compact_summary = try buildCompactSummary(allocator, intent, steps, null, conversation_json);
-    defer allocator.free(compact_summary);
-    const task_ledger_json = try buildTaskLedgerJson(allocator, intent, steps, .summarizing);
-    defer allocator.free(task_ledger_json);
-
-    return std.json.Stringify.valueAlloc(allocator, SessionDoc{
-        .session_id = session_id,
-        .intent = intent,
-        .workspace_path = config.workspace_cwd,
-        .capability_profile = @tagName(config.capability_profile),
-        .max_steps = config.max_steps,
-        .run_ids = run_ids,
-        .proposal_path = proposal_rel,
-        .tool_calls = tool_items,
-        .steps = step_items,
-        .execution_state = "proposal_ready",
-        .next_step_index = @intCast(steps.len + 1),
-        .pending_tool = "",
-        .pending_tool_args = "",
-        .conversation_json = conversation_json,
-        .compact_summary = compact_summary,
-        .task_ledger_json = task_ledger_json,
-        .provider_kind = provider_kind,
-    }, .{});
-}
-
-fn buildCompactSummary(
-    allocator: std.mem.Allocator,
-    intent: []const u8,
-    steps: []const Step,
-    final_text: ?[]const u8,
-    conversation_json: []const u8,
-) ![]u8 {
-    var items = try allocator.alloc(agent_compaction.SummaryStep, steps.len);
-    defer allocator.free(items);
-    for (steps, 0..) |step, index| {
-        items[index] = .{
-            .index = step.index,
-            .kind = step.kind,
-            .summary = step.summary,
-        };
-    }
-    return agent_compaction.buildSessionSummary(allocator, intent, items, final_text, conversation_json);
-}
-
-fn buildTaskLedgerJson(
-    allocator: std.mem.Allocator,
-    intent: []const u8,
-    steps: []const Step,
-    phase: task_ledger.Phase,
-) ![]u8 {
-    var items = try allocator.alloc(task_ledger.StepInput, steps.len);
-    defer allocator.free(items);
-    for (steps, 0..) |step, index| {
-        items[index] = .{
-            .index = step.index,
-            .kind = step.kind,
-            .summary = step.summary,
-        };
-    }
-    var snapshot = try task_ledger.fromSteps(allocator, intent, items, phase);
-    defer snapshot.deinit(allocator);
-    return task_ledger.toJsonAlloc(allocator, snapshot);
-}
-
-fn validateProposalEvidenceForSteps(
-    allocator: std.mem.Allocator,
-    proposal_body: []const u8,
-    steps: []const Step,
-) !?[]const u8 {
-    var items = try allocator.alloc(task_ledger.StepInput, steps.len);
-    defer allocator.free(items);
-    for (steps, 0..) |step, index| {
-        items[index] = .{
-            .index = step.index,
-            .kind = step.kind,
-            .summary = step.summary,
-        };
-    }
-    return task_ledger.validateProposalEvidence(allocator, proposal_body, items);
-}
-
-fn phaseFromExecutionState(state: []const u8) task_ledger.Phase {
-    if (std.mem.eql(u8, state, "completed")) return .completed;
-    if (std.mem.eql(u8, state, "failed")) return .blocked;
-    if (std.mem.eql(u8, state, "proposal_ready")) return .summarizing;
-    if (std.mem.eql(u8, state, "tool_pending")) return .gathering;
-    return .gathering;
 }
 
 fn resolveHomeDir(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
