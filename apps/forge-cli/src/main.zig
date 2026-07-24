@@ -26,6 +26,9 @@ const ext_cmd = @import("ext_cmd.zig");
 const eval_cmd = @import("eval_cmd.zig");
 const ecosystem_cmd = @import("ecosystem_cmd.zig");
 const spec_cmd = @import("spec_cmd.zig");
+const complete_cmd = @import("complete.zig");
+const providers_cmd = @import("providers_cmd.zig");
+const chat_cmd = @import("chat_cmd.zig");
 
 const Io = std.Io;
 
@@ -138,6 +141,18 @@ fn run(
         .spec => {
             return spec_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
+        .complete => {
+            return complete_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
+        .providers => {
+            return providers_cmd.run(allocator, io, parsed, writer) catch 2;
+        },
+        .models => {
+            return providers_cmd.runModels(allocator, io, parsed, writer) catch 2;
+        },
+        .chat => {
+            return chat_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
         .help => {
             try printHelp(writer);
             return 0;
@@ -181,6 +196,10 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  ecosystem  Manage AI tools, context sources, skill packs, eval packs, providers
         \\  ext        Manage extensions (list|install|uninstall)
         \\  spec       Spec-driven workflow (create|list|show|edit|approve|reject|implement|trace)
+        \\  complete   Inline code completion at a file position (RFC-0013)
+        \\  providers  List AI providers with capability (RFC-0016)
+        \\  models     List AI models or query routing (list|capability|route) (RFC-0016)
+        \\  chat       Interactive chat REPL with @mentions and slash commands (RFC-0017)
         \\  help       Show this help
         \\
         \\Options:
@@ -207,6 +226,19 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --min-success-rate <f> Fail if success rate below threshold
         \\  --baseline <path>    Compare success rate to prior .summary.json
         \\  --max-success-regression <f> Fail if success rate regresses beyond delta
+        \\  --file <path>        File path for inline completion (forge complete)
+        \\  --line <n>           1-indexed line for inline completion (default: 1)
+        \\  --char <n>           0-indexed character offset for inline completion (default: 0)
+        \\  --max-tokens <n>     Max tokens for inline completion (default: 64)
+        \\  --timeout-ms <n>     Timeout for inline completion in ms (default: 3000)
+        \\  --pipe               Read chat input from stdin (forge chat)
+        \\  --resume <id>        Resume a previous chat session (forge chat)
+        \\  --context-bytes <n>  Estimated context bytes for model routing (forge models route)
+        \\  --prefer-local       Prefer local providers (ollama) when routing
+        \\  --require-tools      Only route to providers that support tool calling
+        \\  --require-streaming  Only route to providers that support streaming
+        \\  --max-price-per-mtok <n> Max price per 1M tokens (cents) for routing
+        \\  --strengths <s>      Comma-separated strengths for routing (code_edit,completion,planning)
         \\
     );
 }
@@ -278,6 +310,10 @@ fn isKnownCommandName(name: []const u8) bool {
         "ecosystem",
         "ext",
         "spec",
+        "complete",
+        "providers",
+        "models",
+        "chat",
         "help",
     };
     for (commands) |command| {

@@ -109,11 +109,9 @@ pub fn complete(
     provider_options: provider_factory.Options,
     cancel_token: ?*const kernel.cancellation.CancellationToken,
 ) CompletionError!CompletionResult {
-    var provider_handle = provider_factory.create(allocator, io, environ_map, .{
-        .provider_name = provider_options.provider_name,
-        .base_url = provider_options.base_url,
-        .model = provider_options.model,
-    }) catch return error.ProviderFailed;
+    // Pass through all provider options (including fake_response) so the fake
+    // provider can return a deterministic completion in tests.
+    var provider_handle = provider_factory.create(allocator, io, environ_map, provider_options) catch return error.ProviderFailed;
     defer provider_handle.deinit(allocator);
 
     if (cancel_token) |token| {
@@ -123,25 +121,19 @@ pub fn complete(
     const prompt = try buildPrompt(allocator, request);
     defer allocator.free(prompt);
 
-    var conversation: std.ArrayList(u8) = .empty;
-    defer conversation.deinit(allocator);
-    provider_handle.appendToolUserText(allocator, &conversation, prompt) catch return error.ProviderFailed;
+    // Use the streaming ask API for inline completion. This avoids the
+    // tool-loop completeTurn path (which returns tool_call, not text) and
+    // works with both fake and real providers.
+    var response_writer: std.Io.Writer.Allocating = .init(allocator);
+    defer response_writer.deinit();
 
-    var completion = provider_handle.completeTurn(
-        allocator,
-        io,
-        null,
-        conversation.items,
-        "[]",
-        cancel_token,
-    ) catch return error.ProviderFailed;
-    defer completion.deinit(allocator);
-
-    const raw = switch (completion) {
-        .text => |t| t,
-        .tool_call => return error.NoCompletion,
-        .tool_calls => return error.NoCompletion,
-    };
+    // Create a non-cancelling token if none provided (ask API requires one).
+    var no_cancel_source = kernel.cancellation.CancellationTokenSource.init(allocator) catch return error.OutOfMemory;
+    defer no_cancel_source.deinit();
+    var no_cancel_token = no_cancel_source.getToken();
+    const ask_token = if (cancel_token) |t| t else &no_cancel_token;
+    provider_handle.ask(allocator, prompt, &.{}, &response_writer.writer, ask_token) catch return error.ProviderFailed;
+    const raw = response_writer.written();
 
     const cleaned = stripFences(raw);
     if (cleaned.len == 0) return error.NoCompletion;
