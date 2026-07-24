@@ -356,6 +356,15 @@ void forge_backend_set_key_callback(ForgeKeyCallback cb) { g_key_cb = cb; }
 void forge_backend_set_mouse_callback(ForgeMouseCallback cb) { g_mouse_cb = cb; }
 void forge_backend_set_cursor(int type) { (void)type; }
 
+/* IME stubs — Linux X11 IME (XIM/XIC) integration is deferred.
+ * These no-op implementations satisfy the linker so forge-ide builds on
+ * Linux. Real IME support requires XIM/XIC setup in forge_backend_init
+ * and XFilterEvent calls in the event loop. See backend.h for the
+ * callback signature.
+ */
+void forge_backend_set_ime_composition_callback(ForgeImeCompositionCallback cb) { (void)cb; }
+void forge_backend_set_ime_cursor_rect(float x, float y, float w, float h) { (void)x; (void)y; (void)w; (void)h; }
+
 void forge_backend_run(void) {
     if (!g_display) return;
     int pending = 1;

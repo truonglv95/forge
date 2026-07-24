@@ -211,7 +211,10 @@ fn resolveSymbol(allocator: std.mem.Allocator, io: std.Io, root: ?workspace.Work
 
 fn searchWorkspaceForSymbol(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, name: []const u8) ![]u8 {
     _ = io;
-    // Use grep-like search via process_spawn.
+    // Grep for the symbol name with line numbers and 2 lines of context.
+    // Returns matching lines (not just filenames) so the model sees the
+    // actual definition/usage. LSP workspace_symbol integration is pending
+    // (requires an active LSP session in chat context).
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
     try argv.append(allocator, "grep");
@@ -219,10 +222,16 @@ fn searchWorkspaceForSymbol(allocator: std.mem.Allocator, io: std.Io, root: work
     try argv.append(allocator, "--include=*.zig");
     try argv.append(allocator, "--include=*.py");
     try argv.append(allocator, "--include=*.ts");
+    try argv.append(allocator, "--include=*.tsx");
     try argv.append(allocator, "--include=*.rs");
     try argv.append(allocator, "--include=*.go");
     try argv.append(allocator, "--include=*.js");
-    try argv.append(allocator, "-l");
+    try argv.append(allocator, "--include=*.c");
+    try argv.append(allocator, "--include=*.h");
+    try argv.append(allocator, "--include=*.cpp");
+    try argv.append(allocator, "--include=*.java");
+    try argv.append(allocator, "-C2");
+    try argv.append(allocator, "--max-count=5");
     try argv.append(allocator, name);
     try argv.append(allocator, ".");
 
@@ -239,8 +248,8 @@ fn searchWorkspaceForSymbol(allocator: std.mem.Allocator, io: std.Io, root: work
         return error.SubprocessFailed;
     }
 
-    // Limit to first 2000 bytes to keep context manageable.
-    const trimmed = if (result.output.len > 2000) result.output[0..2000] else result.output;
+    // Limit to first 4000 bytes to keep context manageable but useful.
+    const trimmed = if (result.output.len > 4000) result.output[0..4000] else result.output;
     const dup = try allocator.dupe(u8, trimmed);
     allocator.free(result.output);
     return dup;

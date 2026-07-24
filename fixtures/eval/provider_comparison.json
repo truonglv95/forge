@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "name": "provider_comparison",
+  "description": "Benchmark the same tasks across multiple providers (gemini, anthropic, ollama) to measure success rate, latency, token cost, and tool-call sequence quality. Live trials — never run in zig build test.",
+  "tasks": [
+    {
+      "id": "simple-explain",
+      "intent": "Explain what this file does in 2 sentences.",
+      "files": ["packages/ai/src/inline_completion.zig"],
+      "expected_contains": ["completion", "provider"],
+      "max_tokens": 200,
+      "timeout_ms": 30000
+    },
+    {
+      "id": "find-bug",
+      "intent": "Find a potential bug in this code. Report the line number and issue.",
+      "files": ["packages/ai/src/inline_completion.zig"],
+      "expected_contains": ["line"],
+      "max_tokens": 300,
+      "timeout_ms": 30000
+    },
+    {
+      "id": "add-comment",
+      "intent": "Add a doc comment to the complete() function explaining its parameters.",
+      "files": ["packages/ai/src/inline_completion.zig"],
+      "expected_contains": ["///"],
+      "max_tokens": 400,
+      "timeout_ms": 30000
+    },
+    {
+      "id": "extract-function",
+      "intent": "Extract the fence-stripping logic into a separate function called stripMarkdownFences.",
+      "files": ["packages/ai/src/inline_completion.zig"],
+      "expected_contains": ["fn stripMarkdownFences"],
+      "max_tokens": 500,
+      "timeout_ms": 60000
+    },
+    {
+      "id": "add-test",
+      "intent": "Add a unit test for the detectLanguage function covering the .rs extension.",
+      "files": ["packages/ai/src/inline_completion.zig"],
+      "expected_contains": ["test", "rust"],
+      "max_tokens": 400,
+      "timeout_ms": 30000
+    },
+    {
+      "id": "refactor-error",
+      "intent": "Refactor the CompletionError enum to use @typeInfo for error message generation.",
+      "files": ["packages/ai/src/inline_completion.zig"],
+      "expected_contains": ["@typeInfo"],
+      "max_tokens": 500,
+      "timeout_ms": 60000
+    },
+    {
+      "id": "security-review",
+      "intent": "Review this code for security issues. List any concerns.",
+      "files": ["packages/ai/src/inline_completion.zig"],
+      "expected_contains": ["security", "concern"],
+      "max_tokens": 400,
+      "timeout_ms": 30000
+    },
+    {
+      "id": "performance-hint",
+      "intent": "Suggest performance improvements for this code.",
+      "files": ["packages/ai/src/inline_completion.zig"],
+      "expected_contains": ["performance", "improve"],
+      "max_tokens": 400,
+      "timeout_ms": 30000
+    }
+  ],
+  "providers": ["gemini", "anthropic", "ollama"],
+  "metrics": {
+    "success_rate": "fraction of tasks where expected_contains found in response",
+    "p50_latency_ms": "median wall-clock latency from request to response",
+    "p95_latency_ms": "95th percentile latency",
+    "avg_input_tokens": "average input tokens per task",
+    "avg_output_tokens": "average output tokens per task",
+    "avg_cost_cents": "average cost in USD cents per task (input + output)",
+    "tool_call_count": "number of tool calls made (should be 0 for ask-only tasks)"
+  },
+  "run_instructions": "Run: forge eval ai-flow --corpus fixtures/eval/provider_comparison.json --providers gemini,anthropic,ollama --output .forge/evals/provider_comparison.jsonl",
+  "notes": "This corpus is for live provider comparison. Results vary by model version, rate limits, and network. Run multiple times to get statistically significant comparisons. Never commit live results to the repo."
+}

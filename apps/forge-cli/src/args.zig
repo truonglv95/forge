@@ -44,6 +44,8 @@ pub const GlobalFlags = struct {
     background: bool = false,
     follow: bool = false,
     timeout_seconds: u64 = 0,
+    // Provider comparison eval (RFC-0016)
+    providers: ?[]const u8 = null,
     // Provider routing flags (RFC-0016)
     context_bytes: ?usize = null,
     require_tools: bool = false,
@@ -246,6 +248,11 @@ pub const CliArgs = struct {
                     if (i < args.len) flags.timeout_seconds = std.fmt.parseInt(u64, args[i], 10) catch 0;
                 } else if (std.mem.startsWith(u8, arg, "--timeout=")) {
                     flags.timeout_seconds = std.fmt.parseInt(u64, arg["--timeout=".len..], 10) catch 0;
+                } else if (std.mem.eql(u8, arg, "--providers")) {
+                    i += 1;
+                    if (i < args.len) flags.providers = args[i];
+                } else if (std.mem.startsWith(u8, arg, "--providers=")) {
+                    flags.providers = arg["--providers=".len..];
                 } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
                     command = .help;
                     cmd_found = true;
