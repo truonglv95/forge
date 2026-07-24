@@ -132,8 +132,35 @@ pub fn run(
     const out_path = flags.output orelse ".forge/evals/latest.jsonl";
     const repeat = if (flags.repeat == 0) 1 else flags.repeat;
     const max_steps = if (flags.max_steps > 0) flags.max_steps else 8;
-    const provider_name = flags.provider orelse "fake";
-    const model_name = flags.model orelse "default";
+
+    // Parse --providers (comma-separated) for multi-provider comparison.
+    // If --providers is set, loop over each provider; otherwise use --provider.
+    var provider_list: std.ArrayList([]const u8) = .empty;
+    defer provider_list.deinit(allocator);
+    if (flags.providers) |providers_str| {
+        var iter = std.mem.splitScalar(u8, providers_str, ',');
+        while (iter.next()) |p| {
+            const trimmed = std.mem.trim(u8, p, " \t");
+            if (trimmed.len > 0) try provider_list.append(allocator, trimmed);
+        }
+    } else {
+        const provider_name = flags.provider orelse "fake";
+        try provider_list.append(allocator, provider_name);
+    }
+
+    if (provider_list.items.len == 0) {
+        writer.writeAll("error: no providers specified\n") catch {};
+        return error.InvalidCorpus;
+    }
+
+    if (!flags.quiet and !flags.json) {
+        writer.print("Running eval with {d} provider(s): ", .{provider_list.items.len}) catch {};
+        for (provider_list.items, 0..) |p, i| {
+            if (i > 0) writer.writeAll(", ") catch {};
+            writer.writeAll(p) catch {};
+        }
+        writer.print("\nCorpus: {s}\nOutput: {s}\n\n", .{ corpus_path, out_path }) catch {};
+    }
 
     const tasks = loadCorpus(allocator, io, corpus_path) catch return error.InvalidCorpus;
     defer freeTasks(allocator, tasks);
@@ -154,227 +181,234 @@ pub fn run(
 
     var token_total: u64 = 0;
 
-    for (1..repeat + 1) |rep| {
-        const rep_u32: u32 = @intCast(rep);
-        for (tasks) |task| {
-            const start_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
-            var eval_ws = EvalWorkspace.create(allocator, io) catch return error.WorkspaceFailed;
-            defer eval_ws.deinit();
+    for (provider_list.items) |provider_name| {
+        const model_name = flags.model orelse "default";
+        if (!flags.quiet and !flags.json and provider_list.items.len > 1) {
+            writer.print("--- Provider: {s} ---\n", .{provider_name}) catch {};
+        }
 
-            seedWorkspace(allocator, io, eval_ws.root, task.workspace_files) catch return error.WorkspaceFailed;
+        for (1..repeat + 1) |rep| {
+            const rep_u32: u32 = @intCast(rep);
+            for (tasks) |task| {
+                const start_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
+                var eval_ws = EvalWorkspace.create(allocator, io) catch return error.WorkspaceFailed;
+                defer eval_ws.deinit();
 
-            const active_file: ?[]const u8 = blk: {
-                if (!task.expect.has_import_neighbors) break :blk null;
-                if (task.workspace_files.get("main.zig") != null) break :blk "main.zig";
-                break :blk null;
-            };
+                seedWorkspace(allocator, io, eval_ws.root, task.workspace_files) catch return error.WorkspaceFailed;
 
-            if (task.context_only) {
-                const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
-                try latencies.append(allocator, latency_ms);
-                const context_result = contextExpectationOk(allocator, io, eval_ws.root, task.intent, active_file, task.expect) catch ContextExpectation{
-                    .ok = false,
-                    .reason = "context retrieval failed",
+                const active_file: ?[]const u8 = blk: {
+                    if (!task.expect.has_import_neighbors) break :blk null;
+                    if (task.workspace_files.get("main.zig") != null) break :blk "main.zig";
+                    break :blk null;
                 };
-                var rec = try makeRecord(
-                    allocator,
-                    task.id,
-                    rep_u32,
-                    provider_name,
-                    model_name,
-                    latency_ms,
-                    context_result.ok,
-                    context_result.ok,
-                    context_result.ok,
-                    context_result.ok,
-                    context_result.ok,
-                    0,
-                    0,
-                    .{},
-                    context_result.reason,
-                );
-                rec.context_hits = context_result.hits;
-                rec.context_best_rank = context_result.best_rank;
-                rec.context_blocks = context_result.blocks;
-                try records.append(allocator, rec);
-                continue;
-            }
 
-            var eval_flags = flags;
-            if (eval_flags.provider == null) eval_flags.provider = "fake";
-            var provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, eval_flags, task.intent, io, null);
-            provider_opts.options.fake_context_failures = task.fake_context_failures;
-            if (task.fake_response) |response_text| provider_opts.options.fake_response = response_text;
-            if (task.fake_repair_response) |repair_text| provider_opts.options.fake_plan_response = repair_text;
-            const task_max_steps = task.max_steps orelse max_steps;
-            var result = ai.agent.run(allocator, io, environ_map, eval_ws.root, task.intent, .{
-                .max_steps = task_max_steps,
-                .provider_options = provider_opts.options,
-                .workspace_cwd = eval_ws.absolute_path,
-                .active_file = active_file,
-                .mode = .agent,
-                .capability_profile = .propose,
-                .max_repair_attempts = if (task.expect.expect_repair) 2 else if (std.mem.eql(u8, provider_opts.options.provider_name, "fake")) 0 else 2,
-            }) catch |err| {
-                const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
-                try latencies.append(allocator, latency_ms);
-                if (task.expect.step_limit_checkpoint and err == error.StepLimitReached) {
-                    const checkpoint = latestResumableCheckpointOk(allocator, io, eval_ws.absolute_path, task.expect.min_ledger_entries) catch CheckpointExpectation{
+                if (task.context_only) {
+                    const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
+                    try latencies.append(allocator, latency_ms);
+                    const context_result = contextExpectationOk(allocator, io, eval_ws.root, task.intent, active_file, task.expect) catch ContextExpectation{
                         .ok = false,
-                        .steps = 0,
-                        .reason = "checkpoint inspection failed",
+                        .reason = "context retrieval failed",
                     };
-                    try records.append(allocator, try makeRecord(
+                    var rec = try makeRecord(
                         allocator,
                         task.id,
                         rep_u32,
                         provider_name,
                         model_name,
                         latency_ms,
-                        checkpoint.ok,
-                        checkpoint.ok,
-                        checkpoint.ok,
-                        checkpoint.ok,
-                        checkpoint.ok,
-                        checkpoint.steps,
+                        context_result.ok,
+                        context_result.ok,
+                        context_result.ok,
+                        context_result.ok,
+                        context_result.ok,
+                        0,
                         0,
                         .{},
-                        checkpoint.reason,
-                    ));
-                    continue;
-                }
-                const reason = try std.fmt.allocPrint(allocator, "agent run failed: {s}", .{@errorName(err)});
-                defer allocator.free(reason);
-                try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, reason));
-                continue;
-            };
-            defer ai.agent.deinitResult(allocator, &result);
-
-            const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
-            try latencies.append(allocator, latency_ms);
-
-            if (task.expect.has_import_neighbors) {
-                var ctx_builder = ai.context_loader.build(allocator, io, eval_ws.root, .{
-                    .max_bytes = 256 * 1024,
-                    .intent = task.intent,
-                    .active_file = active_file,
-                    .include_import_graph = true,
-                    .include_semantic_search = false,
-                    .auto_semantic_search = false,
-                    .include_web = false,
-                    .include_recent_files = false,
-                    .include_git_diff = false,
-                    .include_project_rules = false,
-                    .include_agent_memory = false,
-                    .include_diagnostics = false,
-                    .include_lsp_context = false,
-                }) catch {
-                    try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "context build failed"));
-                    continue;
-                };
-                defer ctx_builder.deinit();
-
-                var found_imports = false;
-                for (ctx_builder.blocks.items) |block| {
-                    if (block.block_type == .imports) {
-                        found_imports = true;
-                        break;
-                    }
-                }
-                if (!found_imports) {
-                    try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "missing import neighbors in context"));
-                    continue;
-                }
-            }
-            if (task.expect.context_includes.len > 0) {
-                const context_result = contextIncludesExpected(allocator, io, eval_ws.root, task.intent, task.expect) catch ContextExpectation{
-                    .ok = false,
-                    .reason = "context retrieval failed",
-                };
-                if (!context_result.ok) {
-                    var rec = try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, context_result.reason);
+                        context_result.reason,
+                    );
                     rec.context_hits = context_result.hits;
                     rec.context_best_rank = context_result.best_rank;
                     rec.context_blocks = context_result.blocks;
                     try records.append(allocator, rec);
                     continue;
                 }
-            }
 
-            const proposal_ok, const proposal_reason, const proposal_rel = proposalStatus(allocator, io, eval_ws.root, result.proposal_rel) catch {
-                try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "proposal missing or malformed"));
-                continue;
-            };
+                var eval_flags = flags;
+                if (eval_flags.provider == null) eval_flags.provider = "fake";
+                var provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, eval_flags, task.intent, io, null);
+                provider_opts.options.fake_context_failures = task.fake_context_failures;
+                if (task.fake_response) |response_text| provider_opts.options.fake_response = response_text;
+                if (task.fake_repair_response) |repair_text| provider_opts.options.fake_plan_response = repair_text;
+                const task_max_steps = task.max_steps orelse max_steps;
+                var result = ai.agent.run(allocator, io, environ_map, eval_ws.root, task.intent, .{
+                    .max_steps = task_max_steps,
+                    .provider_options = provider_opts.options,
+                    .workspace_cwd = eval_ws.absolute_path,
+                    .active_file = active_file,
+                    .mode = .agent,
+                    .capability_profile = .propose,
+                    .max_repair_attempts = if (task.expect.expect_repair) 2 else if (std.mem.eql(u8, provider_opts.options.provider_name, "fake")) 0 else 2,
+                }) catch |err| {
+                    const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
+                    try latencies.append(allocator, latency_ms);
+                    if (task.expect.step_limit_checkpoint and err == error.StepLimitReached) {
+                        const checkpoint = latestResumableCheckpointOk(allocator, io, eval_ws.absolute_path, task.expect.min_ledger_entries) catch CheckpointExpectation{
+                            .ok = false,
+                            .steps = 0,
+                            .reason = "checkpoint inspection failed",
+                        };
+                        try records.append(allocator, try makeRecord(
+                            allocator,
+                            task.id,
+                            rep_u32,
+                            provider_name,
+                            model_name,
+                            latency_ms,
+                            checkpoint.ok,
+                            checkpoint.ok,
+                            checkpoint.ok,
+                            checkpoint.ok,
+                            checkpoint.ok,
+                            checkpoint.steps,
+                            0,
+                            .{},
+                            checkpoint.reason,
+                        ));
+                        continue;
+                    }
+                    const reason = try std.fmt.allocPrint(allocator, "agent run failed: {s}", .{@errorName(err)});
+                    defer allocator.free(reason);
+                    try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, reason));
+                    continue;
+                };
+                defer ai.agent.deinitResult(allocator, &result);
 
-            if (!proposal_ok) {
-                try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, proposal_reason));
-                continue;
-            }
+                const latency_ms = millisDelta(start_ms, std.Io.Timestamp.now(io, .real).toMilliseconds());
+                try latencies.append(allocator, latency_ms);
 
-            var apply_success = false;
-            var validation_pass = false;
-            var reason: []const u8 = "unknown";
+                if (task.expect.has_import_neighbors) {
+                    var ctx_builder = ai.context_loader.build(allocator, io, eval_ws.root, .{
+                        .max_bytes = 256 * 1024,
+                        .intent = task.intent,
+                        .active_file = active_file,
+                        .include_import_graph = true,
+                        .include_semantic_search = false,
+                        .auto_semantic_search = false,
+                        .include_web = false,
+                        .include_recent_files = false,
+                        .include_git_diff = false,
+                        .include_project_rules = false,
+                        .include_agent_memory = false,
+                        .include_diagnostics = false,
+                        .include_lsp_context = false,
+                    }) catch {
+                        try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "context build failed"));
+                        continue;
+                    };
+                    defer ctx_builder.deinit();
 
-            if (task.expect.proposal_only) {
-                apply_success = true;
-                validation_pass = true;
-                reason = "proposal contract satisfied";
-            } else {
-                apply_success = applyProposalInPlace(allocator, io, eval_ws.root, proposal_rel) catch false;
-                if (!apply_success) {
-                    reason = "proposal failed transaction apply";
+                    var found_imports = false;
+                    for (ctx_builder.blocks.items) |block| {
+                        if (block.block_type == .imports) {
+                            found_imports = true;
+                            break;
+                        }
+                    }
+                    if (!found_imports) {
+                        try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "missing import neighbors in context"));
+                        continue;
+                    }
+                }
+                if (task.expect.context_includes.len > 0) {
+                    const context_result = contextIncludesExpected(allocator, io, eval_ws.root, task.intent, task.expect) catch ContextExpectation{
+                        .ok = false,
+                        .reason = "context retrieval failed",
+                    };
+                    if (!context_result.ok) {
+                        var rec = try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, context_result.reason);
+                        rec.context_hits = context_result.hits;
+                        rec.context_best_rank = context_result.best_rank;
+                        rec.context_blocks = context_result.blocks;
+                        try records.append(allocator, rec);
+                        continue;
+                    }
+                }
+
+                const proposal_ok, const proposal_reason, const proposal_rel = proposalStatus(allocator, io, eval_ws.root, result.proposal_rel) catch {
+                    try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, "proposal missing or malformed"));
+                    continue;
+                };
+
+                if (!proposal_ok) {
+                    try records.append(allocator, try makeFailedRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, proposal_reason));
+                    continue;
+                }
+
+                var apply_success = false;
+                var validation_pass = false;
+                var reason: []const u8 = "unknown";
+
+                if (task.expect.proposal_only) {
+                    apply_success = true;
+                    validation_pass = true;
+                    reason = "proposal contract satisfied";
                 } else {
-                    const ok, const why = postconditionOk(allocator, io, eval_ws.root, task.expect) catch .{ false, "postcondition check failed" };
-                    validation_pass = ok;
-                    reason = why;
+                    apply_success = applyProposalInPlace(allocator, io, eval_ws.root, proposal_rel) catch false;
+                    if (!apply_success) {
+                        reason = "proposal failed transaction apply";
+                    } else {
+                        const ok, const why = postconditionOk(allocator, io, eval_ws.root, task.expect) catch .{ false, "postcondition check failed" };
+                        validation_pass = ok;
+                        reason = why;
+                    }
                 }
-            }
 
-            const steps_count = result.steps.len;
-            if (steps_count < task.expect.min_steps) {
-                try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "insufficient tool exploration"));
-                continue;
-            }
-            if (task.expect.min_ledger_entries > 0) {
-                const ledger_ok = sessionLedgerHasEntries(allocator, io, result.session_id, task.expect.min_ledger_entries) catch false;
-                if (!ledger_ok) {
-                    try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "session task ledger missing or too small"));
+                const steps_count = result.steps.len;
+                if (steps_count < task.expect.min_steps) {
+                    try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "insufficient tool exploration"));
                     continue;
                 }
-            }
-            if (task.expect.context_recovery) {
-                const recovery_ok = sessionEventsContain(allocator, io, result.session_id, "context_compacted") catch false;
-                if (!recovery_ok) {
-                    try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "missing context recovery compaction event"));
+                if (task.expect.min_ledger_entries > 0) {
+                    const ledger_ok = sessionLedgerHasEntries(allocator, io, result.session_id, task.expect.min_ledger_entries) catch false;
+                    if (!ledger_ok) {
+                        try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "session task ledger missing or too small"));
+                        continue;
+                    }
+                }
+                if (task.expect.context_recovery) {
+                    const recovery_ok = sessionEventsContain(allocator, io, result.session_id, "context_compacted") catch false;
+                    if (!recovery_ok) {
+                        try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "missing context recovery compaction event"));
+                        continue;
+                    }
+                }
+                if (task.expect.expect_repair and result.repair_attempts == 0) {
+                    try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "expected repair loop did not run"));
                     continue;
                 }
-            }
-            if (task.expect.expect_repair and result.repair_attempts == 0) {
-                try records.append(allocator, try makeRecord(allocator, task.id, rep_u32, provider_name, model_name, latency_ms, true, true, apply_success, validation_pass, false, steps_count, result.repair_attempts, result.usage, "expected repair loop did not run"));
-                continue;
-            }
 
-            const success = apply_success and validation_pass;
-            token_total += @intCast(result.usage.total_tokens);
-            try records.append(allocator, try makeRecord(
-                allocator,
-                task.id,
-                rep_u32,
-                provider_name,
-                model_name,
-                latency_ms,
-                true,
-                true,
-                apply_success,
-                validation_pass,
-                success,
-                steps_count,
-                result.repair_attempts,
-                result.usage,
-                reason,
-            ));
+                const success = apply_success and validation_pass;
+                token_total += @intCast(result.usage.total_tokens);
+                try records.append(allocator, try makeRecord(
+                    allocator,
+                    task.id,
+                    rep_u32,
+                    provider_name,
+                    model_name,
+                    latency_ms,
+                    true,
+                    true,
+                    apply_success,
+                    validation_pass,
+                    success,
+                    steps_count,
+                    result.repair_attempts,
+                    result.usage,
+                    reason,
+                ));
+            }
         }
-    }
+    } // end provider loop
 
     persistRecords(allocator, io, out_path, records.items) catch return error.WorkspaceFailed;
 
@@ -394,12 +428,14 @@ pub fn run(
 
     const generated_at = timestampIsoUtc(allocator, io) catch try allocator.dupe(u8, "");
     defer allocator.free(generated_at);
-    const provider_model = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, model_name });
+    const providers_joined = if (provider_list.items.len == 1) provider_list.items[0] else "multi";
+    const model_name = flags.model orelse "default";
+    const provider_model = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ providers_joined, model_name });
     defer allocator.free(provider_model);
 
     var summary = Summary{
         .generated_at = generated_at,
-        .provider = provider_name,
+        .provider = providers_joined,
         .model = model_name,
         .provider_model = provider_model,
         .corpus = corpus_path,
