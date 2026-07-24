@@ -41,6 +41,89 @@ static pthread_mutex_t g_ft_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_font_family[256] = "sans-serif";
 static int g_font_weight = 0;
 
+/* Glyph cache — avoids re-rendering the same glyph every frame.
+ * Keyed by (codepoint, font_size). Stores rendered bitmap + metrics.
+ * This is the #1 performance fix: without it, every drawText call
+ * re-runs FT_Load_Glyph + FT_Render_Glyph which is extremely slow. */
+#define GLYPH_CACHE_SIZE 4096
+typedef struct {
+    unsigned long cp;       /* codepoint, 0 = empty slot */
+    unsigned int font_size; /* pixel size */
+    int bitmap_left;
+    int bitmap_top;
+    int advance_x;          /* in pixels (already >> 6) */
+    unsigned int width;
+    unsigned int rows;
+    unsigned char* data;    /* owned, malloc'd */
+} CachedGlyph;
+static CachedGlyph g_glyph_cache[GLYPH_CACHE_SIZE];
+static int g_glyph_cache_init = 0;
+
+static void init_glyph_cache(void) {
+    if (g_glyph_cache_init) return;
+    for (int i = 0; i < GLYPH_CACHE_SIZE; i++) {
+        g_glyph_cache[i].cp = 0;
+        g_glyph_cache[i].data = NULL;
+    }
+    g_glyph_cache_init = 1;
+}
+
+/* Simple hash: cp ^ font_size ^ (cp >> 8) */
+static unsigned int glyph_cache_hash(unsigned long cp, unsigned int fs) {
+    return (unsigned int)((cp ^ (cp >> 8) ^ (fs * 2654435761u)) % GLYPH_CACHE_SIZE);
+}
+
+static CachedGlyph* glyph_cache_lookup(unsigned long cp, unsigned int fs) {
+    if (!g_glyph_cache_init) init_glyph_cache();
+    unsigned int start = glyph_cache_hash(cp, fs);
+    for (int i = 0; i < 8; i++) {
+        unsigned int idx = (start + i) % GLYPH_CACHE_SIZE;
+        if (g_glyph_cache[idx].cp == cp && g_glyph_cache[idx].font_size == fs) {
+            return &g_glyph_cache[idx];
+        }
+        if (g_glyph_cache[idx].cp == 0) return NULL;
+    }
+    return NULL;
+}
+
+static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, FT_GlyphSlot slot) {
+    if (!g_glyph_cache_init) init_glyph_cache();
+    unsigned int start = glyph_cache_hash(cp, fs);
+    for (int i = 0; i < 8; i++) {
+        unsigned int idx = (start + i) % GLYPH_CACHE_SIZE;
+        if (g_glyph_cache[idx].cp == 0 || (g_glyph_cache[idx].cp == cp && g_glyph_cache[idx].font_size == fs)) {
+            if (g_glyph_cache[idx].data) { free(g_glyph_cache[idx].data); }
+            CachedGlyph* g = &g_glyph_cache[idx];
+            g->cp = cp;
+            g->font_size = fs;
+            g->bitmap_left = slot->bitmap_left;
+            g->bitmap_top = slot->bitmap_top;
+            g->advance_x = (int)(slot->advance.x >> 6);
+            g->width = slot->bitmap.width;
+            g->rows = slot->bitmap.rows;
+            size_t sz = (size_t)g->width * g->rows;
+            g->data = (unsigned char*)malloc(sz ? sz : 1);
+            if (g->data && sz) memcpy(g->data, slot->bitmap.buffer, sz);
+            return g;
+        }
+    }
+    /* Cache line full — evict slot at start */
+    unsigned int idx = start % GLYPH_CACHE_SIZE;
+    if (g_glyph_cache[idx].data) free(g_glyph_cache[idx].data);
+    CachedGlyph* g = &g_glyph_cache[idx];
+    g->cp = cp;
+    g->font_size = fs;
+    g->bitmap_left = slot->bitmap_left;
+    g->bitmap_top = slot->bitmap_top;
+    g->advance_x = (int)(slot->advance.x >> 6);
+    g->width = slot->bitmap.width;
+    g->rows = slot->bitmap.rows;
+    size_t sz = (size_t)g->width * g->rows;
+    g->data = (unsigned char*)malloc(sz ? sz : 1);
+    if (g->data && sz) memcpy(g->data, slot->bitmap.buffer, sz);
+    return g;
+}
+
 static int g_clip_active = 0;
 static int g_clip_x = 0, g_clip_y = 0, g_clip_w = 0, g_clip_h = 0;
 
@@ -123,7 +206,24 @@ static int load_font(void) {
     FcChar8* font_file = NULL;
     if (match) FcPatternGetString(match, FC_FILE, 0, &font_file);
     int ok = 0;
-    if (font_file) { if (FT_New_Face(g_ft, (const char*)font_file, 0, &g_face) == 0) ok = 1; }
+    if (font_file) {
+        if (FT_New_Face(g_ft, (const char*)font_file, 0, &g_face) == 0) {
+            ok = 1;
+            /* Enable auto-hinting for sharper text at small sizes.
+             * FT_LOAD_TARGET_NORMAL uses anti-aliased rendering. */
+            if (FT_HAS_HORIZONTAL(g_face)) {
+                /* Select charmap if available */
+                FT_Select_Charmap(g_face, FT_ENCODING_UNICODE);
+            }
+        }
+    }
+    /* Clear glyph cache when font changes */
+    if (g_glyph_cache_init) {
+        for (int i = 0; i < GLYPH_CACHE_SIZE; i++) {
+            if (g_glyph_cache[i].data) { free(g_glyph_cache[i].data); g_glyph_cache[i].data = NULL; }
+            g_glyph_cache[i].cp = 0;
+        }
+    }
     if (match) FcPatternDestroy(match);
     FcPatternDestroy(pat);
     FcConfigDestroy(cfg);
@@ -194,7 +294,8 @@ static void draw_glyph_bitmap(FT_Bitmap* bitmap, int dx, int dy, float r, float 
 static void render_text_run(const char* text, size_t len, float x, float y, float font_size, float r, float g, float b, float a) {
     if (len == 0 || !g_face) return;
     pthread_mutex_lock(&g_ft_lock);
-    FT_Set_Pixel_Sizes(g_face, 0, (unsigned int)(font_size + 0.5f));
+    unsigned int fs_px = (unsigned int)(font_size + 0.5f);
+    FT_Set_Pixel_Sizes(g_face, 0, fs_px);
     float pen_x = x;
     float pen_y = y + (g_face->size->metrics.ascender >> 6);
     size_t i = 0;
@@ -207,11 +308,26 @@ static void render_text_run(const char* text, size_t len, float x, float y, floa
         else if ((c & 0xF8) == 0xF0 && i+3 < len) { cp = ((c&0x07)<<18)|(((uint8_t)text[i+1]&0x3F)<<12)|(((uint8_t)text[i+2]&0x3F)<<6)|((uint8_t)text[i+3]&0x3F); adv = 4; }
         else { adv = 1; }
         i += adv;
-        FT_UInt gi = FT_Get_Char_Index(g_face, cp);
-        if (FT_Load_Glyph(g_face, gi, FT_LOAD_RENDER) != 0) continue;
-        FT_GlyphSlot slot = g_face->glyph;
-        draw_glyph_bitmap(&slot->bitmap, (int)pen_x + slot->bitmap_left, (int)pen_y - slot->bitmap_top, r, g, b, a);
-        pen_x += (float)(slot->advance.x >> 6);
+
+        /* Glyph cache lookup — avoids FT_Load_Glyph + FT_Render_Glyph on every call */
+        CachedGlyph* cg = glyph_cache_lookup(cp, fs_px);
+        if (!cg) {
+            FT_UInt gi = FT_Get_Char_Index(g_face, cp);
+            if (FT_Load_Glyph(g_face, gi, FT_LOAD_RENDER) != 0) continue;
+            cg = glyph_cache_put(cp, fs_px, g_face->glyph);
+            if (!cg) continue;
+        }
+        /* Draw from cached bitmap */
+        if (cg->data && cg->width > 0 && cg->rows > 0) {
+            FT_Bitmap tmp_bm;
+            tmp_bm.rows = cg->rows;
+            tmp_bm.width = cg->width;
+            tmp_bm.pitch = (int)cg->width;
+            tmp_bm.buffer = cg->data;
+            tmp_bm.pixel_mode = FT_PIXEL_MODE_GRAY;
+            draw_glyph_bitmap(&tmp_bm, (int)pen_x + cg->bitmap_left, (int)pen_y - cg->bitmap_top, r, g, b, a);
+        }
+        pen_x += (float)cg->advance_x;
     }
     pthread_mutex_unlock(&g_ft_lock);
 }
@@ -245,7 +361,8 @@ void forge_backend_draw_svg(const char* svg, float x, float y, float w, float h,
 float forge_backend_measure_text_width(const char* text, size_t len, float font_size) {
     if (!text || len == 0 || !g_face) return 0.0f;
     pthread_mutex_lock(&g_ft_lock);
-    FT_Set_Pixel_Sizes(g_face, 0, (unsigned int)(font_size + 0.5f));
+    unsigned int fs_px = (unsigned int)(font_size + 0.5f);
+    FT_Set_Pixel_Sizes(g_face, 0, fs_px);
     float width = 0.0f;
     size_t i = 0;
     while (i < len) {
@@ -257,9 +374,15 @@ float forge_backend_measure_text_width(const char* text, size_t len, float font_
         else if ((c & 0xF8) == 0xF0 && i+3 < len) { cp = ((c&0x07)<<18)|(((uint8_t)text[i+1]&0x3F)<<12)|(((uint8_t)text[i+2]&0x3F)<<6)|((uint8_t)text[i+3]&0x3F); adv = 4; }
         else { adv = 1; }
         i += adv;
-        FT_UInt gi = FT_Get_Char_Index(g_face, cp);
-        if (FT_Load_Glyph(g_face, gi, FT_LOAD_DEFAULT) != 0) continue;
-        width += (float)(g_face->glyph->advance.x >> 6);
+        /* Use glyph cache for advance width — avoids FT_Load_Glyph on measure */
+        CachedGlyph* cg = glyph_cache_lookup(cp, fs_px);
+        if (cg) {
+            width += (float)cg->advance_x;
+        } else {
+            FT_UInt gi = FT_Get_Char_Index(g_face, cp);
+            if (FT_Load_Glyph(g_face, gi, FT_LOAD_DEFAULT) != 0) continue;
+            width += (float)(g_face->glyph->advance.x >> 6);
+        }
     }
     pthread_mutex_unlock(&g_ft_lock);
     return width;
