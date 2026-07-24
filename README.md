@@ -38,11 +38,16 @@ editor buffer or filesystem.
 | M4 | Native IDE editing foundation | Implemented; hardening |
 | M5 | AI-first IDE vertical slice | Implemented; parity pending |
 | M6 | Language intelligence and dogfood alpha | In progress |
-| M7 | Beta hardening and extensibility decision | Not started |
+| M7 | Cursor parity (inline completion, Composer, @mentions, chat REPL) | Planned (RFC-0013, RFC-0017) |
+| M8 | Kiro parity (spec-driven IDE UX, validation hooks, agent hooks) | Planned (RFC-0014) |
+| M9 | Antigravity parity (agent timeline, background runs, multi-agent) | Planned (RFC-0015) |
+| M10 | Provider hardening (capability metadata, smart router, Anthropic) | Planned (RFC-0016) |
 
 See the [Project Roadmap](docs/roadmap/ROADMAP.md) for detailed checklists and
 exit criteria. See the [Project Vision](docs/PROJECT_VISION.md) for the product
-vision and architectural principles.
+vision and architectural principles. See the
+[AI Workflow Evaluation](docs/evaluation/AI_WORKFLOW_EVALUATION.md) for the
+gap analysis vs Cursor / Kiro / Antigravity and the phased parity plan.
 
 ## Repository layout
 
@@ -116,9 +121,17 @@ To verify the complete local foundation in one command, run:
 - [Project vision](docs/PROJECT_VISION.md)
 - [Delivery roadmap](docs/roadmap/ROADMAP.md)
 - [Capability matrix](docs/CAPABILITY_MATRIX.md)
+- [AI Workflow Evaluation — Cursor/Kiro/Antigravity gap analysis](docs/evaluation/AI_WORKFLOW_EVALUATION.md)
+- [Cursor 2 Master Plan](docs/plan/FORGE_CURSOR2_MASTER_PLAN.md)
+- [AI Flow Improvements](docs/plan/FORGE_AI_FLOW_IMPROVEMENTS.md)
 - [RFC-0001: project structure](docs/rfc/RFC-0001-project-structure.md)
 - [RFC-0002: runtime ownership](docs/rfc/RFC-0002-runtime-ownership.md)
 - [RFC-0003: commands, events, and workspace edits](docs/rfc/RFC-0003-commands-events-workspace-edits.md)
+- [RFC-0013: inline tab completion (Cursor parity)](docs/rfc/RFC-0013-inline-tab-completion.md)
+- [RFC-0014: spec-driven development (Kiro parity)](docs/rfc/RFC-0014-spec-driven-development.md)
+- [RFC-0015: agent timeline & background runs (Antigravity parity)](docs/rfc/RFC-0015-agent-timeline-background-runs.md)
+- [RFC-0016: provider capability & smart router](docs/rfc/RFC-0016-provider-capability-smart-router.md)
+- [RFC-0017: CLI chat REPL & mentions](docs/rfc/RFC-0017-cli-chat-repl-mentions.md)
 
 ## Contributing
 

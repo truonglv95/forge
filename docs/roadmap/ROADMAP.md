@@ -684,3 +684,83 @@ changes the dependency graph:
 The first product checkpoint is not “the IDE window opens.” It is: **a real
 change can be proposed, reviewed, verified, and undone safely, and the evidence
 shows the workflow saves meaningful developer effort.**
+
+## 18. Cursor / Kiro / Antigravity parity milestones (M7-M10)
+
+See [AI Workflow Evaluation](../evaluation/AI_WORKFLOW_EVALUATION.md) for full
+gap analysis. Phased rollout to reach parity with Cursor, Kiro, and
+Antigravity while preserving Forge's safety/observability/CLI-parity/native-perf
+advantages.
+
+### M7 — Cursor parity (4-6 weeks)
+
+| # | Work item | RFC |
+|---|---|---|
+| 7.1 | Wire `inline_completion.zig` into IDE ghost text | RFC-0013 |
+| 7.2 | `forge complete` CLI command | RFC-0013 |
+| 7.3 | Composer mode (Cmd+K inline multi-file edit) | — |
+| 7.4 | `@mention` parser + picker (`@file`, `@symbol`, `@web`) | RFC-0017 |
+| 7.5 | `forge chat` interactive REPL with slash commands | RFC-0017 |
+| 7.6 | Streaming output with token counter + cost | RFC-0017 |
+
+Exit gate: inline completion p50 < 500ms, acceptance rate > 20%; `forge chat`
+survives 30-min continuous session.
+
+### M8 — Kiro parity (4-5 weeks)
+
+| # | Work item | RFC |
+|---|---|---|
+| 8.1 | `specs/` directory convention + templates | RFC-0014 |
+| 8.2 | Spec metadata `.forge/specs/<id>.json` + `spec link` | RFC-0014 |
+| 8.3 | `forge spec validate` + `forge check` validation hooks | RFC-0014 |
+| 8.4 | Agent hooks: spec scan + context include + proposal metadata | RFC-0014 |
+| 8.5 | `forge spec trace` JSONL accumulation | RFC-0014 |
+| 8.6 | IDE: spec list panel, spec editor, spec trace view | RFC-0014 |
+| 8.7 | `forge spec implement <id>` end-to-end | RFC-0014 |
+
+Exit gate: 5 specs implemented end-to-end using Forge; `forge check` validates
+specs and warns on stale approved specs.
+
+### M9 — Antigravity parity (5-7 weeks)
+
+| # | Work item | RFC |
+|---|---|---|
+| 9.1 | Background agent runtime: `forge agent run --background` | RFC-0015 |
+| 9.2 | Approval gates + `forge agent approve/reject` + notifications | RFC-0015 |
+| 9.3 | Crash recovery + zombie detection + workspace locking | RFC-0015 |
+| 9.4 | Agent timeline UI component (render + interactions) | RFC-0015 |
+| 9.5 | Multi-agent panel (planner/reviewer/implementer cards) | RFC-0015 |
+| 9.6 | Session branching: `forge agent branch <id> --at-step N` | RFC-0015 |
+| 9.7 | Notification system: toast + center + CLI `--follow` | RFC-0015 |
+
+Exit gate: 3 concurrent background runs without workspace corruption; timeline
+UI renders all step types; multi-agent panel shows main + subagents.
+
+### M10 — Provider hardening (3-4 weeks, parallel with M7-M9)
+
+| # | Work item | RFC |
+|---|---|---|
+| 10.1 | Provider capability struct + builtin_models table | RFC-0016 |
+| 10.2 | `forge providers list` + `forge models list` + `forge models route` | RFC-0016 |
+| 10.3 | Anthropic Claude provider (provider + tool_transport + SSE) | RFC-0016 |
+| 10.4 | Smart model router integrated into `route_resolver.zig` | RFC-0016 |
+| 10.5 | Retry với jitter + failover polish | RFC-0016 |
+| 10.6 | Provider comparison eval: same task across 3+ providers | RFC-0016 |
+
+Exit gate: `forge providers list --json` returns 6+ providers with capability;
+Anthropic Claude provider works with tool use; smart router auto-routes in
+`forge ask` when `--provider auto`.
+
+### M7-M10 cross-cutting definition of done
+
+In addition to per-milestone exit gates:
+
+- Every new RFC feature ships with unit tests + integration tests + fixtures.
+- CLI and IDE parity: same task produces same outcome on both surfaces.
+- Safety invariants preserved: every mutation goes through transaction, every
+  proposal has hash precondition, every apply is undoable.
+- Documentation updated: Capability Matrix, ROADMAP, AI Workflow Evaluation.
+- Eval harness extended for each new feature class (inline, spec, background,
+  provider routing).
+- Dogfood: at least 1 real Forge feature shipped using only Forge, including
+  the new capability being tested.
