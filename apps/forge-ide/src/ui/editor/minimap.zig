@@ -45,8 +45,9 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
     const visible_minimap_lines = @as(usize, @intFromFloat(minimap_h / minimap_line_height));
 
     // Which source lines are visible (based on scroll offset).
-    const scroll_offset = editor_scroll.offset;
-    const first_visible_line: usize = @intFromFloat(@max(0, scroll_offset / 1.0));
+    const scroll_offset = wb.editor_scroll_y;
+    const line_height_px = editor_scroll.lineHeight(theme);
+    const first_visible_line: usize = @intFromFloat(@max(0, scroll_offset / line_height_px));
     const line_offset = if (total_lines > visible_minimap_lines) first_visible_line else 0;
 
     var y = minimap_y;
@@ -82,7 +83,7 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
             const word_len = word_end - col;
             const seg_x = minimap_x + 3 + @as(f32, @floatFromInt(col)) * char_width;
             const seg_w = @as(f32, @floatFromInt(word_len)) * char_width;
-            const seg_color = .{
+            const seg_color: renderer.Color = .{
                 .r = fg.r * (0.4 + density * 0.6),
                 .g = fg.g * (0.4 + density * 0.6),
                 .b = fg.b * (0.4 + density * 0.6),
@@ -100,12 +101,13 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
     if (total_lines > visible_minimap_lines) {
         const viewport_h = @as(f32, @floatFromInt(visible_minimap_lines)) * minimap_line_height;
         const viewport_y = minimap_y + @as(f32, @floatFromInt(first_visible_line)) * minimap_line_height;
-        renderer.Renderer.drawRect(minimap_x, viewport_y, minimap_width, viewport_h, .{
+        const viewport_overlay: renderer.Color = .{
             .r = viewport_bg.r,
             .g = viewport_bg.g,
             .b = viewport_bg.b,
             .a = viewport_indicator_alpha,
-        });
+        };
+        renderer.Renderer.drawRect(minimap_x, viewport_y, minimap_width, viewport_h, viewport_overlay);
         // Accent border on left of viewport
         renderer.Renderer.drawRect(minimap_x, viewport_y, 2, viewport_h, accent);
     }

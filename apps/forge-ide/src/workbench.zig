@@ -165,6 +165,9 @@ pub const Workbench = struct {
     sidebar_visible: bool = true,
     bottom_panel_visible: bool = true,
     agent_panel_visible: bool = true,
+    // Animation state for panel transitions
+    sidebar_anim: @import("ui/core/animations.zig").PanelAnimation = .{ .width = .init(250.0), .opacity = .init(1.0) },
+    bottom_panel_anim: @import("ui/core/animations.zig").PanelAnimation = .{ .width = .init(@import("ui/core/layout.zig").task_panel_height), .opacity = .init(1.0) },
     welcome_visible: bool = false,
     nav_history: navigation_history_mod.History = undefined,
     terminal_selection: ?@import("ui/panel/terminal_panel.zig").Selection = null,
@@ -225,6 +228,7 @@ pub const Workbench = struct {
     goto_bar: editor_find_mod.GotoBar,
     rename_bar: editor_find_mod.RenameBar,
     user_settings: settings_mod.Settings = .{},
+    minimap_enabled: bool = true,
     ide_launcher: []const u8 = "forge-ide",
     environ_map: ?*const std.process.Environ.Map = null,
 
@@ -433,6 +437,7 @@ pub const Workbench = struct {
             self.logBackgroundError("Persist AI panel font size", err);
         };
         self.agent_ui.edit_mode = self.user_settings.agent_edit_mode;
+        self.minimap_enabled = self.user_settings.minimap_enabled;
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
@@ -600,12 +605,22 @@ pub const Workbench = struct {
         switch (action) {
             .toggle_sidebar => {
                 self.sidebar_visible = !self.sidebar_visible;
+                if (self.sidebar_visible) {
+                    self.sidebar_anim.expand(self.sidebar_width);
+                } else {
+                    self.sidebar_anim.collapse(0.0);
+                }
                 try self.setStatus(if (self.sidebar_visible) "Sidebar shown" else "Sidebar hidden");
             },
             .nav_back => try self.navBack(),
             .nav_forward => try self.navForward(),
             .toggle_bottom_panel => {
                 self.bottom_panel_visible = !self.bottom_panel_visible;
+                if (self.bottom_panel_visible) {
+                    self.bottom_panel_anim.expand(self.bottom_panel_height);
+                } else {
+                    self.bottom_panel_anim.collapse(0.0);
+                }
                 try self.setStatus(if (self.bottom_panel_visible) "Panel shown" else "Panel hidden");
             },
             .toggle_agent => {
@@ -1038,6 +1053,7 @@ pub const Workbench = struct {
         self.user_settings.deinit(self.allocator);
         self.user_settings = settings_mod.load(self.allocator, self.io, self.workspace_root) catch .{};
         self.agent_ui.edit_mode = self.user_settings.agent_edit_mode;
+        self.minimap_enabled = self.user_settings.minimap_enabled;
         settings_mod.applyToTheme(self.user_settings, &self.theme);
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
@@ -1053,6 +1069,13 @@ pub const Workbench = struct {
         try self.reloadUserSettings();
         const msg = if (next) "Word wrap enabled" else "Word wrap disabled";
         try self.setStatus(msg);
+    }
+
+    pub fn toggleMinimap(self: *Workbench) void {
+        self.minimap_enabled = !self.minimap_enabled;
+        self.user_settings.minimap_enabled = self.minimap_enabled;
+        const msg = if (self.minimap_enabled) "Minimap enabled" else "Minimap disabled";
+        self.setStatus(msg) catch {};
     }
 
     pub fn setAiPanelFontSize(self: *Workbench, font_size: f32) !void {
@@ -1715,6 +1738,10 @@ pub const Workbench = struct {
 
     pub fn tickFrame(self: *Workbench, dt: f32) !void {
         self.workspace_symbol_picker.tick(dt);
+        // Update panel animations (subtle transitions on collapse/expand).
+        const dt_ms = dt * 1000.0;
+        self.sidebar_anim.update(dt_ms);
+        self.bottom_panel_anim.update(dt_ms);
         try @import("workbench/agent_ops.zig").flushAgentUi(self);
         _ = try @import("workbench/search_ops.zig").flushSearchResults(self);
         if (try @import("workbench/git_ops.zig").flushGitStatusRefresh(self)) {

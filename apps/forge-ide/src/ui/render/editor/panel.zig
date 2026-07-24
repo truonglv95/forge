@@ -12,6 +12,7 @@ const viewport = @import("viewport.zig");
 const overlays = @import("overlays.zig");
 const breadcrumbs = @import("breadcrumbs.zig");
 const welcome = @import("welcome.zig");
+const minimap = @import("../../editor/minimap.zig");
 
 pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, editor_w: f32, editor_h: f32, _: f32) void {
     wb.conflict_action_rects.clearRetainingCapacity();
@@ -181,5 +182,11 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
     if (wb.focused_panel == .editor) {
         overlays.drawHoverTooltip(wb, wb.paneOriginX(editor_x, editor_w, wb.focusedPane()), pane_w);
     }
+
+    // Minimap — scaled-down overview on the right side of the editor.
+    if (editor_buf != null and wb.minimap_enabled) {
+        minimap.drawMinimap(wb, editor_x, editor_w, editor_h);
+    }
+
     renderer.Renderer.clearClipRect();
 }

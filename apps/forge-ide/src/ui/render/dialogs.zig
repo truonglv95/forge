@@ -68,8 +68,8 @@ pub fn drawPalette(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32
     var query_buf: [320:0]u8 = undefined;
     @memcpy(query_buf[0..wb.palette.query_len], wb.palette.querySlice());
     query_buf[wb.palette.query_len] = 0;
-    // Search icon
-    renderer.Renderer.drawSvg(renderer.icons.search, box_x + 18, box_y + 42, 16, 16, accent);
+    // Search icon (forge_icons)
+    renderer.Renderer.drawSvg(renderer.forge_icons.search, box_x + 18, box_y + 42, 16, 16, accent);
     renderer.Renderer.drawText(@ptrCast(&query_buf), box_x + 42, box_y + 43, 14.0, text_primary);
 
     // Cursor indicator

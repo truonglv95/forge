@@ -1,5 +1,6 @@
 const std = @import("std");
 const renderer = @import("forge-renderer");
+const forge_icons = renderer.forge_icons;
 const Workbench = @import("../../../workbench.zig").Workbench;
 const editor_scroll = @import("../../../ui/editor/editor_scroll.zig");
 const syntax = @import("syntax.zig");
@@ -52,11 +53,11 @@ pub fn draw(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) void {
     drawText("Start", left_x, y, 11, muted);
     y += 22;
 
-    drawAction(left_x, y, col_w, renderer.icons.file_directory, "Open folder", "forge .", accent, row_bg, border, text, secondary);
+    drawAction(left_x, y, col_w, forge_icons.folder, "Open folder", "forge .", accent, row_bg, border, text, secondary);
     y += 46;
-    drawAction(left_x, y, col_w, renderer.icons.file, "Open file", "forge /path/to/file", accent, row_bg, border, text, secondary);
+    drawAction(left_x, y, col_w, forge_icons.file, "Open file", "forge /path/to/file", accent, row_bg, border, text, secondary);
     y += 46;
-    drawAction(left_x, y, col_w, renderer.icons.terminal, "Clone repo", "git clone <url> && forge <dir>", accent, row_bg, border, text, secondary);
+    drawAction(left_x, y, col_w, forge_icons.terminal, "Clone repo", "git clone <url> && forge <dir>", accent, row_bg, border, text, secondary);
     y += 64;
 
     // Recent
@@ -148,7 +149,7 @@ fn drawRecent(
 ) void {
     renderer.Renderer.drawRoundedRect(x, y, w, 38, 6, bg);
     renderer.Renderer.drawRect(x, y + 37, w, 1, border);
-    renderer.Renderer.drawSvg(renderer.icons.repo, x + 12, y + 10, 17, 17, accent);
+    renderer.Renderer.drawSvg(forge_icons.repo, x + 12, y + 10, 17, 17, accent);
     drawText(name, x + 42, y + 8, 13, text);
     drawText(path, x + @min(240, w * 0.42), y + 9, 12, muted);
 }

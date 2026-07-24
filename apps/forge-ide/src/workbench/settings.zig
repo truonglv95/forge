@@ -9,6 +9,7 @@ pub const Settings = struct {
     ai_panel_font_size: f32 = @import("../ui/agent/metrics.zig").markdown.default_body_font_size,
     word_wrap: bool = false,
     format_on_save: bool = false,
+    minimap_enabled: bool = true,
     agent_edit_mode: agent_edit_mode.Mode = .auto_edit,
     terminal_shell: ?[]const u8 = null,
     // Ghost text / inline AI completion settings ([ghost_completion] section)

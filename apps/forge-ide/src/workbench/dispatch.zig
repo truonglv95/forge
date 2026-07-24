@@ -440,6 +440,7 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .restore_session_state => try wb.restoreSessionTabs(),
         .settings_reload => try wb.reloadUserSettings(),
         .settings_toggle_word_wrap => try wb.toggleWordWrap(),
+        .settings_toggle_minimap => wb.toggleMinimap(),
         .open_recent_workspace => |index| try wb.openRecentWorkspace(index),
         .problem_quick_fix => try wb.quickFixAtCursor(null, state.last_mouse_x, state.last_mouse_y),
         .debug_stack_goto => |index| try @import("../workbench/debug_ops.zig").gotoDebugStackFrame(wb, index),

@@ -62,6 +62,7 @@ pub const Palette = struct {
             .{ .id = "settings.open", .title = "Preferences: Open User Settings", .category = "View", .command = .open_settings },
             .{ .id = "settings.reload", .title = "Preferences: Reload Settings", .category = "View", .command = .settings_reload },
             .{ .id = "settings.word_wrap", .title = "Preferences: Toggle Word Wrap", .category = "View", .command = .settings_toggle_word_wrap },
+            .{ .id = "settings.minimap", .title = "Preferences: Toggle Minimap", .category = "View", .command = .settings_toggle_minimap },
             .{ .id = "theme.reload", .title = "Theme: Reload from forge.toml", .category = "View", .command = .reload_theme },
             .{ .id = "view.ide", .title = "View: IDE Mode", .category = "View", .command = .{ .set_shell_mode = .ide } },
             .{ .id = "view.agent", .title = "View: Agent Window", .category = "View", .command = .{ .set_shell_mode = .agent_window } },

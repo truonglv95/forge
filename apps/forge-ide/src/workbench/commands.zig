@@ -124,6 +124,7 @@ pub const Command = union(enum) {
     restore_session_state: void,
     settings_reload: void,
     settings_toggle_word_wrap: void,
+    settings_toggle_minimap: void,
     open_recent_workspace: usize,
     problem_quick_fix: void,
     debug_stack_goto: usize,
