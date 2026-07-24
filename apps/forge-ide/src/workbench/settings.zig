@@ -10,6 +10,7 @@ pub const Settings = struct {
     word_wrap: bool = false,
     format_on_save: bool = false,
     minimap_enabled: bool = true,
+    theme_preset: workspace.ThemePreset = .dark,
     agent_edit_mode: agent_edit_mode.Mode = .auto_edit,
     terminal_shell: ?[]const u8 = null,
     // Ghost text / inline AI completion settings ([ghost_completion] section)
@@ -114,6 +115,9 @@ fn parseSettingsContent(settings: *Settings, allocator: std.mem.Allocator, conte
             } else if (std.mem.eql(u8, key, "line_height")) {
                 const parsed = std.fmt.parseFloat(f32, value) catch continue;
                 if (parsed >= 1.0 and parsed <= 2.5) settings.line_height = parsed;
+            } else if (std.mem.eql(u8, key, "preset")) {
+                const unquoted = parseQuoted(value) orelse value;
+                if (workspace.ThemePreset.parse(unquoted)) |preset| settings.theme_preset = preset;
             }
         } else if (std.mem.eql(u8, section, "ai_panel")) {
             if (std.mem.eql(u8, key, "font_size")) {
@@ -186,6 +190,17 @@ pub fn writeEditorLineHeight(
     const value_text = try std.fmt.allocPrint(allocator, "{d:.2}", .{value});
     defer allocator.free(value_text);
     try writeThemeValue(allocator, io, root, "line_height", value_text);
+}
+
+pub fn writeThemePreset(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    preset: workspace.ThemePreset,
+) !void {
+    const value_text = try std.fmt.allocPrint(allocator, "\"{s}\"", .{@tagName(preset)});
+    defer allocator.free(value_text);
+    try writeThemeValue(allocator, io, root, "preset", value_text);
 }
 
 fn writeThemeValue(

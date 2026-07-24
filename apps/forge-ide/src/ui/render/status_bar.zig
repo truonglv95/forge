@@ -88,7 +88,7 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
                 if (is_hover) {
                     renderer.Renderer.drawRect(left_x, bar_y, branch_w, bar_height, .{ .r = 0.2, .g = 0.22, .b = 0.28, .a = 1.0 });
                 }
-                renderer.Renderer.drawSvg(renderer.icons.git_branch, left_x + 8, bar_y + 4, 14, 14, theme_mod.color(theme.colors.text_secondary));
+                renderer.Renderer.drawSvg(renderer.forge_icons.branch, left_x + 8, bar_y + 4, 14, 14, theme_mod.color(theme.colors.text_secondary));
                 renderer.Renderer.drawText(branch, left_x + 8 + 18, bar_y + 4, font_size, theme_mod.color(theme.colors.text_secondary));
                 wb.status_bar_items[wb.status_bar_item_count] = .{
                     .icon = "branch",
@@ -112,7 +112,7 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
                     if (is_sync_hover) {
                         renderer.Renderer.drawRect(left_x, bar_y, sync_w, bar_height, .{ .r = 0.2, .g = 0.22, .b = 0.28, .a = 1.0 });
                     }
-                    renderer.Renderer.drawSvgRotated(renderer.icons.sync, left_x + 8, bar_y + 4, 14, 14, wb.sync_icon_angle, theme_mod.color(theme.colors.text_secondary));
+                    renderer.Renderer.drawSvgRotated(renderer.forge_icons.sync, left_x + 8, bar_y + 4, 14, 14, wb.sync_icon_angle, theme_mod.color(theme.colors.text_secondary));
                     renderer.Renderer.drawText(sync_label, left_x + 8 + 18, bar_y + 4, font_size, theme_mod.color(theme.colors.text_secondary));
                     wb.status_bar_items[wb.status_bar_item_count] = .{
                         .icon = "sync",

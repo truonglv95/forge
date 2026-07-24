@@ -43,13 +43,13 @@ pub fn drawActivityBar(wb: *Workbench, w: f32, alloc: std.mem.Allocator) void {
             renderer.Color{ .r = 0.65, .g = 0.65, .b = 0.65, .a = 1 };
 
         const svg = switch (view) {
-            .explorer => renderer.icons.file_directory,
-            .search => renderer.icons.search,
-            .git => renderer.icons.git_branch,
-            .run => renderer.icons.gear,
-            .extensions => renderer.icons.plus,
-            .ai => renderer.icons.sparkle,
-            .outline => renderer.icons.kebab_horizontal,
+            .explorer => renderer.forge_icons.folder,
+            .search => renderer.forge_icons.search,
+            .git => renderer.forge_icons.branch,
+            .run => renderer.forge_icons.gear,
+            .extensions => renderer.forge_icons.extensions,
+            .ai => renderer.forge_icons.sparkle,
+            .outline => renderer.forge_icons.kebab,
         };
 
         var child_node = alloc.create(renderer.layout.Node) catch return;

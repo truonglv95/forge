@@ -1088,6 +1088,11 @@ pub const Workbench = struct {
         @import("theme_loader.zig").syncFontMetrics(&self.theme);
         @import("theme_loader.zig").applyToRenderer(&self.theme);
         @import("theme_loader.zig").applyShellColors(self.theme);
+        // Persist preference
+        self.user_settings.theme_preset = new_preset;
+        settings_mod.writeThemePreset(self.allocator, self.io, self.workspace_root, new_preset) catch |err| {
+            self.logBackgroundError("Persist theme preset", err);
+        };
         const msg = if (new_preset == .dark) "Theme: dark" else "Theme: light";
         self.setStatus(msg) catch {};
     }
