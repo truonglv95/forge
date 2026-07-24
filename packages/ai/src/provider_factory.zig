@@ -6,6 +6,7 @@ const ollama_provider = @import("providers/ollama/provider.zig");
 const openrouter_provider = @import("providers/openrouter/provider.zig");
 const nvidia_provider = @import("providers/nvidia/provider.zig");
 const openai_provider = @import("providers/openai/provider.zig");
+const anthropic_provider = @import("providers/anthropic/provider.zig");
 const credentials = @import("credentials.zig");
 
 pub const FactoryError = error{
@@ -84,6 +85,10 @@ fn wrapCreateOpenAI(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*con
     return openai_provider.OpenAIProvider.create(allocator, io, environ_map, options);
 }
 
+fn wrapCreateAnthropic(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return anthropic_provider.AnthropicProvider.create(allocator, io, environ_map, options);
+}
+
 const registry = [_]ProviderDef{
     .{ .name = "ollama", .create = wrapCreateOllama, .availability = .ollama_probe },
     .{
@@ -108,6 +113,14 @@ const registry = [_]ProviderDef{
         .availability = .{ .credentials = .{
             .env_vars = &[_][]const u8{"OPENROUTER_API_KEY"},
             .keychain_service = "forge-openrouter",
+        } },
+    },
+    .{
+        .name = "anthropic",
+        .create = wrapCreateAnthropic,
+        .availability = .{ .credentials = .{
+            .env_vars = &[_][]const u8{ "ANTHROPIC_API_KEY", "CLAUDE_API_KEY" },
+            .keychain_service = "forge-anthropic",
         } },
     },
     .{

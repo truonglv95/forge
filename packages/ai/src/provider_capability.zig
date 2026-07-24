@@ -97,6 +97,43 @@ pub const builtin_models = [_]ModelCapability{
         .strengths = &.{ "completion", "code_edit" },
         .effective_context_tokens = 900_000,
     },
+    // Anthropic Claude
+    .{
+        .provider = "anthropic",
+        .model_id = "claude-sonnet-4-5",
+        .display_name = "Claude Sonnet 4.5",
+        .capability = .{
+            .max_context_tokens = 200_000,
+            .supports_tools = true,
+            .supports_streaming = true,
+            .supports_structured_output = false,
+            .returns_usage = true,
+            .returns_finish_reason = true,
+            .price_per_mtok_input = 300,
+            .price_per_mtok_output = 1500,
+            .notes = "Best for agentic coding, tool use",
+        },
+        .strengths = &.{ "code_edit", "planning", "code_review", "agentic" },
+        .effective_context_tokens = 180_000,
+    },
+    .{
+        .provider = "anthropic",
+        .model_id = "claude-haiku-4",
+        .display_name = "Claude Haiku 4",
+        .capability = .{
+            .max_context_tokens = 200_000,
+            .supports_tools = true,
+            .supports_streaming = true,
+            .supports_structured_output = false,
+            .returns_usage = true,
+            .returns_finish_reason = true,
+            .price_per_mtok_input = 100,
+            .price_per_mtok_output = 500,
+            .notes = "Fast, good for inline completion",
+        },
+        .strengths = &.{ "completion", "code_edit" },
+        .effective_context_tokens = 180_000,
+    },
     // OpenRouter (multi-model gateway)
     .{
         .provider = "openrouter",
@@ -382,7 +419,7 @@ pub fn backoffMs(attempt: u8, policy: RetryPolicy) u32 {
 }
 
 test "builtin models table covers all providers" {
-    const providers = [_][]const u8{ "gemini", "openrouter", "openai", "nvidia", "ollama", "fake" };
+    const providers = [_][]const u8{ "gemini", "anthropic", "openrouter", "openai", "nvidia", "ollama", "fake" };
     for (providers) |p| {
         var found = false;
         for (builtin_models) |m| {

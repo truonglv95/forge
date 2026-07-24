@@ -74,6 +74,7 @@ pub const mcp_capability = @import("mcp_capability.zig");
 pub const provider_failover = @import("provider_failover.zig");
 pub const provider_capability = @import("provider_capability.zig");
 pub const mention_parser = @import("mention_parser.zig");
+pub const mention_resolver = @import("mention_resolver.zig");
 pub const usage_tracker = @import("usage_tracker.zig");
 pub const diff_tool = @import("diff_tool.zig");
 pub const adaptive_budget = @import("adaptive_budget.zig");
