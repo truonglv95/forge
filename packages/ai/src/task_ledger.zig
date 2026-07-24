@@ -100,6 +100,386 @@ pub const WorkingState = struct {
     }
 };
 
+pub const StateText = struct {
+    text: []const u8,
+    step_index: u32 = 0,
+
+    pub fn deinit(self: *StateText, allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+        self.* = undefined;
+    }
+};
+
+pub const FileRecord = struct {
+    path: []const u8,
+    last_read_hash: ?u64 = null,
+    last_read_step: u32 = 0,
+    last_edit_step: u32 = 0,
+    edited: bool = false,
+
+    pub fn deinit(self: *FileRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        self.* = undefined;
+    }
+};
+
+pub const ValidationStatus = enum {
+    unknown,
+    not_run,
+    passed,
+    failed,
+};
+
+pub const ValidationRecord = struct {
+    status: ValidationStatus = .not_run,
+    command: []const u8 = "",
+    step_index: u32 = 0,
+    output: []const u8 = "",
+
+    pub fn deinit(self: *ValidationRecord, allocator: std.mem.Allocator) void {
+        if (self.command.len > 0) allocator.free(self.command);
+        if (self.output.len > 0) allocator.free(self.output);
+        self.* = undefined;
+    }
+};
+
+pub const AgentState = struct {
+    phase: Phase = .planning,
+    goal: []const u8,
+    entries: std.ArrayListUnmanaged(Entry) = .empty,
+    todos: std.ArrayListUnmanaged(StateText) = .empty,
+    facts: std.ArrayListUnmanaged(StateText) = .empty,
+    files: std.ArrayListUnmanaged(FileRecord) = .empty,
+    validation: ValidationRecord = .{},
+
+    pub fn init(allocator: std.mem.Allocator, goal: []const u8) !AgentState {
+        var state = AgentState{ .goal = try allocator.dupe(u8, goal) };
+        errdefer state.deinit(allocator);
+        try state.appendEntry(allocator, .goal, 0, "", goal);
+        try state.appendTodo(allocator, "Satisfy the user goal", 0);
+        return state;
+    }
+
+    pub fn initFromJsonOrGoal(allocator: std.mem.Allocator, json: []const u8, goal: []const u8) !AgentState {
+        if (json.len == 0) return init(allocator, goal);
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch return init(allocator, goal);
+        defer parsed.deinit();
+        if (parsed.value != .object) return init(allocator, goal);
+        const obj = parsed.value.object;
+
+        const goal_text = if (obj.get("goal")) |value| if (value == .string) value.string else goal else goal;
+        var state = AgentState{
+            .phase = if (obj.get("phase")) |value| if (value == .string) parsePhase(value.string) else .planning else .planning,
+            .goal = try allocator.dupe(u8, goal_text),
+        };
+        errdefer state.deinit(allocator);
+
+        if (obj.get("todos")) |value| try state.loadStateTextArray(allocator, value, .todo);
+        if (obj.get("facts")) |value| try state.loadStateTextArray(allocator, value, .fact);
+        if (obj.get("entries")) |value| try state.loadEntriesArray(allocator, value);
+        if (obj.get("files")) |value| try state.loadFilesArray(allocator, value);
+        if (obj.get("validation")) |value| try state.loadValidation(allocator, value);
+
+        if (state.entries.items.len == 0) try state.appendEntry(allocator, .goal, 0, "", state.goal);
+        if (state.todos.items.len == 0) try state.appendTodo(allocator, "Satisfy the user goal", 0);
+        try state.rebuildDerivedFromEntries(allocator);
+        return state;
+    }
+
+    pub fn deinit(self: *AgentState, allocator: std.mem.Allocator) void {
+        allocator.free(self.goal);
+        for (self.entries.items) |*entry| {
+            allocator.free(entry.path);
+            allocator.free(entry.text);
+        }
+        self.entries.deinit(allocator);
+        for (self.todos.items) |*item| item.deinit(allocator);
+        self.todos.deinit(allocator);
+        for (self.facts.items) |*item| item.deinit(allocator);
+        self.facts.deinit(allocator);
+        for (self.files.items) |*file| file.deinit(allocator);
+        self.files.deinit(allocator);
+        self.validation.deinit(allocator);
+        self.* = undefined;
+    }
+
+    pub fn recordToolResult(self: *AgentState, allocator: std.mem.Allocator, step_index: u32, tool_name: []const u8, result: []const u8) !void {
+        const kind = classifyStep(tool_name, result);
+        const path = extractBacktickValue(allocator, result) catch try allocator.dupe(u8, "");
+        defer allocator.free(path);
+        try self.appendEntry(allocator, kind, step_index, path, trimWhitespace(result));
+
+        switch (kind) {
+            .file_read => {
+                const evidence = parseReadEvidence(allocator, .{ .index = step_index, .kind = tool_name, .summary = result }) catch return;
+                defer {
+                    var owned = evidence;
+                    owned.deinit(allocator);
+                }
+                try self.noteFileRead(allocator, evidence.path, evidence.hash, step_index);
+                try self.appendFact(allocator, result, step_index);
+                self.phase = .gathering;
+            },
+            .file_edited => {
+                const edit_path = if (path.len > 0) path else pathFromEditArgs(allocator, result) catch "";
+                defer if (edit_path.ptr != path.ptr and edit_path.len > 0) allocator.free(edit_path);
+                if (edit_path.len > 0) try self.noteFileEdit(allocator, edit_path, step_index);
+                self.phase = .editing;
+                self.validation.status = .not_run;
+            },
+            .validation => {
+                try self.setValidation(allocator, result, step_index);
+                self.phase = .validating;
+            },
+            .command => {
+                if (looksLikeValidationResult(result)) {
+                    try self.setValidation(allocator, result, step_index);
+                    self.phase = .validating;
+                }
+            },
+            .blocker => {
+                self.phase = .blocked;
+            },
+            .search => {
+                self.phase = .gathering;
+                try self.appendFact(allocator, result, step_index);
+            },
+            else => {},
+        }
+    }
+
+    pub fn hasFreshFileEvidence(self: AgentState, path: []const u8, hash: u64) bool {
+        for (self.files.items) |file| {
+            if (std.mem.eql(u8, file.path, path) and file.last_read_hash != null and file.last_read_hash.? == hash) return true;
+        }
+        return false;
+    }
+
+    pub fn hasEdits(self: AgentState) bool {
+        for (self.files.items) |file| {
+            if (file.edited) return true;
+        }
+        return false;
+    }
+
+    pub fn lastEditStep(self: AgentState) u32 {
+        var latest: u32 = 0;
+        for (self.files.items) |file| latest = @max(latest, file.last_edit_step);
+        return latest;
+    }
+
+    pub fn validationAfterLastEdit(self: AgentState) bool {
+        const edit_step = self.lastEditStep();
+        if (edit_step == 0) return true;
+        return self.validation.step_index > edit_step and (self.validation.status == .passed or self.validation.status == .failed);
+    }
+
+    pub fn finalGateIssue(self: AgentState, allocator: std.mem.Allocator, final_text: []const u8) !?[]const u8 {
+        if (std.mem.trim(u8, final_text, &std.ascii.whitespace).len == 0) {
+            return try allocator.dupe(u8, "Final answer blocked: missing summary text.");
+        }
+        if (self.hasEdits() and !self.validationAfterLastEdit()) {
+            return try allocator.dupe(u8, "Final answer blocked: edits were made but no validation command has run after the latest edit. Run an allowlisted validation command or explain a failed validation result.");
+        }
+        if (self.hasEdits() and self.validation.status == .not_run) {
+            return try allocator.dupe(u8, "Final answer blocked: missing verification status after edits.");
+        }
+        return null;
+    }
+
+    pub fn toJsonAlloc(self: AgentState, allocator: std.mem.Allocator) ![]u8 {
+        var out = std.Io.Writer.Allocating.init(allocator);
+        defer out.deinit();
+        const writer = &out.writer;
+        try writer.writeAll("{\"schema_version\":2");
+        try writer.print(",\"phase\":\"{s}\"", .{@tagName(self.phase)});
+        try writer.writeAll(",\"goal\":");
+        try std.json.Stringify.value(self.goal, .{}, writer);
+
+        try writer.writeAll(",\"todos\":[");
+        for (self.todos.items, 0..) |item, index| {
+            if (index > 0) try writer.writeByte(',');
+            try writer.print("{{\"step_index\":{d},\"text\":", .{item.step_index});
+            try std.json.Stringify.value(item.text, .{}, writer);
+            try writer.writeByte('}');
+        }
+        try writer.writeAll("],\"facts\":[");
+        for (self.facts.items, 0..) |item, index| {
+            if (index > 0) try writer.writeByte(',');
+            try writer.print("{{\"step_index\":{d},\"text\":", .{item.step_index});
+            try std.json.Stringify.value(trimTail(item.text, 512), .{}, writer);
+            try writer.writeByte('}');
+        }
+        try writer.writeAll("],\"files\":[");
+        for (self.files.items, 0..) |file, index| {
+            if (index > 0) try writer.writeByte(',');
+            try writer.writeAll("{\"path\":");
+            try std.json.Stringify.value(file.path, .{}, writer);
+            if (file.last_read_hash) |hash| {
+                try writer.print(",\"last_read_hash\":{d}", .{hash});
+            } else {
+                try writer.writeAll(",\"last_read_hash\":null");
+            }
+            try writer.print(",\"last_read_step\":{d},\"last_edit_step\":{d},\"edited\":{}}}", .{ file.last_read_step, file.last_edit_step, file.edited });
+        }
+        try writer.writeAll("],\"validation\":{");
+        try writer.print("\"status\":\"{s}\",\"step_index\":{d},\"command\":", .{ @tagName(self.validation.status), self.validation.step_index });
+        try std.json.Stringify.value(self.validation.command, .{}, writer);
+        try writer.writeAll(",\"output\":");
+        try std.json.Stringify.value(trimTail(self.validation.output, 512), .{}, writer);
+        try writer.writeByte('}');
+
+        try writer.writeAll(",\"entries\":[");
+        for (self.entries.items, 0..) |entry, index| {
+            if (index > 0) try writer.writeByte(',');
+            try writer.print("{{\"kind\":\"{s}\",\"step_index\":{d},\"path\":", .{ @tagName(entry.kind), entry.step_index });
+            try std.json.Stringify.value(entry.path, .{}, writer);
+            try writer.writeAll(",\"text\":");
+            try std.json.Stringify.value(trimTail(entry.text, 512), .{}, writer);
+            try writer.writeByte('}');
+        }
+        try writer.writeAll("]}");
+        return try out.toOwnedSlice();
+    }
+
+    fn appendEntry(self: *AgentState, allocator: std.mem.Allocator, kind: EntryKind, step_index: u32, path: []const u8, text: []const u8) !void {
+        try self.entries.append(allocator, .{
+            .kind = kind,
+            .step_index = step_index,
+            .path = try allocator.dupe(u8, path),
+            .text = try allocator.dupe(u8, text),
+        });
+    }
+
+    fn appendTodo(self: *AgentState, allocator: std.mem.Allocator, text: []const u8, step_index: u32) !void {
+        try self.todos.append(allocator, .{ .text = try allocator.dupe(u8, text), .step_index = step_index });
+    }
+
+    fn appendFact(self: *AgentState, allocator: std.mem.Allocator, text: []const u8, step_index: u32) !void {
+        try self.facts.append(allocator, .{ .text = try allocator.dupe(u8, trimTail(trimWhitespace(text), 512)), .step_index = step_index });
+        if (self.facts.items.len > 32) {
+            self.facts.items[0].deinit(allocator);
+            _ = self.facts.orderedRemove(0);
+        }
+    }
+
+    fn noteFileRead(self: *AgentState, allocator: std.mem.Allocator, path: []const u8, hash: ?u64, step_index: u32) !void {
+        const rec = try self.fileRecord(allocator, path);
+        rec.last_read_hash = hash;
+        rec.last_read_step = step_index;
+    }
+
+    fn noteFileEdit(self: *AgentState, allocator: std.mem.Allocator, path: []const u8, step_index: u32) !void {
+        const rec = try self.fileRecord(allocator, path);
+        rec.edited = true;
+        rec.last_edit_step = step_index;
+    }
+
+    fn fileRecord(self: *AgentState, allocator: std.mem.Allocator, path: []const u8) !*FileRecord {
+        for (self.files.items) |*file| {
+            if (std.mem.eql(u8, file.path, path)) return file;
+        }
+        try self.files.append(allocator, .{ .path = try allocator.dupe(u8, path) });
+        return &self.files.items[self.files.items.len - 1];
+    }
+
+    fn setValidation(self: *AgentState, allocator: std.mem.Allocator, output: []const u8, step_index: u32) !void {
+        self.validation.deinit(allocator);
+        self.validation = .{
+            .status = if (validationPassed(output)) .passed else .failed,
+            .command = try allocator.dupe(u8, firstLineAfterPrefix(output, "run_command") orelse "run_command"),
+            .step_index = step_index,
+            .output = try allocator.dupe(u8, trimTail(output, 2048)),
+        };
+    }
+
+    fn loadStateTextArray(self: *AgentState, allocator: std.mem.Allocator, value: std.json.Value, bucket: enum { todo, fact }) !void {
+        if (value != .array) return;
+        for (value.array.items) |item| {
+            if (item != .object) continue;
+            const text_value = item.object.get("text") orelse continue;
+            if (text_value != .string) continue;
+            const step_value = item.object.get("step_index") orelse null;
+            const step_index: u32 = if (step_value != null and step_value.? == .integer) @intCast(step_value.?.integer) else 0;
+            switch (bucket) {
+                .todo => try self.appendTodo(allocator, text_value.string, step_index),
+                .fact => try self.appendFact(allocator, text_value.string, step_index),
+            }
+        }
+    }
+
+    fn loadEntriesArray(self: *AgentState, allocator: std.mem.Allocator, value: std.json.Value) !void {
+        if (value != .array) return;
+        for (value.array.items) |item| {
+            if (item != .object) continue;
+            const kind_value = item.object.get("kind") orelse continue;
+            const text_value = item.object.get("text") orelse null;
+            const path_value = item.object.get("path") orelse null;
+            const step_value = item.object.get("step_index") orelse null;
+            const kind = if (kind_value == .string) parseEntryKind(kind_value.string) else EntryKind.decision;
+            const text = if (text_value != null and text_value.? == .string) text_value.?.string else "";
+            const path = if (path_value != null and path_value.? == .string) path_value.?.string else "";
+            const step_index: u32 = if (step_value != null and step_value.? == .integer) @intCast(step_value.?.integer) else 0;
+            try self.appendEntry(allocator, kind, step_index, path, text);
+        }
+    }
+
+    fn loadFilesArray(self: *AgentState, allocator: std.mem.Allocator, value: std.json.Value) !void {
+        if (value != .array) return;
+        for (value.array.items) |item| {
+            if (item != .object) continue;
+            const path_value = item.object.get("path") orelse continue;
+            if (path_value != .string) continue;
+            const rec = try self.fileRecord(allocator, path_value.string);
+            if (item.object.get("last_read_hash")) |hash_value| {
+                if (hash_value == .integer) rec.last_read_hash = @intCast(hash_value.integer);
+            }
+            if (item.object.get("last_read_step")) |step_value| {
+                if (step_value == .integer) rec.last_read_step = @intCast(step_value.integer);
+            }
+            if (item.object.get("last_edit_step")) |step_value| {
+                if (step_value == .integer) rec.last_edit_step = @intCast(step_value.integer);
+            }
+            if (item.object.get("edited")) |edited_value| {
+                if (edited_value == .bool) rec.edited = edited_value.bool;
+            }
+        }
+    }
+
+    fn loadValidation(self: *AgentState, allocator: std.mem.Allocator, value: std.json.Value) !void {
+        if (value != .object) return;
+        self.validation.deinit(allocator);
+        const status_value = value.object.get("status") orelse null;
+        const command_value = value.object.get("command") orelse null;
+        const output_value = value.object.get("output") orelse null;
+        const step_value = value.object.get("step_index") orelse null;
+        self.validation = .{
+            .status = if (status_value != null and status_value.? == .string) parseValidationStatus(status_value.?.string) else .unknown,
+            .command = try allocator.dupe(u8, if (command_value != null and command_value.? == .string) command_value.?.string else ""),
+            .output = try allocator.dupe(u8, if (output_value != null and output_value.? == .string) output_value.?.string else ""),
+            .step_index = if (step_value != null and step_value.? == .integer) @intCast(step_value.?.integer) else 0,
+        };
+    }
+
+    fn rebuildDerivedFromEntries(self: *AgentState, allocator: std.mem.Allocator) !void {
+        for (self.entries.items) |entry| {
+            switch (entry.kind) {
+                .file_read => {
+                    const parsed = parseReadEvidence(allocator, .{ .index = entry.step_index, .kind = "read_file", .summary = entry.text }) catch continue;
+                    defer {
+                        var owned = parsed;
+                        owned.deinit(allocator);
+                    }
+                    try self.noteFileRead(allocator, parsed.path, parsed.hash, parsed.step_index);
+                },
+                .file_edited => if (entry.path.len > 0) try self.noteFileEdit(allocator, entry.path, entry.step_index),
+                .validation => if (self.validation.step_index < entry.step_index) try self.setValidation(allocator, entry.text, entry.step_index),
+                else => {},
+            }
+        }
+    }
+};
+
 const ProposalEdit = struct {
     start: u64,
     end: u64,
@@ -449,11 +829,43 @@ fn parseEntryKind(value: []const u8) EntryKind {
     return .decision;
 }
 
+fn parseValidationStatus(value: []const u8) ValidationStatus {
+    inline for (@typeInfo(ValidationStatus).@"enum".fields) |field| {
+        if (std.mem.eql(u8, value, field.name)) return @enumFromInt(field.value);
+    }
+    return .unknown;
+}
+
 fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     for (needles) |needle| {
         if (std.mem.indexOf(u8, haystack, needle) != null) return true;
     }
     return false;
+}
+
+fn looksLikeValidationResult(summary: []const u8) bool {
+    return std.mem.startsWith(u8, summary, "run_command exit ") or
+        std.mem.indexOf(u8, summary, "validation [") != null or
+        containsAny(summary, &.{ "zig build", "zig test", "npm test", "pytest", "cargo test" });
+}
+
+fn validationPassed(summary: []const u8) bool {
+    return std.mem.startsWith(u8, summary, "run_command exit 0") or
+        std.mem.indexOf(u8, summary, "validation [pass]") != null or
+        std.mem.indexOf(u8, summary, "all checks passed") != null;
+}
+
+fn firstLineAfterPrefix(text: []const u8, prefix: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, text, prefix) orelse return null;
+    var end = start;
+    while (end < text.len and text[end] != '\n' and text[end] != '\r') : (end += 1) {}
+    return text[start..end];
+}
+
+fn pathFromEditArgs(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+    _ = allocator;
+    _ = text;
+    return "";
 }
 
 fn looksLikeReadFileSummary(summary: []const u8) bool {
@@ -663,4 +1075,40 @@ test "working state includes evidence and counters" {
     const md = try formatWorkingStateMarkdown(allocator, state);
     defer allocator.free(md);
     try std.testing.expect(std.mem.indexOf(u8, md, "Fresh evidence") != null);
+}
+
+test "agent state serializes structured files facts and validation" {
+    const allocator = std.testing.allocator;
+    var state = try AgentState.init(allocator, "fix layout");
+    defer state.deinit(allocator);
+
+    try state.recordToolResult(allocator, 1, "read_file", "File `src/ui.zig` hash=2a bytes=4 lines=1-2\n");
+    try state.recordToolResult(allocator, 2, "replace_file_content", "Write `src/ui.zig` hash=2a blocks=1: adjust layout");
+    try state.recordToolResult(allocator, 3, "run_command", "run_command exit 0\nzig build test");
+
+    const json = try state.toJsonAlloc(allocator);
+    defer allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_version\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"files\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"facts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"validation\"") != null);
+    try std.testing.expect(state.validationAfterLastEdit());
+}
+
+test "agent state final gate requires validation after edits" {
+    const allocator = std.testing.allocator;
+    var state = try AgentState.init(allocator, "fix bug");
+    defer state.deinit(allocator);
+
+    try state.recordToolResult(allocator, 1, "read_file", "File `src/main.zig` hash=1 bytes=4 lines=1-1\n");
+    try state.recordToolResult(allocator, 2, "replace_file_content", "Write `src/main.zig` hash=1 blocks=1");
+
+    const blocked = try state.finalGateIssue(allocator, "Done.");
+    try std.testing.expect(blocked != null);
+    defer allocator.free(blocked.?);
+    try std.testing.expect(std.mem.indexOf(u8, blocked.?, "no validation command") != null);
+
+    try state.recordToolResult(allocator, 3, "run_command", "run_command exit 0\nzig build");
+    const allowed = try state.finalGateIssue(allocator, "Done. Validation passed.");
+    try std.testing.expect(allowed == null);
 }

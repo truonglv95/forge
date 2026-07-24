@@ -14,6 +14,7 @@ const turn = @import("turn.zig");
 const compaction = @import("compaction.zig");
 const workspace = @import("forge-workspace");
 const tool_args = @import("../tools/args.zig");
+const task_ledger = @import("../task_ledger.zig");
 
 pub const StepCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
 pub const StepBeginCallback = *const fn (?*anyopaque, u32, []const u8, []const u8) void;
@@ -161,6 +162,8 @@ pub fn run(
     defer conversation.deinit(allocator);
 
     var guard = LoopGuard{};
+    var agent_state = task_ledger.AgentState.initFromJsonOrGoal(allocator, config.initial_task_ledger_json, intent) catch return error.ProviderFailed;
+    defer agent_state.deinit(allocator);
 
     const prompt = loop_prompt.buildExplorePrompt(allocator, intent, ctx_builder, .{
         .task_intent = config.task_intent,
@@ -170,11 +173,13 @@ pub fn run(
 
     if (config.initial_conversation_json.len > 0) {
         conversation.appendSlice(allocator, config.initial_conversation_json) catch return error.ProviderFailed;
-        if (config.initial_task_ledger_json.len > 0) {
+        const state_json = agent_state.toJsonAlloc(allocator) catch return error.ProviderFailed;
+        defer allocator.free(state_json);
+        if (state_json.len > 0) {
             const ledger_prompt = std.fmt.allocPrint(
                 allocator,
                 "Task ledger checkpoint. Use this as durable task state; do not treat it as source code.\n```json\n{s}\n```",
-                .{config.initial_task_ledger_json},
+                .{state_json},
             ) catch return error.ProviderFailed;
             defer allocator.free(ledger_prompt);
             transport.appendUserText(allocator, &conversation, ledger_prompt) catch return error.ProviderFailed;
@@ -189,7 +194,7 @@ pub fn run(
             .name = @constCast(config.pending_tool),
             .args_json = @constCast(config.pending_args_json),
         };
-        try executeTool(allocator, transport, &conversation, pending_call, tool_ctx, mcp, config, &guard, step_index, false);
+        try executeTool(allocator, transport, &conversation, pending_call, tool_ctx, mcp, config, &guard, &agent_state, step_index, false);
         step_index += 1;
     }
 
@@ -206,7 +211,7 @@ pub fn run(
             callback(config.turn_context, step_index);
         }
 
-        try compactConversationIfNeeded(allocator, transport, &conversation, intent, ctx_builder, config, step_index, &conversation_compactions);
+        try compactConversationIfNeeded(allocator, transport, &conversation, intent, ctx_builder, config, &agent_state, step_index, &conversation_compactions);
 
         const llm_start_ms = std.Io.Timestamp.now(tool_ctx.io, .real).toMilliseconds();
         var completion = transport.complete(allocator, conversation.items, tool_declarations_json, config.cancel_token) catch |err| {
@@ -226,7 +231,9 @@ pub fn run(
                     context_recoveries += 1;
                     const before_bytes = conversation.items.len;
                     var recovery_options = compaction.recoveryOptions(context_recoveries);
-                    recovery_options.task_ledger_json = config.initial_task_ledger_json;
+                    const state_json = agent_state.toJsonAlloc(allocator) catch return error.ProviderFailed;
+                    defer allocator.free(state_json);
+                    recovery_options.task_ledger_json = state_json;
                     const recovery_prompt = compaction.buildRecoveryPrompt(
                         allocator,
                         intent,
@@ -283,7 +290,7 @@ pub fn run(
 
         switch (completion) {
             .tool_call => |call| {
-                try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, &guard, step_index, true);
+                try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, &guard, &agent_state, step_index, true);
                 step_index += 1;
             },
             .tool_calls => |calls| {
@@ -292,18 +299,27 @@ pub fn run(
                 // RFC-0015). Each call still increments step_index and is
                 // checkpointed independently.
                 for (calls) |call| {
-                    try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, &guard, step_index, true);
+                    try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, &guard, &agent_state, step_index, true);
                     step_index += 1;
                 }
             },
-            .text => return .{
-                .conversation_json = conversation.toOwnedSlice(allocator) catch return error.ProviderFailed,
-                .next_step_index = step_index,
-                .final_text = allocator.dupe(u8, completion.text) catch return error.ProviderFailed,
+            .text => {
+                if (agent_state.finalGateIssue(allocator, completion.text) catch return error.ProviderFailed) |issue| {
+                    defer allocator.free(issue);
+                    emitTelemetry(config, .{ .phase = "gate", .items = step_index, .detail = "final_blocked" });
+                    transport.appendUserText(allocator, &conversation, issue) catch return error.ProviderFailed;
+                    continue;
+                }
+                agent_state.phase = .completed;
+                return .{
+                    .conversation_json = conversation.toOwnedSlice(allocator) catch return error.ProviderFailed,
+                    .next_step_index = step_index,
+                    .final_text = allocator.dupe(u8, completion.text) catch return error.ProviderFailed,
+                };
             },
         }
     }
-    try checkpointCompactResume(allocator, transport, &conversation, intent, ctx_builder, config, step_index);
+    try checkpointCompactResume(allocator, transport, &conversation, intent, ctx_builder, config, &agent_state, step_index);
     return error.StepLimitReached;
 }
 
@@ -314,6 +330,7 @@ fn compactConversationIfNeeded(
     intent: []const u8,
     ctx_builder: *const context.ContextBuilder,
     config: Config,
+    agent_state: *const task_ledger.AgentState,
     step_index: u32,
     compactions: *u8,
 ) LoopError!void {
@@ -324,7 +341,9 @@ fn compactConversationIfNeeded(
     const next_attempt = if (compactions.* == std.math.maxInt(u8)) compactions.* else compactions.* + 1;
     const before_bytes = conversation.items.len;
     var compact_options = compaction.recoveryOptions(next_attempt);
-    compact_options.task_ledger_json = config.initial_task_ledger_json;
+    const state_json = agent_state.toJsonAlloc(allocator) catch return error.ProviderFailed;
+    defer allocator.free(state_json);
+    compact_options.task_ledger_json = state_json;
     const compact_prompt = compaction.buildResumePrompt(
         allocator,
         intent,
@@ -359,6 +378,7 @@ fn checkpointCompactResume(
     intent: []const u8,
     ctx_builder: *const context.ContextBuilder,
     config: Config,
+    agent_state: *const task_ledger.AgentState,
     step_index: u32,
 ) LoopError!void {
     const checkpoint = config.checkpoint_callback orelse return;
@@ -368,7 +388,9 @@ fn checkpointCompactResume(
         config.max_context_recovery_attempts + 1;
     const before_bytes = conversation.items.len;
     var resume_options = compaction.recoveryOptions(checkpoint_attempt);
-    resume_options.task_ledger_json = config.initial_task_ledger_json;
+    const state_json = agent_state.toJsonAlloc(allocator) catch return error.ProviderFailed;
+    defer allocator.free(state_json);
+    resume_options.task_ledger_json = state_json;
     const resume_prompt = compaction.buildResumePrompt(
         allocator,
         intent,
@@ -426,6 +448,7 @@ fn executeTool(
     mcp: ?*mcp_registry.Registry,
     config: Config,
     guard: *LoopGuard,
+    agent_state: *task_ledger.AgentState,
     step_index: u32,
     append_call: bool,
 ) LoopError!void {
@@ -454,12 +477,12 @@ fn executeTool(
         if (!checkpoint(config.checkpoint_context, conversation.items, step_index, effective_call.name, effective_call.args_json)) return error.ProviderFailed;
     }
 
-    if (std.mem.eql(u8, effective_call.name, "replace_file_content")) {
-        const maybe_message = missingWriteEvidenceMessage(allocator, tool_ctx, conversation.items, effective_call.args_json) catch null;
+    if (std.mem.eql(u8, effective_call.name, "replace_file_content") or std.mem.eql(u8, effective_call.name, "multi_edit")) {
+        const maybe_message = missingWriteEvidenceMessage(allocator, tool_ctx, agent_state.*, effective_call.name, effective_call.args_json) catch null;
         if (maybe_message != null) {
             const message = maybe_message.?;
             defer allocator.free(message);
-            emitTelemetry(config, .{ .phase = "tool_arg_repair", .items = step_index, .detail = "missing_write_evidence" });
+            emitTelemetry(config, .{ .phase = "gate", .items = step_index, .detail = "missing_write_evidence" });
             transport.appendToolResult(allocator, conversation, effective_call.name, message, &.{}) catch return error.ProviderFailed;
             if (config.step_callback) |callback| callback(config.step_context, step_index, subagent.classifyTool(effective_call.name).label(), message);
             if (config.checkpoint_callback) |checkpoint| {
@@ -535,6 +558,7 @@ fn executeTool(
     defer allocator.free(bounded);
 
     transport.appendToolResult(allocator, conversation, effective_call.name, bounded, exec_result.images) catch return error.ProviderFailed;
+    agent_state.recordToolResult(allocator, step_index, effective_call.name, bounded) catch return error.ProviderFailed;
 
     if (config.step_callback) |callback| {
         const kind = subagent.classifyTool(effective_call.name).label();
@@ -623,9 +647,20 @@ fn firstStringField(object: std.json.ObjectMap, keys: []const []const u8) ?[]con
 fn missingWriteEvidenceMessage(
     allocator: std.mem.Allocator,
     tool_ctx: tool_executor.Context,
-    conversation_json: []const u8,
+    agent_state: task_ledger.AgentState,
+    tool_name: []const u8,
     args_json: []const u8,
 ) !?[]const u8 {
+    if (std.mem.eql(u8, tool_name, "multi_edit")) {
+        const edit_args = tool_args.parseMultiEditArgs(allocator, args_json) catch return null;
+        defer tool_args.freeMultiEditArgs(allocator, edit_args);
+        for (edit_args.files) |file| {
+            const issue = try missingPathEvidenceMessage(allocator, tool_ctx, agent_state, file.path, "multi_edit");
+            if (issue) |text| return text;
+        }
+        return null;
+    }
+
     const edit_args = tool_args.parseReplaceFileContentArgs(allocator, args_json) catch return null;
     defer {
         allocator.free(edit_args.path);
@@ -635,14 +670,24 @@ fn missingWriteEvidenceMessage(
         }
         allocator.free(edit_args.edits);
     }
-    const wp = workspace.WorkspacePath.parse(edit_args.path) catch return null;
+    return try missingPathEvidenceMessage(allocator, tool_ctx, agent_state, edit_args.path, "replace_file_content");
+}
+
+fn missingPathEvidenceMessage(
+    allocator: std.mem.Allocator,
+    tool_ctx: tool_executor.Context,
+    agent_state: task_ledger.AgentState,
+    path: []const u8,
+    tool_name: []const u8,
+) !?[]const u8 {
+    const wp = workspace.WorkspacePath.parse(path) catch return null;
     var snap = workspace.FileSnapshot.read(allocator, tool_ctx.io, tool_ctx.root, wp) catch return null;
     defer snap.deinit();
-    if (conversationHasReadEvidence(allocator, conversation_json, edit_args.path, snap.hash)) return null;
+    if (agent_state.hasFreshFileEvidence(path, snap.hash)) return null;
     return try std.fmt.allocPrint(
         allocator,
-        "Tool `replace_file_content` blocked: missing fresh read_file evidence for `{s}` hash={x}. Call read_file on `{s}` before editing, then retry with the exact block to replace.",
-        .{ edit_args.path, snap.hash, edit_args.path },
+        "Tool `{s}` blocked: missing fresh read_file evidence for `{s}` hash={x}. Call read_file on `{s}` before editing, then retry with the exact block to replace.",
+        .{ tool_name, path, snap.hash, path },
     );
 }
 
@@ -807,7 +852,10 @@ test "missingWriteEvidenceMessage blocks edits until fresh read evidence exists"
         \\{"path":"src/main.zig","edits":[{"search":"const value = 1;","replace":"const value = 2;"}]}
     ;
 
-    const blocked = try missingWriteEvidenceMessage(allocator, tool_ctx, "[]", args);
+    var agent_state = try task_ledger.AgentState.init(allocator, "edit file");
+    defer agent_state.deinit(allocator);
+
+    const blocked = try missingWriteEvidenceMessage(allocator, tool_ctx, agent_state, "replace_file_content", args);
     try std.testing.expect(blocked != null);
     defer allocator.free(blocked.?);
     try std.testing.expect(std.mem.indexOf(u8, blocked.?, "missing fresh read_file evidence") != null);
@@ -816,7 +864,8 @@ test "missingWriteEvidenceMessage blocks edits until fresh read evidence exists"
     defer snap.deinit();
     const evidence = try std.fmt.allocPrint(allocator, "File `src/main.zig` hash={x} bytes={d} lines=1-1\n", .{ snap.hash, snap.content.len });
     defer allocator.free(evidence);
-    const allowed = try missingWriteEvidenceMessage(allocator, tool_ctx, evidence, args);
+    try agent_state.recordToolResult(allocator, 1, "read_file", evidence);
+    const allowed = try missingWriteEvidenceMessage(allocator, tool_ctx, agent_state, "replace_file_content", args);
     try std.testing.expect(allowed == null);
 }
 
@@ -1024,11 +1073,13 @@ test "step limit checkpoints compact resume state" {
     );
 
     var checkpoint_state = CheckpointState{};
+    var agent_state = try task_ledger.AgentState.init(allocator, "implement a long feature");
+    defer agent_state.deinit(allocator);
     try checkpointCompactResume(allocator, mock.transport(), &conversation, "implement a long feature", &builder, .{
         .checkpoint_callback = CheckpointState.checkpoint,
         .checkpoint_context = &checkpoint_state,
         .max_context_recovery_attempts = 3,
-    }, 47);
+    }, &agent_state, 47);
 
     try std.testing.expect(checkpoint_state.called);
     try std.testing.expectEqual(@as(u32, 47), checkpoint_state.step);
@@ -1119,9 +1170,11 @@ test "oversized conversation compacts before provider call" {
     try conversation.appendNTimes(allocator, 'x', 2048);
 
     var compactions: u8 = 0;
+    var agent_state = try task_ledger.AgentState.init(allocator, "long task");
+    defer agent_state.deinit(allocator);
     try compactConversationIfNeeded(allocator, mock.transport(), &conversation, "long task", &builder, .{
         .max_conversation_bytes = 512,
-    }, 9, &compactions);
+    }, &agent_state, 9, &compactions);
 
     try std.testing.expectEqual(@as(u8, 1), mock.user_appends);
     try std.testing.expectEqual(@as(u8, 1), compactions);

@@ -199,9 +199,11 @@ pub fn buildTaskLedgerJson(
             .summary = step.summary,
         };
     }
-    var snapshot = try task_ledger.fromSteps(allocator, intent, items, phase);
-    defer snapshot.deinit(allocator);
-    return task_ledger.toJsonAlloc(allocator, snapshot);
+    var state = try task_ledger.AgentState.init(allocator, intent);
+    defer state.deinit(allocator);
+    state.phase = phase;
+    for (items) |item| try state.recordToolResult(allocator, item.index, item.kind, item.summary);
+    return state.toJsonAlloc(allocator);
 }
 
 pub fn validateProposalEvidenceForSteps(

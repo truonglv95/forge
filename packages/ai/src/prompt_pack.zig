@@ -45,8 +45,10 @@ pub const edit_policy =
     \\Implementation policy:
     \\- Prefer source files over generated caches, binaries, and build artifacts.
     \\- Read the exact target files before editing.
+    \\- Edits are blocked unless the target file has fresh read_file evidence in the task ledger.
     \\- Use replace_file_content for a single-file focused edit and multi_edit for cross-file refactors.
     \\- replace_file_content directly edits the user's editor buffer. Do not output WorkspaceEdit JSON or proposal JSON during the native tool loop.
+    \\- After an edit, run the most relevant allowlisted validation command before final answer when one is apparent.
     \\- Keep edits scoped to the user's request and the surrounding code style.
     \\- Finish with a short summary of concrete edits and validation status.
     \\
@@ -67,6 +69,7 @@ pub const final_answer_checklist =
     \\Final answer checklist:
     \\- Say what changed or what was found.
     \\- Mention validation run, or state that validation was not run.
+    \\- If edits were made, include verification status from a validation command or a concrete reason validation could not run.
     \\- Mention unresolved risks only when they matter.
     \\- Keep the answer concise and specific to the user's request.
     \\
