@@ -52,6 +52,16 @@ pub fn run(
     if (std.mem.eql(u8, sub, "trace")) {
         return try traceSpec(allocator, io, root, positionals, writer);
     }
+    // Phase 3 additions (RFC-0014)
+    if (std.mem.eql(u8, sub, "init")) {
+        return try initSpecs(allocator, io, root, parsed.flags, writer);
+    }
+    if (std.mem.eql(u8, sub, "template")) {
+        return try showTemplate(allocator, positionals, writer);
+    }
+    if (std.mem.eql(u8, sub, "validate")) {
+        return try validateSpecs(allocator, io, root, positionals, writer);
+    }
 
     try writer.print("error: unknown spec subcommand '{s}'\n", .{sub});
     try printUsage(writer);
@@ -408,6 +418,8 @@ fn printUsage(writer: *std.Io.Writer) !void {
         \\Usage: forge spec <subcommand> [options]
         \\
         \\Subcommands:
+        \\  init                                      Create specs/ directory with templates
+        \\  template <type>                           Print spec template (feature|bugfix|refactor|spike)
         \\  create <name> [--intent "text"]            Create a new spec
         \\  list                                      List all specs
         \\  show <name> [section]                      Show spec content (req|design|tasks|plan)
@@ -416,8 +428,331 @@ fn printUsage(writer: *std.Io.Writer) !void {
         \\  reject <name>                             Mark spec rejected
         \\  implement <name> [--provider ...] [--max-steps N]  Run agent to implement spec
         \\  trace <name>                              Show task->commit traceability
+        \\  validate [<name>]                         Validate spec schema and requirements
         \\
         \\Sections: requirements (req), design, tasks, plan
         \\
     , .{});
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3 additions (RFC-0014)
+// ---------------------------------------------------------------------------
+
+/// `forge spec init` — create specs/ directory with templates and README.
+fn initSpecs(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, flags: args_mod.GlobalFlags, writer: *std.Io.Writer) !u8 {
+    _ = allocator;
+    const subdirs = [_][]const u8{ "specs/features", "specs/bugfixes", "specs/refactors", "specs/spikes", "specs/templates" };
+    var created: u32 = 0;
+    for (subdirs) |subdir| {
+        root.dir.createDirPath(io, subdir) catch |err| switch (err) {
+            error.PathAlreadyExists => continue,
+            else => {
+                try writer.print("error: cannot create {s}: {}\n", .{ subdir, err });
+                return 1;
+            },
+        };
+        created += 1;
+    }
+
+    // Create templates
+    const templates = [_]struct { path: []const u8, content: []const u8 }{
+        .{ .path = "specs/templates/feature.md", .content = feature_template },
+        .{ .path = "specs/templates/bugfix.md", .content = bugfix_template },
+        .{ .path = "specs/templates/refactor.md", .content = refactor_template },
+        .{ .path = "specs/templates/spike.md", .content = spike_template },
+    };
+    for (templates) |tpl| {
+        const rel = workspace.WorkspacePath.parse(tpl.path) catch continue;
+        workspace.atomic.replaceFile(io, root, rel, tpl.content) catch {
+            try writer.print("warning: cannot create {s}\n", .{tpl.path});
+            continue;
+        };
+        created += 1;
+    }
+
+    // Create README
+    const readme_rel = workspace.WorkspacePath.parse("specs/README.md") catch return 1;
+    workspace.atomic.replaceFile(io, root, readme_rel, specs_readme) catch {};
+
+    if (flags.json) {
+        try writer.print("{{\"type\":\"spec_init\",\"created\":{d},\"status\":\"ok\"}}\n", .{created});
+    } else {
+        try writer.print("Created specs/ directory structure ({d} items).\n", .{created});
+        try writer.writeAll("\nNext steps:\n");
+        try writer.writeAll("  1. forge spec template feature > specs/features/my-feature.md\n");
+        try writer.writeAll("  2. Edit the spec to add requirements and acceptance criteria.\n");
+        try writer.writeAll("  3. forge spec approve my-feature\n");
+        try writer.writeAll("  4. forge spec implement my-feature\n");
+    }
+    return 0;
+}
+
+/// `forge spec template <type>` — print a spec template to stdout.
+fn showTemplate(allocator: std.mem.Allocator, positionals: []const []const u8, writer: *std.Io.Writer) !u8 {
+    _ = allocator;
+    const tpl_type = if (positionals.len >= 2) positionals[1] else "feature";
+    const template: []const u8 = if (std.mem.eql(u8, tpl_type, "feature"))
+        feature_template
+    else if (std.mem.eql(u8, tpl_type, "bugfix"))
+        bugfix_template
+    else if (std.mem.eql(u8, tpl_type, "refactor"))
+        refactor_template
+    else if (std.mem.eql(u8, tpl_type, "spike"))
+        spike_template
+    else {
+        try writer.print("error: unknown template type '{s}'. Use: feature|bugfix|refactor|spike\n", .{tpl_type});
+        return 2;
+    };
+    try writer.writeAll(template);
+    return 0;
+}
+
+/// `forge spec validate [<name>]` — validate spec schema and requirements.
+fn validateSpecs(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, positionals: []const []const u8, writer: *std.Io.Writer) !u8 {
+    var has_errors = false;
+    var checked: u32 = 0;
+
+    if (positionals.len >= 2) {
+        // Validate single spec
+        const name = positionals[1];
+        checked += 1;
+        const errors = try validateOneSpec(allocator, io, root, name);
+        defer allocator.free(errors);
+        if (errors.len > 0) {
+            has_errors = true;
+            try writer.print("✗ Spec '{s}' has issues:\n", .{name});
+            for (errors) |e| try writer.print("  - {s}\n", .{e});
+        } else {
+            try writer.print("✓ Spec '{s}' is valid\n", .{name});
+        }
+    } else {
+        // Validate all specs
+        const specs = ai.spec_writer.listSpecs(allocator, io, root) catch {
+            try writer.writeAll("error: failed to list specs\n");
+            return 1;
+        };
+        defer ai.spec_writer.freeSpecList(allocator, specs);
+
+        for (specs) |spec| {
+            checked += 1;
+            const errors = try validateOneSpec(allocator, io, root, spec.run_id);
+            defer allocator.free(errors);
+            if (errors.len > 0) {
+                has_errors = true;
+                try writer.print("✗ Spec '{s}':\n", .{spec.run_id});
+                for (errors) |e| try writer.print("  - {s}\n", .{e});
+            } else {
+                try writer.print("✓ Spec '{s}' is valid\n", .{spec.run_id});
+            }
+        }
+    }
+
+    if (checked == 0) {
+        try writer.writeAll("No specs found. Run `forge spec init` to create the specs/ directory.\n");
+    } else if (!has_errors) {
+        try writer.print("\nAll {d} specs valid.\n", .{checked});
+    }
+
+    return if (has_errors) 1 else 0;
+}
+
+fn validateOneSpec(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, name: []const u8) ![][]const u8 {
+    var errors: std.ArrayList([]const u8) = .empty;
+    defer errors.deinit(allocator);
+
+    // Check requirements section exists and is non-empty.
+    const req = ai.spec_writer.readSection(allocator, io, root, name, "requirements") catch {
+        try errors.append(allocator, try std.fmt.allocPrint(allocator, "missing 'requirements' section", .{}));
+        return errors.toOwnedSlice(allocator);
+    };
+    defer allocator.free(req);
+    if (std.mem.trim(u8, req, " \t\r\n").len == 0) {
+        try errors.append(allocator, try std.fmt.allocPrint(allocator, "'requirements' section is empty", .{}));
+    }
+
+    // Check tasks section exists.
+    const tasks = ai.spec_writer.readSection(allocator, io, root, name, "tasks") catch {
+        try errors.append(allocator, try std.fmt.allocPrint(allocator, "missing 'tasks' section", .{}));
+        return errors.toOwnedSlice(allocator);
+    };
+    defer allocator.free(tasks);
+    if (std.mem.trim(u8, tasks, " \t\r\n").len == 0) {
+        try errors.append(allocator, try std.fmt.allocPrint(allocator, "'tasks' section is empty", .{}));
+    }
+
+    return errors.toOwnedSlice(allocator);
+}
+
+// ---------------------------------------------------------------------------
+// Spec templates (RFC-0014)
+// ---------------------------------------------------------------------------
+
+const feature_template =
+    \\---
+    \\spec_id: <auto-generated>
+    \\title: "<title>"
+    \\type: feature
+    \\status: draft
+    \\author: <your-name>
+    \\created: <YYYY-MM-DD>
+    \\updated: <YYYY-MM-DD>
+    \\approver: ""
+    \\implementation_pr: ""
+    \\related_rfc: ""
+    \\---
+    \\
+    \\## Context
+    \\<Why this spec exists — what problem does it solve?>
+    \\
+    \\## Requirements
+    \\- R1: <requirement 1>
+    \\- R2: <requirement 2>
+    \\
+    \\## Design
+    \\<High-level design — no implementation detail. Reference RFCs if applicable.>
+    \\
+    \\## Acceptance
+    \\- [ ] R1 verified via <how>
+    \\- [ ] R2 verified via <how>
+    \\
+    \\## Out of scope
+    \\<What is explicitly NOT in this spec.>
+    \\
+;
+
+const bugfix_template =
+    \\---
+    \\spec_id: <auto-generated>
+    \\title: "<title>"
+    \\type: bugfix
+    \\status: draft
+    \\author: <your-name>
+    \\created: <YYYY-MM-DD>
+    \\updated: <YYYY-MM-DD>
+    \\approver: ""
+    \\implementation_pr: ""
+    \\related_rfc: ""
+    \\---
+    \\
+    \\## Context
+    \\<What is the bug? When does it happen? What is the impact?>
+    \\
+    \\## Requirements
+    \\- R1: <root cause addressed>
+    \\- R2: <regression test added>
+    \\
+    \\## Design
+    \\<Minimal fix description. Avoid scope creep.>
+    \\
+    \\## Acceptance
+    \\- [ ] Bug no longer reproduces with <repro steps>
+    \\- [ ] Regression test passes
+    \\- [ ] No new failures in `forge check`
+    \\
+    \\## Out of scope
+    \\<Related improvements that should be separate specs.>
+    \\
+;
+
+const refactor_template =
+    \\---
+    \\spec_id: <auto-generated>
+    \\title: "<title>"
+    \\type: refactor
+    \\status: draft
+    \\author: <your-name>
+    \\created: <YYYY-MM-DD>
+    \\updated: <YYYY-MM-DD>
+    \\approver: ""
+    \\implementation_pr: ""
+    \\related_rfc: ""
+    \\---
+    \\
+    \\## Context
+    \\<What code is being refactored? Why now? What is the current pain?>
+    \\
+    \\## Requirements
+    \\- R1: <behavior preserved>
+    \\- R2: <measurable improvement: perf, readability, testability>
+    \\
+    \\## Design
+    \\<Before/after sketch. Call out any API changes.>
+    \\
+    \\## Acceptance
+    \\- [ ] All existing tests pass
+    \\- [ ] New tests cover the refactored path
+    \\- [ ] No public API breaks (or migration guide added)
+    \\
+    \\## Out of scope
+    \\<Behavior changes that should be separate specs.>
+    \\
+;
+
+const spike_template =
+    \\---
+    \\spec_id: <auto-generated>
+    \\title: "<title>"
+    \\type: spike
+    \\status: draft
+    \\author: <your-name>
+    \\created: <YYYY-MM-DD>
+    \\updated: <YYYY-MM-DD>
+    \\approver: ""
+    \\implementation_pr: ""
+    \\related_rfc: ""
+    \\---
+    \\
+    \\## Context
+    \\<What question are we trying to answer? What is the time box?>
+    \\
+    \\## Requirements
+    \\- R1: <question answered with evidence>
+    \\- R2: <decision: proceed / pivot / abort>
+    \\
+    \\## Design
+    \\<Experiment plan. What will we build/measure to answer the question?>
+    \\
+    \\## Acceptance
+    \\- [ ] Question answered with concrete data
+    \\- [ ] Decision documented
+    \\- [ ] Findings shared with team
+    \\
+    \\## Out of scope
+    \\<Production implementation — that is a follow-up spec.>
+    \\
+;
+
+const specs_readme =
+    \\# Specs
+    \\
+    \\This directory is the source of truth for spec-driven development in Forge.
+    \\See [RFC-0014](../docs/rfc/RFC-0014-spec-driven-development.md) for the full workflow.
+    \\
+    \\## Layout
+    \\
+    \\```text
+    \\specs/
+    \\├── features/      # new functionality
+    \\├── bugfixes/      # bug fixes
+    \\├── refactors/     # code refactors
+    \\├── spikes/        # research / time-boxed experiments
+    \\└── templates/     # spec templates (feature, bugfix, refactor, spike)
+    \\```
+    \\
+    \\## Workflow
+    \\
+    \\```bash
+    \\forge spec init                          # create this directory + templates
+    \\forge spec template feature > specs/features/my-feature.md
+    \\forge spec create my-feature             # register with Forge
+    \\forge spec edit my-feature --section requirements --body "..."
+    \\forge spec validate my-feature           # check schema
+    \\forge spec approve my-feature            # mark ready to implement
+    \\forge spec implement my-feature          # agent proposes from spec
+    \\forge spec trace my-feature              # show spec -> commit trace
+    \\```
+    \\
+    \\`forge check` runs `forge spec validate` on all specs automatically.
+    \\
+;

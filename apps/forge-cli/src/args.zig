@@ -40,6 +40,10 @@ pub const GlobalFlags = struct {
     // Chat REPL flags (RFC-0017)
     pipe: bool = false,
     resume_session: ?[]const u8 = null,
+    // Background agent flags (RFC-0015)
+    background: bool = false,
+    follow: bool = false,
+    timeout_seconds: u64 = 0,
     // Provider routing flags (RFC-0016)
     context_bytes: ?usize = null,
     require_tools: bool = false,
@@ -232,6 +236,15 @@ pub const CliArgs = struct {
                     if (i < args.len) flags.resume_session = args[i];
                 } else if (std.mem.startsWith(u8, arg, "--resume=")) {
                     flags.resume_session = arg["--resume=".len..];
+                } else if (std.mem.eql(u8, arg, "--background")) {
+                    flags.background = true;
+                } else if (std.mem.eql(u8, arg, "--follow")) {
+                    flags.follow = true;
+                } else if (std.mem.eql(u8, arg, "--timeout")) {
+                    i += 1;
+                    if (i < args.len) flags.timeout_seconds = std.fmt.parseInt(u64, args[i], 10) catch 0;
+                } else if (std.mem.startsWith(u8, arg, "--timeout=")) {
+                    flags.timeout_seconds = std.fmt.parseInt(u64, arg["--timeout=".len..], 10) catch 0;
                 } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
                     command = .help;
                     cmd_found = true;

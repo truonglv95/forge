@@ -76,9 +76,9 @@ fn resolveOne(
 ) !ResolvedMention {
     switch (mention) {
         .file => |f| return resolveFile(allocator, io, root, f.path, f.line_range),
-        .symbol => |s| return resolveSymbol(allocator, s),
-        .web => |w| return resolveWeb(allocator, w),
-        .docs => |d| return resolveDocs(allocator, d),
+        .symbol => |s| return resolveSymbol(allocator, io, root, s),
+        .web => |w| return resolveWeb(allocator, io, w),
+        .docs => |d| return resolveDocs(allocator, io, root, d),
         .spec => |sp| return resolveSpec(allocator, io, root, sp),
         .recent => return resolveRecent(allocator),
         .git_diff => return resolveGitDiff(allocator, io, root),
@@ -164,39 +164,194 @@ fn sliceLines(allocator: std.mem.Allocator, content: []const u8, start: u32, end
     return buf.toOwnedSlice(allocator);
 }
 
-fn resolveSymbol(allocator: std.mem.Allocator, name: []const u8) !ResolvedMention {
-    // Stub: LSP workspace_symbol requires an active LSP session.
+fn resolveSymbol(allocator: std.mem.Allocator, io: std.Io, root: ?workspace.WorkspaceRoot, name: []const u8) !ResolvedMention {
     const label = try std.fmt.allocPrint(allocator, "@symbol:{s}", .{name});
+
+    if (root == null) {
+        return .{
+            .kind = "symbol",
+            .label = label,
+            .content = try allocator.dupe(u8, ""),
+            .bytes = 0,
+            .error_message = try allocator.dupe(u8, "no workspace open"),
+        };
+    }
+
+    // Fallback: text search for the symbol name in workspace files.
+    // Full LSP workspace_symbol resolution requires an active LSP session
+    // (Phase 4 when LSP controller is wired into chat).
+    const search_results = searchWorkspaceForSymbol(allocator, io, root.?, name) catch |err| {
+        return .{
+            .kind = "symbol",
+            .label = label,
+            .content = try allocator.dupe(u8, ""),
+            .bytes = 0,
+            .error_message = try std.fmt.allocPrint(allocator, "search failed: {}", .{err}),
+        };
+    };
+    defer allocator.free(search_results);
+
+    if (search_results.len == 0) {
+        return .{
+            .kind = "symbol",
+            .label = label,
+            .content = try allocator.dupe(u8, ""),
+            .bytes = 0,
+            .error_message = try std.fmt.allocPrint(allocator, "symbol '{s}' not found in workspace (LSP integration pending)", .{name}),
+        };
+    }
+
     return .{
         .kind = "symbol",
         .label = label,
-        .content = try allocator.dupe(u8, ""),
-        .bytes = 0,
-        .error_message = try allocator.dupe(u8, "symbol resolution requires LSP (Phase 3)"),
+        .content = search_results,
+        .bytes = search_results.len,
     };
 }
 
-fn resolveWeb(allocator: std.mem.Allocator, query: []const u8) !ResolvedMention {
-    // Stub: web fetch requires provider context.
+fn searchWorkspaceForSymbol(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, name: []const u8) ![]u8 {
+    _ = io;
+    // Use grep-like search via process_spawn.
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, "grep");
+    try argv.append(allocator, "-rn");
+    try argv.append(allocator, "--include=*.zig");
+    try argv.append(allocator, "--include=*.py");
+    try argv.append(allocator, "--include=*.ts");
+    try argv.append(allocator, "--include=*.rs");
+    try argv.append(allocator, "--include=*.go");
+    try argv.append(allocator, "--include=*.js");
+    try argv.append(allocator, "-l");
+    try argv.append(allocator, name);
+    try argv.append(allocator, ".");
+
+    const spawn_opts = process_spawn.SpawnOptions{
+        .cwd = root.path,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    };
+
+    const result = process_spawn.runCapture(allocator, argv.items, spawn_opts) catch return error.SubprocessFailed;
+    if (result.exit_code > 1) {
+        allocator.free(result.output);
+        return error.SubprocessFailed;
+    }
+
+    // Limit to first 2000 bytes to keep context manageable.
+    const trimmed = if (result.output.len > 2000) result.output[0..2000] else result.output;
+    const dup = try allocator.dupe(u8, trimmed);
+    allocator.free(result.output);
+    return dup;
+}
+
+fn resolveWeb(allocator: std.mem.Allocator, io: std.Io, query: []const u8) !ResolvedMention {
     const label = try std.fmt.allocPrint(allocator, "@web:{s}", .{query});
+    _ = io;
+
+    // If query looks like a URL (starts with http:// or https://), fetch it directly.
+    if (std.mem.startsWith(u8, query, "http://") or std.mem.startsWith(u8, query, "https://")) {
+        const content = fetchUrl(allocator, query) catch |err| {
+            return .{
+                .kind = "web",
+                .label = label,
+                .content = try allocator.dupe(u8, ""),
+                .bytes = 0,
+                .error_message = try std.fmt.allocPrint(allocator, "fetch failed: {}", .{err}),
+            };
+        };
+        return .{
+            .kind = "web",
+            .label = label,
+            .content = content,
+            .bytes = content.len,
+        };
+    }
+
+    // Otherwise, treat as a search query — return a stub pointing to search.
     return .{
         .kind = "web",
         .label = label,
         .content = try allocator.dupe(u8, ""),
         .bytes = 0,
-        .error_message = try allocator.dupe(u8, "web resolution requires fetch_url tool (Phase 3)"),
+        .error_message = try std.fmt.allocPrint(allocator, "web search for '{s}' requires a search API (pass a URL to fetch directly)", .{query}),
     };
 }
 
-fn resolveDocs(allocator: std.mem.Allocator, library: []const u8) !ResolvedMention {
-    // Stub: docs RAG requires indexed docs.
+fn fetchUrl(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
+    var client = std.http.Client{ .allocator = allocator, .io = undefined };
+    defer client.deinit();
+
+    var response_alloc = std.Io.Writer.Allocating.init(allocator);
+    defer response_alloc.deinit();
+
+    const result = client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .response_writer = &response_alloc.writer,
+    }) catch return error.NetworkError;
+
+    if (result.status != .ok) return error.HttpError;
+
+    const body = response_alloc.written();
+    // Limit to 8KB for context.
+    const trimmed = if (body.len > 8192) body[0..8192] else body;
+    return allocator.dupe(u8, trimmed);
+}
+
+fn resolveDocs(allocator: std.mem.Allocator, io: std.Io, root: ?workspace.WorkspaceRoot, library: []const u8) !ResolvedMention {
     const label = try std.fmt.allocPrint(allocator, "@docs:{s}", .{library});
+
+    if (root == null) {
+        return .{
+            .kind = "docs",
+            .label = label,
+            .content = try allocator.dupe(u8, ""),
+            .bytes = 0,
+            .error_message = try allocator.dupe(u8, "no workspace open"),
+        };
+    }
+
+    // Fallback: search docs/ directory in workspace for the library name.
+    const docs_path_str = std.fmt.allocPrint(allocator, "docs/{s}.md", .{library}) catch {
+        return .{
+            .kind = "docs",
+            .label = label,
+            .content = try allocator.dupe(u8, ""),
+            .bytes = 0,
+            .error_message = try allocator.dupe(u8, "out of memory"),
+        };
+    };
+    defer allocator.free(docs_path_str);
+
+    const rel_path = workspace.WorkspacePath.parse(docs_path_str) catch {
+        return .{
+            .kind = "docs",
+            .label = label,
+            .content = try allocator.dupe(u8, ""),
+            .bytes = 0,
+            .error_message = try std.fmt.allocPrint(allocator, "invalid docs path for '{s}'", .{library}),
+        };
+    };
+
+    var snapshot = workspace.snapshot.FileSnapshot.read(allocator, io, root.?, rel_path) catch {
+        return .{
+            .kind = "docs",
+            .label = label,
+            .content = try allocator.dupe(u8, ""),
+            .bytes = 0,
+            .error_message = try std.fmt.allocPrint(allocator, "docs '{s}' not found (looked for docs/{s}.md)", .{ library, library }),
+        };
+    };
+    defer snapshot.deinit();
+
+    const content = try allocator.dupe(u8, snapshot.content);
     return .{
         .kind = "docs",
         .label = label,
-        .content = try allocator.dupe(u8, ""),
-        .bytes = 0,
-        .error_message = try allocator.dupe(u8, "docs resolution requires RAG index (Phase 3)"),
+        .content = content,
+        .bytes = content.len,
     };
 }
 
@@ -407,7 +562,7 @@ test "resolveSpec returns error without workspace" {
     try std.testing.expect(results[0].error_message != null);
 }
 
-test "resolveSymbol returns stub error" {
+test "resolveSymbol returns error without workspace" {
     const allocator = std.testing.allocator;
     const mentions = [_]mention_parser.Mention{.{ .symbol = "foo" }};
     const results = try resolveAll(allocator, std.testing.io, null, &mentions);
@@ -420,7 +575,7 @@ test "resolveSymbol returns stub error" {
     }
     try std.testing.expectEqual(@as(usize, 1), results.len);
     try std.testing.expect(results[0].error_message != null);
-    try std.testing.expect(std.mem.indexOf(u8, results[0].error_message.?, "LSP") != null);
+    try std.testing.expect(std.mem.indexOf(u8, results[0].error_message.?, "no workspace") != null);
 }
 
 test "sliceLines extracts range" {

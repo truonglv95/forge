@@ -38,6 +38,25 @@ pub fn run(
     if (std.mem.eql(u8, subcommand, "timeline")) {
         return runTimeline(allocator, io, parsed, writer);
     }
+    // Phase 3 additions (RFC-0015): background runs
+    if (std.mem.eql(u8, subcommand, "runs")) {
+        return runRunsList(allocator, io, parsed, writer);
+    }
+    if (std.mem.eql(u8, subcommand, "wait")) {
+        return runWait(allocator, io, parsed, writer);
+    }
+    if (std.mem.eql(u8, subcommand, "cancel")) {
+        return runCancel(allocator, io, parsed, writer);
+    }
+    if (std.mem.eql(u8, subcommand, "approve")) {
+        return runApprove(allocator, io, parsed, writer);
+    }
+    if (std.mem.eql(u8, subcommand, "reject")) {
+        return runReject(allocator, io, parsed, writer);
+    }
+    if (std.mem.eql(u8, subcommand, "branch")) {
+        return runBranch(allocator, io, parsed, writer);
+    }
     if (!std.mem.eql(u8, subcommand, "run")) {
         try writer.print("error: unknown agent subcommand '{s}'\n", .{subcommand});
         return 2;
@@ -49,6 +68,10 @@ pub fn run(
     }
 
     const intent = parsed.positional[1];
+    // Background mode: spawn detached process and return run_id immediately.
+    if (parsed.flags.background) {
+        return runBackground(allocator, io, environ_map, parsed, intent, writer);
+    }
     return runAgent(allocator, io, environ_map, parsed, intent, false, writer);
 }
 
@@ -140,6 +163,29 @@ fn runEvents(
         try writer.print("  {s}\n", .{rendered});
     }
     if (count == 0) try writer.writeAll("  (no events)\n");
+
+    // --follow: poll for new events (RFC-0015).
+    if (parsed.flags.follow) {
+        var last_size: usize = body.len;
+        try writer.writeAll("  (following — press Ctrl+C to stop)\n");
+        while (true) {
+            io.sleep(std.Io.Duration.fromSeconds(1), .real) catch break;
+            const new_body = workspace.sessions.readEvents(allocator, io, session_id) catch break;
+            defer allocator.free(new_body);
+            if (new_body.len > last_size) {
+                const new_part = new_body[last_size..];
+                var new_lines = std.mem.splitScalar(u8, new_part, '\n');
+                while (new_lines.next()) |line| {
+                    const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+                    if (trimmed.len == 0) continue;
+                    const rendered = events_render.renderPreviewAlloc(allocator, trimmed) catch continue;
+                    defer allocator.free(rendered);
+                    try writer.print("  {s}\n", .{rendered});
+                }
+                last_size = new_body.len;
+            }
+        }
+    }
     return 0;
 }
 
@@ -743,4 +789,214 @@ fn cliApprovalCallback(context: ?*anyopaque, tool_name: []const u8, args_json: [
     _ = args_json;
     _ = policy;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Background agent runs (RFC-0015)
+// ---------------------------------------------------------------------------
+
+const process_spawn = @import("forge-util").process_spawn;
+
+/// `forge agent run --background --intent "..."` — spawn detached process.
+fn runBackground(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    parsed: args_mod.CliArgs,
+    intent: []const u8,
+    writer: *std.Io.Writer,
+) !u8 {
+    _ = environ_map;
+
+    // Generate a run_id based on timestamp.
+    const now = std.Io.Timestamp.now(io, .real).toMilliseconds();
+    const run_id = std.fmt.allocPrint(allocator, "run_{d}", .{now}) catch return 2;
+    defer allocator.free(run_id);
+
+    // Build argv for the background process: forge agent run <intent> (without --background).
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, "forge");
+    try argv.append(allocator, "agent");
+    try argv.append(allocator, "run");
+    try argv.append(allocator, intent);
+    if (parsed.flags.provider) |p| {
+        try argv.append(allocator, "--provider");
+        try argv.append(allocator, p);
+    }
+    if (parsed.flags.model) |m| {
+        try argv.append(allocator, "--model");
+        try argv.append(allocator, m);
+    }
+    if (parsed.flags.max_steps > 0) {
+        const steps_str = std.fmt.allocPrint(allocator, "{d}", .{parsed.flags.max_steps}) catch return 2;
+        try argv.append(allocator, "--max-steps");
+        try argv.append(allocator, steps_str);
+    }
+    if (parsed.flags.capability) |c| {
+        try argv.append(allocator, "--capability");
+        try argv.append(allocator, c);
+    }
+    if (parsed.flags.workspace) |w| {
+        try argv.append(allocator, "--workspace");
+        try argv.append(allocator, w);
+    }
+
+    const spawn_opts = process_spawn.SpawnOptions{
+        .cwd = parsed.flags.workspace,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    };
+
+    _ = process_spawn.spawn(allocator, argv.items, spawn_opts) catch {
+        try writer.writeAll("error: failed to spawn background agent\n");
+        return 2;
+    };
+
+    if (parsed.flags.json) {
+        try writer.print("{{\"type\":\"background_run\",\"run_id\":\"{s}\",\"status\":\"running\"}}\n", .{run_id});
+    } else {
+        try writer.print("Started background agent: {s}\n", .{run_id});
+        try writer.writeAll("Use `forge agent runs` to list, `forge agent wait <run_id>` to wait,\n");
+        try writer.writeAll("`forge agent events <session_id> --follow` to stream events.\n");
+    }
+    return 0;
+}
+
+/// `forge agent runs [--status running|all]` — list background runs.
+fn runRunsList(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
+    var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
+    defer opened.close(io);
+
+    var list = try workspace.sessions.listEntries(allocator, io, opened.path);
+    defer list.deinit();
+
+    if (parsed.flags.json) {
+        try writer.writeAll("{\"type\":\"runs\",\"runs\":[");
+        for (list.items, 0..) |entry, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print(
+                "{{\"session_id\":\"{s}\",\"intent\":\"{s}\",\"timestamp_ms\":{d}}}",
+                .{ entry.session_id, entry.intent, entry.timestamp_ms },
+            );
+        }
+        try writer.writeAll("]}\n");
+    } else {
+        try writer.writeAll("Background runs:\n");
+        if (list.items.len == 0) {
+            try writer.writeAll("  (none)\n");
+            return 0;
+        }
+        for (list.items) |entry| {
+            try writer.print("  {s}  {s}\n", .{ entry.session_id, entry.intent });
+        }
+    }
+    return 0;
+}
+
+/// `forge agent wait <run_id> [--timeout N]` — wait for a background run to complete.
+fn runWait(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
+    _ = allocator;
+    _ = io;
+    if (parsed.positional.len < 2) {
+        try writer.writeAll("error: agent wait requires a run_id\n");
+        return 2;
+    }
+    const run_id = parsed.positional[1];
+    // Stub: real implementation would poll the run record file for status change.
+    try writer.print("(stub) Waiting for {s}... (polling not yet implemented)\n", .{run_id});
+    try writer.writeAll("Use `forge agent events <session_id> --follow` to stream events instead.\n");
+    return 0;
+}
+
+/// `forge agent cancel <run_id>` — cancel a background run.
+fn runCancel(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
+    _ = allocator;
+    _ = io;
+    if (parsed.positional.len < 2) {
+        try writer.writeAll("error: agent cancel requires a run_id\n");
+        return 2;
+    }
+    const run_id = parsed.positional[1];
+    // Stub: real implementation would send SIGTERM to the background process.
+    try writer.print("(stub) Cancel signal sent to {s} (process kill not yet implemented)\n", .{run_id});
+    return 0;
+}
+
+/// `forge agent approve <run_id> --yes` — approve a pending tool call.
+fn runApprove(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
+    _ = allocator;
+    _ = io;
+    if (parsed.positional.len < 2) {
+        try writer.writeAll("error: agent approve requires a run_id\n");
+        return 2;
+    }
+    const run_id = parsed.positional[1];
+    // Stub: real implementation would write an approval event to the session log.
+    try writer.print("(stub) Approval granted for {s} (event-based approval not yet implemented)\n", .{run_id});
+    return 0;
+}
+
+/// `forge agent reject <run_id>` — reject a pending tool call.
+fn runReject(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
+    _ = allocator;
+    _ = io;
+    if (parsed.positional.len < 2) {
+        try writer.writeAll("error: agent reject requires a run_id\n");
+        return 2;
+    }
+    const run_id = parsed.positional[1];
+    try writer.print("(stub) Rejection sent for {s} (event-based approval not yet implemented)\n", .{run_id});
+    return 0;
+}
+
+/// `forge agent branch <session_id> --at-step N --intent "..."` — fork a session.
+fn runBranch(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
+    if (parsed.positional.len < 2) {
+        try writer.writeAll("error: agent branch requires a session_id\n");
+        return 2;
+    }
+    const session_id = parsed.positional[1];
+
+    var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
+    defer opened.close(io);
+
+    // Load source session.
+    var src_doc = workspace.sessions.loadSession(allocator, io, session_id) catch {
+        try writer.print("error: no session '{s}'\n", .{session_id});
+        return 2;
+    };
+    defer workspace.sessions.deinitSession(allocator, &src_doc);
+
+    // Generate new session id.
+    const now = std.Io.Timestamp.now(io, .real).toMilliseconds();
+    const new_session_id = std.fmt.allocPrint(allocator, "sess_{d}", .{now}) catch return 2;
+    defer allocator.free(new_session_id);
+
+    // Copy events up to the step limit (if specified via --max-steps).
+    const events = workspace.sessions.readEvents(allocator, io, session_id) catch {
+        try writer.print("error: cannot read events for '{s}'\n", .{session_id});
+        return 2;
+    };
+    defer allocator.free(events);
+
+    // Write events to new session (simplified: copy all events).
+    // Real implementation would filter by step index.
+    var lines = std.mem.splitScalar(u8, events, '\n');
+    var copied: u32 = 0;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+        if (trimmed.len == 0) continue;
+        workspace.sessions.appendEvent(allocator, io, new_session_id, trimmed) catch continue;
+        copied += 1;
+    }
+
+    if (parsed.flags.json) {
+        try writer.print("{{\"type\":\"branch\",\"new_session_id\":\"{s}\",\"branched_from\":\"{s}\",\"events_copied\":{d}}}\n", .{ new_session_id, session_id, copied });
+    } else {
+        try writer.print("Branched session: {s} (from {s}, {d} events copied)\n", .{ new_session_id, session_id, copied });
+        try writer.writeAll("Resume with: forge agent resume <new_session_id>\n");
+    }
+    return 0;
 }

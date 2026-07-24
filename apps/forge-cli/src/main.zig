@@ -189,7 +189,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  context    Preview AI context preparation
         \\  ask        Ask AI to propose a change (no auto-apply)
         \\  run        List or show AI run records (list|show)
-        \\  agent      Multi-step agent (interactive, or run|resume|list|events)
+        \\  agent      Multi-step agent (interactive, or run|resume|list|events|timeline|runs|wait|cancel|approve|reject|branch)
         \\  plan       Plan a proposal using AI
         \\  parsers    Sync Tree-sitter parser lock for the workspace (sync)
         \\  eval       Run evaluation suites (ai-flow)
