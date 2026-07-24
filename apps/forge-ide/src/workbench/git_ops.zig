@@ -154,6 +154,16 @@ fn runGitAction(wb: *@import("../workbench.zig").Workbench, args: []const []cons
     }
 }
 
+pub fn stageAll(wb: *@import("../workbench.zig").Workbench) !void {
+    try runGitAction(wb, &.{ "git", "add", "-A" }, "Stage all files");
+    try refreshGitStatus(wb);
+}
+
+pub fn unstageAll(wb: *@import("../workbench.zig").Workbench) !void {
+    try runGitAction(wb, &.{ "git", "reset" }, "Unstage all files");
+    try refreshGitStatus(wb);
+}
+
 pub fn flushGitStatusRefresh(wb: *@import("../workbench.zig").Workbench) !bool {
     wb.git.refresh_mutex.lock();
     const ready = wb.git.refresh_ready;

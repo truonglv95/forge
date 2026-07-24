@@ -3,6 +3,7 @@ const provider = @import("provider.zig");
 const context = @import("context.zig");
 const conversation = @import("conversation.zig");
 const kernel = @import("forge-kernel");
+const prompt_pack = @import("prompt_pack.zig");
 
 pub const PlannerError = error{
     GenerationFailed,
@@ -33,6 +34,8 @@ pub const Planner = struct {
     }
 
     fn writePromptHeader(self: *Planner, p_writer: *std.Io.Writer, intro: []const u8) provider.ProviderError!void {
+        p_writer.print("Prompt pack: {s}\n", .{prompt_pack.version}) catch return error.ProviderInternalError;
+        p_writer.writeAll(prompt_pack.base_constitution) catch return error.ProviderInternalError;
         p_writer.writeAll(intro) catch return error.ProviderInternalError;
         conversation.appendHistory(p_writer, self.history) catch return error.ProviderInternalError;
         p_writer.writeAll("--- CONTEXT ---\n") catch return error.ProviderInternalError;
@@ -44,33 +47,7 @@ pub const Planner = struct {
 
     fn writeJsonContractInstructions(self: *Planner, p_writer: *std.Io.Writer) provider.ProviderError!void {
         const is_local = std.mem.eql(u8, self.prov.metadata().provider_name, "ollama");
-        p_writer.writeAll(
-            \\Respond ONLY with valid JSON. Do not use markdown blocks or prose before/after the object.
-            \\The response must start with '{' and end with '}'.
-            \\Schema (proposal v1):
-            \\{"schema_version":1,"summary":"one line","assumptions":["..."],"validation_tasks":["auto:test","property: fuzz changed parsers if applicable"],"workspace_edit":{"files":[{"path":"relative/path.txt","operation":"create|modify|delete","expected_hash":null,"edits":[{"search":"exact code block to replace","replacement":"new code block"}]}]}}
-            \\For modify/delete include expected_hash from the current file snapshot.
-            \\For modify, you MUST provide the "search" field containing the EXACT original code block you want to replace (including all whitespace and indentation) and the "replacement" field. Do not use start/end.
-            \\If no file edits are required yet, return workspace_edit.files as an empty array.
-            \\
-            \\CODE QUALITY & STYLE RULES:
-            \\- Strictly follow the project's coding conventions (e.g. idiomatic Zig, standard naming, avoid deprecated APIs).
-            \\- Ensure logic correctness, handle edge cases, and double-check syntax before generating the final JSON.
-            \\- Preserve existing code comments and indentation levels.
-            \\- For `modify` operations, provide a complete drop-in replacement that logically fits without breaking the surrounding context.
-        ) catch return error.ProviderInternalError;
-        if (is_local) {
-            p_writer.writeAll(
-                \\
-                \\LOCAL MODEL RULES (strict):
-                \\- Never wrap JSON in ``` fences.
-                \\- Never explain the proposal outside the JSON object.
-                \\- Keep summary short; put details in assumptions or file edits.
-                \\- For questions/reviews with no code changes, use workspace_edit.files: [] and put the answer in summary.
-                \\- Example (no edits): {"schema_version":1,"summary":"Project uses Zig monorepo layout.","assumptions":[],"validation_tasks":[],"workspace_edit":{"files":[]}}
-                \\
-            ) catch return error.ProviderInternalError;
-        }
+        prompt_pack.writeProposalJsonContract(p_writer, is_local) catch return error.ProviderInternalError;
     }
 
     /// Generates a WorkspaceEdit JSON response by prompting the AI provider
@@ -78,10 +55,7 @@ pub const Planner = struct {
         var p_alloc = std.Io.Writer.Allocating.init(self.allocator);
         defer p_alloc.deinit();
         const p_writer = &p_alloc.writer;
-        try self.writePromptHeader(
-            p_writer,
-            "You are an expert software engineer. Your task is to output a single JSON object matching the WorkspaceEdit schema based on the following intent.\n\n",
-        );
+        try self.writePromptHeader(p_writer, prompt_pack.edit_prompt_intro);
 
         p_writer.writeAll("--- INSTRUCTIONS ---\n") catch return error.ProviderInternalError;
         try self.writeJsonContractInstructions(p_writer);
@@ -96,17 +70,9 @@ pub const Planner = struct {
         var p_alloc = std.Io.Writer.Allocating.init(self.allocator);
         defer p_alloc.deinit();
         const p_writer = &p_alloc.writer;
-        try self.writePromptHeader(
-            p_writer,
-            "MARKDOWN PLAN MODE\nYou are an expert software engineer. Write an implementation plan in Markdown based on the intent and context below.\n\n",
-        );
+        try self.writePromptHeader(p_writer, prompt_pack.markdown_plan_intro);
 
-        p_writer.writeAll(
-            \\--- INSTRUCTIONS ---
-            \\Respond ONLY with Markdown (headings, bullet lists). Do not output JSON or code fences wrapping the whole document.
-            \\Include: goal, approach, files to touch, risks, and validation steps.
-            \\Use headings: Goal, Design, Tasks, Risks, Validation.
-        ) catch return error.ProviderInternalError;
+        p_writer.writeAll(prompt_pack.markdown_plan_instructions) catch return error.ProviderInternalError;
 
         const prompt_items = p_alloc.writer.buffer[0..p_alloc.writer.end];
         try self.prov.ask(self.allocator, prompt_items, self.images, writer, cancel_token);
@@ -123,10 +89,7 @@ pub const Planner = struct {
         var p_alloc = std.Io.Writer.Allocating.init(self.allocator);
         defer p_alloc.deinit();
         const p_writer = &p_alloc.writer;
-        try self.writePromptHeader(
-            p_writer,
-            "REPAIR MODE\nYour previous proposal failed validation after a trial apply to the workspace. Output a corrected JSON proposal that fixes the failures.\n\n",
-        );
+        try self.writePromptHeader(p_writer, prompt_pack.repair_prompt_intro);
 
         p_writer.writeAll("--- FAILED PROPOSAL ---\n") catch return error.ProviderInternalError;
         p_writer.writeAll(failed_proposal) catch return error.ProviderInternalError;
@@ -135,9 +98,7 @@ pub const Planner = struct {
 
         p_writer.writeAll("\n\n--- INSTRUCTIONS ---\n") catch return error.ProviderInternalError;
         try self.writeJsonContractInstructions(p_writer);
-        p_writer.writeAll(
-            \\Address every validation failure shown above.
-        ) catch return error.ProviderInternalError;
+        p_writer.writeAll(prompt_pack.repair_instructions) catch return error.ProviderInternalError;
 
         const prompt_items = p_alloc.writer.buffer[0..p_alloc.writer.end];
         try self.prov.ask(self.allocator, prompt_items, self.images, writer, cancel_token);

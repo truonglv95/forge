@@ -2,6 +2,7 @@ const std = @import("std");
 const context = @import("../context.zig");
 const context_manifest = @import("../context_manifest.zig");
 const routing = @import("../routing.zig");
+const prompt_pack = @import("../prompt_pack.zig");
 
 pub const Options = struct {
     task_intent: routing.TaskIntent = .explore_codebase,
@@ -24,70 +25,14 @@ pub fn buildExplorePrompt(
     defer prompt.deinit();
     const writer = &prompt.writer;
 
-    try writer.print("You are a coding agent working inside a Forge workspace.\n", .{});
-    try writer.writeAll(
-        \\Tool loop contract:
-        \\- If the current context is insufficient, call exactly one focused tool to get the missing fact.
-        \\- Prefer grep/search for exact symbols, filenames, and short keywords; use codebase_search only when grep is insufficient.
-        \\- Grep accepts pattern, optional path/glob, and a|b alternation. Example: {"pattern":"engine|tensor","glob":"*.py"}.
-        \\- Prefer codebase_search for unknown symbols/concepts, grep for exact text, list_tree for structure, and read_file for line-level evidence.
-        \\- For "where is X" / Vietnamese "ở đâu"/"tới đâu"/"đâu rồi" questions: start with list_tree on `.`, then read_file on likely paths.
-        \\- Use short English keywords in search/codebase_search (e.g. "tiny engine"), never paste the full user sentence.
-        \\- If codebase_search says the index is not ready, use list_tree and read_file instead of repeating semantic search.
-        \\- If an imports/import-graph block is present, prefer read_file on those neighbor files when chasing definitions or call sites.
-        \\- After each tool result, decide whether you have enough evidence; continue only when another specific fact is missing.
-        \\- Do not repeat equivalent tool calls unless the previous observation was insufficient or stale.
-        \\- Finish with a concise answer once the task is complete.
-        \\
-    );
+    try writer.print("Prompt pack: {s}\n", .{prompt_pack.version});
+    try writer.writeAll(prompt_pack.base_constitution);
+    try writer.writeAll(prompt_pack.tool_loop_contract);
     try writer.writeAll(context_manifest.intentGuidance(options.task_intent));
-    if (options.task_intent == .answer_question or options.task_intent == .explore_codebase) {
-        try writer.writeAll(
-            \\Read-only policy:
-            \\- Use tools only to inspect the workspace; do not propose or apply edits.
-            \\- Finish with a natural-language answer grounded in the files/tool results you inspected.
-            \\- Do not output WorkspaceEdit JSON, schema_version, or workspace_edit for read-only questions.
-            \\- If the user asks whether something is missing or OK, assess the current implementation and name concrete gaps or say none were found.
-            \\
-        );
-    }
-    if (options.task_intent == .edit_code) {
-        try writer.writeAll(
-            \\Implementation policy:
-            \\- Prefer *.py / *.zig / *.ts source files; skip __pycache__, .pyc, and build artifacts.
-            \\- After one or two read_file calls, use replace_file_content to implement the requested change.
-            \\- replace_file_content directly edits the user's editor buffer. Do not output WorkspaceEdit JSON or proposal JSON.
-            \\- Finish with a short summary of the concrete edits, not a generic framework explanation.
-            \\
-        );
-    }
-    if (options.task_intent == .computer_control) {
-        try writer.writeAll(
-            \\Computer Control policy:
-            \\- Use the `mcp_computer-control_take_screenshot` tool to observe the screen and get the current visual state.
-            \\- Analyze the screenshot to identify the exact coordinates (x, y) of UI elements.
-            \\- Use `mcp_computer-control_mouse_move`, `mcp_computer-control_mouse_click`, `mcp_computer-control_keyboard_type`, and `mcp_computer-control_keyboard_press` to interact with the UI.
-            \\- Wait for the UI to respond before taking the next action. Take additional screenshots if needed to verify the state.
-            \\- Never guess coordinates; always verify them from the screenshot.
-            \\- Finish with a concise summary of the actions taken.
-            \\
-        );
-    }
+    try writer.writeAll(prompt_pack.intentPolicy(options.task_intent));
+    try writer.writeAll(prompt_pack.final_answer_checklist);
     try writer.print("\nUser intent: {s}\n\n", .{intent});
-
-    if (options.preloaded_retrieval) {
-        try writer.writeAll(
-            \\Retrieval policy: fused semantic + keyword context is pre-loaded below.
-            \\Do not call codebase_search for the same intent unless you need different symbols.
-            \\
-        );
-    } else {
-        try writer.writeAll(
-            \\Use search, codebase_search, list_tree, and read_file to gather facts before answering.
-            \\Do not guess file contents.
-            \\
-        );
-    }
+    try writer.writeAll(prompt_pack.retrievalPolicy(options.preloaded_retrieval));
 
     try writer.writeAll(manifest);
     try writer.writeAll("\nContext blocks loaded:\n");

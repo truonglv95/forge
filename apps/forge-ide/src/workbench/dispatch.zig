@@ -1,18 +1,13 @@
 const std = @import("std");
-const editor = @import("forge-editor");
 const workspace = @import("forge-workspace");
 const plugin = @import("forge-plugin");
-const lsp = @import("forge-lsp");
 const workspace_io = @import("../workspace_io.zig");
 const explorer_ops = @import("../explorer/ops.zig");
 const recovery_mod = @import("recovery.zig");
 const conflict_resolver = @import("conflict_resolver.zig");
-const agent_workflow = @import("../agent/workflow.zig");
 const tasks_mod = @import("tasks.zig");
 const commands_mod = @import("commands.zig");
 const state = @import("../ui/core/state.zig");
-const Workbench = @import("../workbench.zig").Workbench;
-const mention_resolver_mod = @import("mention_resolver.zig");
 const Command = commands_mod.Command;
 
 pub fn dispatch(wb: anytype, command: Command) !void {
@@ -280,304 +275,39 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             }
             wb.workspace_symbol_picker.close();
         },
-        .agent_set_mode => |mode| {
-            wb.agent_ui.session.lock();
-            wb.agent_ui.session.mode = mode;
-            wb.agent_ui.session.mode_menu_open = false;
-            wb.agent_ui.session.unlock();
-            const label = switch (mode) {
-                .ask => "Ask mode",
-                .plan => "Plan mode",
-                .agent => "Agent mode",
-            };
-            try wb.setStatus(label);
-        },
-        .agent_submit => {
-            const prompt_text = try wb.agent_ui.prompt_buffer.content();
-            defer wb.agent_ui.prompt_buffer.allocator.free(prompt_text);
-            const trimmed = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);
-            if (trimmed.len == 0) return;
-
-            // P1.5-1: Resolve @mentions in the prompt and build a context
-            // preamble that gets prepended to the user's intent.
-            var resolved = mention_resolver_mod.resolveMentions(
-                wb.allocator,
-                wb.io,
-                wb.workspace_root,
-                trimmed,
-            ) catch mention_resolver_mod.ResolvedList{ .items = &.{} };
-            defer resolved.deinit(wb.allocator);
-
-            const preamble = mention_resolver_mod.buildContextPreamble(wb.allocator, resolved.items) catch try wb.allocator.dupe(u8, "");
-            defer wb.allocator.free(preamble);
-
-            // Combine preamble + user prompt.
-            const full_prompt = if (preamble.len > 0)
-                std.fmt.allocPrint(wb.allocator, "{s}{s}", .{ preamble, trimmed }) catch try wb.allocator.dupe(u8, trimmed)
-            else
-                try wb.allocator.dupe(u8, trimmed);
-            defer wb.allocator.free(full_prompt);
-
-            // For the chat display, show the original (trimmed) prompt
-            // without the preamble — users don't want to see the context
-            // block in the chat bubble.
-            const owned_prompt = try wb.allocator.dupe(u8, trimmed);
-            defer wb.allocator.free(owned_prompt);
-
-            wb.agent_ui.prompt_buffer.deinit();
-            wb.agent_ui.prompt_buffer = try editor.Buffer.init(wb.allocator);
-            wb.prompt_scroll_y = 0;
-            wb.focused_panel = .agent;
-
-            try @import("../workbench/agent_ops.zig").appendChat(wb, .user, owned_prompt);
-            wb.chat_follow_stream = true;
-            const active = wb.editor.tabs.activeDoc();
-            const active_path = if (active) |doc| doc.path else null;
-
-            // Collect file paths from resolved mentions to use as scope_files.
-            // This supplements the agent's existing scope with files the user
-            // explicitly mentioned via @file: tokens.
-            var scope_files: std.ArrayList([]const u8) = .empty;
-            defer scope_files.deinit(wb.allocator);
-            for (resolved.items) |m| {
-                if (m.kind == .file and m.ok) {
-                    scope_files.append(wb.allocator, m.label) catch {};
-                }
-            }
-
-            agent_workflow.spawnGenerate(&@import("../workbench/agent_ops.zig").agentHost(wb), full_prompt, scope_files.items, active_path) catch |err| {
-                const msg = switch (err) {
-                    error.AgentBusy => "Agent is already running",
-                    else => "Agent failed to start",
-                };
-                try wb.setStatus(msg);
-                return;
-            };
-            wb.chat_scroll_to_end_on_ready = true;
-            try wb.setStatus("Agent: building context…");
-        },
-        .agent_edit_selection => {
-            const doc = wb.editor.tabs.activeDoc() orelse {
-                try wb.setStatus("No active file");
-                return;
-            };
-            const selection = doc.buffer.selectedText(wb.allocator) catch {
-                try wb.setStatus("Failed to read selection");
-                return;
-            };
-            defer wb.allocator.free(selection);
-            if (selection.len == 0) {
-                try wb.setStatus("Select code first (drag in editor)");
-                return;
-            }
-
-            const prompt_text = wb.agent_ui.prompt_buffer.content() catch {
-                try wb.setStatus("Failed to read prompt");
-                return;
-            };
-            defer wb.agent_ui.prompt_buffer.allocator.free(prompt_text);
-            const user_part = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);
-
-            const intent = if (user_part.len > 0)
-                try std.fmt.allocPrint(wb.allocator, "Edit the selected code in {s}.\n\nRequest: {s}\n\nSelected code:\n```\n{s}\n```", .{ doc.path, user_part, selection })
-            else
-                try std.fmt.allocPrint(wb.allocator, "Edit the selected code in {s}.\n\n```\n{s}\n```\n\nImprove or fix as needed.", .{ doc.path, selection });
-            defer wb.allocator.free(intent);
-
-            wb.agent_ui.prompt_buffer.deinit();
-            wb.agent_ui.prompt_buffer = try editor.Buffer.init(wb.allocator);
-            wb.prompt_scroll_y = 0;
-            wb.focused_panel = .agent;
-            wb.agent_ui.session.lock();
-            wb.agent_ui.session.mode = .agent;
-            wb.agent_ui.session.unlock();
-
-            try @import("../workbench/agent_ops.zig").appendChat(wb, .user, intent);
-            wb.chat_follow_stream = true;
-
-            const scope = try wb.allocator.alloc([]const u8, 1);
-            defer wb.allocator.free(scope);
-            scope[0] = try wb.allocator.dupe(u8, doc.path);
-            defer wb.allocator.free(scope[0]);
-
-            agent_workflow.spawnGenerate(&@import("../workbench/agent_ops.zig").agentHost(wb), intent, scope, doc.path) catch |err| {
-                const msg = switch (err) {
-                    error.AgentBusy => "Agent is already running",
-                    else => "Agent failed to start",
-                };
-                try wb.setStatus(msg);
-                return;
-            };
-            try wb.setStatus("Agent: editing selection…");
-        },
-        .agent_cancel => {
-            agent_workflow.cancel(&@import("../workbench/agent_ops.zig").agentHost(wb));
-            try wb.setStatus("Cancelling agent...");
-        },
-        .agent_apply => {
-            const tx_id = try agent_workflow.applyCurrentProposal(&@import("../workbench/agent_ops.zig").agentHost(wb));
-            @import("../workbench/agent_ops.zig").closeProposalReview(wb);
-            var buf: [64]u8 = undefined;
-            const msg = try std.fmt.bufPrint(&buf, "Applied transaction {d}", .{tx_id});
-            try wb.setStatus(msg);
-            try @import("../workbench/agent_ops.zig").appendChat(wb, .agent, "Changes applied to workspace.");
-        },
-        .agent_rollback => {
-            try agent_workflow.rollbackLastCheckpoint(&@import("../workbench/agent_ops.zig").agentHost(wb));
-            @import("../workbench/agent_ops.zig").closeProposalReview(wb);
-            try @import("../workbench/agent_ops.zig").appendChat(wb, .agent, "Rolled back to pre-apply checkpoint.");
-            try wb.setStatus("Checkpoint restored");
-        },
-        .agent_dismiss_apply => {
-            wb.agent_ui.session.dismissPostApplyBanner();
-            try wb.setStatus("Changes kept");
-        },
-        .agent_approve_spec => {
-            try agent_workflow.approveSpecAndGenerate(&@import("../workbench/agent_ops.zig").agentHost(wb));
-            try wb.setStatus("Spec approved — generating proposal...");
-        },
-        .agent_approve_tool => {
-            wb.agent_ui.session.resolveToolApproval(true);
-            try wb.setStatus("Tool approved — continuing agent...");
-        },
-        .agent_approve_always_tool => {
-            wb.agent_ui.session.lock();
-            wb.agent_ui.session.always_approve_tools = true;
-            wb.agent_ui.session.unlock();
-            wb.agent_ui.session.resolveToolApproval(true);
-            try wb.setStatus("Always approve enabled — continuing agent...");
-        },
-        .agent_reject_tool => {
-            wb.agent_ui.session.resolveToolApproval(false);
-            try wb.setStatus("Tool rejected");
-        },
-        .agent_continue_session => {
-            wb.agent_ui.session.lock();
-            const kind = wb.agent_ui.session.resume_offer_kind;
-            const session_id = if (wb.agent_ui.session.resume_session_id) |id| try wb.allocator.dupe(u8, id) else null;
-            wb.agent_ui.session.unlock();
-            if (session_id) |id| {
-                defer wb.allocator.free(id);
-                switch (kind) {
-                    .continue_run => agent_workflow.spawnResumeSession(&@import("../workbench/agent_ops.zig").agentHost(wb), id) catch |err| {
-                        try wb.setStatus(agent_workflow.agentFailureMessage(err));
-                    },
-                    .review_proposal => {
-                        agent_workflow.openStoredProposal(&@import("../workbench/agent_ops.zig").agentHost(wb), id) catch |err| {
-                            try wb.setStatus(agent_workflow.agentFailureMessage(err));
-                            return;
-                        };
-                        @import("../workbench/agent_ops.zig").openProposalReview(wb);
-                    },
-                }
-            }
-        },
-        .agent_dismiss_resume => {
-            agent_workflow.dismissResumeOffer(&@import("../workbench/agent_ops.zig").agentHost(wb));
-            try wb.setStatus("Resume offer dismissed");
-        },
-        .agent_reject => {
-            agent_workflow.rejectCurrentProposal(&@import("../workbench/agent_ops.zig").agentHost(wb));
-            @import("../workbench/agent_ops.zig").closeProposalReview(wb);
-            try @import("../workbench/agent_ops.zig").appendChat(wb, .agent, "Proposal rejected.");
-            try wb.setStatus("Proposal rejected");
-        },
-        .agent_show_review => try @import("../workbench/agent_ops.zig").showAgentReview(wb),
-        .agent_toggle_step => |index| {
-            wb.agent_ui.session.lock();
-            if (index < wb.agent_ui.session.agent_steps.items.len) {
-                const step = &wb.agent_ui.session.agent_steps.items[index];
-                step.expanded = !step.expanded;
-                wb.agent_ui.session.agent_steps_revision += 1;
-            }
-            wb.agent_ui.session.unlock();
-        },
-        .agent_select_run => |index| {
-            wb.agent_ui.session.lock();
-            if (index < wb.agent_ui.session.run_history.items.len) {
-                wb.agent_ui.session.selected_run_index = index;
-                const entry = wb.agent_ui.session.run_history.items[index];
-                if (wb.agent_ui.session.run_id) |old| wb.allocator.free(old);
-                wb.agent_ui.session.run_id = wb.allocator.dupe(u8, entry.run_id) catch null;
-                if (wb.agent_ui.session.proposal_rel) |old| wb.allocator.free(old);
-                // Build proposal abs path in session dir
-                const sess_dir = workspace.global_store.getSessionDir(wb.allocator, wb.io, wb.workspace_root) catch null;
-                if (sess_dir) |sd| {
-                    defer wb.allocator.free(sd);
-                    const proposal_abs = std.fmt.allocPrint(wb.allocator, "{s}/proposals/{s}.json", .{ sd, entry.run_id }) catch null;
-                    wb.agent_ui.session.proposal_rel = proposal_abs;
-                } else {
-                    // Fallback: legacy relative path
-                    wb.agent_ui.session.proposal_rel = std.fmt.allocPrint(wb.allocator, ".forge/proposals/{s}.json", .{entry.run_id}) catch null;
-                }
-            }
-            wb.agent_ui.session.unlock();
-            if (wb.agent_ui.session.proposal_rel) |rel| {
-                agent_workflow.loadProposalPreview(&@import("../workbench/agent_ops.zig").agentHost(wb), rel) catch {};
-                @import("../workbench/agent_ops.zig").openProposalReview(wb);
-            }
-        },
-        .agent_refresh_runs => try agent_workflow.refreshRunHistory(&@import("../workbench/agent_ops.zig").agentHost(wb)),
-        .agent_add_scope => |path| {
-            try wb.agent_ui.session.addScopeFile(path);
-            @import("../workbench/agent_ops.zig").refreshAgentContextPreview(wb);
-        },
-        .agent_remove_scope => |path| {
-            wb.agent_ui.session.removeScopeFile(path);
-            @import("../workbench/agent_ops.zig").refreshAgentContextPreview(wb);
-        },
-        .agent_clear_scope => {
-            wb.agent_ui.session.clearScope();
-            @import("../workbench/agent_ops.zig").refreshAgentContextPreview(wb);
-        },
-        .agent_scope_picker_open => try @import("../workbench/agent_ops.zig").openScopePicker(wb),
-        .agent_scope_picker_close => wb.agent_ui.session.closeScopePicker(),
-        .agent_scope_picker_select => try @import("../workbench/agent_ops.zig").selectScopePickerEntry(wb),
-        .agent_toggle_context_inspector => wb.agent_ui.session.toggleContextInspector(),
-        .agent_toggle_mode_menu => wb.agent_ui.session.toggleModeMenu(),
-        .agent_toggle_model_menu => wb.agent_ui.session.toggleModelMenu(),
-        .agent_close_menus => wb.agent_ui.session.closeMenus(),
-        .agent_set_model => |index| try @import("../workbench/agent_ops.zig").setAgentModelIndex(wb, index),
-        .agent_remove_attachment => |index| {
-            wb.agent_ui.session.removeAttachment(index);
-            @import("../workbench/agent_ops.zig").refreshAgentContextPreview(wb);
-            try wb.setStatus("Attachment removed");
-        },
-        .agent_copy_message => |index| {
-            if (index < wb.agent_ui.chat_history.items.len) {
-                const text = wb.agent_ui.chat_history.items[index].content;
-                @import("forge-renderer").Renderer.setClipboardText(text);
-                try wb.setStatus("Message copied to clipboard");
-            }
-        },
-        .agent_open_message => |index| {
-            std.debug.print("agent_open_message triggered for index {d}\n", .{index});
-            if (index < wb.agent_ui.chat_history.items.len) {
-                const text = wb.agent_ui.chat_history.items[index].content;
-
-                const filename = std.fmt.allocPrint(wb.allocator, "/tmp/forge_msg_{d}.md", .{index}) catch |err| {
-                    std.debug.print("allocPrint failed: {}\n", .{err});
-                    return;
-                };
-                defer wb.allocator.free(filename);
-
-                std.debug.print("Trying to create file: {s}\n", .{filename});
-                var file = std.Io.Dir.createFileAbsolute(wb.io, filename, .{ .truncate = true }) catch |err| {
-                    std.debug.print("createFileAbsolute failed: {}\n", .{err});
-                    return;
-                };
-                defer file.close(wb.io);
-                file.writeStreamingAll(wb.io, text) catch |err| {
-                    std.debug.print("writeStreamingAll failed: {}\n", .{err});
-                    return;
-                };
-
-                std.debug.print("File created, opening it...\n", .{});
-                wb.openFile(filename) catch |err| {
-                    std.debug.print("openFile failed: {}\n", .{err});
-                };
-            }
-        },
+        .agent_set_mode,
+        .agent_submit,
+        .agent_edit_selection,
+        .agent_cancel,
+        .agent_apply,
+        .agent_rollback,
+        .agent_dismiss_apply,
+        .agent_approve_spec,
+        .agent_approve_tool,
+        .agent_approve_always_tool,
+        .agent_reject_tool,
+        .agent_continue_session,
+        .agent_dismiss_resume,
+        .agent_reject,
+        .agent_show_review,
+        .agent_toggle_step,
+        .agent_select_run,
+        .agent_refresh_runs,
+        .agent_add_scope,
+        .agent_remove_scope,
+        .agent_clear_scope,
+        .agent_scope_picker_open,
+        .agent_scope_picker_close,
+        .agent_scope_picker_select,
+        .agent_toggle_context_inspector,
+        .agent_toggle_mode_menu,
+        .agent_toggle_model_menu,
+        .agent_close_menus,
+        .agent_set_model,
+        .agent_remove_attachment,
+        .agent_copy_message,
+        .agent_open_message,
+        => try @import("../workbench/agent_dispatch.zig").dispatch(wb, command),
         .set_shell_mode => |mode| {
             wb.shell_mode = mode;
             if (mode == .agent_window) wb.focused_panel = .agent;
@@ -602,16 +332,8 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .git_push => {
             @import("git_ops.zig").scheduleGitPush(wb);
         },
-        .git_stage_all => {
-            const process_spawn = @import("forge-util").process_spawn;
-            _ = process_spawn.runWait(wb.allocator, &.{ "git", "add", "." }, .{ .cwd = wb.workspace_path }) catch {};
-            try @import("../workbench/git_ops.zig").refreshGitStatus(wb);
-        },
-        .git_unstage_all => {
-            const process_spawn = @import("forge-util").process_spawn;
-            _ = process_spawn.runWait(wb.allocator, &.{ "git", "reset" }, .{ .cwd = wb.workspace_path }) catch {};
-            try @import("../workbench/git_ops.zig").refreshGitStatus(wb);
-        },
+        .git_stage_all => try @import("../workbench/git_ops.zig").stageAll(wb),
+        .git_unstage_all => try @import("../workbench/git_ops.zig").unstageAll(wb),
         .uninstall_extension => |extension_id| {
             try plugin.marketplace.uninstall(wb.allocator, wb.io, wb.workspace_root, extension_id);
             try @import("../workbench/extensions_ops.zig").reloadExtensions(wb);
@@ -866,10 +588,10 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         },
         // P0-2: Inline edit (Cmd+K)
         .inline_edit_open => {
-            try openInlineEdit(wb);
+            try @import("../workbench/inline_edit_ops.zig").open(wb);
         },
         .inline_edit_submit => {
-            try submitInlineEdit(wb);
+            try @import("../workbench/inline_edit_ops.zig").submit(wb);
         },
         .inline_edit_accept => {
             if (wb.editor.tabs.activeDoc()) |doc| {
@@ -1001,54 +723,4 @@ fn wordAtCursor(buf: anytype) ?[]const u8 {
     while (end < line.len and (std.ascii.isAlphanumeric(line[end]) or line[end] == '_')) : (end += 1) {}
     if (start >= end) return null;
     return line[start..end];
-}
-
-// --- Helpers for P0-2 (inline edit) ---
-
-fn openInlineEdit(wb: *Workbench) !void {
-    const doc = wb.editor.tabs.activeDoc() orelse {
-        try wb.setStatus("No active file");
-        return;
-    };
-    const sel = doc.buffer.selectionOrdered();
-    const has_selection = sel.start.row != sel.end.row or sel.start.col != sel.end.col;
-    if (!has_selection) {
-        try wb.setStatus("Select code first (drag in editor)");
-        return;
-    }
-    const selected = doc.buffer.selectedText(wb.allocator) catch {
-        try wb.setStatus("Failed to read selection");
-        return;
-    };
-    defer wb.allocator.free(selected);
-    try wb.editor.inline_edit.open(
-        doc.path,
-        sel.start.row,
-        sel.start.col,
-        sel.end.row,
-        sel.end.col,
-        selected,
-    );
-}
-
-fn submitInlineEdit(wb: *Workbench) !void {
-    if (!wb.editor.inline_edit.active) return;
-    if (wb.editor.inline_edit.promptText().len == 0) {
-        try wb.setStatus("Type an instruction first");
-        return;
-    }
-    wb.editor.inline_edit.markPending();
-    try wb.setStatus("Generating edit…");
-    // Spawn a generate run with the inline-edit prompt as intent. The
-    // agent will produce a proposal which the user can review/apply via
-    // the existing proposal review UI (Tab accept / Esc reject).
-    const intent = try wb.editor.inline_edit.buildAgentPrompt();
-    defer wb.allocator.free(intent);
-    const scope_files: []const []const u8 = &.{};
-    const active_file = wb.editor.inline_edit.file_path;
-    agent_workflow.spawnGenerate(&@import("../workbench/agent_ops.zig").agentHost(wb), intent, scope_files, active_file) catch |err| {
-        std.log.warn("inline_edit agent run failed: {s}", .{@errorName(err)});
-        wb.editor.inline_edit.close();
-        try wb.setStatus("Inline edit failed");
-    };
 }

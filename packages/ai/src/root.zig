@@ -86,6 +86,7 @@ pub const mcp_registry = @import("mcp_registry.zig");
 pub const routing = @import("routing.zig");
 pub const intent_classifier = @import("intent_classifier.zig");
 pub const route_resolver = @import("route_resolver.zig");
+pub const prompt_pack = @import("prompt_pack.zig");
 pub const index_warm = @import("index_warm.zig");
 pub const ecosystem = @import("ecosystem.zig");
 pub const task_ledger = @import("task_ledger.zig");

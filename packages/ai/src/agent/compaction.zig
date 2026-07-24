@@ -1,6 +1,7 @@
 const std = @import("std");
 const context = @import("../context.zig");
 const context_manifest = @import("../context_manifest.zig");
+const prompt_pack = @import("../prompt_pack.zig");
 const routing = @import("../routing.zig");
 
 pub const Options = struct {
@@ -50,17 +51,7 @@ pub fn buildRecoveryPrompt(
     defer out.deinit();
     const writer = &out.writer;
 
-    try writer.print(
-        \\You are continuing a Forge coding-agent task after the previous model call exceeded the context window.
-        \\The workspace context has been compacted. Do not restart from scratch.
-        \\
-        \\Task intent: {s}
-        \\Recovery attempt: {d}
-        \\User goal: {s}
-        \\
-        \\Continue from the compact state below. If more evidence is needed, call one focused tool. Prefer read_file on known paths, and avoid repeating broad retrieval unless the missing fact is specific.
-        \\
-    , .{ routing.intentLabel(task_intent), options.attempt, intent });
+    try prompt_pack.writeRecoveryHeader(writer, task_intent, options.attempt, intent);
 
     try writer.writeAll("Compacted context manifest:\n");
     try writer.writeAll(manifest);
@@ -69,14 +60,7 @@ pub fn buildRecoveryPrompt(
     try writer.writeAll(convo_tail);
     try writer.writeAll("\n```\n\n");
 
-    try writer.writeAll(
-        \\Recovery rules:
-        \\- Treat the conversation tail as memory, not as code to edit.
-        \\- Preserve completed tool evidence and edits.
-        \\- If the original task is complete, answer with a concise final summary.
-        \\- If not complete, continue the tool loop with the smallest useful next step.
-        \\
-    );
+    try writer.writeAll(prompt_pack.recovery_rules);
 
     return try out.toOwnedSlice();
 }
@@ -102,15 +86,7 @@ pub fn buildResumePrompt(
     defer out.deinit();
     const writer = &out.writer;
 
-    try writer.print(
-        \\You are resuming a long-running Forge coding-agent task from a compact checkpoint.
-        \\Do not restart from scratch. Continue from the evidence and state below.
-        \\
-        \\Task intent: {s}
-        \\Next step index: {d}
-        \\User goal: {s}
-        \\
-    , .{ routing.intentLabel(task_intent), next_step_index, intent });
+    try prompt_pack.writeResumeHeader(writer, task_intent, next_step_index, intent);
 
     try writer.writeAll("Compact context manifest:\n");
     try writer.writeAll(manifest);
@@ -119,14 +95,7 @@ pub fn buildResumePrompt(
     try writer.writeAll(convo_tail);
     try writer.writeAll("\n```\n\n");
 
-    try writer.writeAll(
-        \\Resume rules:
-        \\- Use the tail as memory, not as authoritative source code.
-        \\- Retrieve fresh file contents before editing.
-        \\- Prefer one focused next tool call over broad repo scans.
-        \\- If enough work is done, answer with a final summary.
-        \\
-    );
+    try writer.writeAll(prompt_pack.resume_rules);
 
     return try out.toOwnedSlice();
 }
