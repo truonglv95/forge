@@ -2,12 +2,14 @@ pub const fake = @import("fake/provider.zig");
 pub const gemini = @import("gemini/provider.zig");
 pub const ollama = @import("ollama/provider.zig");
 pub const openrouter = @import("openrouter/provider.zig");
+pub const anthropic = @import("anthropic/provider.zig");
 
 // Tool Transports
 pub const fake_tool_transport = @import("fake/tool_transport.zig");
 pub const gemini_tool_transport = @import("gemini/tool_transport.zig");
 pub const ollama_tool_transport = @import("ollama/tool_transport.zig");
 pub const openrouter_tool_transport = @import("openrouter/tool_transport.zig");
+pub const anthropic_tool_transport = @import("anthropic/tool_transport.zig");
 
 // Subcomponents
 pub const gemini_embedder = @import("gemini/embedder.zig");
