@@ -1341,6 +1341,35 @@ test "agent run uses fake tool loop when enabled" {
     try std.testing.expect(result.proposal_rel != null);
 }
 
+test "agent fake tool loop accepts multi-file search replace proposal after evidence" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const forge_home = try initAgentTestHome(allocator, &tmp);
+    defer allocator.free(forge_home);
+    defer workspace.global_store.clearForgeHomeOverride();
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
+    try workspace.atomic.createDirPath(io, root, "src");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/limits.zig"), "pub const DEFAULT_LIMIT: usize = 64;\npub const VERSION: u32 = 1;\n");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/config.zig"), "const limits = @import(\"limits.zig\");\npub const Config = struct {\n    limit: usize = limits.DEFAULT_LIMIT,\n};\n");
+    try workspace.atomic.replaceFile(io, root, try workspace.WorkspacePath.parse("src/main.zig"), "const config = @import(\"config.zig\");\npub fn main() void { _ = config.Config{}.limit; }\n");
+
+    const fake_response =
+        \\{"schema_version":1,"summary":"Move default limit into config","workspace_edit":{"files":[{"path":"src/limits.zig","operation":"modify","edits":[{"search":"pub const DEFAULT_LIMIT: usize = 64;\npub const VERSION: u32 = 1;\n","replacement":"pub const VERSION: u32 = 1;\n"}]},{"path":"src/config.zig","operation":"modify","edits":[{"search":"const limits = @import(\"limits.zig\");\npub const Config = struct {\n    limit: usize = limits.DEFAULT_LIMIT,\n};\n","replacement":"pub const DEFAULT_LIMIT: usize = 64;\npub const Config = struct { limit: usize = DEFAULT_LIMIT };\n"}]},{"path":"src/main.zig","operation":"modify","edits":[{"search":"const config = @import(\"config.zig\");\npub fn main() void { _ = config.Config{}.limit; }\n","replacement":"const config = @import(\"config.zig\");\npub fn main() void { _ = config.DEFAULT_LIMIT; }\n"}]}]}}
+    ;
+
+    var result = try run(allocator, io, null, root, "Move DEFAULT_LIMIT from limits.zig into config.zig and update main.zig to read config.DEFAULT_LIMIT.", .{
+        .max_steps = 8,
+        .provider_options = .{ .provider_name = "fake", .fake_response = fake_response, .fake_tool_loop = true },
+    });
+    defer deinitResult(allocator, &result);
+
+    try std.testing.expect(result.steps.len >= 4);
+    try std.testing.expect(result.proposal_rel != null);
+}
+
 test "ask read-only mode explores and returns text without proposal" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

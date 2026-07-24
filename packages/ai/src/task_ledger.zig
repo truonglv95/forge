@@ -481,8 +481,9 @@ pub const AgentState = struct {
 };
 
 const ProposalEdit = struct {
-    start: u64,
-    end: u64,
+    start: u64 = 0,
+    end: u64 = 0,
+    search: ?[]const u8 = null,
     replacement: []const u8,
 };
 
@@ -1140,6 +1141,18 @@ test "proposal evidence accepts matching read hash" {
     };
     const proposal =
         \\{"schema_version":1,"workspace_edit":{"files":[{"path":"src/main.zig","operation":"modify","expected_hash":1,"edits":[{"start":0,"end":0,"replacement":"// hi\n"}]}]}}
+    ;
+    const issue = try validateProposalEvidence(allocator, proposal, &steps);
+    try std.testing.expect(issue == null);
+}
+
+test "proposal evidence accepts search replace edits" {
+    const allocator = std.testing.allocator;
+    const steps = [_]StepInput{
+        .{ .index = 1, .kind = "read_file", .summary = "File `src/main.zig` hash=1 bytes=12 lines=1-3\n" },
+    };
+    const proposal =
+        \\{"schema_version":1,"workspace_edit":{"files":[{"path":"src/main.zig","operation":"modify","expected_hash":1,"edits":[{"search":"const old = 1;\n","replacement":"const new = 1;\n"}]}]}}
     ;
     const issue = try validateProposalEvidence(allocator, proposal, &steps);
     try std.testing.expect(issue == null);

@@ -2,8 +2,9 @@ const std = @import("std");
 const workspace = @import("forge-workspace");
 
 const JsonEdit = struct {
-    start: u64,
-    end: u64,
+    start: u64 = 0,
+    end: u64 = 0,
+    search: ?[]const u8 = null,
     replacement: []const u8,
 };
 
@@ -110,4 +111,24 @@ test "fillMissingExpectedHashes injects hash for modify" {
     const out = try fillMissingExpectedHashes(allocator, io, root, body);
     defer allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"expected_hash\"") != null);
+}
+
+test "fillMissingExpectedHashes accepts search replace edits" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    const root = workspace.WorkspaceRoot.init(tmp.dir, ".");
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "main.zig", .data = "pub fn oldName() void {}\n" });
+
+    const body =
+        \\{"schema_version":1,"summary":"rename","workspace_edit":{"files":[{"path":"main.zig","operation":"modify","edits":[{"search":"pub fn oldName() void {}\n","replacement":"pub fn newName() void {}\n"}]}]}}
+    ;
+
+    const out = try fillMissingExpectedHashes(allocator, io, root, body);
+    defer allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"expected_hash\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"search\"") != null);
 }
