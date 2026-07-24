@@ -324,6 +324,13 @@ pub const Theme = struct {
         theme.ui_font_family = "Inter";
         return theme;
     }
+
+    pub fn lightDefault() Theme {
+        var theme = presetPalette(.light);
+        theme.font_family = "Menlo";
+        theme.ui_font_family = "Inter";
+        return theme;
+    }
 };
 
 fn presetPalette(preset: ThemePreset) Theme {

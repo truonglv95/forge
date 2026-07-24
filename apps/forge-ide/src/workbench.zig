@@ -168,6 +168,7 @@ pub const Workbench = struct {
     // Animation state for panel transitions
     sidebar_anim: @import("ui/core/animations.zig").PanelAnimation = .{ .width = .init(250.0), .opacity = .init(1.0) },
     bottom_panel_anim: @import("ui/core/animations.zig").PanelAnimation = .{ .width = .init(@import("ui/core/layout.zig").task_panel_height), .opacity = .init(1.0) },
+    tab_switch_anim: @import("ui/core/animations.zig").TabSwitchAnimation = .init(),
     welcome_visible: bool = false,
     nav_history: navigation_history_mod.History = undefined,
     terminal_selection: ?@import("ui/panel/terminal_panel.zig").Selection = null,
@@ -1078,6 +1079,19 @@ pub const Workbench = struct {
         self.setStatus(msg) catch {};
     }
 
+    pub fn toggleTheme(self: *Workbench) void {
+        const workspace_pkg = @import("forge-workspace");
+        const current_preset = self.theme.preset;
+        const new_preset: workspace_pkg.ThemePreset = if (current_preset == .dark) .light else .dark;
+        self.theme = if (new_preset == .dark) workspace_pkg.Theme.darkDefault() else workspace_pkg.Theme.lightDefault();
+        // Re-apply user font/metric overrides
+        @import("theme_loader.zig").syncFontMetrics(&self.theme);
+        @import("theme_loader.zig").applyToRenderer(&self.theme);
+        @import("theme_loader.zig").applyShellColors(self.theme);
+        const msg = if (new_preset == .dark) "Theme: dark" else "Theme: light";
+        self.setStatus(msg) catch {};
+    }
+
     pub fn setAiPanelFontSize(self: *Workbench, font_size: f32) !void {
         const next = std.math.clamp(font_size, 12.0, 20.0);
         self.user_settings.ai_panel_font_size = next;
@@ -1590,6 +1604,10 @@ pub const Workbench = struct {
 
     pub fn activateTab(self: *Workbench, index: usize) !void {
         if (index >= self.editor.tabs.tabs.items.len) return;
+        // Trigger tab switch animation (fade + slide) when switching tabs.
+        if (self.editor.tabs.active != index) {
+            self.tab_switch_anim.trigger();
+        }
         self.editor.tabs.active = index;
         const doc = &self.editor.tabs.tabs.items[index];
         try self.explorer.select(doc.path);
@@ -1742,6 +1760,11 @@ pub const Workbench = struct {
         const dt_ms = dt * 1000.0;
         self.sidebar_anim.update(dt_ms);
         self.bottom_panel_anim.update(dt_ms);
+        // Update tab switch animation. When fade-out completes, trigger fade-in.
+        self.tab_switch_anim.update(dt_ms);
+        if (!self.tab_switch_anim.fade.isAnimating() and self.tab_switch_anim.fade.current < 0.5) {
+            self.tab_switch_anim.triggerIn();
+        }
         try @import("workbench/agent_ops.zig").flushAgentUi(self);
         _ = try @import("workbench/search_ops.zig").flushSearchResults(self);
         if (try @import("workbench/git_ops.zig").flushGitStatusRefresh(self)) {

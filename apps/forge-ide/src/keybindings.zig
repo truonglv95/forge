@@ -74,6 +74,7 @@ pub const Registry = struct {
             .{ .key = "cmd+b", .palette_id = "view.toggle_sidebar" },
             .{ .key = "cmd+j", .palette_id = "view.toggle_panel" },
             .{ .key = "cmd+l", .palette_id = "view.focus_agent" },
+            .{ .key = "cmd+shift+t", .palette_id = "theme.toggle" },
             .{ .key = "cmd+.", .palette_id = "problem.quick_fix" },
             // P0-4: Multi-cursor + folding
             .{ .key = "cmd+d", .palette_id = "editor.add_cursor_next" },
