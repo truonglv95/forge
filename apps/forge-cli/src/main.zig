@@ -29,6 +29,7 @@ const spec_cmd = @import("spec_cmd.zig");
 const complete_cmd = @import("complete.zig");
 const providers_cmd = @import("providers_cmd.zig");
 const chat_cmd = @import("chat_cmd.zig");
+const edit_cmd = @import("edit_cmd.zig");
 
 const Io = std.Io;
 
@@ -153,6 +154,9 @@ fn run(
         .chat => {
             return chat_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
+        .edit => {
+            return edit_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
         .help => {
             try printHelp(writer);
             return 0;
@@ -200,6 +204,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  providers  List AI providers with capability (RFC-0016)
         \\  models     List AI models or query routing (list|capability|route) (RFC-0016)
         \\  chat       Interactive chat REPL with @mentions and slash commands (RFC-0017)
+        \\  edit       Composer-style multi-file inline edit (RFC-0013 Composer)
         \\  help       Show this help
         \\
         \\Options:
@@ -314,6 +319,7 @@ fn isKnownCommandName(name: []const u8) bool {
         "providers",
         "models",
         "chat",
+        "edit",
         "help",
     };
     for (commands) |command| {
