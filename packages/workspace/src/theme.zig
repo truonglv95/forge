@@ -386,39 +386,41 @@ fn presetPalette(preset: ThemePreset) Theme {
             .line_height_scale = 1.5,
             .tab_width = 4,
             .colors = .{
-                .workbench_bg = .{ .r = 0.96, .g = 0.96, .b = 0.96 },
-                .header_bg = .{ .r = 0.88, .g = 0.88, .b = 0.88 },
-                .activity_bg = .{ .r = 0.9, .g = 0.9, .b = 0.9 },
-                .sidebar_bg = .{ .r = 0.93, .g = 0.93, .b = 0.94 },
-                .agent_bg = .{ .r = 0.95, .g = 0.95, .b = 0.96 },
-                .editor_bg = .{ .r = 1.0, .g = 1.0, .b = 1.0 },
-                .tab_bar_bg = .{ .r = 0.9, .g = 0.9, .b = 0.9 },
+                // Modern light palette — clean, high-contrast, warm whites
+                .workbench_bg = .{ .r = 0.984, .g = 0.984, .b = 0.988 }, // #fbfbfc
+                .header_bg = .{ .r = 0.972, .g = 0.972, .b = 0.976 }, // #f8f8fa
+                .activity_bg = .{ .r = 0.965, .g = 0.965, .b = 0.972 }, // #f6f6f8
+                .sidebar_bg = .{ .r = 0.976, .g = 0.976, .b = 0.980 }, // #f9f9fa
+                .agent_bg = .{ .r = 0.992, .g = 0.992, .b = 0.996 }, // #fdfdfe
+                .editor_bg = .{ .r = 1.0, .g = 1.0, .b = 1.0 }, // #ffffff
+                .tab_bar_bg = .{ .r = 0.965, .g = 0.965, .b = 0.972 },
                 .tab_active_bg = .{ .r = 1.0, .g = 1.0, .b = 1.0 },
-                .panel_bg = .{ .r = 0.98, .g = 0.98, .b = 0.98 },
+                .panel_bg = .{ .r = 0.980, .g = 0.980, .b = 0.984 },
                 .status_bg = .{ .r = 0.0, .g = 0.42, .b = 0.72 },
-                .border = .{ .r = 0.78, .g = 0.78, .b = 0.78 },
-                .text_primary = .{ .r = 0.12, .g = 0.12, .b = 0.12 },
-                .text_secondary = .{ .r = 0.25, .g = 0.25, .b = 0.25 },
-                .text_muted = .{ .r = 0.45, .g = 0.45, .b = 0.45 },
-                .editor_fg = .{ .r = 0.12, .g = 0.12, .b = 0.12 },
-                .line_number = .{ .r = 0.55, .g = 0.55, .b = 0.55 },
-                .cursor = .{ .r = 0.0, .g = 0.0, .b = 0.0 },
-                .keyword = .{ .r = 0.0, .g = 0.0, .b = 0.8 },
-                .number = .{ .r = 0.08, .g = 0.55, .b = 0.08 },
-                .punctuation = .{ .r = 0.35, .g = 0.35, .b = 0.35 },
-                .string_color = .{ .r = 0.65, .g = 0.2, .b = 0.2 },
-                .type = .{ .r = 0.1, .g = 0.5, .b = 0.4 },
-                .parameter = .{ .r = 0.6, .g = 0.3, .b = 0.0 },
-                .variable = .{ .r = 0.0, .g = 0.2, .b = 0.5 },
-                .property = .{ .r = 0.5, .g = 0.1, .b = 0.4 },
-                .function = .{ .r = 0.4, .g = 0.3, .b = 0.1 },
-                .comment = .{ .r = 0.4, .g = 0.6, .b = 0.4 },
-                .diff_add = .{ .r = 0.1, .g = 0.55, .b = 0.1 },
-                .diff_remove = .{ .r = 0.75, .g = 0.15, .b = 0.15 },
-                .accent = .{ .r = 0.0, .g = 0.45, .b = 0.85 },
-                .accent_soft = .{ .r = 0.82, .g = 0.9, .b = 0.98 },
-                .selection = .{ .r = 0.85, .g = 0.9, .b = 0.98 },
-                .warning = .{ .r = 0.85, .g = 0.45, .b = 0.0 },
+                .border = .{ .r = 0.890, .g = 0.890, .b = 0.902 }, // #e3e3e6
+                .text_primary = .{ .r = 0.094, .g = 0.094, .b = 0.110 }, // #181820
+                .text_secondary = .{ .r = 0.290, .g = 0.290, .b = 0.322 }, // #4a4a52
+                .text_muted = .{ .r = 0.490, .g = 0.490, .b = 0.522 }, // #7d7d85
+                .editor_fg = .{ .r = 0.133, .g = 0.133, .b = 0.157 }, // #222228
+                .line_number = .{ .r = 0.620, .g = 0.620, .b = 0.651 }, // #9e9ea6
+                .cursor = .{ .r = 0.10, .g = 0.34, .b = 0.94 }, // #1a57f0
+                // Syntax — clean, readable, distinct
+                .keyword = .{ .r = 0.50, .g = 0.20, .b = 0.78 }, // #8033c7 purple
+                .number = .{ .r = 0.80, .g = 0.40, .b = 0.10 }, // #cc6619 orange
+                .punctuation = .{ .r = 0.40, .g = 0.40, .b = 0.45 }, // #666673
+                .string_color = .{ .r = 0.20, .g = 0.55, .b = 0.25 }, // #338c40 green
+                .type = .{ .r = 0.05, .g = 0.45, .b = 0.55 }, // #0d738c teal
+                .parameter = .{ .r = 0.75, .g = 0.40, .b = 0.10 }, // #bf6619
+                .variable = .{ .r = 0.20, .g = 0.30, .b = 0.55 }, // #334d8c
+                .property = .{ .r = 0.50, .g = 0.20, .b = 0.55 }, // #80338c
+                .function = .{ .r = 0.65, .g = 0.40, .b = 0.05 }, // #a6660d amber
+                .comment = .{ .r = 0.45, .g = 0.50, .b = 0.55 }, // #737f88 muted
+                .diff_add = .{ .r = 0.20, .g = 0.55, .b = 0.25 }, // #338c40
+                .diff_remove = .{ .r = 0.80, .g = 0.20, .b = 0.20 }, // #cc3333
+                .accent = .{ .r = 0.10, .g = 0.34, .b = 0.94 }, // #1a57f0 blue
+                .accent_soft = .{ .r = 0.86, .g = 0.91, .b = 0.98 }, // #dbe8fa
+                .selection = .{ .r = 0.78, .g = 0.85, .b = 0.96 },
+                .warning = .{ .r = 0.80, .g = 0.50, .b = 0.0 }, // #cc8000
             },
         },
     };

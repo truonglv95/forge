@@ -1,0 +1,147 @@
+//! Editor minimap — scaled-down overview of the file content.
+//!
+//! Shows a zoomed-out representation of the file on the right side of
+//! the editor, with a viewport indicator showing the currently visible
+//! region. Click to scroll, drag to pan.
+//!
+//! Inspired by VSCode/Sublime Text minimaps.
+
+const std = @import("std");
+const renderer = @import("forge-renderer");
+const Workbench = @import("../../workbench.zig").Workbench;
+const theme_mod = @import("../render/theme.zig");
+const editor_scroll = @import("editor_scroll.zig");
+
+pub const minimap_width: f32 = 80;
+pub const minimap_line_height: f32 = 2.5;
+pub const viewport_indicator_alpha: f32 = 0.2;
+
+/// Draw the minimap on the right side of the editor.
+/// `editor_x` is the left edge of the editor area, `editor_w` is its width.
+pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) void {
+    const doc = wb.editor.tabs.activeDoc() orelse return;
+
+    const theme = &wb.theme;
+    const bg = theme_mod.color(theme.colors.tab_bar_bg);
+    const fg = theme_mod.color(theme.colors.text_muted);
+    const accent = theme_mod.color(theme.colors.accent);
+    const viewport_bg = theme_mod.color(theme.colors.accent_soft);
+
+    const minimap_x = editor_x + editor_w - minimap_width;
+    const minimap_y = editor_scroll.content_top;
+    const minimap_h = editor_h - editor_scroll.content_top;
+
+    // Background
+    renderer.Renderer.drawRect(minimap_x, minimap_y, minimap_width, minimap_h, bg);
+
+    // Draw scaled-down representation of lines.
+    // Each line becomes a thin horizontal strip; characters become colored
+    // segments based on syntax classification (simplified: just use fg color
+    // with varying alpha based on character density).
+    const lines = doc.buffer.lines.items;
+    const total_lines = lines.len;
+
+    // How many minimap lines fit in the visible area.
+    const visible_minimap_lines = @as(usize, @intFromFloat(minimap_h / minimap_line_height));
+
+    // Which source lines are visible (based on scroll offset).
+    const scroll_offset = editor_scroll.offset;
+    const first_visible_line: usize = @intFromFloat(@max(0, scroll_offset / 1.0));
+    const line_offset = if (total_lines > visible_minimap_lines) first_visible_line else 0;
+
+    var y = minimap_y;
+    var i: usize = line_offset;
+    const max_iter = @min(total_lines, line_offset + visible_minimap_lines + 5);
+    while (i < max_iter and y < minimap_y + minimap_h) : (i += 1) {
+        const line = lines[i].items;
+        if (line.len == 0) {
+            y += minimap_line_height;
+            continue;
+        }
+
+        // Draw a thin strip for each line. Density based on character count.
+        // Max ~60 chars represented; longer lines get brighter color.
+        const char_count = @min(line.len, 80);
+        const density: f32 = @as(f32, @floatFromInt(char_count)) / 80.0;
+
+        // Draw colored segments for non-whitespace characters.
+        // Simplified: draw one rect per "word" (contiguous non-space).
+        var col: usize = 0;
+        const char_width: f32 = (minimap_width - 6) / 80.0;
+        while (col < char_count) {
+            // Skip whitespace
+            if (std.ascii.isWhitespace(line[col])) {
+                col += 1;
+                continue;
+            }
+            // Find end of word
+            var word_end = col;
+            while (word_end < char_count and !std.ascii.isWhitespace(line[word_end])) : (word_end += 1) {}
+
+            // Draw word segment
+            const word_len = word_end - col;
+            const seg_x = minimap_x + 3 + @as(f32, @floatFromInt(col)) * char_width;
+            const seg_w = @as(f32, @floatFromInt(word_len)) * char_width;
+            const seg_color = .{
+                .r = fg.r * (0.4 + density * 0.6),
+                .g = fg.g * (0.4 + density * 0.6),
+                .b = fg.b * (0.4 + density * 0.6),
+                .a = 0.7,
+            };
+            renderer.Renderer.drawRect(seg_x, y, seg_w, minimap_line_height - 0.5, seg_color);
+
+            col = word_end;
+        }
+
+        y += minimap_line_height;
+    }
+
+    // Viewport indicator — shows which portion of the file is visible.
+    if (total_lines > visible_minimap_lines) {
+        const viewport_h = @as(f32, @floatFromInt(visible_minimap_lines)) * minimap_line_height;
+        const viewport_y = minimap_y + @as(f32, @floatFromInt(first_visible_line)) * minimap_line_height;
+        renderer.Renderer.drawRect(minimap_x, viewport_y, minimap_width, viewport_h, .{
+            .r = viewport_bg.r,
+            .g = viewport_bg.g,
+            .b = viewport_bg.b,
+            .a = viewport_indicator_alpha,
+        });
+        // Accent border on left of viewport
+        renderer.Renderer.drawRect(minimap_x, viewport_y, 2, viewport_h, accent);
+    }
+
+    // Separator border on left
+    renderer.Renderer.drawRect(minimap_x - 1, minimap_y, 1, minimap_h, theme_mod.color(theme.colors.border));
+}
+
+/// Check if a click position is within the minimap area.
+pub fn isMinimapClick(editor_x: f32, editor_w: f32, click_x: f32, click_y: f32, editor_h: f32) bool {
+    const minimap_x = editor_x + editor_w - minimap_width;
+    return click_x >= minimap_x and click_x <= minimap_x + minimap_width and
+        click_y >= editor_scroll.content_top and click_y <= editor_h;
+}
+
+/// Convert a click Y position in the minimap to a scroll offset.
+pub fn minimapClickToScroll(click_y: f32, total_lines: usize, visible_lines: usize) f32 {
+    if (total_lines <= visible_lines) return 0;
+    const minimap_h = @as(f32, @floatFromInt(total_lines)) * minimap_line_height;
+    const visible_h = @as(f32, @floatFromInt(visible_lines)) * minimap_line_height;
+    const scrollable_h = minimap_h - visible_h;
+    if (scrollable_h <= 0) return 0;
+    const ratio = std.math.clamp(click_y / scrollable_h, 0, 1);
+    return ratio * @as(f32, @floatFromInt(total_lines - visible_lines));
+}
+
+test "isMinimapClick detects clicks in minimap area" {
+    try std.testing.expect(isMinimapClick(0, 800, 730, 100, 600));
+    try std.testing.expect(!isMinimapClick(0, 800, 100, 100, 600));
+}
+
+test "minimapClickToScroll returns 0 for small files" {
+    try std.testing.expectEqual(@as(f32, 0), minimapClickToScroll(50, 10, 20));
+}
+
+test "minimapClickToScroll returns ratio for large files" {
+    const scroll = minimapClickToScroll(100, 1000, 100);
+    try std.testing.expect(scroll > 0);
+}
