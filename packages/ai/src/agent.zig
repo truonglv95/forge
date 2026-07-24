@@ -671,6 +671,13 @@ pub fn run(
                 final_proposal = allocator.dupe(u8, candidate) catch return error.InvalidProposal;
                 continue;
             }
+            appendDiagnosticBlocker(
+                allocator,
+                &steps,
+                &next_index,
+                "proposal JSON normalization failed after repair attempts",
+                effective_config,
+            ) catch {};
             return error.InvalidProposal;
         };
         defer allocator.free(normalized);
@@ -705,6 +712,14 @@ pub fn run(
                 final_proposal = allocator.dupe(u8, prepared) catch return error.InvalidProposal;
                 continue;
             }
+            const owned_summary = std.fmt.allocPrint(
+                allocator,
+                "proposal evidence check failed after repair attempts: {s}",
+                .{issue},
+            ) catch null;
+            defer if (owned_summary) |summary| allocator.free(summary);
+            const summary = owned_summary orelse "proposal evidence check failed after repair attempts";
+            appendDiagnosticBlocker(allocator, &steps, &next_index, summary, effective_config) catch {};
             return error.InvalidProposal;
         }
 
@@ -722,6 +737,13 @@ pub fn run(
                 final_proposal = allocator.dupe(u8, prepared) catch return error.InvalidProposal;
                 continue;
             }
+            appendDiagnosticBlocker(
+                allocator,
+                &steps,
+                &next_index,
+                "proposal JSON validation failed after repair attempts",
+                effective_config,
+            ) catch {};
             return error.InvalidProposal;
         };
         use_repair_prompt = false;
@@ -1254,6 +1276,17 @@ fn appendStep(
     }) catch return error.WorkspaceFailed;
 }
 
+fn appendDiagnosticBlocker(
+    allocator: std.mem.Allocator,
+    steps: *std.ArrayList(Step),
+    next_index: *u32,
+    summary: []const u8,
+    config: Config,
+) AgentError!void {
+    try appendStep(allocator, steps, next_index.*, "diagnostic", summary, null, config);
+    next_index.* += 1;
+}
+
 fn mapToolError(err: tool_executor.AgentToolError) AgentError {
     return switch (err) {
         error.Cancelled => error.Cancelled,
@@ -1368,6 +1401,26 @@ test "agent fake tool loop accepts multi-file search replace proposal after evid
 
     try std.testing.expect(result.steps.len >= 4);
     try std.testing.expect(result.proposal_rel != null);
+}
+
+test "agent appends diagnostic blocker step" {
+    const allocator = std.testing.allocator;
+    var steps: std.ArrayList(Step) = .empty;
+    defer {
+        deinitSteps(allocator, steps.items);
+        steps.deinit(allocator);
+    }
+    var next_index: u32 = 3;
+
+    try appendDiagnosticBlocker(allocator, &steps, &next_index, "proposal JSON normalization failed after repair attempts", .{
+        .provider_options = .{ .provider_name = "fake" },
+    });
+
+    try std.testing.expectEqual(@as(u32, 4), next_index);
+    try std.testing.expectEqual(@as(usize, 1), steps.items.len);
+    try std.testing.expectEqual(@as(u32, 3), steps.items[0].index);
+    try std.testing.expectEqualStrings("explore", steps.items[0].kind);
+    try std.testing.expect(std.mem.indexOf(u8, steps.items[0].summary, "failed after repair attempts") != null);
 }
 
 test "ask read-only mode explores and returns text without proposal" {
