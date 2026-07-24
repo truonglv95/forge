@@ -72,6 +72,7 @@ pub const subagent = @import("subagent.zig");
 pub const spec_writer = @import("spec_writer.zig");
 pub const mcp_capability = @import("mcp_capability.zig");
 pub const provider_failover = @import("provider_failover.zig");
+pub const provider_capability = @import("provider_capability.zig");
 pub const usage_tracker = @import("usage_tracker.zig");
 pub const diff_tool = @import("diff_tool.zig");
 pub const adaptive_budget = @import("adaptive_budget.zig");
