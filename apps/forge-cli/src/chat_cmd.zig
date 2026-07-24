@@ -243,37 +243,44 @@ fn processIntent(
     };
     defer allocator.free(mentions);
 
-    // Resolve mentions to context files (just @file for now).
+    // Open workspace first so we can resolve mentions that need it.
+    var opened = workspace_cmd.OpenedWorkspace.open(allocator, io, parsed) catch |err| {
+        try writer.print("error opening workspace: {}\n", .{err});
+        return;
+    };
+    defer opened.close(io);
+
+    // Resolve mentions to context content using mention_resolver.
+    const resolved = ai.mention_resolver.resolveAll(allocator, io, opened.root, mentions) catch |err| {
+        try writer.print("error resolving mentions: {}\n", .{err});
+        return;
+    };
+    defer {
+        for (resolved) |*r| {
+            var r_mut = r.*;
+            r_mut.deinit(allocator);
+        }
+        allocator.free(resolved);
+    }
+
+    // Collect @file paths for the ask workflow's --file flag.
     var context_files: std.ArrayList([]const u8) = .empty;
     defer context_files.deinit(allocator);
 
-    for (mentions) |m| {
-        switch (m) {
-            .file => |f| {
-                try context_files.append(allocator, f.path);
-                try writer.print("[context] @file:{s}\n", .{f.path});
-            },
-            .symbol => |s| {
-                try writer.print("[context] @symbol:{s} (resolved via LSP - stub)\n", .{s});
-            },
-            .web => |w| {
-                try writer.print("[context] @web:{s} (resolved via fetch_url - stub)\n", .{w});
-            },
-            .docs => |d| {
-                try writer.print("[context] @docs:{s} (resolved via indexed docs - stub)\n", .{d});
-            },
-            .spec => |s| {
-                try writer.print("[context] @spec:{s} (resolved via spec dir - stub)\n", .{s});
-            },
-            .recent => {
-                try writer.writeAll("[context] @recent (5 recent files - stub)\n");
-            },
-            .git_diff => {
-                try writer.writeAll("[context] @git:diff (resolved via git_diff tool - stub)\n");
-            },
-            .git_status => {
-                try writer.writeAll("[context] @git:status (resolved via git status - stub)\n");
-            },
+    for (resolved) |r| {
+        if (r.error_message) |em| {
+            try writer.print("[context] {s} — {s}\n", .{ r.label, em });
+        } else if (r.bytes > 0) {
+            try writer.print("[context] {s} ({d} bytes)\n", .{ r.label, r.bytes });
+            // If it's a file mention, add the path to context_files.
+            if (std.mem.eql(u8, r.kind, "file")) {
+                // Extract path from label "@file:path"
+                if (std.mem.startsWith(u8, r.label, "@file:")) {
+                    try context_files.append(allocator, r.label[6..]);
+                }
+            }
+        } else {
+            try writer.print("[context] {s} (empty)\n", .{r.label});
         }
     }
 
@@ -289,8 +296,8 @@ fn processIntent(
         return;
     }
 
-    // Build a CliArgs with the resolved context files + session config.
-    var files_array = std.ArrayList([]const u8).empty;
+    // Build effective flags with resolved context files + session config.
+    var files_array: std.ArrayList([]const u8) = .empty;
     defer files_array.deinit(allocator);
     for (parsed.flags.files) |f| try files_array.append(allocator, f);
     for (context_files.items) |f| try files_array.append(allocator, f);
@@ -301,13 +308,6 @@ fn processIntent(
     effective_flags.capability = session.capability;
     effective_flags.provider = session.provider;
     if (session.model) |m| effective_flags.model = m;
-
-    // Open workspace and dispatch to ask workflow.
-    var opened = workspace_cmd.OpenedWorkspace.open(allocator, io, .{ .flags = effective_flags, .command = .ask, .positional = &.{} }) catch |err| {
-        try writer.print("error opening workspace: {}\n", .{err});
-        return;
-    };
-    defer opened.close(io);
 
     var scope = try cancel_scope_mod.Scope.init(allocator);
     defer scope.deinit();

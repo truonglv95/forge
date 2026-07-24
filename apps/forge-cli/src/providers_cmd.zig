@@ -23,6 +23,7 @@ fn renderProviders(writer: *std.Io.Writer, json: bool) !u8 {
         .{ .name = "auto", .note = "Auto-route based on task and capability" },
         .{ .name = "fake", .note = "Deterministic test provider" },
         .{ .name = "gemini", .note = "Google Gemini (gemini-2.5-pro, gemini-2.5-flash)" },
+        .{ .name = "anthropic", .note = "Anthropic Claude (claude-sonnet-4-5, claude-haiku-4)" },
         .{ .name = "ollama", .note = "Local Ollama models (qwen2.5-coder, llama3.3)" },
         .{ .name = "openrouter", .note = "OpenRouter multi-model gateway" },
         .{ .name = "openai", .note = "OpenAI-compatible (GPT-4o, etc.)" },
