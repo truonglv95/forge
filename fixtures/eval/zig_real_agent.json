@@ -1,0 +1,74 @@
+[
+  {
+    "id": "zig-real-module-boundary-read",
+    "intent": "Inspect the Zig workspace modules and explain where agent prompt state should live. Do not propose edits.",
+    "workspace_files": {
+      "build.zig": "pub fn build(b: *std.Build) void { _ = b; }\n",
+      "packages/ai/src/agent/loop.zig": "pub fn runAgentLoop() void {}\n",
+      "packages/ai/src/task_ledger.zig": "pub const AgentState = struct { phase: []const u8 };\n",
+      "apps/forge-ide/src/agent/session.zig": "pub const Session = struct { agent_steps: usize = 0 };\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 2,
+      "min_ledger_entries": 3
+    }
+  },
+  {
+    "id": "zig-real-long-task-20-steps",
+    "intent": "LONG_EVAL_20_STEPS Inspect sample.txt, list the repo, check diff state, and keep gathering evidence for a long task before finalizing.",
+    "max_steps": 32,
+    "workspace_files": {
+      "sample.txt": "hello forge long task sample\n",
+      "src/main.zig": "pub fn main() void {}\n"
+    },
+    "expect": {
+      "proposal_only": true,
+      "min_steps": 20,
+      "min_ledger_entries": 20
+    }
+  },
+  {
+    "id": "zig-real-failed-build-repair",
+    "intent": "Create status.txt so validation passes after repair.",
+    "workspace_files": {
+      "Makefile": "test:\n\tgrep -q fixed status.txt\n"
+    },
+    "fake_response": "{\"schema_version\":1,\"summary\":\"create broken status\",\"assumptions\":[],\"validation_tasks\":[\"make test\"],\"workspace_edit\":{\"files\":[{\"path\":\"status.txt\",\"operation\":\"create\",\"edits\":[{\"start\":0,\"end\":0,\"replacement\":\"broken\\n\"}]}]}}",
+    "fake_repair_response": "{\"schema_version\":1,\"summary\":\"repair status\",\"assumptions\":[],\"validation_tasks\":[\"make test\"],\"workspace_edit\":{\"files\":[{\"path\":\"status.txt\",\"operation\":\"create\",\"edits\":[{\"start\":0,\"end\":0,\"replacement\":\"fixed\\n\"}]}]}}",
+    "expect": {
+      "path": "status.txt",
+      "contains": "fixed",
+      "min_steps": 2,
+      "expect_repair": true
+    }
+  },
+  {
+    "id": "zig-real-multi-file-refactor",
+    "intent": "Move DEFAULT_LIMIT from limits.zig into config.zig and update main.zig to read config.DEFAULT_LIMIT.",
+    "workspace_files": {
+      "src/limits.zig": "pub const DEFAULT_LIMIT: usize = 64;\npub const VERSION: u32 = 1;\n",
+      "src/config.zig": "const limits = @import(\"limits.zig\");\npub const Config = struct {\n    limit: usize = limits.DEFAULT_LIMIT,\n};\n",
+      "src/main.zig": "const config = @import(\"config.zig\");\npub fn main() void { _ = config.Config{}.limit; }\n"
+    },
+    "fake_response": "{\"schema_version\":1,\"summary\":\"Move default limit into config\",\"assumptions\":[],\"validation_tasks\":[\"zig build test\"],\"workspace_edit\":{\"files\":[{\"path\":\"src/limits.zig\",\"operation\":\"modify\",\"expected_hash\":9191557334038732590,\"edits\":[{\"search\":\"pub const DEFAULT_LIMIT: usize = 64;\\npub const VERSION: u32 = 1;\\n\",\"replacement\":\"pub const VERSION: u32 = 1;\\n\"}]},{\"path\":\"src/config.zig\",\"operation\":\"modify\",\"expected_hash\":214581647878229490,\"edits\":[{\"search\":\"const limits = @import(\\\"limits.zig\\\");\\npub const Config = struct {\\n    limit: usize = limits.DEFAULT_LIMIT,\\n};\\n\",\"replacement\":\"pub const DEFAULT_LIMIT: usize = 64;\\npub const Config = struct { limit: usize = DEFAULT_LIMIT };\\n\"}]},{\"path\":\"src/main.zig\",\"operation\":\"modify\",\"expected_hash\":475015472573427733,\"edits\":[{\"search\":\"const config = @import(\\\"config.zig\\\");\\npub fn main() void { _ = config.Config{}.limit; }\\n\",\"replacement\":\"const config = @import(\\\"config.zig\\\");\\npub fn main() void { _ = config.DEFAULT_LIMIT; }\\n\"}]}]}}",
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        {
+          "path": "src/limits.zig",
+          "contains": "VERSION",
+          "not_contains": "DEFAULT_LIMIT"
+        },
+        {
+          "path": "src/config.zig",
+          "contains": "pub const DEFAULT_LIMIT"
+        },
+        {
+          "path": "src/main.zig",
+          "contains": "config.DEFAULT_LIMIT"
+        }
+      ]
+    }
+  }
+]

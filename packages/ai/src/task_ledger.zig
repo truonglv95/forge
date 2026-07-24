@@ -582,11 +582,17 @@ pub fn statsFromJson(allocator: std.mem.Allocator, json: []const u8) !Stats {
 pub fn formatTimelineFromJson(allocator: std.mem.Allocator, json: []const u8, max_entries: usize) ![]const u8 {
     var snapshot = try parseSnapshotJson(allocator, json);
     defer snapshot.deinit(allocator);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
     const writer = &out.writer;
 
     try writer.print("Task timeline\nPhase: {s}\nGoal: {s}\n", .{ @tagName(snapshot.phase), snapshot.goal });
+    if (parsed.value == .object) {
+        try appendObservabilityOverview(writer, parsed.value.object);
+    }
     const start = if (snapshot.entries.len > max_entries) snapshot.entries.len - max_entries else 0;
     if (start > 0) try writer.print("- ... {d} older entrie(s)\n", .{start});
     for (snapshot.entries[start..]) |entry| {
@@ -598,6 +604,52 @@ pub fn formatTimelineFromJson(allocator: std.mem.Allocator, json: []const u8, ma
         }
     }
     return try out.toOwnedSlice();
+}
+
+fn appendObservabilityOverview(writer: *std.Io.Writer, obj: std.json.ObjectMap) !void {
+    if (obj.get("validation")) |validation| {
+        if (validation == .object) {
+            const status = jsonString(validation.object, "status");
+            const step = jsonInt(validation.object, "step_index");
+            const command = jsonString(validation.object, "command");
+            if (status.len > 0) {
+                if (command.len > 0) {
+                    try writer.print("Validation: {s} at step {d} ({s})\n", .{ status, step, command });
+                } else {
+                    try writer.print("Validation: {s} at step {d}\n", .{ status, step });
+                }
+            }
+        }
+    }
+    if (obj.get("files")) |files| {
+        if (files == .array and files.array.items.len > 0) {
+            var edited: usize = 0;
+            for (files.array.items) |item| {
+                if (item != .object) continue;
+                if (item.object.get("edited")) |value| {
+                    if (value == .bool and value.bool) edited += 1;
+                }
+            }
+            try writer.print("Files: {d} tracked, {d} edited\n", .{ files.array.items.len, edited });
+            const shown = @min(files.array.items.len, @as(usize, 6));
+            for (files.array.items[0..shown]) |item| {
+                if (item != .object) continue;
+                const path = jsonString(item.object, "path");
+                if (path.len == 0) continue;
+                try writer.print("- file `{s}` read_step={d} edit_step={d} edited={}\n", .{
+                    path,
+                    jsonInt(item.object, "last_read_step"),
+                    jsonInt(item.object, "last_edit_step"),
+                    jsonBool(item.object, "edited"),
+                });
+            }
+        }
+    }
+    if (obj.get("facts")) |facts| {
+        if (facts == .array and facts.array.items.len > 0) {
+            try writer.print("Facts: {d} captured\n", .{facts.array.items.len});
+        }
+    }
 }
 
 fn parseSnapshotJson(allocator: std.mem.Allocator, json: []const u8) !Snapshot {
@@ -829,6 +881,31 @@ fn parseEntryKind(value: []const u8) EntryKind {
     return .decision;
 }
 
+fn jsonString(obj: std.json.ObjectMap, key: []const u8) []const u8 {
+    if (obj.get(key)) |value| {
+        if (value == .string) return value.string;
+    }
+    return "";
+}
+
+fn jsonInt(obj: std.json.ObjectMap, key: []const u8) i64 {
+    if (obj.get(key)) |value| {
+        return switch (value) {
+            .integer => value.integer,
+            .float => @intFromFloat(value.float),
+            else => 0,
+        };
+    }
+    return 0;
+}
+
+fn jsonBool(obj: std.json.ObjectMap, key: []const u8) bool {
+    if (obj.get(key)) |value| {
+        if (value == .bool) return value.bool;
+    }
+    return false;
+}
+
 fn parseValidationStatus(value: []const u8) ValidationStatus {
     inline for (@typeInfo(ValidationStatus).@"enum".fields) |field| {
         if (std.mem.eql(u8, value, field.name)) return @enumFromInt(field.value);
@@ -1008,6 +1085,26 @@ test "ledger timeline renders compact task state" {
     try std.testing.expect(std.mem.indexOf(u8, timeline, "Task timeline") != null);
     try std.testing.expect(std.mem.indexOf(u8, timeline, "file_edited") != null);
     try std.testing.expect(std.mem.indexOf(u8, timeline, "src/ui.zig") != null);
+}
+
+test "ledger timeline includes observability overview" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"schema_version":2,"phase":"validating","goal":"fix ui",
+        \\"facts":[{"step_index":1,"text":"read ui"}],
+        \\"files":[{"path":"src/ui.zig","last_read_hash":1,"last_read_step":1,"last_edit_step":2,"edited":true}],
+        \\"validation":{"status":"passed","step_index":3,"command":"run_command exit 0","output":"ok"},
+        \\"entries":[
+        \\{"kind":"goal","step_index":0,"path":"","text":"fix ui"},
+        \\{"kind":"file_read","step_index":1,"path":"src/ui.zig","text":"Read"},
+        \\{"kind":"file_edited","step_index":2,"path":"src/ui.zig","text":"Write"},
+        \\{"kind":"validation","step_index":3,"path":"","text":"run_command exit 0"}]}
+    ;
+    const timeline = try formatTimelineFromJson(allocator, json, 8);
+    defer allocator.free(timeline);
+    try std.testing.expect(std.mem.indexOf(u8, timeline, "Validation: passed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, timeline, "Files: 1 tracked, 1 edited") != null);
+    try std.testing.expect(std.mem.indexOf(u8, timeline, "Facts: 1 captured") != null);
 }
 
 test "ledger collects read evidence hash and line range" {

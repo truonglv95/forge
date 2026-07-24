@@ -10,6 +10,7 @@ const streaming = @import("../../streaming.zig");
 pub const FakeTransport = struct {
     mcp: ?*mcp_registry.Registry,
     short_script: bool = false,
+    final_response: []const u8 = "",
     stream_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     stream_context: ?*anyopaque = null,
 
@@ -44,6 +45,29 @@ pub const FakeTransport = struct {
         }
 
         const response_count = countFunctionResponses(conversation_json);
+        if (std.mem.indexOf(u8, conversation_json, "DEFAULT_LIMIT") != null and self.final_response.len > 0) {
+            return switch (response_count) {
+                0 => .{ .tool_call = .{
+                    .name = try allocator.dupe(u8, "read_file"),
+                    .args_json = try allocator.dupe(u8, "{\"path\":\"src/limits.zig\"}"),
+                } },
+                1 => .{ .tool_call = .{
+                    .name = try allocator.dupe(u8, "read_file"),
+                    .args_json = try allocator.dupe(u8, "{\"path\":\"src/config.zig\"}"),
+                } },
+                2 => .{ .tool_call = .{
+                    .name = try allocator.dupe(u8, "read_file"),
+                    .args_json = try allocator.dupe(u8, "{\"path\":\"src/main.zig\"}"),
+                } },
+                else => return try emitTextCompletion(allocator, self.final_response, cancel_token, self),
+            };
+        }
+        if (std.mem.indexOf(u8, conversation_json, "LONG_EVAL_20_STEPS") != null) {
+            if (response_count < 20) {
+                return longEvalToolCall(allocator, response_count);
+            }
+            return try emitTextCompletion(allocator, "Long eval exploration complete.", cancel_token, self);
+        }
         if (self.short_script) {
             return switch (response_count) {
                 0 => .{ .tool_call = .{
@@ -132,6 +156,27 @@ pub const FakeTransport = struct {
         try conversation.appendSlice(allocator, piece);
     }
 };
+
+fn longEvalToolCall(allocator: std.mem.Allocator, response_count: usize) !turn.Completion {
+    return switch (response_count % 4) {
+        0 => .{ .tool_call = .{
+            .name = try allocator.dupe(u8, "search"),
+            .args_json = try allocator.dupe(u8, "{\"term\":\"sample\",\"path\":\".\"}"),
+        } },
+        1 => .{ .tool_call = .{
+            .name = try allocator.dupe(u8, "read_file"),
+            .args_json = try allocator.dupe(u8, "{\"path\":\"sample.txt\"}"),
+        } },
+        2 => .{ .tool_call = .{
+            .name = try allocator.dupe(u8, "list_tree"),
+            .args_json = try allocator.dupe(u8, "{\"path\":\".\",\"depth\":2}"),
+        } },
+        else => .{ .tool_call = .{
+            .name = try allocator.dupe(u8, "git_diff"),
+            .args_json = try allocator.dupe(u8, "{\"stat\":true}"),
+        } },
+    };
+}
 
 fn countFunctionResponses(conversation_json: []const u8) usize {
     const needle = "functionResponse";

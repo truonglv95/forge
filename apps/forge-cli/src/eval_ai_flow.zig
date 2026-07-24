@@ -100,6 +100,8 @@ const Summary = struct {
     generated_at: []const u8,
     provider: []const u8,
     model: []const u8,
+    provider_model: []const u8,
+    corpus: []const u8,
     tasks: usize,
     successes: usize,
     success_rate: f64,
@@ -392,11 +394,15 @@ pub fn run(
 
     const generated_at = timestampIsoUtc(allocator, io) catch try allocator.dupe(u8, "");
     defer allocator.free(generated_at);
+    const provider_model = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ provider_name, model_name });
+    defer allocator.free(provider_model);
 
     var summary = Summary{
         .generated_at = generated_at,
         .provider = provider_name,
         .model = model_name,
+        .provider_model = provider_model,
+        .corpus = corpus_path,
         .tasks = records.items.len,
         .successes = success_count,
         .success_rate = round4(success_rate),
@@ -1172,4 +1178,14 @@ test "ai-flow evaluator runs multi-file edit corpus" {
     }, &out);
     try std.testing.expectEqual(@as(u8, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, out.buffered(), "\"success_rate\":1") != null);
+}
+
+test "ai-flow evaluator loads zig real agent corpus" {
+    const allocator = std.testing.allocator;
+    const tasks = try loadCorpus(allocator, std.testing.io, "fixtures/eval/zig_real_agent.json");
+    defer freeTasks(allocator, tasks);
+    try std.testing.expect(tasks.len >= 4);
+    try std.testing.expect(tasks[1].expect.min_steps >= 20);
+    try std.testing.expect(tasks[2].expect.expect_repair);
+    try std.testing.expect(tasks[3].expect.files.len >= 3);
 }

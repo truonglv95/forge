@@ -41,10 +41,17 @@ pub fn renderPreviewAlloc(allocator: std.mem.Allocator, ndjson_line: []const u8)
         );
     }
     if (std.mem.eql(u8, type_str, "telemetry")) {
+        const phase = jsonStr(obj, "phase");
+        if (std.mem.eql(u8, phase, "prompt")) {
+            return std.fmt.allocPrint(allocator, "prompt_size  {d} bytes blocks={d} {s}", .{ jsonInt(obj, "bytes"), jsonInt(obj, "items"), jsonStr(obj, "detail") });
+        }
+        if (std.mem.eql(u8, phase, "gate") or std.mem.eql(u8, phase, "repair") or std.mem.eql(u8, phase, "checkpoint")) {
+            return std.fmt.allocPrint(allocator, "{s}  items={d} bytes={d} {s}", .{ phase, jsonInt(obj, "items"), jsonInt(obj, "bytes"), jsonStr(obj, "detail") });
+        }
         return std.fmt.allocPrint(
             allocator,
             "telemetry  {s} {d}ms bytes={d} items={d} {s}",
-            .{ jsonStr(obj, "phase"), jsonInt(obj, "duration_ms"), jsonInt(obj, "bytes"), jsonInt(obj, "items"), jsonStr(obj, "detail") },
+            .{ phase, jsonInt(obj, "duration_ms"), jsonInt(obj, "bytes"), jsonInt(obj, "items"), jsonStr(obj, "detail") },
         );
     }
     if (std.mem.eql(u8, type_str, "run_started")) {

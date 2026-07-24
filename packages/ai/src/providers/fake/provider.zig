@@ -98,6 +98,7 @@ pub const FakeProvider = struct {
         return .{
             .mcp = mcp,
             .short_script = self.tool_loop_short,
+            .final_response = self.response,
             .stream_callback = self.stream_callback,
             .stream_context = self.stream_context,
         };

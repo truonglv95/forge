@@ -170,6 +170,13 @@ pub fn run(
         .preloaded_retrieval = config.preloaded_retrieval,
     }) catch return error.ProviderFailed;
     defer allocator.free(prompt);
+    emitTelemetry(config, .{
+        .phase = "prompt",
+        .duration_ms = 0,
+        .bytes = prompt.len,
+        .items = ctx_builder.blocks.items.len,
+        .detail = "initial_tool_loop_prompt",
+    });
 
     if (config.initial_conversation_json.len > 0) {
         conversation.appendSlice(allocator, config.initial_conversation_json) catch return error.ProviderFailed;
