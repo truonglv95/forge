@@ -338,39 +338,42 @@ fn presetPalette(preset: ThemePreset) Theme {
             .line_height_scale = 1.5,
             .tab_width = 4,
             .colors = .{
-                .workbench_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
-                .header_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
-                .activity_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
-                .sidebar_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
-                .agent_bg = .{ .r = 0.12, .g = 0.12, .b = 0.12 },
-                .editor_bg = .{ .r = 0.12, .g = 0.12, .b = 0.12 },
-                .tab_bar_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
-                .tab_active_bg = .{ .r = 0.12, .g = 0.12, .b = 0.12 },
-                .panel_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
-                .status_bg = .{ .r = 0.1, .g = 0.1, .b = 0.1 },
-                .border = .{ .r = 0.18, .g = 0.18, .b = 0.18 },
-                .text_primary = .{ .r = 0.9, .g = 0.9, .b = 0.9 },
-                .text_secondary = .{ .r = 0.7, .g = 0.7, .b = 0.7 },
-                .text_muted = .{ .r = 0.5, .g = 0.5, .b = 0.5 },
-                .editor_fg = .{ .r = 0.85, .g = 0.85, .b = 0.85 },
-                .line_number = .{ .r = 0.4, .g = 0.4, .b = 0.4 },
-                .cursor = .{ .r = 0.8, .g = 0.8, .b = 0.8 },
-                .keyword = .{ .r = 0.35, .g = 0.6, .b = 0.85 },
-                .number = .{ .r = 0.7, .g = 0.8, .b = 0.6 },
-                .punctuation = .{ .r = 0.6, .g = 0.6, .b = 0.6 },
-                .string_color = .{ .r = 0.8, .g = 0.55, .b = 0.4 },
-                .type = .{ .r = 0.3, .g = 0.75, .b = 0.65 },
-                .parameter = .{ .r = 0.8, .g = 0.6, .b = 0.3 },
-                .variable = .{ .r = 0.6, .g = 0.8, .b = 0.95 },
-                .property = .{ .r = 0.5, .g = 0.7, .b = 0.85 },
-                .function = .{ .r = 0.85, .g = 0.85, .b = 0.6 },
-                .comment = .{ .r = 0.4, .g = 0.6, .b = 0.4 },
-                .diff_add = .{ .r = 0.2, .g = 0.5, .b = 0.2 },
-                .diff_remove = .{ .r = 0.6, .g = 0.2, .b = 0.2 },
-                .accent = .{ .r = 0.15, .g = 0.45, .b = 0.85 },
-                .accent_soft = .{ .r = 0.2, .g = 0.3, .b = 0.5 },
-                .selection = .{ .r = 0.15, .g = 0.3, .b = 0.45 },
-                .warning = .{ .r = 0.8, .g = 0.6, .b = 0.1 },
+                // Modern dark palette — inspired by VSCode Modern Dark / Cursor
+                // Deeper backgrounds with subtle blue tint for depth
+                .workbench_bg = .{ .r = 0.094, .g = 0.094, .b = 0.110 }, // #181820
+                .header_bg = .{ .r = 0.094, .g = 0.094, .b = 0.110 },
+                .activity_bg = .{ .r = 0.078, .g = 0.078, .b = 0.094 }, // #141418
+                .sidebar_bg = .{ .r = 0.086, .g = 0.086, .b = 0.102 }, // #16161a
+                .agent_bg = .{ .r = 0.102, .g = 0.102, .b = 0.118 }, // #1a1a1e
+                .editor_bg = .{ .r = 0.094, .g = 0.094, .b = 0.110 }, // #181820
+                .tab_bar_bg = .{ .r = 0.078, .g = 0.078, .b = 0.094 },
+                .tab_active_bg = .{ .r = 0.094, .g = 0.094, .b = 0.110 },
+                .panel_bg = .{ .r = 0.086, .g = 0.086, .b = 0.102 },
+                .status_bg = .{ .r = 0.063, .g = 0.063, .b = 0.078 }, // #101014
+                .border = .{ .r = 0.165, .g = 0.165, .b = 0.196 }, // #2a2a32
+                .text_primary = .{ .r = 0.933, .g = 0.933, .b = 0.953 }, // #eeeef3
+                .text_secondary = .{ .r = 0.733, .g = 0.733, .b = 0.773 }, // #bbbbcc
+                .text_muted = .{ .r = 0.533, .g = 0.533, .b = 0.573 }, // #888899
+                .editor_fg = .{ .r = 0.882, .g = 0.882, .b = 0.922 }, // #e1e1eb
+                .line_number = .{ .r = 0.373, .g = 0.373, .b = 0.412 }, // #5f5f6a
+                .cursor = .{ .r = 0.533, .g = 0.733, .b = 1.0 }, // #88bbff
+                // Syntax — modern vibrant but not harsh
+                .keyword = .{ .r = 0.533, .g = 0.6, .b = 1.0 }, // #8899ff purple-blue
+                .number = .{ .r = 0.933, .g = 0.667, .b = 0.467 }, // #eeaa77 orange
+                .punctuation = .{ .r = 0.6, .g = 0.6, .b = 0.667 }, // #9999aa
+                .string_color = .{ .r = 0.733, .g = 0.867, .b = 0.533 }, // #bbdd88 green
+                .type = .{ .r = 0.467, .g = 0.867, .b = 0.867 }, // #77dddd teal
+                .parameter = .{ .r = 0.933, .g = 0.733, .b = 0.533 }, // #eebb88
+                .variable = .{ .r = 0.733, .g = 0.8, .b = 0.933 }, // #bbccdd
+                .property = .{ .r = 0.6, .g = 0.733, .b = 0.933 }, // #99bbee
+                .function = .{ .r = 0.933, .g = 0.8, .b = 0.467 }, // #eecc77 yellow
+                .comment = .{ .r = 0.4, .g = 0.467, .b = 0.533 }, // #667788 muted
+                .diff_add = .{ .r = 0.2, .g = 0.533, .b = 0.267 }, // #338844
+                .diff_remove = .{ .r = 0.733, .g = 0.267, .b = 0.267 }, // #bb4444
+                .accent = .{ .r = 0.267, .g = 0.533, .b = 1.0 }, // #4488ff blue
+                .accent_soft = .{ .r = 0.2, .g = 0.333, .b = 0.533 }, // #335588
+                .selection = .{ .r = 0.2, .g = 0.333, .b = 0.533 },
+                .warning = .{ .r = 0.933, .g = 0.733, .b = 0.2 }, // #eebb33
             },
         },
         .light => .{
