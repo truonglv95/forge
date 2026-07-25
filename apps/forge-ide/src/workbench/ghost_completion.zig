@@ -315,7 +315,7 @@ pub const Store = struct {
                 .suffix = suffix,
                 .file_path = path,
                 .max_tokens = 64,
-                .timeout_ms = 3000,
+                .timeout_ms = 10000,
             },
             .{
                 .provider_name = self.config.ai_provider,

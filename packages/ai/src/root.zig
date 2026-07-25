@@ -146,3 +146,6 @@ pub const multi_file_edit = @import("multi_file_edit.zig");
 pub const chat_memory = @import("chat_memory.zig");
 pub const workflows = @import("workflows.zig");
 pub const voice_input = @import("voice_input.zig");
+pub const rate_limiter = @import("rate_limiter.zig");
+pub const error_parser = @import("error_parser.zig");
+pub const model_capabilities = @import("model_capabilities.zig");

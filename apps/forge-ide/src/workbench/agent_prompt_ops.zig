@@ -6,6 +6,22 @@ const agent_ops = @import("agent_ops.zig");
 const mention_resolver_mod = @import("mention_resolver.zig");
 
 pub fn submitAgentPrompt(wb: anytype) !void {
+    // Rate limit check — prevents hitting API rate limits when users
+    // spam prompts. Returns a friendly error instead of failing silently.
+    wb.rate_limiter.check() catch |err| {
+        switch (err) {
+            error.RateLimited => {
+                const wait_ms = wb.rate_limiter.timeUntilNext();
+                var buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Rate limited — wait {d}ms before next prompt", .{wait_ms}) catch "Rate limited — please wait";
+                try wb.setStatus(msg);
+                _ = wb.notifications.warning(msg) catch {};
+                return;
+            },
+            else => return err,
+        }
+    };
+
     const prompt_text = try wb.agent_ui.prompt_buffer.content();
     defer wb.agent_ui.prompt_buffer.allocator.free(prompt_text);
     const trimmed = std.mem.trim(u8, prompt_text, &std.ascii.whitespace);

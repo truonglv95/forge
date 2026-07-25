@@ -124,6 +124,8 @@ pub const Workbench = struct {
     completion_debounce: ai.inline_completion.DebounceState = .{},
     /// Proactive completion — when true, auto-trigger completion after 1s idle.
     proactive_completion_enabled: bool = true,
+    /// Rate limiter for AI provider calls — prevents API rate limit errors.
+    rate_limiter: ai.rate_limiter.RateLimiter = undefined,
 
     lsp_initialized: bool = false,
     marketplace_catalog: ?plugin.MarketplaceCatalog = null,
@@ -481,6 +483,7 @@ pub const Workbench = struct {
         }.log;
 
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
+        self.rate_limiter = ai.rate_limiter.RateLimiter.init(allocator);
         self.user_settings = settings_mod.load(allocator, io, root) catch |err| blk: {
             self.logBackgroundError("Load settings", err);
             break :blk .{};
@@ -593,6 +596,7 @@ pub const Workbench = struct {
             self.debug.deinit();
             if (self.rag_index) |*idx| idx.deinit();
             if (self.completion_cache) |*cache| cache.deinit();
+            self.rate_limiter.deinit();
         }
         self.wrap_cache.deinit();
         self.max_line_len_cache.deinit();

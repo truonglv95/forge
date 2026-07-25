@@ -3,9 +3,17 @@ const kernel = @import("forge-kernel");
 const provider = @import("provider.zig");
 
 pub const Options = struct {
-    chunk_size: usize = 32,
+    /// Chunk size in bytes. Larger chunks = fewer callback invocations =
+    /// less overhead. For real LLM streaming (Gemini/Claude), 128 bytes
+    /// is a good balance between responsiveness and overhead.
+    /// For fake provider (tests), 32 is fine.
+    chunk_size: usize = 128,
     on_chunk: ?*const fn (?*anyopaque, []const u8) void = null,
     on_chunk_context: ?*anyopaque = null,
+    /// Inter-chunk delay in nanoseconds (0 = no delay).
+    /// Used to simulate streaming latency for the fake provider.
+    /// Real providers stream naturally from the network.
+    inter_chunk_delay_ns: u64 = 0,
 };
 
 /// Invokes `on_chunk` for slices of `content` without writing to a writer.

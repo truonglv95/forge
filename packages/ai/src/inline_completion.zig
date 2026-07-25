@@ -29,7 +29,10 @@ pub const CompletionRequest = struct {
     /// Symbols from LSP document symbols for the current file.
     file_symbols: []const []const u8 = &.{},
     max_tokens: u32 = 256, // Increased from 64 for multi-line
-    timeout_ms: u64 = 3000,
+    /// Timeout in milliseconds. Real LLM providers (Gemini, Claude) can
+    /// take 5-10 seconds for multi-line completions, so we default to
+    /// 10000ms. The fake provider returns instantly so tests are unaffected.
+    timeout_ms: u64 = 10000,
     /// Whether this is a proactive (auto-triggered) completion.
     proactive: bool = false,
 };
