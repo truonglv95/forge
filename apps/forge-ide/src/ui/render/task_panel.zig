@@ -7,12 +7,30 @@ const Workbench = @import("../../workbench.zig").Workbench;
 
 pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32, panel_h: f32) void {
     const bottom_panel = @import("../panel/bottom_panel.zig");
+    const theme = &wb.theme;
+    const syntax_mod = @import("theme.zig");
+
+    // Panel background — slightly different from editor bg to visually separate
+    const panel_bg = syntax_mod.color(theme.colors.tab_bar_bg);
     renderer.Renderer.setClipRect(editor_x, panel_y, editor_w, panel_h);
+
+    // Top border — accent-tinted separator
+    const border = syntax_mod.color(theme.colors.border);
+    renderer.Renderer.drawRect(editor_x, panel_y, editor_w, 1, border);
+
+    // Tab bar background
+    const tab_bar_h = bottom_panel.tab_bar_height;
+    renderer.Renderer.drawRect(editor_x, panel_y + 1, editor_w, tab_bar_h, panel_bg);
+
+    // Draw tabs with modern pill style
     const tab_y = bottom_panel.tabBarTop(panel_y);
+    var tab_x: f32 = editor_x + 12;
     for (bottom_panel.tabs) |tab| {
         const selected = wb.bottom_panel_mode == tab.mode;
-        const tab_x = editor_x + tab.x_offset;
+        const is_hovered = state.last_mouse_x >= tab_x and state.last_mouse_x < tab_x + tab.w + 8 and
+            state.last_mouse_y >= tab_y and state.last_mouse_y < tab_y + bottom_panel.tab_h + 4;
 
+        // Build label (add count for Problems tab)
         var label_buf: [32:0]u8 = undefined;
         if (tab.mode == .problems and wb.lsp.diagnostics.list.items.len > 0) {
             const prob = std.fmt.bufPrint(&label_buf, "{s} {d}", .{ tab.label, wb.lsp.diagnostics.list.items.len }) catch tab.label;
@@ -22,38 +40,68 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             label_buf[tab.label.len] = 0;
         }
 
+        // Tab pill background — selected gets accent-soft, hover gets subtle highlight
+        if (selected) {
+            renderer.Renderer.drawRoundedRect(tab_x - 4, tab_y, tab.w + 12, bottom_panel.tab_h + 2, 4, syntax_mod.color(theme.colors.accent_soft));
+            // Active indicator — 2px accent bar at bottom
+            renderer.Renderer.drawRect(tab_x - 4, tab_y + bottom_panel.tab_h, tab.w + 12, 2, syntax_mod.color(theme.colors.accent));
+        } else if (is_hovered) {
+            renderer.Renderer.drawRoundedRect(tab_x - 4, tab_y, tab.w + 12, bottom_panel.tab_h + 2, 4, .{ .r = 1, .g = 1, .b = 1, .a = 0.05 });
+        }
+
         const text_color = if (selected)
-            renderer.Color{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 }
+            syntax_mod.color(theme.colors.text_primary)
+        else if (is_hovered)
+            syntax_mod.color(theme.colors.text_secondary)
         else
-            renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
+            renderer.Color{ .r = 0.55, .g = 0.55, .b = 0.6, .a = 1.0 };
 
         renderer.Renderer.drawText(@ptrCast(&label_buf), tab_x, tab_y + 3, 11.0, text_color);
-
-        if (selected) {
-            renderer.Renderer.drawRect(tab_x, tab_y + bottom_panel.tab_h + 2, tab.w - 8, 1.0, text_color);
-        }
+        tab_x += tab.w + 12;
     }
 
+    // Right-side action buttons for terminal mode
     if (wb.bottom_panel_mode == .terminal) {
         const rx = editor_x + editor_w;
         const icon_y = tab_y + 3;
-        const icon_color = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
+        const icon_color: renderer.Color = if (state.last_mouse_y >= tab_y and state.last_mouse_y < tab_y + 20)
+            syntax_mod.color(theme.colors.text_secondary)
+        else
+            renderer.Color{ .r = 0.5, .g = 0.5, .b = 0.55, .a = 1.0 };
 
-        renderer.Renderer.drawSvg(renderer.forge_icons.close, rx - 24, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.forge_icons.chevron_down, rx - 44, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.forge_icons.kebab, rx - 64, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.forge_icons.close, rx - 88, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.forge_icons.folder, rx - 112, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.forge_icons.chevron_down, rx - 136, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.forge_icons.plus, rx - 156, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawText("zsh", rx - 188, icon_y + 3, 11.0, icon_color);
-        renderer.Renderer.drawSvg(renderer.forge_icons.terminal, rx - 208, icon_y, 16, 16, icon_color);
+        // Check hover for each button
+        const btn_size: f32 = 20;
+        const btn_x = rx - 24;
+        const buttons = [_]struct { icon: [:0]const u8, hover_x: f32 }{
+            .{ .icon = renderer.forge_icons.close, .hover_x = btn_x },
+            .{ .icon = renderer.forge_icons.chevron_down, .hover_x = btn_x - 24 },
+            .{ .icon = renderer.forge_icons.plus, .hover_x = btn_x - 48 },
+        };
+        for (buttons) |btn| {
+            const is_btn_hover = state.last_mouse_x >= btn.hover_x and state.last_mouse_x < btn.hover_x + btn_size and
+                state.last_mouse_y >= tab_y and state.last_mouse_y < tab_y + btn_size;
+            if (is_btn_hover) {
+                renderer.Renderer.drawRoundedRect(btn.hover_x - 2, tab_y, btn_size + 4, btn_size, 4, .{ .r = 1, .g = 1, .b = 1, .a = 0.06 });
+            }
+            renderer.Renderer.drawSvg(btn.icon, btn.hover_x, icon_y, 16, 16, icon_color);
+        }
+
+        // Shell name badge
+        const shell_label = "zsh";
+        const shell_w: f32 = 30;
+        const shell_x = rx - 24 - 48 - shell_w - 8;
+        renderer.Renderer.drawRoundedRect(shell_x, tab_y + 1, shell_w, 18, 3, .{ .r = 0.15, .g = 0.17, .b = 0.2, .a = 0.8 });
+        renderer.Renderer.drawText(shell_label, shell_x + 6, tab_y + 3, 10.0, .{ .r = 0.7, .g = 0.78, .b = 0.9, .a = 0.9 });
     }
 
+    // Bottom border of tab bar
+    renderer.Renderer.drawRect(editor_x, panel_y + 1 + tab_bar_h, editor_w, 1, border);
+
+    // Content area
     switch (wb.bottom_panel_mode) {
         .output => {
-            const content_top = panel_y + 34.0;
-            const content_h = panel_h - 34.0;
+            const content_top = panel_y + tab_bar_h + 6;
+            const content_h = panel_h - tab_bar_h - 6;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             var line_y = content_top - wb.task_scroll_y;
             if (wb.lsp.rename_preview.active) {
@@ -99,7 +147,7 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
                 }
 
                 var buf_btn: [128:0]u8 = undefined;
-                const btn_text = std.fmt.bufPrint(&buf_btn, "Channel: {s} \xEF\xBF\xBD", .{channel_name}) catch "Channel \xEF\xBF\xBD";
+                const btn_text = std.fmt.bufPrint(&buf_btn, "Channel: {s}", .{channel_name}) catch "Channel";
                 buf_btn[btn_text.len] = 0;
 
                 const text_w = renderer.Renderer.measureText(@ptrCast(&buf_btn), 11.0);
@@ -134,29 +182,40 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             }
         },
         .problems => {
-            const content_top = panel_y + 34.0;
-            const content_h = panel_h - 34.0;
+            const content_top = panel_y + tab_bar_h + 6;
+            const content_h = panel_h - tab_bar_h - 6;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
-            const line_h: f32 = 14.0;
+            const line_h: f32 = 18.0; // Taller rows for better readability
             const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
             const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
             const end_idx = @min(wb.lsp.diagnostics.list.items.len, start_idx + visual_count);
 
             var line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
             for (wb.lsp.diagnostics.list.items[start_idx..end_idx]) |item| {
+                // Severity icon — circle with colour
+                const sev_color = switch (item.severity) {
+                    .err => renderer.Color{ .r = 0.95, .g = 0.45, .b = 0.45, .a = 1.0 },
+                    .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
+                    else => renderer.Color{ .r = 0.6, .g = 0.7, .b = 0.85, .a = 1.0 },
+                };
+                const sev_icon = switch (item.severity) {
+                    .err => "✕",
+                    .warning => "▲",
+                    else => "i",
+                };
+                renderer.Renderer.drawText(sev_icon, editor_x + 16, line_y + 2, 11.0, sev_color);
+
+                // Message text
                 var buf: [512:0]u8 = undefined;
                 const line = std.fmt.bufPrint(&buf, "L{d}:{d}  {s}", .{ item.line + 1, item.character + 1, item.message }) catch item.message;
                 buf[line.len] = 0;
-                const color = switch (item.severity) {
-                    .err => renderer.Color{ .r = 0.95, .g = 0.45, .b = 0.45, .a = 1.0 },
-                    .warning => renderer.Color{ .r = 1.0, .g = 0.75, .b = 0.35, .a = 1.0 },
-                    else => renderer.Color{ .r = 0.85, .g = 0.85, .b = 0.85, .a = 1.0 },
-                };
-                renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 20, line_y, 12.0, color);
+                renderer.Renderer.drawText(@ptrCast(&buf), editor_x + 36, line_y + 2, 12.0, sev_color);
                 line_y += line_h;
             }
             if (wb.lsp.diagnostics.list.items.len == 0) {
-                renderer.Renderer.drawText("No problems for active file.", editor_x + 20, panel_y + 40, 12.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+                // Empty state with icon
+                renderer.Renderer.drawSvg(renderer.forge_icons.check, editor_x + 16, content_top, 20, 20, .{ .r = 0.3, .g = 0.7, .b = 0.4, .a = 0.8 });
+                renderer.Renderer.drawText("No problems detected in this file.", editor_x + 42, content_top + 4, 12.0, .{ .r = 0.5, .g = 0.55, .b = 0.6, .a = 1.0 });
             }
         },
         .terminal => {
@@ -208,8 +267,8 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
         .debug_console => {
             wb.debug.console.lock();
             defer wb.debug.console.unlock();
-            const content_top = panel_y + 34.0;
-            const content_h = panel_h - 34.0;
+            const content_top = panel_y + tab_bar_h + 6;
+            const content_h = panel_h - tab_bar_h - 6;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             const line_h: f32 = 14.0;
             const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
@@ -230,8 +289,8 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             }
         },
         .debug_variables => {
-            const content_top = panel_y + 34.0;
-            const content_h = panel_h - 34.0;
+            const content_top = panel_y + tab_bar_h + 6;
+            const content_h = panel_h - tab_bar_h - 6;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             var line_y = content_top - wb.task_scroll_y;
             if (line_y + 14 >= content_top and line_y < content_top + content_h) {
@@ -262,8 +321,8 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
             }
         },
         .debug_callstack => {
-            const content_top = panel_y + 34.0;
-            const content_h = panel_h - 34.0;
+            const content_top = panel_y + tab_bar_h + 6;
+            const content_h = panel_h - tab_bar_h - 6;
             renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             var line_y = content_top - wb.task_scroll_y;
             if (line_y + 14 >= content_top and line_y < content_top + content_h) {
@@ -295,10 +354,12 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
         },
     }
     renderer.Renderer.clearClipRect();
+
+    // Scrollbar
     const bottom_content_top = if (wb.bottom_panel_mode == .terminal)
         @import("../panel/terminal_panel.zig").contentTop(panel_y)
     else
-        panel_y + 34.0;
+        panel_y + bottom_panel.tab_bar_height + 6;
     const bottom_content_h = panel_h - (bottom_content_top - panel_y);
     const bottom_line_count = wb.bottomPanelLineCount();
     const bottom_line_h = if (wb.bottom_panel_mode == .terminal)
@@ -307,8 +368,8 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
         panel_scroll.bottom_line_h;
     const bottom_content = @as(f32, @floatFromInt(@max(1, bottom_line_count))) * bottom_line_h;
     const bottom_max = @max(0, bottom_content - bottom_content_h);
-    const show_bottom_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, editor_x, bottom_content_top, editor_w, bottom_content_h);
-    scrollbar.drawVertical(
+    const bottom_sb_hover = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, editor_x + editor_w - scrollbar.track_w - 4, bottom_content_top, scrollbar.track_w + 8, bottom_content_h);
+    scrollbar.drawVerticalWithState(
         editor_x + editor_w - scrollbar.track_w - 4,
         bottom_content_top,
         bottom_content_h,
@@ -316,6 +377,8 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
         bottom_max,
         bottom_content,
         bottom_content_h,
-        show_bottom_scroll,
+        true,
+        bottom_sb_hover,
+        false,
     );
 }
