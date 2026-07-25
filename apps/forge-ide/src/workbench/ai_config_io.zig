@@ -18,12 +18,15 @@ pub fn writeTomlKey(
     //
     // New behavior:
     //   1. Read workspace .forge/settings.toml (may not exist yet).
-    //   2. upsertTomlValue handles both edit-existing and create-new
+    //   2. Skip the write if the key already exists with the SAME value
+    //      (no-op). This prevents duplicate [section] sections from being
+    //      created when the value hasn't changed.
+    //   3. upsertTomlValue handles both edit-existing and create-new
     //      cases (it appends a new [section] block if the section is
     //      missing entirely).
-    //   3. Atomically replace the workspace file. Creates the file if
+    //   4. Atomically replace the workspace file. Creates the file if
     //      it doesn't exist yet.
-    //   4. Home file (~/.forge/settings.toml) is only used as a fallback
+    //   5. Home file (~/.forge/settings.toml) is only used as a fallback
     //      when the workspace is read-only (e.g. opened from /tmp).
     const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return;
 
@@ -35,6 +38,14 @@ pub fn writeTomlKey(
     } else |_| {}
 
     defer if (snap_owned) |*s| s.deinit();
+
+    // Skip the write if the key already exists with the exact same value.
+    // This prevents duplicate sections when the value hasn't changed
+    // (e.g. on repeated settings loads or no-op edits). The check is
+    // done by parsing the TOML content and comparing the trimmed value.
+    if (@import("settings.zig").settingsContentHasKeyWithValue(workspace_content, section_name, key, value)) {
+        return;
+    }
 
     // upsertTomlValue: if key exists → edit; if section exists but key
     // doesn't → append key to section; if section doesn't exist → append
@@ -171,6 +182,19 @@ fn writeMultipleKeys(
     } else |_| {}
     defer if (snap_owned) |*s| s.deinit();
 
+    // Skip the write entirely if ALL keys already exist with the exact
+    // same values. This is a no-op fast path that prevents duplicate
+    // sections when the user re-selects the same model/provider.
+    const settings_mod = @import("settings.zig");
+    var all_match = true;
+    for (pairs) |pair| {
+        if (!settings_mod.settingsContentHasKeyWithValue(workspace_content, section_name, pair.key, pair.value)) {
+            all_match = false;
+            break;
+        }
+    }
+    if (all_match and workspace_content.len > 0) return;
+
     // Upsert each key sequentially in memory — no file I/O between
     // upserts. upsertTomlValue handles edit-existing and create-new.
     var current = try allocator.dupe(u8, workspace_content);
@@ -178,7 +202,7 @@ fn writeMultipleKeys(
     for (pairs) |pair| {
         var quoted_buf: [512]u8 = undefined;
         const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{pair.value}) catch return;
-        const updated = @import("settings.zig").upsertTomlValue(allocator, current, section_name, pair.key, quoted) catch |err| {
+        const updated = settings_mod.upsertTomlValue(allocator, current, section_name, pair.key, quoted) catch |err| {
             if (err == error.WorkspaceFailed or err == error.AccessDenied) return;
             return err;
         };

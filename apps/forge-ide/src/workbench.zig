@@ -493,9 +493,11 @@ pub const Workbench = struct {
             self.logBackgroundError("Load settings", err);
             break :blk .{};
         };
-        settings_mod.writeAiPanelFontSize(allocator, io, root, self.user_settings.ai_panel_font_size) catch |err| {
-            self.logBackgroundError("Persist AI panel font size", err);
-        };
+        // Do NOT writeAiPanelFontSize on every startup. The previous code
+        // re-wrote the [ai_panel] font_size key on every launch even when
+        // the value hadn't changed — producing duplicate [ai_panel] sections
+        // when combined with the upsert edge cases. Settings are only written
+        // when the user explicitly changes them (see setAiPanelFontSize).
         self.agent_ui.edit_mode = self.user_settings.agent_edit_mode;
         self.minimap_enabled = self.user_settings.minimap_enabled;
         settings_mod.applyToTheme(self.user_settings, &self.theme);

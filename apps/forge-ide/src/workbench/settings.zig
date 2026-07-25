@@ -248,10 +248,18 @@ pub fn writeAiPanelFontSize(
     defer allocator.free(value_text);
 
     // Try workspace .forge/settings.toml first — read current content,
-    // upsert the font_size key, write back. This preserves all other
-    // settings in the file.
+    // check if the key already exists with the SAME value (no-op if so),
+    // upsert the font_size key, write back.
     if (readWorkspaceSettings(allocator, io, root)) |workspace_content| {
         defer allocator.free(workspace_content);
+        // Skip the write if the key already exists with the exact same
+        // value. This prevents duplicate [ai_panel] sections from being
+        // created when the value hasn't changed (e.g. on startup or
+        // repeated settings loads). The previous code re-wrote on every
+        // call, which combined with upsert edge cases produced duplicates.
+        if (settingsContentHasKeyWithValue(workspace_content, "ai_panel", "font_size", value_text)) {
+            return;
+        }
         const updated = try upsertTomlValue(allocator, workspace_content, "ai_panel", "font_size", value_text);
         defer allocator.free(updated);
         const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
@@ -272,10 +280,34 @@ pub fn writeAiPanelFontSize(
     };
     defer allocator.free(content);
 
-    // File exists — upsert the key into existing content
+    // Skip if key already exists with the same value.
+    if (settingsContentHasKeyWithValue(content, "ai_panel", "font_size", value_text)) {
+        return;
+    }
     const updated = try upsertTomlValue(allocator, content, "ai_panel", "font_size", value_text);
     defer allocator.free(updated);
     try workspace.global_store.replaceAbsoluteFile(io, home_settings, updated);
+}
+
+/// Check if the settings content has a key in a section with a specific
+/// value. Returns true only if BOTH the key exists AND its value matches
+/// `expected_value` (after trimming whitespace). Used to skip no-op writes.
+pub fn settingsContentHasKeyWithValue(content: []const u8, section_name: []const u8, key_name: []const u8, expected_value: []const u8) bool {
+    var section: []const u8 = "";
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, &std.ascii.whitespace, raw_line);
+        if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+            section = std.mem.trim(u8, &std.ascii.whitespace, trimmed[1 .. trimmed.len - 1]);
+            continue;
+        }
+        if (std.mem.eql(u8, section, section_name) and lineKeyMatches(trimmed, key_name)) {
+            const equals = std.mem.indexOfScalar(u8, trimmed, '=') orelse return false;
+            const actual_value = std.mem.trim(u8, &std.ascii.whitespace, trimmed[equals + 1 ..]);
+            return std.mem.eql(u8, actual_value, expected_value);
+        }
+    }
+    return false;
 }
 
 pub fn writeAgentEditMode(
