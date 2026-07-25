@@ -53,7 +53,10 @@ pub fn drawPalette(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32
     const box_x = (w - box_w) / 2;
     const box_y = (h - box_h) / 3;
 
-    // Panel with subtle shadow + accent border top
+    // Drop shadow under the panel (offset 4px down-right) — gives the modal
+    // depth so it visually floats above the editor instead of looking pasted.
+    renderer.Renderer.drawRoundedRect(box_x + 4, box_y + 6, box_w, box_h, 12, .{ .r = 0, .g = 0, .b = 0, .a = 0.35 });
+    // Panel with subtle accent border top
     renderer.Renderer.drawRoundedRect(box_x, box_y, box_w, box_h, 12, panel_bg);
     renderer.Renderer.drawRoundedRect(box_x, box_y, box_w, 3, 1.5, accent);
 
@@ -72,8 +75,11 @@ pub fn drawPalette(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32
     renderer.Renderer.drawSvg(renderer.forge_icons.search, box_x + 18, box_y + 42, 16, 16, accent);
     renderer.Renderer.drawText(@ptrCast(&query_buf), box_x + 42, box_y + 43, 14.0, text_primary);
 
-    // Cursor indicator
-    renderer.Renderer.drawRect(box_x + 42 + @as(f32, @floatFromInt(wb.palette.query_len)) * 8, box_y + 42, 1, 16, accent);
+    // Blinking cursor indicator (uses the same 1.06s blink cycle as the editor)
+    const blink_phase = @mod(@import("../core/state.zig").time, 1.06);
+    if (blink_phase < 0.53) {
+        renderer.Renderer.drawRect(box_x + 42 + @as(f32, @floatFromInt(wb.palette.query_len)) * 8, box_y + 42, 1, 16, accent);
+    }
 
     // Results
     var row_y = box_y + 82;
@@ -100,12 +106,52 @@ pub fn drawPalette(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32
         title_buf[title_len] = 0;
         renderer.Renderer.drawText(@ptrCast(&title_buf), box_x + 20 + @as(f32, @floatFromInt(cat_len)) * 6.5 + 16, row_y, 13.0, if (selected) text_primary else text_secondary);
 
+        // Right-aligned shortcut hint for some common commands. Helps users
+        // discover keyboard shortcuts without leaving the palette.
+        const shortcut: ?[]const u8 = shortcutForCommand(entry.id);
+        if (shortcut) |sc| {
+            var sc_buf: [32:0]u8 = undefined;
+            const sc_len = @min(sc.len, sc_buf.len - 1);
+            @memcpy(sc_buf[0..sc_len], sc[0..sc_len]);
+            sc_buf[sc_len] = 0;
+            const sc_w: f32 = @as(f32, @floatFromInt(sc_len)) * 6.5;
+            // Background pill behind the shortcut for VSCode-like look
+            renderer.Renderer.drawRoundedRect(box_x + box_w - 24 - sc_w - 14, row_y - 1, sc_w + 12, 18, 4, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 0.06 });
+            renderer.Renderer.drawText(@ptrCast(&sc_buf), box_x + box_w - 24 - sc_w - 8, row_y + 1, 10.0, text_muted);
+        }
+
         row_y += 26;
     }
 
-    // Footer hint
+    // Footer hint with category-coloured key chips
     renderer.Renderer.drawRect(box_x, box_y + box_h - 28, box_w, 1, border);
     drawZText("↑↓ navigate  ↵ select  esc close", box_x + 16, box_y + box_h - 20, 11, text_muted);
+    // Result count on the right
+    var count_buf: [64:0]u8 = undefined;
+    const count_msg = std.fmt.bufPrint(&count_buf, "{d} results", .{wb.palette.filtered.len}) catch "";
+    count_buf[count_msg.len] = 0;
+    drawZText(@ptrCast(&count_buf), box_x + box_w - 100, box_y + box_h - 20, 11, text_muted);
+}
+
+/// Returns a friendly shortcut string for well-known command IDs, or null
+/// if the command has no canonical shortcut. Used by the palette to surface
+/// keyboard hints next to entries so users learn shortcuts over time.
+fn shortcutForCommand(id: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, id, "file.save")) return "⌘S";
+    if (std.mem.eql(u8, id, "file.close")) return "⌘W";
+    if (std.mem.eql(u8, id, "editor.find")) return "⌘F";
+    if (std.mem.eql(u8, id, "editor.replace")) return "⌘⌥F";
+    if (std.mem.eql(u8, id, "editor.goto")) return "⌃G";
+    if (std.mem.eql(u8, id, "editor.definition")) return "F12";
+    if (std.mem.eql(u8, id, "editor.references")) return "⇧F12";
+    if (std.mem.eql(u8, id, "editor.rename")) return "F2";
+    if (std.mem.eql(u8, id, "editor.format")) return "⇧⌥F";
+    if (std.mem.eql(u8, id, "editor.add_cursor_next")) return "⌘D";
+    if (std.mem.eql(u8, id, "editor.add_cursor_all")) return "⌘⇧L";
+    if (std.mem.eql(u8, id, "palette.open")) return "⌘⇧P";
+    if (std.mem.eql(u8, id, "view.toggle")) return "⌘⇧A";
+    if (std.mem.eql(u8, id, "agent.edit_selection")) return "⌘K";
+    return null;
 }
 
 const syntax = @import("theme.zig");

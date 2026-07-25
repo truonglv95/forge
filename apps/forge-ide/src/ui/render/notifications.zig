@@ -31,30 +31,49 @@ pub fn drawNotifications(wb: *Workbench, window_w: f32, window_h: f32) void {
         const slide_offset = (1.0 - slide_progress) * (card_w + card_margin);
         const x = window_w - card_margin - card_w + slide_offset;
 
+        // Fade-out animation: last 0.4s of lifetime, fade alpha to 0.
+        const fade_alpha: f32 = if (notif.remaining < 0.4)
+            @max(0.0, notif.remaining / 0.4)
+        else
+            1.0;
+
         // Card shadow
-        renderer.Renderer.drawRoundedRect(x + 2, y + 3, card_w, card_h, 8, .{ .r = 0, .g = 0, .b = 0, .a = 0.3 });
+        renderer.Renderer.drawRoundedRect(x + 2, y + 3, card_w, card_h, 8, .{ .r = 0, .g = 0, .b = 0, .a = 0.3 * fade_alpha });
 
         // Card background — rounded
-        renderer.Renderer.drawRoundedRect(x, y, card_w, card_h, 8, theme_mod.color(theme.colors.panel_bg));
+        const bg = theme_mod.color(theme.colors.panel_bg);
+        renderer.Renderer.drawRoundedRect(x, y, card_w, card_h, 8, .{
+            .r = bg.r,
+            .g = bg.g,
+            .b = bg.b,
+            .a = bg.a * fade_alpha,
+        });
 
         // Accent strip on the left (colored by level).
         const accent_color: renderer.Color = switch (notif.level) {
-            .info => .{ .r = 0.27, .g = 0.53, .b = 1.0, .a = 1.0 },
-            .success => .{ .r = 0.20, .g = 0.53, .b = 0.27, .a = 1.0 },
-            .warning => .{ .r = 0.93, .g = 0.73, .b = 0.20, .a = 1.0 },
-            .err => .{ .r = 0.73, .g = 0.27, .b = 0.27, .a = 1.0 },
+            .info => .{ .r = 0.27, .g = 0.53, .b = 1.0, .a = fade_alpha },
+            .success => .{ .r = 0.20, .g = 0.53, .b = 0.27, .a = fade_alpha },
+            .warning => .{ .r = 0.93, .g = 0.73, .b = 0.20, .a = fade_alpha },
+            .err => .{ .r = 0.73, .g = 0.27, .b = 0.27, .a = fade_alpha },
         };
         renderer.Renderer.drawRoundedRect(x, y, 4, card_h, 2, accent_color);
 
         // Border.
-        renderer.Renderer.drawRect(x, y, card_w, 1, theme_mod.color(theme.colors.border));
-        renderer.Renderer.drawRect(x, y + card_h - 1, card_w, 1, theme_mod.color(theme.colors.border));
+        const border = theme_mod.color(theme.colors.border);
+        renderer.Renderer.drawRect(x, y, card_w, 1, .{ .r = border.r, .g = border.g, .b = border.b, .a = border.a * fade_alpha });
+        renderer.Renderer.drawRect(x, y + card_h - 1, card_w, 1, .{ .r = border.r, .g = border.g, .b = border.b, .a = border.a * fade_alpha });
 
         // Title (level label) in accent color.
         renderer.Renderer.drawText(notif.level.label(), x + 14, y + 8, title_size, accent_color);
 
         // Message text.
         const message_color = theme_mod.color(theme.colors.text_primary);
+        const msg_color: renderer.Color = .{
+            .r = message_color.r,
+            .g = message_color.g,
+            .b = message_color.b,
+            .a = message_color.a * fade_alpha,
+        };
         var msg_y = y + 24;
         const msg_x = x + 14;
         // Simple word-wrap.
@@ -66,7 +85,7 @@ pub fn drawNotifications(wb: *Workbench, window_w: f32, window_h: f32) void {
             if (line.items.len > 0) {
                 const test_w = estimateWidth(line.items, font_size) + estimateWidth(" ", font_size) + estimateWidth(word, font_size);
                 if (test_w > max_line_w) {
-                    renderer.Renderer.drawText(line.items, msg_x, msg_y, font_size, message_color);
+                    renderer.Renderer.drawText(line.items, msg_x, msg_y, font_size, msg_color);
                     msg_y += font_size + 2;
                     line.clearRetainingCapacity();
                 } else {
@@ -76,7 +95,13 @@ pub fn drawNotifications(wb: *Workbench, window_w: f32, window_h: f32) void {
             line.appendSlice(wb.allocator, word) catch break;
         }
         if (line.items.len > 0 and msg_y < y + card_h) {
-            renderer.Renderer.drawText(line.items, msg_x, msg_y, font_size, message_color);
+            renderer.Renderer.drawText(line.items, msg_x, msg_y, font_size, msg_color);
+        }
+
+        // Request redraw while any animation is in progress so the fade-out
+        // is visible even when nothing else is happening.
+        if (fade_alpha < 1.0 or slide_progress < 1.0) {
+            renderer.Renderer.requestRedraw();
         }
 
         y -= (card_h + card_gap);

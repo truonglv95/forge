@@ -145,7 +145,12 @@ pub fn drawFindHighlights(
 pub fn drawEditorOverlay(wb: *Workbench, editor_x: f32, editor_w: f32) void {
     const bar_h: f32 = if (wb.find_bar.open and wb.find_bar.replace_mode) 56 else 32;
     const bar_y: f32 = tabs_ui.tab_bar_top + tabs_ui.tab_bar_height;
+    // Subtle drop shadow above the overlay (top 2px gradient) so it visually
+    // detaches from the editor instead of looking like a flat sticker.
+    renderer.Renderer.drawRect(editor_x, bar_y - 2, editor_w, 2, .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.25 });
     renderer.Renderer.drawRect(editor_x, bar_y, editor_w, bar_h, .{ .r = 0.12, .g = 0.14, .b = 0.18, .a = 0.98 });
+    // Bottom border to separate from editor content
+    renderer.Renderer.drawRect(editor_x, bar_y + bar_h - 1, editor_w, 1, .{ .r = 0.2, .g = 0.22, .b = 0.28, .a = 1.0 });
 
     if (wb.find_bar.open) {
         var query_buf: [256:0]u8 = undefined;
@@ -153,8 +158,21 @@ pub fn drawEditorOverlay(wb: *Workbench, editor_x: f32, editor_w: f32) void {
         const clipped_q = if (query.len > 255) query[0..255] else query;
         @memcpy(query_buf[0..clipped_q.len], clipped_q);
         query_buf[clipped_q.len] = 0;
+
+        // Find input box with cursor caret
+        const input_x = editor_x + 56;
+        const input_w: f32 = 200;
+        renderer.Renderer.drawRoundedRect(input_x, bar_y + 5, input_w, 22, 4, .{ .r = 0.08, .g = 0.09, .b = 0.12, .a = 1.0 });
+        renderer.Renderer.drawRoundedRect(input_x, bar_y + 5, input_w, 22, 4, .{ .r = 0.25, .g = 0.28, .b = 0.34, .a = 0.7 });
         renderer.Renderer.drawText("Find:", editor_x + 12, bar_y + 8, 11.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
-        renderer.Renderer.drawText(@ptrCast(&query_buf), editor_x + 56, bar_y + 8, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+        renderer.Renderer.drawText(@ptrCast(&query_buf), input_x + 8, bar_y + 8, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+
+        // Blinking caret (when overlay is focused)
+        const blink_phase = @mod(@import("../../core/state.zig").time, 1.06);
+        if (blink_phase < 0.53) {
+            const caret_x = input_x + 8 + @import("../../editor/editor_scroll.zig").cursorX(query, 0, 11.0);
+            renderer.Renderer.drawRect(caret_x, bar_y + 8, 1.5, 16, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
+        }
 
         if (wb.find_bar.replace_mode) {
             var replace_buf: [256:0]u8 = undefined;
@@ -162,17 +180,40 @@ pub fn drawEditorOverlay(wb: *Workbench, editor_x: f32, editor_w: f32) void {
             const clipped_r = if (replacement.len > 255) replacement[0..255] else replacement;
             @memcpy(replace_buf[0..clipped_r.len], clipped_r);
             replace_buf[clipped_r.len] = 0;
-            renderer.Renderer.drawText("With:", editor_x + 12, bar_y + 30, 11.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
-            renderer.Renderer.drawText(@ptrCast(&replace_buf), editor_x + 56, bar_y + 30, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
+
+            const replace_x = editor_x + 56;
+            const replace_w: f32 = 200;
+            renderer.Renderer.drawRoundedRect(replace_x, bar_y + 28, replace_w, 22, 4, .{ .r = 0.08, .g = 0.09, .b = 0.12, .a = 1.0 });
+            renderer.Renderer.drawRoundedRect(replace_x, bar_y + 28, replace_w, 22, 4, .{ .r = 0.25, .g = 0.28, .b = 0.34, .a = 0.7 });
+            renderer.Renderer.drawText("With:", editor_x + 12, bar_y + 33, 11.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
+            renderer.Renderer.drawText(@ptrCast(&replace_buf), replace_x + 8, bar_y + 33, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
         }
 
+        // Match counter on the right side — color codes results:
+        // - green: matches found, currently positioned on one
+        // - red:   no matches at all
         var count_buf: [64:0]u8 = undefined;
         const count_msg = if (wb.find_bar.matches.len > 0)
             std.fmt.bufPrint(&count_buf, "{d}/{d}", .{ wb.find_bar.match_index + 1, wb.find_bar.matches.len }) catch ""
         else
             std.fmt.bufPrint(&count_buf, "0/0", .{}) catch "0/0";
         count_buf[count_msg.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&count_buf), editor_x + editor_w - 80, bar_y + 8, 11.0, .{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 });
+        const count_color = if (wb.find_bar.matches.len > 0)
+            renderer.Color{ .r = 0.55, .g = 0.85, .b = 0.55, .a = 1.0 }
+        else
+            renderer.Color{ .r = 0.95, .g = 0.55, .b = 0.55, .a = 1.0 };
+        renderer.Renderer.drawText(@ptrCast(&count_buf), editor_x + editor_w - 80, bar_y + 8, 11.0, count_color);
+
+        // Show small hint text for available actions
+        var hint_buf: [128:0]u8 = undefined;
+        const hint = if (wb.find_bar.replace_mode)
+            "Enter=Replace  Cmd+Enter=All  Esc=Close"
+        else
+            "Enter=Next  Shift+Enter=Prev  Cmd+1=Replace  Esc=Close";
+        const hint_clipped = if (hint.len > 127) hint[0..127] else hint;
+        @memcpy(hint_buf[0..hint_clipped.len], hint_clipped);
+        hint_buf[hint_clipped.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&hint_buf), editor_x + editor_w - 360, bar_y + (if (wb.find_bar.replace_mode) @as(f32, 33) else 8), 10.0, .{ .r = 0.5, .g = 0.5, .b = 0.55, .a = 1.0 });
     }
 
     if (wb.goto_bar.open) {
