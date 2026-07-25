@@ -544,7 +544,17 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
     var span = telemetry.startSpan("input", "ime_event");
     defer span.end();
     const wb = state.wb orelse return;
-    state.markAllDirty();
+    // Mark only the focused panel as dirty — IME composition affects
+    // only the active buffer (editor or agent prompt), so redrawing
+    // other panels is wasted work.
+    switch (wb.focused_panel) {
+        .editor => {
+            state.dirty_editor = true;
+            state.dirty_status_bar = true;
+        },
+        .agent => state.dirty_agent = true,
+        else => state.markAllDirty(),
+    }
 
     var active_buffer = if (wb.focused_panel == .editor)
         wb.activeBuffer() orelse return

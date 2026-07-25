@@ -67,12 +67,48 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
     const wb = state.wb orelse return;
 
     // Dirty flag propagation: mouse events affect the panel under cursor.
-    // For simplicity, mark all dirty on mouse events (hover, click, drag
-    // can affect multiple panels). Optimization: detect which panel the
-    // mouse is in and mark only that panel.
-    // For now, keep markAllDirty for mouse (UI feedback needs immediate
-    // response). Key events use targeted dirty marking.
-    state.markAllDirty();
+    // Targeted dirty marking — only mark the panel under the mouse.
+    // This avoids redrawing unchanged panels on every mouse move / click.
+    // Mouse hover can affect: status bar (hover indicator), editor
+    // (hover tooltip / cursor), sidebar (hover row), agent panel (hover
+    // effects on buttons / chat). Mark all visible panels on drag
+    // (splitter drag affects layout) and global clicks (activity bar
+    // switches sidebar view).
+    {
+        var w: f32 = 0;
+        var h: f32 = 0;
+        renderer.Renderer.getWindowSize(&w, &h);
+        const geo = wb.layoutGeometry(w, h);
+        const is_splitter_drag = state.is_dragging_agent_splitter or
+            state.is_dragging_explorer_splitter or
+            state.is_dragging_bottom_panel_splitter;
+        if (is_splitter_drag) {
+            // Splitter drag changes panel widths — all panels must
+            // redraw to reflect the new layout.
+            state.markAllDirty();
+        } else if (event.x < geo.explorer_x + geo.explorer_w and event.y < h - 22) {
+            // Sidebar / activity bar region
+            state.dirty_sidebar = true;
+            state.dirty_status_bar = true;
+        } else if (event.x >= geo.editor_x and event.x < geo.agent_splitter_x and event.y > 35 and event.y < geo.task_panel_y - 35) {
+            // Editor region (above bottom panel)
+            state.dirty_editor = true;
+            state.dirty_status_bar = true;
+        } else if (event.x >= geo.agent_x and event.x < geo.agent_x + geo.agent_w and geo.agent_w > 0) {
+            // Agent panel region
+            state.dirty_agent = true;
+        } else if (event.y >= geo.task_panel_y and geo.task_panel_h > 0) {
+            // Bottom panel
+            state.dirty_bottom_panel = true;
+        } else if (event.y >= h - 22) {
+            // Status bar
+            state.dirty_status_bar = true;
+        } else {
+            // Fallback — mark all dirty for any uncaught region (header,
+            // gaps, etc.) so we don't drop visual updates.
+            state.markAllDirty();
+        }
+    }
 
     var w: f32 = 0;
     var h: f32 = 0;

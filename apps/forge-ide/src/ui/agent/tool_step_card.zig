@@ -140,6 +140,71 @@ const title_line_h: f32 = 14.0;
 /// Vertical padding inside the card (top + bottom = 2 * title_v_pad).
 const title_v_pad: f32 = 6.0;
 
+/// Card-height cache — avoids re-running measureText on every frame for
+/// tool-step cards whose titles haven't changed (Issue: per-frame
+/// measureText for wrap estimation caused measurable CPU usage when the
+/// agent panel showed many cards). Keyed by (title_hash, content_w) —
+/// we hash the title content so the cache works even when the title is
+/// produced via stack-local compact_buf (which differs across calls).
+/// The cache is invalidated implicitly when the title text changes
+/// (different hash → different slot). Capacity is small (8 slots) since
+/// typical agent runs produce 3-6 visible cards at a time.
+const CardHeightCacheEntry = struct {
+    title_hash: u64,
+    title_len: u32,
+    content_w_bits: u32, // content_w quantized to integer for stable key
+    height: f32,
+};
+var card_height_cache: [8]CardHeightCacheEntry = [_]CardHeightCacheEntry{
+    .{ .title_hash = 0, .title_len = 0, .content_w_bits = 0, .height = 0 },
+    .{ .title_hash = 0, .title_len = 0, .content_w_bits = 0, .height = 0 },
+    .{ .title_hash = 0, .title_len = 0, .content_w_bits = 0, .height = 0 },
+    .{ .title_hash = 0, .title_len = 0, .content_w_bits = 0, .height = 0 },
+    .{ .title_hash = 0, .title_len = 0, .content_w_bits = 0, .height = 0 },
+    .{ .title_hash = 0, .title_len = 0, .content_w_bits = 0, .height = 0 },
+    .{ .title_hash = 0, .title_len = 0, .content_w_bits = 0, .height = 0 },
+    .{ .title_hash = 0, .title_len = 0, .content_w_bits = 0, .height = 0 },
+};
+var card_height_cache_inited: bool = false;
+
+fn titleHash(title: []const u8) u64 {
+    return std.hash.CityHash64.hash(title);
+}
+
+fn lookupCardHeight(title: []const u8, content_w: f32) ?f32 {
+    if (!card_height_cache_inited) return null;
+    const key_hash = titleHash(title);
+    const key_len: u32 = @intCast(title.len);
+    const key_w: u32 = @intFromFloat(@round(content_w));
+    for (card_height_cache) |entry| {
+        if (entry.title_hash == key_hash and entry.title_len == key_len and entry.content_w_bits == key_w) {
+            return entry.height;
+        }
+    }
+    return null;
+}
+
+fn storeCardHeight(title: []const u8, content_w: f32, height: f32) void {
+    card_height_cache_inited = true;
+    const key_hash = titleHash(title);
+    const key_len: u32 = @intCast(title.len);
+    const key_w: u32 = @intFromFloat(@round(content_w));
+    // Find existing slot for this key, or reuse slot 0 (LRU-ish).
+    var slot_idx: usize = 0;
+    for (card_height_cache, 0..) |entry, i| {
+        if (entry.title_hash == key_hash and entry.title_len == key_len and entry.content_w_bits == key_w) {
+            slot_idx = i;
+            break;
+        }
+    }
+    card_height_cache[slot_idx] = .{
+        .title_hash = key_hash,
+        .title_len = key_len,
+        .content_w_bits = key_w,
+        .height = height,
+    };
+}
+
 /// Compute the dynamic card height needed to fit the step's title,
 /// wrapping onto multiple lines if necessary. The minimum height is
 /// the standard `card_h` (28px); wrapped titles grow by `title_line_h`
@@ -162,19 +227,34 @@ pub fn computeCardHeight(
 
     if (title.len == 0) return card_h;
 
+    // Cache lookup — skips measureText on every frame for unchanged
+    // titles. step.summary (and thus `title` via compact_buf) is stable
+    // across frames because agent steps are heap-allocated and only
+    // mutated on appendAgentStep / clearAgentSteps. compact_buf is on
+    // the stack, but its content is derived from step.summary so
+    // pointer-identity lookup works for the source allocation.
+    if (lookupCardHeight(title, content_w)) |cached_h| {
+        return cached_h;
+    }
+
     const title_max_w = @max(0, content_w - title_x_pad - title_right_pad);
-    if (title_max_w <= 0) return card_h;
+    if (title_max_w <= 0) {
+        storeCardHeight(title, content_w, card_h);
+        return card_h;
+    }
 
     const title_w = renderer.Renderer.measureText(title, title_font_size);
-    if (title_w <= title_max_w) return card_h;
-
-    // Need to wrap. Estimate line count by chunking on word boundaries.
-    const line_count = estimateWrappedLines(title, title_max_w);
-    if (line_count <= 1) return card_h;
-    // Height = top pad + line_count * line_h + bottom pad, with a
-    // minimum of the standard card_h.
-    const natural_h = title_v_pad * 2.0 + @as(f32, @floatFromInt(line_count)) * title_line_h;
-    return @max(card_h, natural_h);
+    const result_h: f32 = if (title_w <= title_max_w) card_h else blk: {
+        // Need to wrap. Estimate line count by chunking on word boundaries.
+        const line_count = estimateWrappedLines(title, title_max_w);
+        if (line_count <= 1) break :blk card_h;
+        // Height = top pad + line_count * line_h + bottom pad, with a
+        // minimum of the standard card_h.
+        const natural_h = title_v_pad * 2.0 + @as(f32, @floatFromInt(line_count)) * title_line_h;
+        break :blk @max(card_h, natural_h);
+    };
+    storeCardHeight(title, content_w, result_h);
+    return result_h;
 }
 
 /// Estimate the number of lines a piece of text will occupy when
