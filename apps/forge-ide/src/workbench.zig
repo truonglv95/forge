@@ -1685,12 +1685,39 @@ pub const Workbench = struct {
         custom_embedding_models: ?[]const u8,
         enable_hyde: bool,
     } {
-        _ = root;
-        const settings_abs = try workspace.global_store.joinHome(allocator, "settings.toml");
-        defer allocator.free(settings_abs);
-        const content = try workspace.global_store.readAbsoluteFile(allocator, io, settings_abs);
-        defer allocator.free(content);
-        const config = parseAiSettingsContent(content);
+        // Read home settings first, then workspace settings (workspace
+        // takes priority). This matches the write path in ai_config_io.zig
+        // which tries workspace first, then home. Without reading both,
+        // settings saved to .forge/settings.toml were never loaded back.
+        var combined: std.ArrayList(u8) = .empty;
+        defer combined.deinit(allocator);
+
+        const home_settings = try workspace.global_store.joinHome(allocator, "settings.toml");
+        defer allocator.free(home_settings);
+        if (workspace.global_store.readAbsoluteFile(allocator, io, home_settings)) |content| {
+            defer allocator.free(content);
+            try combined.appendSlice(allocator, content);
+            if (content.len > 0 and content[content.len - 1] != '\n') {
+                try combined.append(allocator, '\n');
+            }
+        } else |_| {}
+
+        // Also read workspace .forge/settings.toml
+        const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch null;
+        if (wp) |wsp| {
+            if (workspace.snapshot.FileSnapshot.read(allocator, io, root, wsp)) |snap_const| {
+                var snap = snap_const;
+                defer snap.deinit();
+                try combined.appendSlice(allocator, snap.content);
+                if (snap.content.len > 0 and snap.content[snap.content.len - 1] != '\n') {
+                    try combined.append(allocator, '\n');
+                }
+            } else |_| {}
+        }
+
+        if (combined.items.len == 0) return error.FileNotFound;
+
+        const config = parseAiSettingsContent(combined.items);
         const provider = try allocator.dupe(u8, config.ai_provider);
         errdefer allocator.free(provider);
         const model = if (config.ai_model) |value| try allocator.dupe(u8, value) else null;
@@ -1831,7 +1858,7 @@ pub const Workbench = struct {
         // Smooth scroll interpolation — exponentially approach the target.
         // This produces a soft ~80ms settle that makes mouse-wheel / jump-to-def
         // feel less jarring without introducing visible lag during typing.
-        const scroll_lerp = 1.0 - std.math.exp(-dt * 18.0); // ~80ms time constant
+        const scroll_lerp = 1.0 - std.math.exp(-dt * 25.0); // ~50ms settle, was 18 (~80ms)
         var scroll_anim_active = false;
         if (self.editor_scroll_target_y >= 0) {
             const delta = self.editor_scroll_target_y - self.editor_scroll_y;

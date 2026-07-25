@@ -105,7 +105,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             renderer.Renderer.setCursor(4);
         } else {
             var handled_cursor = false;
-            if (event.y >= h - 22) {
+            // I-beam cursor when hovering over editor content area.
+            // This matches VSCode/Cursor behaviour where the mouse
+            // shows a text cursor (vertical bar) inside the editor.
+            if (geo.shell_mode == .ide and editor_hit.isEditorContentArea(geo, event.x, event.y)) {
+                renderer.Renderer.setCursor(1);
+                handled_cursor = true;
+            } else if (event.y >= h - 22) {
                 const status_bar = @import("../render/status_bar.zig");
                 if (status_bar.hitTest(wb, event.x, event.y) != .none) {
                     renderer.Renderer.setCursor(4);
