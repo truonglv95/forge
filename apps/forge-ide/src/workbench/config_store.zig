@@ -202,8 +202,10 @@ pub const Pair = struct {
 };
 
 /// Write a single key-value pair to the settings file. Skips the write
-/// if the key already exists with the exact same value (no-op). This is
-/// THE function all settings writes should go through.
+/// if the key already exists with the exact same value (no-op) AND there
+/// are no duplicate sections. If duplicate sections exist, the upsert
+/// runs to clean them up (consolidating into a single section).
+/// This is THE function all settings writes should go through.
 pub fn writeKey(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -218,14 +220,39 @@ pub fn writeKey(
     };
     defer if (content.len > 0) allocator.free(content);
 
-    // No-op fast path: skip if key already has the exact same value.
+    // No-op fast path: skip if key already has the exact same value AND
+    // there are no duplicate sections in the file. If duplicates exist,
+    // we must run upsert to consolidate them — otherwise the file
+    // accumulates duplicate [section] blocks that confuse the parser.
     if (content.len > 0 and hasKeyWithValue(content, section_name, key_name, value_text)) {
-        return;
+        if (!hasDuplicateSection(content, section_name)) {
+            return;
+        }
+        // Fall through to upsert — it will consolidate the duplicates.
     }
 
     const updated = try upsert(allocator, content, section_name, key_name, value_text);
     defer allocator.free(updated);
     try writeFile(io, root, updated);
+}
+
+/// Check if the content has more than one [section_name] block. Used to
+/// decide whether a no-op write needs to run upsert to consolidate
+/// duplicate sections (a cleanup operation).
+pub fn hasDuplicateSection(content: []const u8, section_name: []const u8) bool {
+    var count: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, &std.ascii.whitespace, raw_line);
+        if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+            const name = std.mem.trim(u8, &std.ascii.whitespace, trimmed[1 .. trimmed.len - 1]);
+            if (std.mem.eql(u8, name, section_name)) {
+                count += 1;
+                if (count >= 2) return true;
+            }
+        }
+    }
+    return false;
 }
 
 /// Write a float key (e.g. font_size). Formats the float consistently
@@ -272,7 +299,8 @@ pub fn writeBoolKey(
 }
 
 /// Write multiple string keys to the same section in a single file
-/// read-modify-write. Skips if ALL keys already have the correct values.
+/// read-modify-write. Skips if ALL keys already have the correct values
+/// AND there are no duplicate sections.
 pub fn writeStringKeys(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -288,8 +316,10 @@ pub fn writeStringKeys(
     };
     defer if (content.len > 0) allocator.free(content);
 
-    // No-op fast path: skip if ALL keys already have the correct values.
-    if (content.len > 0) {
+    // No-op fast path: skip if ALL keys already have the correct values
+    // AND there are no duplicate sections. If duplicates exist, run
+    // upsert to consolidate them.
+    if (content.len > 0 and !hasDuplicateSection(content, section_name)) {
         var all_match = true;
         for (pairs) |pair| {
             var buf: [512]u8 = undefined;

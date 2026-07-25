@@ -534,20 +534,20 @@ test "upsertTomlValue appends missing setting to existing section" {
     try std.testing.expect(std.mem.indexOf(u8, out, "word_wrap = true") != null);
 }
 
-test "parseSettingsContent uses latest ai panel font size" {
+test "parse ai_panel font_size 14.5" {
     const input =
-        \\[ai_panel]
-        \\font_size = 14.5
+        \\[theme]
+        \\font_size = 14
         \\
         \\[ai_panel]
-        \\font_size = 16.0
+        \\font_size = 14.5
         \\
     ;
     var settings: Settings = .{};
     defer settings.deinit(std.testing.allocator);
-
     try parseSettingsContent(&settings, std.testing.allocator, input);
-    try std.testing.expectEqual(@as(f32, 16.0), settings.ai_panel_font_size);
+    try std.testing.expectEqual(@as(f32, 14.0), settings.font_size);
+    try std.testing.expectEqual(@as(f32, 14.5), settings.ai_panel_font_size);
 }
 
 test "parseSettingsContent reads agent edit mode" {

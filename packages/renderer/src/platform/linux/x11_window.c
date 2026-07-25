@@ -377,9 +377,14 @@ static int load_font(void) {
             g_glyph_cache[i].cp = 0;
         }
     }
+    /* Initialize FreeType library BEFORE freeing faces. If g_ft is NULL
+     * (e.g. first call, or after a previous teardown), calling FT_Done_Face
+     * on a stale face pointer will segfault inside FreeType because the
+     * library handle it references is invalid. By ensuring g_ft is valid
+     * first, FT_Done_Face can safely free the face. */
+    if (!g_ft) { if (FT_Init_FreeType(&g_ft) != 0) { pthread_mutex_unlock(&g_ft_lock); return 0; } }
     if (g_face) { FT_Done_Face(g_face); g_face = NULL; }
     if (g_face_bold) { FT_Done_Face(g_face_bold); g_face_bold = NULL; }
-    if (!g_ft) { if (FT_Init_FreeType(&g_ft) != 0) { pthread_mutex_unlock(&g_ft_lock); return 0; } }
 
     /* Try system fonts first via fontconfig — prefers JetBrains Mono
      * (a programmer font with clear 0/O, 1/l/I distinction) when
