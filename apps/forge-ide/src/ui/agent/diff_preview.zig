@@ -178,7 +178,7 @@ pub fn drawDiffPreview(
         }
     }
     var count_buf: [64:0]u8 = undefined;
-    const count_str = std.fmt.bufPrintZ(&count_buf, "{d} files  +{d}  -{d}", .{
+    _ = std.fmt.bufPrintZ(&count_buf, "{d} files  +{d}  -{d}", .{
         preview.hunks.items.len, total_additions, total_deletions,
     }) catch "";
     renderer.Renderer.drawText(@ptrCast(&count_buf), x + 130, current_y + 7, 10.0, .{ .r = 0.6, .g = 0.65, .b = 0.7, .a = 1.0 });
