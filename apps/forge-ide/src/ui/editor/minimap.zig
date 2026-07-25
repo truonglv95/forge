@@ -11,10 +11,45 @@ const renderer = @import("forge-renderer");
 const Workbench = @import("../../workbench.zig").Workbench;
 const theme_mod = @import("../render/theme.zig");
 const editor_scroll = @import("editor_scroll.zig");
+const tokens = @import("../tokens.zig");
 
 pub const minimap_width: f32 = 80;
 pub const minimap_line_height: f32 = 2.5;
 pub const viewport_indicator_alpha: f32 = 0.2;
+
+/// Simple keyword set for minimap syntax colouring. Mirrors the
+/// keyword list in chat_markdown.zig — kept short to avoid perf hit
+/// at the minimap's tiny scale.
+const minimap_keywords = [_][]const u8{
+    "pub",  "fn",     "const",  "var",   "let",   "function", "class",    "import",
+    "from", "export", "struct", "enum",  "union", "return",   "try",      "catch",
+    "if",   "else",   "switch", "while", "for",   "break",    "continue", "defer",
+};
+
+fn isMinimapKeyword(word: []const u8) bool {
+    for (minimap_keywords) |kw| {
+        if (std.mem.eql(u8, word, kw)) return true;
+    }
+    return false;
+}
+
+/// Classify a word for minimap colouring. Returns a tinted colour
+/// based on the word's role (keyword/type/function/identifier).
+/// Colours are desaturated to ~30% of the editor's syntax palette —
+/// minimap should read as a soft overview, not a neon copy of the
+/// editor (per VLM review: was too vibrant/noisy at full saturation).
+fn classifyWord(word: []const u8, base: renderer.Color) renderer.Color {
+    if (word.len == 0) return base;
+    if (isMinimapKeyword(word)) {
+        // Muted purple — 30% of syntax_keyword brightness.
+        return .{ .r = tokens.color.syntax_keyword.r * 0.3, .g = tokens.color.syntax_keyword.g * 0.3, .b = tokens.color.syntax_keyword.b * 0.3, .a = 0.6 };
+    }
+    if (word[0] >= 'A' and word[0] <= 'Z') {
+        // Muted cyan for types.
+        return .{ .r = tokens.color.syntax_type.r * 0.3, .g = tokens.color.syntax_type.g * 0.3, .b = tokens.color.syntax_type.b * 0.3, .a = 0.6 };
+    }
+    return base;
+}
 
 /// Draw the minimap on the right side of the editor.
 /// `editor_x` is the left edge of the editor area, `editor_w` is its width.
@@ -36,8 +71,7 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
 
     // Draw scaled-down representation of lines.
     // Each line becomes a thin horizontal strip; characters become colored
-    // segments based on syntax classification (simplified: just use fg color
-    // with varying alpha based on character density).
+    // segments based on syntax classification.
     const lines = doc.buffer.lines.items;
     const total_lines = lines.len;
 
@@ -61,12 +95,14 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
         }
 
         // Draw a thin strip for each line. Density based on character count.
-        // Max ~60 chars represented; longer lines get brighter color.
+        // Max ~80 chars represented; longer lines get brighter color.
         const char_count = @min(line.len, 80);
         const density: f32 = @as(f32, @floatFromInt(char_count)) / 80.0;
 
         // Draw colored segments for non-whitespace characters.
-        // Simplified: draw one rect per "word" (contiguous non-space).
+        // Each word gets a tinted colour based on syntax classification
+        // (keyword=purple, type=cyan, identifier=fg). This makes the
+        // minimap visually echo the editor's syntax highlighting.
         var col: usize = 0;
         const char_width: f32 = (minimap_width - 6) / 80.0;
         while (col < char_count) {
@@ -79,16 +115,18 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
             var word_end = col;
             while (word_end < char_count and !std.ascii.isWhitespace(line[word_end])) : (word_end += 1) {}
 
-            // Draw word segment
+            // Draw word segment with syntax-coloured tint
             const word_len = word_end - col;
             const seg_x = minimap_x + 3 + @as(f32, @floatFromInt(col)) * char_width;
             const seg_w = @as(f32, @floatFromInt(word_len)) * char_width;
-            const seg_color: renderer.Color = .{
+            const word = line[col..word_end];
+            const base_color: renderer.Color = .{
                 .r = fg.r * (0.4 + density * 0.6),
                 .g = fg.g * (0.4 + density * 0.6),
                 .b = fg.b * (0.4 + density * 0.6),
                 .a = 0.7,
             };
+            const seg_color = classifyWord(word, base_color);
             renderer.Renderer.drawRect(seg_x, y, seg_w, minimap_line_height - 0.5, seg_color);
 
             col = word_end;

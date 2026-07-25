@@ -394,7 +394,11 @@ pub fn drawEditorViewport(
                     const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
                     if (show_editor_cursor) {
                         const cur_color = syntax.color(theme.colors.cursor);
-                        drawEditorText("|", cursor_x, line_num_y, font_size, .{
+                        // Thin vertical bar cursor — 2px wide, full line height.
+                        // Was a '|' text glyph which was fuzzy at small sizes
+                        // and inconsistent with VSCode's bar cursor. The
+                        // cursor_fade alpha applies so the blink still works.
+                        renderer.Renderer.drawRect(cursor_x, line_num_y, 2, line_h, .{
                             .r = cur_color.r,
                             .g = cur_color.g,
                             .b = cur_color.b,
@@ -521,13 +525,17 @@ pub fn drawEditorViewport(
                         renderer.Renderer.drawRect(cursor_x, line_num_y + line_h - 2, ime_w, 2, syntax.color(theme.colors.text_primary));
                         if (wb.ime_cursor >= 0 and wb.ime_cursor <= ime_text.len) {
                             const sub_w = measureEditorText(ime_text[0..@intCast(wb.ime_cursor)], font_size);
-                            drawEditorText("|", cursor_x + sub_w, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                            // IME caret — thin bar like the main cursor.
+                            renderer.Renderer.drawRect(cursor_x + sub_w, line_num_y, 2, line_h, syntax.color(theme.colors.cursor));
                             renderer.Renderer.setImeCursorRect(cursor_x + sub_w, line_num_y, 0, line_h);
                         } else {
                             renderer.Renderer.setImeCursorRect(cursor_x, line_num_y, ime_w, line_h);
                         }
                     } else if (show_editor_cursor) {
-                        drawEditorText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                        // Thin vertical bar cursor — 2px wide, full line height.
+                        // Matches VSCode's bar cursor (was '|' text glyph).
+                        const cur_color = syntax.color(theme.colors.cursor);
+                        renderer.Renderer.drawRect(cursor_x, line_num_y, 2, line_h, cur_color);
                         renderer.Renderer.setImeCursorRect(cursor_x, line_num_y, 0, line_h);
                     }
                     wb.editor.ghost.mutex.lock();
