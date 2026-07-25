@@ -43,6 +43,7 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceR
     var settings: Settings = .{};
     errdefer settings.deinit(allocator);
 
+    // Read home settings first (~/.forge/settings.toml) — global UI prefs.
     const home_settings = workspace.global_store.joinHome(allocator, "settings.toml") catch return settings;
     defer allocator.free(home_settings);
     if (workspace.global_store.readAbsoluteFile(allocator, io, home_settings)) |content| {
@@ -50,7 +51,10 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceR
         try parseSettingsContent(&settings, allocator, content);
     } else |_| {}
 
-    if (readWorkspaceSettings(allocator, io, root)) |content| {
+    // Read workspace settings (.forge/settings.toml) — per-project overrides.
+    // Uses the unified config_store for consistent file reading.
+    const config_store = @import("config_store.zig");
+    if (config_store.readFile(allocator, io, root)) |content| {
         defer allocator.free(content);
         try parseSettingsContent(&settings, allocator, content);
     } else |_| {}
@@ -243,50 +247,11 @@ pub fn writeAiPanelFontSize(
     root: workspace.WorkspaceRoot,
     font_size: f32,
 ) !void {
+    // Delegate to the unified config_store. This ensures consistent
+    // float formatting ({d:.1}), no-op detection, and section handling
+    // across all settings writes.
     const value = std.math.clamp(font_size, 12.0, 20.0);
-    const value_text = try std.fmt.allocPrint(allocator, "{d:.1}", .{value});
-    defer allocator.free(value_text);
-
-    // Try workspace .forge/settings.toml first — read current content,
-    // check if the key already exists with the SAME value (no-op if so),
-    // upsert the font_size key, write back.
-    if (readWorkspaceSettings(allocator, io, root)) |workspace_content| {
-        defer allocator.free(workspace_content);
-        // Skip the write if the key already exists with the exact same
-        // value. This prevents duplicate [ai_panel] sections from being
-        // created when the value hasn't changed (e.g. on startup or
-        // repeated settings loads). The previous code re-wrote on every
-        // call, which combined with upsert edge cases produced duplicates.
-        if (settingsContentHasKeyWithValue(workspace_content, "ai_panel", "font_size", value_text)) {
-            return;
-        }
-        const updated = try upsertTomlValue(allocator, workspace_content, "ai_panel", "font_size", value_text);
-        defer allocator.free(updated);
-        const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
-        try workspace.atomic.replaceFile(io, root, wp, updated);
-        return;
-    } else |_| {}
-
-    // Fallback: write to home ~/.forge/settings.toml
-    const home_settings = try workspace.global_store.joinHome(allocator, "settings.toml");
-    defer allocator.free(home_settings);
-
-    const content = workspace.global_store.readAbsoluteFile(allocator, io, home_settings) catch {
-        // File doesn't exist — create with just this setting
-        const default_content = try std.fmt.allocPrint(allocator, "[ai_panel]\nfont_size = {s}\n", .{value_text});
-        defer allocator.free(default_content);
-        try workspace.global_store.replaceAbsoluteFile(io, home_settings, default_content);
-        return;
-    };
-    defer allocator.free(content);
-
-    // Skip if key already exists with the same value.
-    if (settingsContentHasKeyWithValue(content, "ai_panel", "font_size", value_text)) {
-        return;
-    }
-    const updated = try upsertTomlValue(allocator, content, "ai_panel", "font_size", value_text);
-    defer allocator.free(updated);
-    try workspace.global_store.replaceAbsoluteFile(io, home_settings, updated);
+    try @import("config_store.zig").writeFloatKey(allocator, io, root, "ai_panel", "font_size", value);
 }
 
 /// Check if the settings content has a key in a section with a specific

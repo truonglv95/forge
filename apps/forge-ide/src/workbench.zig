@@ -1727,23 +1727,16 @@ pub const Workbench = struct {
         enable_hyde: bool,
     } {
         // Single source of truth: AI config is read ONLY from the workspace
-        // .forge/settings.toml. The previous code concatenated home +
-        // workspace, which produced duplicate [ai] sections when both files
-        // had AI keys — the parser's "last value wins" logic then produced
-        // inconsistent results depending on which file had which key.
-        //
-        // The home file (~/.forge/settings.toml) is still used for global
-        // UI settings (theme, font, etc.) but NOT for AI provider/model.
-        // This matches the write path in ai_config_io.zig which writes
-        // AI settings exclusively to the workspace file.
-        const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return error.FileNotFound;
-        const snap_const = workspace.snapshot.FileSnapshot.read(allocator, io, root, wp) catch return error.FileNotFound;
-        var snap = snap_const;
-        defer snap.deinit();
+        // .forge/settings.toml via the unified config_store. The previous
+        // code concatenated home + workspace, which produced duplicate [ai]
+        // sections when both files had AI keys.
+        const config_store = @import("workbench/config_store.zig");
+        const content = config_store.readFile(allocator, io, root) catch return error.FileNotFound;
+        defer allocator.free(content);
 
-        if (snap.content.len == 0) return error.FileNotFound;
+        if (content.len == 0) return error.FileNotFound;
 
-        const config = parseAiSettingsContent(snap.content);
+        const config = parseAiSettingsContent(content);
         const provider = try allocator.dupe(u8, config.ai_provider);
         errdefer allocator.free(provider);
         const model = if (config.ai_model) |value| try allocator.dupe(u8, value) else null;
