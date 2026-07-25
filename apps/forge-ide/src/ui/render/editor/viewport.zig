@@ -77,8 +77,25 @@ pub fn drawEditorViewport(
     }
 
     renderer.Renderer.setClipRect(editor_x, content_top, editor_w, editor_view_h);
-    const show_cursor = @mod(state.time, 1.0) < 0.5;
+    // Cursor blink: 1.06s period (0.53s on, 0.53s off) — matches VSCode.
+    // Smooth fade-in/out at transition for less harsh blinking.
+    const blink_phase = @mod(state.time, 1.06);
+    const show_cursor = blink_phase < 0.53;
     const show_editor_cursor = show_cursor and wb.focused_panel == .editor and pane_focused;
+    // Fade alpha at blink transitions (last 100ms of each phase)
+    const fade_dur: f32 = 0.1;
+    const cursor_fade: f32 = blk: {
+        const phase_end: f32 = if (show_cursor) 0.53 else 1.06;
+        const phase_start: f32 = if (show_cursor) 0.0 else 0.53;
+        const phase_len: f32 = phase_end - phase_start;
+        const time_in_phase: f32 = blink_phase - phase_start;
+        if (time_in_phase > phase_len - fade_dur) {
+            break :blk 1.0 - (time_in_phase - (phase_len - fade_dur)) / fade_dur;
+        } else if (time_in_phase < fade_dur) {
+            break :blk time_in_phase / fade_dur;
+        }
+        break :blk 1.0;
+    };
     const bracket_pair = if (show_editor_cursor and !wb.agent_ui.session.worker_running) blk: {
         const hash = std.hash.CityHash64.hash(file_path);
         if (wb.bracket_match_cache.file_path_hash == hash and
@@ -376,7 +393,13 @@ pub fn drawEditorViewport(
                     const line = editor_buf.lineAt(seg.buf_line);
                     const cursor_x = text_x + editor_scroll.cursorX(line, editor_buf.cursor.col, font_size);
                     if (show_editor_cursor) {
-                        drawEditorText("|", cursor_x, line_num_y, font_size, syntax.color(theme.colors.cursor));
+                        const cur_color = syntax.color(theme.colors.cursor);
+                        drawEditorText("|", cursor_x, line_num_y, font_size, .{
+                            .r = cur_color.r,
+                            .g = cur_color.g,
+                            .b = cur_color.b,
+                            .a = cursor_fade,
+                        });
                     }
                     wb.editor.ghost.mutex.lock();
                     if (wb.editor.ghost.ghost_text) |gt| {

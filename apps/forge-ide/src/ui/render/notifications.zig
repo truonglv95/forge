@@ -24,17 +24,25 @@ pub fn drawNotifications(wb: *Workbench, window_w: f32, window_h: f32) void {
     // Stack from bottom-right, going up.
     var y = window_h - card_margin - card_h;
     for (wb.notifications.items.items) |notif| {
-        const x = window_w - card_margin - card_w;
+        // Slide-in animation: new notifications slide in from the right.
+        // Use remaining time as proxy for age (high remaining = just shown).
+        // Assuming default duration ~5s, slide-in happens in first 0.3s.
+        const slide_progress = @min(1.0, @max(0.0, (5.0 - notif.remaining) / 0.3));
+        const slide_offset = (1.0 - slide_progress) * (card_w + card_margin);
+        const x = window_w - card_margin - card_w + slide_offset;
 
-        // Card background.
-        renderer.Renderer.drawRoundedRect(x, y, card_w, card_h, 6, theme_mod.color(theme.colors.panel_bg));
+        // Card shadow
+        renderer.Renderer.drawRoundedRect(x + 2, y + 3, card_w, card_h, 8, .{ .r = 0, .g = 0, .b = 0, .a = 0.3 });
+
+        // Card background — rounded
+        renderer.Renderer.drawRoundedRect(x, y, card_w, card_h, 8, theme_mod.color(theme.colors.panel_bg));
 
         // Accent strip on the left (colored by level).
         const accent_color: renderer.Color = switch (notif.level) {
-            .info => .{ .r = 0.35, .g = 0.6, .b = 0.95, .a = 1.0 },
-            .success => .{ .r = 0.30, .g = 0.75, .b = 0.45, .a = 1.0 },
-            .warning => .{ .r = 0.95, .g = 0.70, .b = 0.30, .a = 1.0 },
-            .err => .{ .r = 0.90, .g = 0.35, .b = 0.35, .a = 1.0 },
+            .info => .{ .r = 0.27, .g = 0.53, .b = 1.0, .a = 1.0 },
+            .success => .{ .r = 0.20, .g = 0.53, .b = 0.27, .a = 1.0 },
+            .warning => .{ .r = 0.93, .g = 0.73, .b = 0.20, .a = 1.0 },
+            .err => .{ .r = 0.73, .g = 0.27, .b = 0.27, .a = 1.0 },
         };
         renderer.Renderer.drawRoundedRect(x, y, 4, card_h, 2, accent_color);
 

@@ -338,22 +338,32 @@ pub const thinking_text_style = chat_markdown.Style{
 
 pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) f32 {
     _ = text;
-    const dot_count: usize = @as(usize, @intFromFloat(@mod(anim_time * 2.8, 3.0))) + 1;
-    var label_buf: [16]u8 = undefined;
-    @memcpy(label_buf[0.."Thinking".len], "Thinking");
-    var label_len: usize = "Thinking".len;
-    var i: usize = 0;
-    while (i < dot_count) : (i += 1) {
-        label_buf[label_len] = '.';
-        label_len += 1;
+    // Animated pulsing dots — three dots with phase-shifted opacity
+    const pill_w: f32 = 100;
+    const pill_h: f32 = 32;
+    // Pill background — subtle accent
+    renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 16, .{ .r = 0.10, .g = 0.12, .b = 0.16, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 16, .{ .r = 0.15, .g = 0.27, .b = 0.48, .a = 0.3 });
+
+    // Sparkle icon
+    renderer.Renderer.drawSvg(renderer.forge_icons.sparkle, inner_x + 12, y + 8, 16, 16, .{ .r = 0.27, .g = 0.53, .b = 1.0, .a = 0.9 });
+
+    // Three pulsing dots — each phase-shifted by 0.33s
+    const dot_base_x = inner_x + 38;
+    const dot_y = y + 14;
+    var di: usize = 0;
+    while (di < 3) : (di += 1) {
+        const phase = @mod(anim_time * 2.0 + @as(f32, @floatFromInt(di)) * 0.33, 1.5);
+        const alpha: f32 = if (phase < 0.75) 0.4 + phase * 0.8 else 0.4 + (1.5 - phase) * 0.8;
+        const clamped_alpha = @max(0.2, @min(1.0, alpha));
+        renderer.Renderer.drawRoundedRect(dot_base_x + @as(f32, @floatFromInt(di)) * 10.0, dot_y, 5, 5, 2.5, .{
+            .r = 0.27,
+            .g = 0.53,
+            .b = 1.0,
+            .a = clamped_alpha,
+        });
     }
 
-    const pill_w: f32 = 142;
-    const pill_h: f32 = 32;
-    renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 6, .{ .r = 0.03, .g = 0.24, .b = 0.43, .a = 1.0 });
-    renderer.Renderer.drawRoundedRect(inner_x + 1, y + 1, pill_w - 2, pill_h - 2, 5, .{ .r = 0.07, .g = 0.12, .b = 0.18, .a = 1.0 });
-    renderer.Renderer.drawSvg(renderer.forge_icons.sparkle, inner_x + 14, y + 8, 16, 16, .{ .r = 0.18, .g = 0.58, .b = 0.95, .a = 1.0 });
-    renderer.Renderer.drawTextWithStyle(label_buf[0..label_len], inner_x + 34, y + 8, 12.0, .{ .r = 0.24, .g = 0.62, .b = 0.95, .a = 1.0 }, metrics.typography.strong_style);
     return thinkingLineHeight();
 }
 
