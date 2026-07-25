@@ -489,6 +489,8 @@ float forge_backend_get_dpi_scale(void) {
     return 1.0f;
 }
 
+void forge_backend_set_full_clear(int needed) { (void)needed; }
+
 void forge_backend_set_clip_rect(float x, float y, float w, float h) {
     if (!g_back_dc) return;
     g_has_clip = true;
