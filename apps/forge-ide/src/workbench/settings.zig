@@ -335,7 +335,7 @@ pub fn writeWordWrap(
     try workspace.global_store.replaceAbsoluteFile(io, home_settings, updated);
 }
 
-fn settingsContentHasKey(content: []const u8, section_name: []const u8, key_name: []const u8) bool {
+pub fn settingsContentHasKey(content: []const u8, section_name: []const u8, key_name: []const u8) bool {
     var section: []const u8 = "";
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw_line| {

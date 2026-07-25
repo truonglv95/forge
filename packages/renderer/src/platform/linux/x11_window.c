@@ -626,9 +626,9 @@ static void render_text_run(const char* text, size_t len, float x, float y, floa
         if (!cg) {
             /* Use LCD subpixel rendering for crisper text on LCD screens.
              * FT_LOAD_TARGET_LCD renders 3 bytes per pixel (R,G,B subpixels). */
-            FT_Int32 load_flags = FT_LOAD_RENDER;
+            FT_Int32 load_flags = FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT;
 #if USE_LCD_SUBPIXEL
-            load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD;
+            load_flags = FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LCD;
 #endif
             if (FT_Load_Glyph(draw_face, gi, load_flags) != 0) continue;
             cg = glyph_cache_put(cp, fs_px, draw_face->glyph);
@@ -881,9 +881,9 @@ static void prewarm_glyph_cache(void) {
             if (glyph_cache_lookup(cp, fs_px)) continue; /* already cached */
             FT_UInt gi = FT_Get_Char_Index(g_face, cp);
             if (gi == 0) continue;
-            FT_Int32 load_flags = FT_LOAD_RENDER;
+            FT_Int32 load_flags = FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT;
 #if USE_LCD_SUBPIXEL
-            load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD;
+            load_flags = FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LCD;
 #endif
             if (FT_Load_Glyph(g_face, gi, load_flags) != 0) continue;
             glyph_cache_put(cp, fs_px, g_face->glyph);

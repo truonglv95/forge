@@ -9,7 +9,20 @@ pub fn writeTomlKey(
     key: []const u8,
     value: []const u8,
 ) !void {
-    _ = root;
+    // Try workspace .forge/settings.toml first (same as writeThemeValue).
+    const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return;
+    if (workspace.snapshot.FileSnapshot.read(allocator, io, root, wp)) |snap_const| {
+        var snap = snap_const;
+        defer snap.deinit();
+        if (@import("settings.zig").settingsContentHasKey(snap.content, section_name, key)) {
+            const updated = try @import("settings.zig").upsertTomlValue(allocator, snap.content, section_name, key, value);
+            defer allocator.free(updated);
+            try workspace.atomic.replaceFile(io, root, wp, updated);
+            return;
+        }
+    } else |_| {}
+
+    // Fallback: write to home ~/.forge/settings.toml
     const settings_abs = try workspace.global_store.joinHome(allocator, "settings.toml");
     defer allocator.free(settings_abs);
 

@@ -460,6 +460,8 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             wb.allocator.free(wb.agent_ui.provider);
             wb.agent_ui.provider = try wb.allocator.dupe(u8, next);
             try @import("ai_config_io.zig").writeAiProvider(wb.allocator, wb.io, wb.workspace_root, next);
+            // Reload settings so the change persists across restarts.
+            wb.reloadUserSettings() catch {};
         },
         .ai_edit_model => {
             // Since models are vast, we open settings.toml for free-form text input
