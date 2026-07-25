@@ -197,8 +197,10 @@ pub fn handleGitClick(wb: anytype, hit: @import("../ui/sidebar/git_panel.zig").H
         .push => try wb.dispatch(.git_push),
         .pull => try wb.dispatch(.git_pull),
         .switch_branch => {
-            try wb.setStatus("Switch branch not yet implemented via Palette");
-            // TODO: dispatch a palette command for branch switching
+            // Open the branch picker so the user can pick a branch
+            // to switch to. Previously this only set a status message
+            // saying it was not implemented, leaving users stranded.
+            try wb.dispatch(.palette_git_switch_branch);
         },
         .commit => try @import("../workbench/git_ops.zig").commitStagedChanges(wb),
         .ai_generate => try wb.setStatus("AI Commit Generation not yet implemented"),

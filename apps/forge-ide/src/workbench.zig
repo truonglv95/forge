@@ -740,6 +740,12 @@ pub const Workbench = struct {
         var status_buf: [128]u8 = undefined;
         const status = std.fmt.bufPrint(&status_buf, "{s} failed: {s}", .{ action, @errorName(err) }) catch "Background task failed";
         self.setStatus(status) catch {};
+        // Surface background errors as a warning toast so users actually
+        // see them. Without this, errors only show in the status bar (which
+        // disappears on the next status change) and in the Forge output
+        // channel (which most users never open). The toast stays for the
+        // default ~5s and gives users a chance to notice the failure.
+        _ = self.notifications.warning(status) catch {};
     }
 
     pub fn activeTerminal(self: *Workbench) *terminal_session_mod.TerminalSession {
