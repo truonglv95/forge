@@ -152,8 +152,12 @@ pub fn draw(window_w: f32, state: ToolbarState, hover_action: ?Action, header_bg
     for (buttons[0..count]) |btn| {
         if (!btn.enabled) continue;
         const hover = hover_action == btn.action;
-        if (btn.active or hover) {
-            renderer.Renderer.drawRoundedRect(btn.x, btn.y, btn.w, btn.h, 4, .{ .r = 0.28, .g = 0.32, .b = 0.38, .a = 1.0 });
+        if (btn.active) {
+            // Active state — accent soft background
+            renderer.Renderer.drawRoundedRect(btn.x, btn.y, btn.w, btn.h, 5, .{ .r = 0.20, .g = 0.33, .b = 0.53, .a = 0.6 });
+        } else if (hover) {
+            // Hover state — subtle highlight
+            renderer.Renderer.drawRoundedRect(btn.x, btn.y, btn.w, btn.h, 5, .{ .r = 0.18, .g = 0.19, .b = 0.22, .a = 0.8 });
         }
         drawIcon(btn.action, btn, hover);
     }

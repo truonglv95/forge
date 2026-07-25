@@ -157,27 +157,42 @@ pub fn drawExplorerPanel(wb: *Workbench, explorer_x: f32, explorer_panel_width: 
         row_view.flex_node = row_node;
         tree_root_view.addChild(alloc, row_view) catch return;
 
-        // Background logic
+        // Background logic — use theme-aware colors
         if (row_active) {
             row_view.bg_color_id = "accent";
         } else if (row_selected) {
             row_view.bg_color_id = "selection";
         } else if (state.explorer_hover_row == row_index) {
-            // we will also check hover via mouse y later, but for now fallback to state
-            row_view.bg_color = .{ .r = 0.18, .g = 0.2, .b = 0.24, .a = 1.0 };
+            row_view.bg_color = .{ .r = 0.15, .g = 0.16, .b = 0.19, .a = 1.0 };
         }
 
-        // Left Padding (20) + Indent
+        // Left Padding (16) + Indent — reduced for tighter layout
         var indent_node = alloc.create(renderer.layout.Node) catch return;
         indent_node.* = renderer.layout.Node.init(alloc);
         indent_node.direction = .row;
-        indent_node.width = 20.0 + indent;
+        indent_node.width = 16.0 + indent;
         row_node.addChild(alloc, indent_node) catch return;
 
         var indent_view = alloc.create(renderer.view.View) catch return;
         indent_view.* = renderer.view.View.init(.{ .x = 0, .y = 0, .w = 0, .h = 0 });
         indent_view.flex_node = indent_node;
         row_view.addChild(alloc, indent_view) catch return;
+
+        // Indentation guide lines — subtle vertical lines for nested items
+        if (row.depth > 0) {
+            const guide_color = shared.color(wb.theme.colors.border);
+            const guide_y = shared.visibleRowY(explorer_scroll.list_top, wb.explorer_scroll_y, row_h, row_index);
+            var d: usize = 1;
+            while (d <= row.depth) : (d += 1) {
+                const guide_x = explorer_x + 12.0 + @as(f32, @floatFromInt(d - 1)) * 14.0;
+                renderer.Renderer.drawRect(guide_x, guide_y, 1, row_h, .{
+                    .r = guide_color.r,
+                    .g = guide_color.g,
+                    .b = guide_color.b,
+                    .a = guide_color.a * 0.3,
+                });
+            }
+        }
 
         // Chevron / Icon
         var icon_node = alloc.create(renderer.layout.Node) catch return;

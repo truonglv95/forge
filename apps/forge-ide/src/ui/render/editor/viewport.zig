@@ -60,6 +60,22 @@ pub fn drawEditorViewport(
     }
 
     renderer.Renderer.drawRect(editor_x, content_top, gutter, editor_view_h, syntax.color(theme.colors.sidebar_bg));
+
+    // Current line highlight — subtle background on the active line
+    if (pane_focused) {
+        const cursor_row = editor_buf.cursor.row;
+        const cursor_y = content_top + editor_scroll.text_inset_y + (@as(f32, @floatFromInt(cursor_row)) - scroll_y / line_h) * line_h;
+        if (cursor_y >= content_top and cursor_y < content_top + editor_view_h) {
+            const line_bg = syntax.color(theme.colors.selection);
+            renderer.Renderer.drawRect(editor_x, cursor_y, editor_w, line_h, .{
+                .r = line_bg.r,
+                .g = line_bg.g,
+                .b = line_bg.b,
+                .a = 0.15,
+            });
+        }
+    }
+
     renderer.Renderer.setClipRect(editor_x, content_top, editor_w, editor_view_h);
     const show_cursor = @mod(state.time, 1.0) < 0.5;
     const show_editor_cursor = show_cursor and wb.focused_panel == .editor and pane_focused;

@@ -58,12 +58,13 @@ pub const markdown = struct {
 };
 
 pub const bubble = struct {
-    pub const pad_x: f32 = tokens.space.lg;
-    pub const pad_y: f32 = 12.0;
+    pub const pad_x: f32 = tokens.space.lg + 2.0;
+    pub const pad_y: f32 = 14.0;
     pub const title_h: f32 = 16.0;
-    pub const gap: f32 = 18.0;
+    pub const gap: f32 = 16.0;
     pub const agent_icon_size: f32 = 20.0;
     pub const agent_header_h: f32 = agent_icon_size + tokens.space.sm;
+    pub const corner_radius: f32 = 10.0;
 };
 
 pub const composer = struct {

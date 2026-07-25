@@ -58,11 +58,17 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
     const font_size = 11.0;
     const bar_y = h - bar_height;
 
-    // Background.
+    // Background — subtle gradient effect via two rects
     renderer.Renderer.drawRect(0, bar_y, w, bar_height, theme_mod.color(theme.colors.status_bg));
 
-    // Border on top.
-    renderer.Renderer.drawRect(0, bar_y, w, 1, theme_mod.color(theme.colors.border));
+    // Top border — subtle, slightly brighter than bg
+    const border = theme_mod.color(theme.colors.border);
+    renderer.Renderer.drawRect(0, bar_y, w, 1, .{
+        .r = border.r * 1.2,
+        .g = border.g * 1.2,
+        .b = border.b * 1.2,
+        .a = 0.6,
+    });
 
     // Build hit test items from scratch
     wb.status_bar_item_count = 0;
