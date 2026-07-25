@@ -246,6 +246,35 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
             };
             wb.status_bar_item_count += 1;
             right_x -= 8;
+
+            // Selection length indicator — shows when user has selected text,
+            // e.g. "5 sel" for 5 characters selected. Hidden when no selection.
+            if (buf.hasSelection()) {
+                const ord = buf.selectionOrdered();
+                const sel_len = if (ord.start.row == ord.end.row)
+                    ord.end.col - ord.start.col
+                else blk: {
+                    // multi-line selection — count chars in selection
+                    var total: usize = 0;
+                    for (ord.start.row..ord.end.row + 1) |sr| {
+                        const line = buf.lineAt(sr);
+                        if (sr == ord.start.row) {
+                            total += line.len - ord.start.col;
+                        } else if (sr == ord.end.row) {
+                            total += ord.end.col;
+                        } else {
+                            total += line.len + 1; // +1 for newline
+                        }
+                    }
+                    break :blk total;
+                };
+                var sel_buf: [32:0]u8 = undefined;
+                const sel_label = std.fmt.bufPrint(&sel_buf, "{d} sel", .{sel_len}) catch "sel";
+                const sel_w = estimateWidth(sel_label, font_size) + 12;
+                right_x -= sel_w;
+                renderer.Renderer.drawText(sel_label, right_x + 6, bar_y + 4, font_size, theme_mod.color(theme.colors.text_secondary));
+                right_x -= 6;
+            }
         }
     }
 

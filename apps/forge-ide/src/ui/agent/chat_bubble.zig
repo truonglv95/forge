@@ -337,9 +337,14 @@ pub const thinking_text_style = chat_markdown.Style{
 };
 
 pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) f32 {
-    _ = text;
-    // Animated pulsing dots — three dots with phase-shifted opacity
-    const pill_w: f32 = 100;
+    // Animated pulsing dots — three dots with phase-shifted opacity.
+    // Pill width adapts to text length so longer status messages (e.g.
+    // "Reading context: 12 files…") fit inside without clipping.
+    var label_w: f32 = 0;
+    if (text.len > 0) {
+        label_w = @as(f32, @floatFromInt(text.len)) * 6.0;
+    }
+    const pill_w: f32 = @max(100, 38 + label_w + 16);
     const pill_h: f32 = 32;
     // Pill background — subtle accent
     renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 16, .{ .r = 0.10, .g = 0.12, .b = 0.16, .a = 1.0 });
@@ -362,6 +367,17 @@ pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) 
             .b = 1.0,
             .a = clamped_alpha,
         });
+    }
+
+    // Optional status text (e.g. "Reading context", "Generating diff")
+    // — drawn after the dots so users can see what the agent is doing
+    // instead of just watching dots pulse.
+    if (text.len > 0) {
+        var label_buf: [128:0]u8 = undefined;
+        const clipped = if (text.len > 127) text[0..127] else text;
+        @memcpy(label_buf[0..clipped.len], clipped);
+        label_buf[clipped.len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&label_buf), dot_base_x + 42, y + 9, 11.0, .{ .r = 0.7, .g = 0.78, .b = 0.92, .a = 0.9 });
     }
 
     return thinkingLineHeight();

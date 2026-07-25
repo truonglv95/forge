@@ -558,26 +558,35 @@ pub fn drawEditorViewport(
     }
 
     renderer.Renderer.setClipRect(editor_x, content_top, editor_w, editor_view_h);
-    const show_editor_scroll = scrollbar.hovered(state.last_mouse_x, state.last_mouse_y, editor_x, content_top, editor_w, editor_view_h);
-    scrollbar.drawVertical(
-        editor_x + editor_w - scrollbar.track_w - 4,
+    const editor_sb_x = editor_x + editor_w - scrollbar.track_w - 4;
+    const editor_sb_hover = state.last_mouse_x >= editor_sb_x and state.last_mouse_x < editor_sb_x + scrollbar.track_w + 8 and
+        state.last_mouse_y >= content_top and state.last_mouse_y < content_top + editor_view_h;
+    scrollbar.drawVerticalWithState(
+        editor_sb_x,
         content_top,
         editor_view_h,
         scroll_y,
         max_scroll_y,
         content_h,
         editor_view_h,
-        show_editor_scroll,
+        true,
+        editor_sb_hover,
+        false,
     );
-    scrollbar.drawHorizontal(
+    const h_sb_y = content_top + editor_view_h - scrollbar.track_w - 2;
+    const h_sb_hover = state.last_mouse_y >= h_sb_y and state.last_mouse_y < h_sb_y + scrollbar.track_w + 4 and
+        state.last_mouse_x >= editor_x + gutter and state.last_mouse_x < editor_x + gutter + viewport_w;
+    scrollbar.drawHorizontalWithState(
         editor_x + gutter,
-        content_top + editor_view_h - scrollbar.track_w - 2,
+        h_sb_y,
         viewport_w,
         scroll_x,
         max_scroll_x,
         content_w,
         viewport_w,
-        show_editor_scroll,
+        true,
+        h_sb_hover,
+        false,
     );
     renderer.Renderer.clearClipRect();
 }
