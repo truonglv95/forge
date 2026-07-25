@@ -142,3 +142,7 @@ pub const commit_gen = @import("commit_gen.zig");
 pub const debug_assist = @import("debug_assist.zig");
 pub const nl_search = @import("nl_search.zig");
 pub const refactor = @import("refactor.zig");
+pub const multi_file_edit = @import("multi_file_edit.zig");
+pub const chat_memory = @import("chat_memory.zig");
+pub const workflows = @import("workflows.zig");
+pub const voice_input = @import("voice_input.zig");
