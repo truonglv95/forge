@@ -72,7 +72,7 @@ const notifications_mod = @import("workbench/notifications.zig");
 const watch_expressions_mod = @import("workbench/watch_expressions.zig");
 const sync_mod = @import("forge-util").sync;
 
-pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, settings_modal, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename, output_channels };
+pub const PanelFocus = enum { editor, agent, explorer, search, git, run, extensions, ai, settings_modal, proposal_review, terminal, palette, conflict, recovery, find, goto_line, rename, output_channels, login };
 pub const EditorPane = enum { primary, secondary };
 pub const ChatRole = @import("workbench/types.zig").ChatRole;
 pub const ChatMessage = struct {
@@ -130,6 +130,23 @@ pub const Workbench = struct {
     /// requests in this session. Displayed in the status bar so users can
     /// monitor spend in real time. See RFC-0018.
     usage_tracker: ai.usage_tracker.UsageTracker = undefined,
+    /// Auth session manager — handles Supabase login, token refresh,
+    /// and persistent session storage. When logged in, the IDE uses the
+    /// forge_cloud provider (backend proxy) instead of direct LLM calls.
+    auth_manager: ai.auth_session.SessionManager = undefined,
+    /// Login modal state — email/password input buffers.
+    login_email_buffer: @import("forge-editor").Buffer = undefined,
+    login_password_buffer: @import("forge-editor").Buffer = undefined,
+    /// Login error message (shown in red on the login modal).
+    login_error: ?[]const u8 = null,
+    /// Login is in progress (show spinner / disable inputs).
+    login_in_progress: bool = false,
+    /// Supabase project URL (configured in settings or hardcoded).
+    forge_cloud_url: []const u8 = "",
+    /// Supabase anon key (configured in settings or hardcoded).
+    forge_cloud_anon_key: []const u8 = "",
+    /// Which login field is focused (0 = email, 1 = password).
+    login_focused_field: u8 = 0,
 
     lsp_initialized: bool = false,
     marketplace_catalog: ?plugin.MarketplaceCatalog = null,
@@ -489,6 +506,22 @@ pub const Workbench = struct {
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
         self.rate_limiter = ai.rate_limiter.RateLimiter.init(allocator);
         self.usage_tracker = ai.usage_tracker.UsageTracker.init(allocator);
+        // Initialize auth session manager. Default config — users can
+        // override forge_cloud_url/anon_key in settings later.
+        self.forge_cloud_url = try allocator.dupe(u8, "https://forge-cloud.supabase.co");
+        self.forge_cloud_anon_key = try allocator.dupe(u8, "");
+        self.auth_manager = ai.auth_session.SessionManager.init(allocator, io, .{
+            .project_url = self.forge_cloud_url,
+            .anon_key = self.forge_cloud_anon_key,
+        });
+        self.login_email_buffer = try editor.Buffer.init(allocator);
+        self.login_password_buffer = try editor.Buffer.init(allocator);
+        // Try to load stored session (auto-login on startup).
+        self.auth_manager.loadStored() catch {};
+        // If not logged in, show login modal on startup.
+        if (!self.auth_manager.isLoggedIn()) {
+            self.focused_panel = .login;
+        }
         self.user_settings = settings_mod.load(allocator, io, root) catch |err| blk: {
             self.logBackgroundError("Load settings", err);
             break :blk .{};
@@ -605,6 +638,11 @@ pub const Workbench = struct {
             if (self.completion_cache) |*cache| cache.deinit();
             self.rate_limiter.deinit();
             self.usage_tracker.deinit();
+            self.auth_manager.deinit();
+            self.login_email_buffer.deinit();
+            self.login_password_buffer.deinit();
+            self.allocator.free(self.forge_cloud_url);
+            self.allocator.free(self.forge_cloud_anon_key);
         }
         self.wrap_cache.deinit();
         self.max_line_len_cache.deinit();
@@ -1208,6 +1246,63 @@ pub const Workbench = struct {
         var buf: [96]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Agent edit mode set to {s}", .{mode.label()}) catch "Agent edit mode updated";
         try self.setStatus(msg);
+    }
+
+    /// Submit the login form. Called when the user presses Enter on the
+    /// login modal. Reads email/password from the login buffers, calls
+    /// Supabase Auth, and on success switches to the forge_cloud provider.
+    pub fn submitLogin(self: *Workbench) !void {
+        if (self.login_in_progress) return;
+        const email = self.login_email_buffer.content() catch return;
+        defer self.login_email_buffer.allocator.free(email);
+        const password = self.login_password_buffer.content() catch return;
+        defer self.login_password_buffer.allocator.free(password);
+
+        if (email.len == 0 or password.len == 0) {
+            self.login_error = "Email and password are required";
+            return;
+        }
+
+        self.login_in_progress = true;
+        self.login_error = null;
+
+        // Call Supabase Auth.
+        self.auth_manager.signInWithEmail(email, password) catch |err| {
+            self.login_in_progress = false;
+            self.login_error = switch (err) {
+                ai.auth.AuthError.InvalidCredentials => "Invalid email or password",
+                ai.auth.AuthError.TooManyRequests => "Too many attempts. Try again later.",
+                ai.auth.AuthError.NetworkError => "Network error. Check your connection.",
+                else => "Login failed. Please try again.",
+            };
+            return;
+        };
+
+        // Success — clear login state and switch to IDE.
+        self.login_in_progress = false;
+        self.login_error = null;
+        self.login_password_buffer.deinit();
+        self.login_password_buffer = try editor.Buffer.init(self.allocator);
+        self.focused_panel = .editor;
+
+        // Switch to forge_cloud provider (backend proxy).
+        self.allocator.free(self.agent_ui.provider);
+        self.agent_ui.provider = try self.allocator.dupe(u8, "forge_cloud");
+
+        try self.setStatus("Signed in — using Forge Cloud");
+    }
+
+    /// Skip login — use the IDE with direct LLM calls (BYO API key).
+    pub fn skipLogin(self: *Workbench) void {
+        self.focused_panel = .editor;
+        try self.setStatus("Using direct API (bring your own key)") catch {};
+    }
+
+    /// Sign out — clears the stored session and shows the login modal.
+    pub fn signOut(self: *Workbench) !void {
+        self.auth_manager.signOut() catch {};
+        self.focused_panel = .login;
+        try self.setStatus("Signed out");
     }
 
     pub fn setEditorFontSize(self: *Workbench, font_size: f32) !void {

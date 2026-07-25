@@ -18,6 +18,7 @@ const notifications_render = @import("notifications.zig");
 const ai_render = @import("sidebar/ai.zig");
 
 const dialogs = @import("dialogs.zig");
+const login_modal = @import("login_modal.zig");
 
 fn c(rgba: @import("forge-workspace").Rgba) renderer.Color {
     return theme_loader.toColor(rgba);
@@ -194,6 +195,13 @@ pub fn onRenderFrame() void {
         // Settings Modal must be drawn last to be on top
         if (wb.settings_modal_open) {
             settings_modal.draw(wb, w, h);
+        }
+
+        // Login modal — drawn on top of everything else when user is
+        // not authenticated. Blocks interaction with the IDE until
+        // the user signs in or skips.
+        if (wb.focused_panel == .login) {
+            login_modal.drawLoginModal(wb, w, h);
         }
 
         const draw_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
