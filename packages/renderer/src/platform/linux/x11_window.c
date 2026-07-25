@@ -330,6 +330,16 @@ static int allocate_framebuffer(int width, int height) {
 
 static int load_font(void) {
     pthread_mutex_lock(&g_ft_lock);
+    /* Clear glyph cache BEFORE freeing faces — cached glyphs hold
+     * pointers into the face's glyph slot data, so freeing a face
+     * invalidates all cached glyphs that came from it. Must clear
+     * the cache first to prevent use-after-free in render_text_run. */
+    if (g_glyph_cache_init) {
+        for (int i = 0; i < GLYPH_CACHE_SIZE; i++) {
+            if (g_glyph_cache[i].data) { free(g_glyph_cache[i].data); g_glyph_cache[i].data = NULL; }
+            g_glyph_cache[i].cp = 0;
+        }
+    }
     if (g_face) { FT_Done_Face(g_face); g_face = NULL; }
     if (g_face_bold) { FT_Done_Face(g_face_bold); g_face_bold = NULL; }
     if (!g_ft) { if (FT_Init_FreeType(&g_ft) != 0) { pthread_mutex_unlock(&g_ft_lock); return 0; } }
