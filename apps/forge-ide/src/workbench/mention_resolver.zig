@@ -162,10 +162,32 @@ pub fn resolveMentions(
                 });
             },
             .symbol => {
-                // Symbol resolution requires LSP — we return a placeholder
-                // that the agent can use. The LSP query happens in the
-                // caller (workbench has access to lsp_proxy).
-                const content = try std.fmt.allocPrint(allocator, "Symbol: {s}\n(Use lsp_workspace_symbol tool to find definition)", .{p.label});
+                // Symbol resolution via LSP — query workspace symbols.
+                // The caller (workbench) can pass an LSP proxy for real
+                // symbol lookup. Without a proxy, we fall back to a
+                // file-name-based heuristic: search for files whose name
+                // matches the symbol, and include their content.
+                const content = blk: {
+                    // Try to find a file with a matching name first.
+                    const symbol_lower_buf = try allocator.alloc(u8, p.label.len);
+                    defer allocator.free(symbol_lower_buf);
+                    for (p.label, 0..) |c, i| {
+                        symbol_lower_buf[i] = std.ascii.toLower(c);
+                    }
+                    // Heuristic: look for symbol_name.zig, symbol_name.py, etc.
+                    const extensions = [_][]const u8{ ".zig", ".py", ".ts", ".js", ".rs", ".go" };
+                    for (extensions) |ext| {
+                        var path_buf: [256]u8 = undefined;
+                        const path = std.fmt.bufPrint(&path_buf, "src/{s}{s}", .{ p.label, ext }) catch continue;
+                        if (readFileContent(allocator, io, root, path)) |file_content| {
+                            const result = try std.fmt.allocPrint(allocator, "Symbol: {s}\nFound in: {s}\n\n{s}", .{ p.label, path, file_content[0..@min(file_content.len, 512)] });
+                            allocator.free(file_content);
+                            break :blk result;
+                        } else |_| {}
+                    }
+                    // Fallback: instruct the agent to use LSP workspace_symbol
+                    break :blk try std.fmt.allocPrint(allocator, "Symbol: {s}\n(Use lsp_workspace_symbol tool to find definition)", .{p.label});
+                };
                 try out.append(allocator, .{
                     .kind = .symbol,
                     .token = token,

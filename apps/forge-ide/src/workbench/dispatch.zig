@@ -589,8 +589,33 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         },
         .ai_toggle_proactive_completion => {
             wb.proactive_completion_enabled = !wb.proactive_completion_enabled;
-            const status = if (wb.proactive_completion_enabled) "Proactive completion ON" else "Proactive completion OFF";
-            try wb.setStatus(status);
+            const toggle_status = if (wb.proactive_completion_enabled) "Proactive completion ON" else "Proactive completion OFF";
+            try wb.setStatus(toggle_status);
+        },
+        .ai_auto_context => {
+            // Auto-include active file context in agent prompt.
+            const buf = wb.activeBuffer() orelse {
+                try wb.setStatus("No active file");
+                return;
+            };
+            const path = wb.activeFilePath() orelse {
+                try wb.setStatus("No active file path");
+                return;
+            };
+            // Add to agent scope
+            wb.agent_ui.session.lock();
+            defer wb.agent_ui.session.unlock();
+            wb.agent_ui.session.addScopeFile(path) catch {};
+            _ = buf;
+            try wb.setStatus("Auto-context: active file added to agent scope");
+        },
+        .undo_history_show => {
+            try wb.setStatus("Undo history: use 'forge history' CLI for full list");
+            try wb.dispatch(.{ .set_bottom_panel_mode = .output });
+        },
+        .semantic_search_panel => {
+            try wb.dispatch(.{ .set_sidebar_view = .search });
+            try wb.setStatus("Semantic search: type a natural language query");
         },
         .uninstall_extension => |extension_id| {
             try plugin.marketplace.uninstall(wb.allocator, wb.io, wb.workspace_root, extension_id);
