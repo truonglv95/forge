@@ -133,6 +133,39 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
                     wb.status_bar_item_count += 1;
                     left_x += sync_w + 8;
                 }
+
+                // 4. Git change count — shows total changed files (staged +
+                // unstaged). Clicking opens the Git sidebar view. Hidden when
+                // there are no changes (clean working tree) so the bar
+                // doesn't show "0 changes" noise.
+                if (gs.entries.len > 0) {
+                    var changes_buf: [32]u8 = undefined;
+                    const changes_label = std.fmt.bufPrint(&changes_buf, "{d} changes", .{gs.entries.len}) catch "changes";
+                    const changes_w = estimateWidth(changes_label, font_size) + 16;
+                    const is_changes_hover = isHovered(wb, left_x, bar_y, changes_w, bar_height);
+                    if (is_changes_hover) {
+                        renderer.Renderer.drawRect(left_x, bar_y, changes_w, bar_height, .{ .r = 0.2, .g = 0.22, .b = 0.28, .a = 1.0 });
+                    }
+                    // Use warning colour when there are changes — gives a
+                    // subtle visual hint that there's uncommitted work.
+                    const changes_color = if (gs.entries.len > 0)
+                        renderer.Color{ .r = 0.95, .g = 0.75, .b = 0.35, .a = 1.0 }
+                    else
+                        theme_mod.color(theme.colors.text_secondary);
+                    renderer.Renderer.drawText(changes_label, left_x + 8, bar_y + 4, font_size, changes_color);
+                    wb.status_bar_items[wb.status_bar_item_count] = .{
+                        .icon = "changes",
+                        .label = changes_label,
+                        .action = .open_branch_menu, // opens git view
+                        .hovered = is_changes_hover,
+                        .x = left_x,
+                        .y = bar_y,
+                        .w = changes_w,
+                        .h = bar_height,
+                    };
+                    wb.status_bar_item_count += 1;
+                    left_x += changes_w + 8;
+                }
             }
         }
     }
