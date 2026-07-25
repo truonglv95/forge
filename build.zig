@@ -118,21 +118,18 @@ pub fn build(b: *std.Build) void {
             renderer.addIncludePath(b.path("packages/renderer/src/platform/linux"));
             renderer.addCSourceFile(.{
                 .file = b.path("packages/renderer/src/platform/linux/x11_window.c"),
-                .flags = &.{},
+                .flags = &.{"-DFORGE_HAS_GLX"},
             });
             renderer.linkSystemLibrary("X11", .{});
             renderer.linkSystemLibrary("Xext", .{});
             renderer.linkSystemLibrary("freetype", .{});
             renderer.linkSystemLibrary("fontconfig", .{});
-            // GPU backend (OpenGL ES) — linked when EGL/GLES dev libs are installed.
-            // Install: apt-get install libegl1-mesa-dev libgles2-mesa-dev
-            // Then uncomment:
-            // renderer.addCSourceFile(.{
-            //     .file = b.path("packages/renderer/src/gpu/gpu_opengl.c"),
-            //     .flags = &.{},
-            // });
-            // renderer.linkSystemLibrary("EGL", .{});
-            // renderer.linkSystemLibrary("GLESv2", .{});
+            // GPU backend via GLX (desktop OpenGL) — uses libGL.so already installed.
+            renderer.addCSourceFile(.{
+                .file = b.path("packages/renderer/src/gpu/gpu_glx.c"),
+                .flags = &.{"-DFORGE_HAS_GLX"},
+            });
+            renderer.linkSystemLibrary("GL", .{});
         },
         .windows => {
             renderer.addCSourceFile(.{

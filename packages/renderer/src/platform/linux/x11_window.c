@@ -21,10 +21,11 @@
 #define NANOSVGRAST_IMPLEMENTATION
 #include "nanosvgrast.h"
 
-/* OpenGL ES for GPU rendering mode — only available when EGL/GLES
- * dev libs are installed. Guard with FORGE_HAS_GLES flag. */
-#ifdef FORGE_HAS_GLES
-#include <GLES3/gl3.h>
+/* OpenGL (GLX) for GPU rendering mode — uses desktop OpenGL via GLX.
+ * Available on any X11 system with libGL (Mesa). No EGL/GLES needed. */
+#ifdef FORGE_HAS_GLX
+#include <GL/gl.h>
+#include <GL/glx.h>
 #endif
 
 #include "../shared/backend.h"
@@ -155,20 +156,20 @@ static int g_clip_x = 0, g_clip_y = 0, g_clip_w = 0, g_clip_h = 0;
 /* HiDPI scale factor (1.0 = normal, 2.0 = retina/4K). */
 static float g_dpi_scale = 1.0f;
 
-/* GPU rendering mode — when enabled, rect rendering uses OpenGL ES
- * batched draw calls instead of CPU per-pixel fill. Text and SVG
- * rendering remain on CPU until SDF atlas is wired. */
-#ifdef FORGE_HAS_GLES
-static int g_gpu_mode = 0; /* 0=CPU, 1=GPU (OpenGL ES) */
+/* GPU rendering mode — when enabled, rect rendering uses GLX/OpenGL
+ * batched draw calls instead of CPU per-pixel fill. */
+#ifdef FORGE_HAS_GLX
+static int g_gpu_mode = 0; /* 0=CPU, 1=GPU (GLX/OpenGL) */
 
-/* Forward declaration for GPU init (defined in gpu_opengl.c) */
-extern int forge_gpu_opengl_init(void* x11_display, unsigned long x11_window);
-extern void forge_gpu_opengl_draw_rect(float x, float y, float w, float h, float r, float g, float b, float a);
-extern void forge_gpu_opengl_flush(float viewport_w, float viewport_h);
-extern void forge_gpu_opengl_present(void);
-extern int forge_gpu_opengl_available(void* x11_display);
+/* Forward declarations for GPU init (defined in gpu_glx.c) */
+extern int forge_gpu_glx_init(void* x11_display, unsigned long x11_window);
+extern void forge_gpu_glx_draw_rect(float x, float y, float w, float h, float r, float g, float b, float a);
+extern void forge_gpu_glx_flush(float viewport_w, float viewport_h);
+extern void forge_gpu_glx_present(void* x11_display, unsigned long x11_window);
+extern void forge_gpu_glx_clear(float r, float g, float b, float a);
+extern int forge_gpu_glx_available(void* x11_display);
 #else
-static int g_gpu_mode = 0; /* Always CPU when GLES not available */
+static int g_gpu_mode = 0; /* Always CPU when GLX not available */
 #endif
 
 static void detect_dpi_scale(void) {
@@ -463,10 +464,10 @@ static void put_pixel(int x, int y, uint32_t premul_bgra) {
 
 void forge_backend_draw_rect(float xf, float yf, float wf, float hf, float r, float g, float b, float a) {
     if (a <= 0.0f) return;
-    /* GPU mode: batch rect for OpenGL ES draw call (flush at end of frame) */
-#ifdef FORGE_HAS_GLES
+    /* GPU mode: batch rect for GLX/OpenGL draw call (flush at end of frame) */
+#ifdef FORGE_HAS_GLX
     if (g_gpu_mode) {
-        forge_gpu_opengl_draw_rect(xf, yf, wf, hf, r, g, b, a);
+        forge_gpu_glx_draw_rect(xf, yf, wf, hf, r, g, b, a);
         return;
     }
 #endif
@@ -889,13 +890,12 @@ void forge_backend_create_window(const char* title, int width, int height) {
     XMapWindow(g_display, g_window);
     XFlush(g_display);
 
-    /* Try GPU init — if OpenGL ES is available, enable GPU rect rendering.
-     * Text + SVG still use CPU path. GPU mode can be toggled via --gpu flag. */
-#ifdef FORGE_HAS_GLES
-    if (forge_gpu_opengl_available(g_display)) {
-        if (forge_gpu_opengl_init(g_display, (unsigned long)g_window)) {
+    /* Try GPU init — if GLX/OpenGL is available, enable GPU rect rendering. */
+#ifdef FORGE_HAS_GLX
+    if (forge_gpu_glx_available(g_display)) {
+        if (forge_gpu_glx_init(g_display, (unsigned long)g_window)) {
             g_gpu_mode = 1;
-            fprintf(stderr, "[forge] GPU mode enabled (OpenGL ES 3.0)\n");
+            fprintf(stderr, "[forge] GPU mode enabled (GLX/OpenGL)\n");
         }
     }
 #endif
@@ -924,16 +924,15 @@ void forge_backend_run(void) {
     while (1) {
         while (XPending(g_display)) { XEvent ev; XNextEvent(g_display, &ev); handle_event(&ev); }
         if (pending || g_continuous) {
-#ifdef FORGE_HAS_GLES
+#ifdef FORGE_HAS_GLX
             if (g_gpu_mode) {
-                /* GPU mode: render callback batches rects via OpenGL ES,
-                 * then flush + present via eglSwapBuffers (VSync built-in). */
-                glClearColor(0.118f, 0.118f, 0.137f, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT);
+                /* GPU mode: GLX clear + render callback (batches rects) +
+                 * flush + glXSwapBuffers (VSync). */
+                forge_gpu_glx_clear(0.118f, 0.118f, 0.137f, 1.0f);
                 g_clip_active = 0;
                 if (g_render_cb) g_render_cb();
-                forge_gpu_opengl_flush((float)g_width, (float)g_height);
-                forge_gpu_opengl_present();
+                forge_gpu_glx_flush((float)g_width, (float)g_height);
+                forge_gpu_glx_present(g_display, (unsigned long)g_window);
             } else {
 #endif
                 /* CPU mode: fill framebuffer, render callback, present via X11 */
@@ -943,7 +942,7 @@ void forge_backend_run(void) {
                 if (g_shm_attached) { memcpy(g_image->data, g_pixels, (size_t)g_width*g_height*4); XShmPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height, False); }
                 else if (g_image) XPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height);
                 XSync(g_display, False);
-#ifdef FORGE_HAS_GLES
+#ifdef FORGE_HAS_GLX
             }
 #endif
             atomic_fetch_add(&g_frames_drawn, 1);
