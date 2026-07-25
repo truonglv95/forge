@@ -131,15 +131,16 @@ fn color(enabled: bool, active: bool, hover: bool) renderer.Color {
 fn drawIcon(action: Action, btn: Button, hover: bool) void {
     const c = color(btn.enabled, btn.active, hover);
     const svg = switch (action) {
-        .toggle_sidebar => renderer.icons.file_directory,
-        .nav_back => renderer.icons.chevron_down,
-        .nav_forward => renderer.icons.chevron_right,
-        .toggle_bottom_panel => renderer.icons.search,
-        .toggle_agent => renderer.icons.sparkle,
-        .open_settings => renderer.icons.gear,
-        .toggle_agent_window => renderer.icons.repo,
+        .toggle_sidebar => renderer.forge_icons.folder,
+        .nav_back => renderer.forge_icons.chevron_right,
+        .nav_forward => renderer.forge_icons.chevron_right,
+        .toggle_bottom_panel => renderer.forge_icons.search,
+        .toggle_agent => renderer.forge_icons.sparkle,
+        .open_settings => renderer.forge_icons.gear,
+        .toggle_agent_window => renderer.forge_icons.repo,
     };
-    renderer.Renderer.drawSvg(svg, btn.x + (btn.w - 16) / 2, btn.y + (btn.h - 16) / 2, 16, 16, c);
+    const icon_size: f32 = 18;
+    renderer.Renderer.drawSvg(svg, btn.x + (btn.w - icon_size) / 2, btn.y + (btn.h - icon_size) / 2, icon_size, icon_size, c);
 }
 
 pub fn draw(window_w: f32, state: ToolbarState, hover_action: ?Action, header_bg: renderer.Color) void {

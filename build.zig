@@ -115,6 +115,7 @@ pub fn build(b: *std.Build) void {
             renderer.linkSystemLibrary("objc", .{});
         },
         .linux => {
+            renderer.addIncludePath(b.path("packages/renderer/src/platform/linux"));
             renderer.addCSourceFile(.{
                 .file = b.path("packages/renderer/src/platform/linux/x11_window.c"),
                 .flags = &.{},

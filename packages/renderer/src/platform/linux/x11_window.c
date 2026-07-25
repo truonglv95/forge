@@ -16,6 +16,11 @@
 #include FT_FREETYPE_H
 #include <fontconfig/fontconfig.h>
 
+#define NANOSVG_IMPLEMENTATION
+#include "nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "nanosvgrast.h"
+
 #include "../shared/backend.h"
 
 static Display* g_display = NULL;
@@ -40,6 +45,11 @@ static FT_Face g_face = NULL;
 static pthread_mutex_t g_ft_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_font_family[256] = "sans-serif";
 static int g_font_weight = 0;
+
+/* Font fallback chain — when primary face lacks a glyph, try these. */
+#define MAX_FALLBACK_FACES 4
+static FT_Face g_fallback_faces[MAX_FALLBACK_FACES];
+static int g_fallback_count = 0;
 
 /* Glyph cache — avoids re-rendering the same glyph every frame.
  * Keyed by (codepoint, font_size). Stores rendered bitmap + metrics.
@@ -126,6 +136,64 @@ static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, FT_GlyphS
 
 static int g_clip_active = 0;
 static int g_clip_x = 0, g_clip_y = 0, g_clip_w = 0, g_clip_h = 0;
+
+/* SVG icon cache — parse + rasterize once, reuse on subsequent draws.
+ * Keyed by SVG string pointer (icons are static constants, so pointer
+ * identity is stable). Stores rasterized RGBA bitmap at common sizes. */
+#define SVG_CACHE_SIZE 256
+typedef struct {
+    const char* svg_ptr;     /* pointer to SVG string, NULL = empty */
+    unsigned int size;        /* rendered size (w=h=size) */
+    unsigned char* data;     /* RGBA bitmap, owned */
+    unsigned int width;
+    unsigned int height;
+} CachedSvg;
+static CachedSvg g_svg_cache[SVG_CACHE_SIZE];
+static int g_svg_cache_init = 0;
+static NSVGrasterizer* g_svg_rasterizer = NULL;
+
+static void init_svg_cache(void) {
+    if (g_svg_cache_init) return;
+    for (int i = 0; i < SVG_CACHE_SIZE; i++) {
+        g_svg_cache[i].svg_ptr = NULL;
+        g_svg_cache[i].data = NULL;
+    }
+    g_svg_rasterizer = nsvgCreateRasterizer();
+    g_svg_cache_init = 1;
+}
+
+static CachedSvg* svg_cache_lookup(const char* svg_ptr, unsigned int size) {
+    if (!g_svg_cache_init) init_svg_cache();
+    for (int i = 0; i < SVG_CACHE_SIZE; i++) {
+        if (g_svg_cache[i].svg_ptr == svg_ptr && g_svg_cache[i].size == size) {
+            return &g_svg_cache[i];
+        }
+    }
+    return NULL;
+}
+
+static CachedSvg* svg_cache_put(const char* svg_ptr, unsigned int size, unsigned char* data, unsigned int w, unsigned int h) {
+    if (!g_svg_cache_init) init_svg_cache();
+    /* Find empty slot or evict */
+    for (int i = 0; i < SVG_CACHE_SIZE; i++) {
+        if (g_svg_cache[i].svg_ptr == NULL) {
+            g_svg_cache[i].svg_ptr = svg_ptr;
+            g_svg_cache[i].size = size;
+            g_svg_cache[i].data = data;
+            g_svg_cache[i].width = w;
+            g_svg_cache[i].height = h;
+            return &g_svg_cache[i];
+        }
+    }
+    /* Evict slot 0 */
+    if (g_svg_cache[0].data) free(g_svg_cache[0].data);
+    g_svg_cache[0].svg_ptr = svg_ptr;
+    g_svg_cache[0].size = size;
+    g_svg_cache[0].data = data;
+    g_svg_cache[0].width = w;
+    g_svg_cache[0].height = h;
+    return &g_svg_cache[0];
+}
 
 static inline uint32_t rgba_to_bgra(float r, float g, float b, float a) {
     uint8_t R = (uint8_t)(r * 255.0f + 0.5f);
@@ -224,6 +292,34 @@ static int load_font(void) {
             g_glyph_cache[i].cp = 0;
         }
     }
+
+    /* Load fallback fonts for missing glyphs (CJK, emoji, symbols).
+     * Try: DejaVu Sans, Noto Sans, Liberation Sans, monospace. */
+    for (int fi = 0; fi < g_fallback_count; fi++) {
+        if (g_fallback_faces[fi]) { FT_Done_Face(g_fallback_faces[fi]); g_fallback_faces[fi] = NULL; }
+    }
+    g_fallback_count = 0;
+    const char* fallback_families[] = {"DejaVu Sans", "Noto Sans", "Liberation Sans", "DejaVu Sans Mono"};
+    for (size_t fi = 0; fi < sizeof(fallback_families)/sizeof(fallback_families[0]) && g_fallback_count < MAX_FALLBACK_FACES; fi++) {
+        FcPattern* fpat = FcPatternCreate();
+        FcPatternAddString(fpat, FC_FAMILY, (const FcChar8*)fallback_families[fi]);
+        FcConfigSubstitute(cfg, fpat, FcMatchPattern);
+        FcDefaultSubstitute(fpat);
+        FcResult fresult;
+        FcPattern* fmatch = FcFontMatch(cfg, fpat, &fresult);
+        FcChar8* ffile = NULL;
+        if (fmatch) FcPatternGetString(fmatch, FC_FILE, 0, &ffile);
+        if (ffile) {
+            FT_Face fface = NULL;
+            if (FT_New_Face(g_ft, (const char*)ffile, 0, &fface) == 0) {
+                FT_Select_Charmap(fface, FT_ENCODING_UNICODE);
+                g_fallback_faces[g_fallback_count++] = fface;
+            }
+        }
+        if (fmatch) FcPatternDestroy(fmatch);
+        FcPatternDestroy(fpat);
+    }
+
     if (match) FcPatternDestroy(match);
     FcPatternDestroy(pat);
     FcConfigDestroy(cfg);
@@ -298,6 +394,7 @@ static void render_text_run(const char* text, size_t len, float x, float y, floa
     FT_Set_Pixel_Sizes(g_face, 0, fs_px);
     float pen_x = x;
     float pen_y = y + (g_face->size->metrics.ascender >> 6);
+    FT_UInt prev_gi = 0;
     size_t i = 0;
     while (i < len) {
         unsigned long cp = 0; size_t adv = 0;
@@ -309,12 +406,36 @@ static void render_text_run(const char* text, size_t len, float x, float y, floa
         else { adv = 1; }
         i += adv;
 
+        /* Font fallback: if glyph not in primary face, try fallback faces */
+        FT_UInt gi = FT_Get_Char_Index(g_face, cp);
+        FT_Face draw_face = g_face;
+        if (gi == 0) {
+            /* Try fallback faces (monospace, sans-serif default) */
+            for (int fi = 0; fi < g_fallback_count; fi++) {
+                FT_UInt alt_gi = FT_Get_Char_Index(g_fallback_faces[fi], cp);
+                if (alt_gi != 0) {
+                    draw_face = g_fallback_faces[fi];
+                    gi = alt_gi;
+                    FT_Set_Pixel_Sizes(draw_face, 0, fs_px);
+                    break;
+                }
+            }
+        }
+
+        /* Kerning: apply kerning delta between prev glyph and current */
+        if (prev_gi != 0 && FT_HAS_KERNING(draw_face)) {
+            FT_Vector delta;
+            if (FT_Get_Kerning(draw_face, prev_gi, gi, FT_KERNING_DEFAULT, &delta) == 0) {
+                pen_x += (float)(delta.x >> 6);
+            }
+        }
+        prev_gi = gi;
+
         /* Glyph cache lookup — avoids FT_Load_Glyph + FT_Render_Glyph on every call */
         CachedGlyph* cg = glyph_cache_lookup(cp, fs_px);
         if (!cg) {
-            FT_UInt gi = FT_Get_Char_Index(g_face, cp);
-            if (FT_Load_Glyph(g_face, gi, FT_LOAD_RENDER) != 0) continue;
-            cg = glyph_cache_put(cp, fs_px, g_face->glyph);
+            if (FT_Load_Glyph(draw_face, gi, FT_LOAD_RENDER) != 0) continue;
+            cg = glyph_cache_put(cp, fs_px, draw_face->glyph);
             if (!cg) continue;
         }
         /* Draw from cached bitmap */
@@ -355,7 +476,75 @@ void forge_backend_draw_styled_text(const char* text, size_t len, float x, float
 }
 
 void forge_backend_draw_svg(const char* svg, float x, float y, float w, float h, float angle, float r, float g, float b, float a) {
-    (void)svg; (void)angle; forge_backend_draw_rect(x, y, w, h, r, g, b, a * 0.7f);
+    (void)angle;
+    if (!svg || w <= 0 || h <= 0) return;
+
+    /* Render SVG at target size, cache by (svg_ptr, size). */
+    unsigned int render_size = (unsigned int)(w > h ? w : h);
+    if (render_size < 8) render_size = 8;
+    if (render_size > 256) render_size = 256;
+
+    CachedSvg* cv = svg_cache_lookup(svg, render_size);
+    if (!cv) {
+        /* Parse + rasterize. nsvgParse modifies the input string, so copy it. */
+        size_t svg_len = strlen(svg);
+        char* svg_copy = (char*)malloc(svg_len + 1);
+        if (!svg_copy) return;
+        memcpy(svg_copy, svg, svg_len + 1);
+
+        NSVGimage* image = nsvgParse(svg_copy, "px", 96.0f);
+        if (!image) { free(svg_copy); return; }
+
+        unsigned int rw = render_size;
+        unsigned int rh = render_size;
+        unsigned char* img = (unsigned char*)malloc((size_t)rw * rh * 4);
+        if (!img) { free(svg_copy); nsvgDelete(image); return; }
+
+        if (!g_svg_rasterizer) init_svg_cache();
+        if (g_svg_rasterizer) {
+            /* Scale SVG to fit render_size. nanosvg uses 0,0 origin. */
+            float scale = render_size / image->width;
+            if (image->height > image->width) scale = render_size / image->height;
+            nsvgRasterize(g_svg_rasterizer, image, 0, 0, scale, img, rw, rh, rw * 4);
+        }
+        nsvgDelete(image);
+        free(svg_copy);
+
+        cv = svg_cache_put(svg, render_size, img, rw, rh);
+        if (!cv) { free(img); return; }
+    }
+
+    /* Tint + alpha-blend the cached RGBA bitmap into the framebuffer.
+     * The SVG is rendered white (default fill); we tint with (r,g,b). */
+    if (!cv->data) return;
+    uint8_t R = (uint8_t)(r * 255.0f + 0.5f);
+    uint8_t G = (uint8_t)(g * 255.0f + 0.5f);
+    uint8_t B = (uint8_t)(b * 255.0f + 0.5f);
+
+    /* Center the icon in the target rect (w x h). */
+    float draw_x = x + (w - (float)cv->width) * 0.5f;
+    float draw_y = y + (h - (float)cv->height) * 0.5f;
+
+    for (unsigned int py = 0; py < cv->height; py++) {
+        int dst_y = (int)(draw_y + py);
+        if (dst_y < 0 || dst_y >= g_height) continue;
+        for (unsigned int px = 0; px < cv->width; px++) {
+            int dst_x = (int)(draw_x + px);
+            if (dst_x < 0 || dst_x >= g_width) continue;
+            if (!in_clip(dst_x, dst_y)) continue;
+            size_t idx = ((size_t)py * cv->width + px) * 4;
+            /* SVG RGBA: use alpha channel, tint with color */
+            uint8_t sa = cv->data[idx + 3];
+            if (sa == 0) continue;
+            float alpha = (sa / 255.0f) * a;
+            uint32_t premul = ((uint32_t)(alpha * 255) << 24) |
+                              ((uint32_t)(R * alpha) << 16) |
+                              ((uint32_t)(G * alpha) << 8) |
+                              (uint32_t)(B * alpha);
+            uint32_t* dst = &g_pixels[(size_t)dst_y * g_width + dst_x];
+            *dst = blend_pixel(*dst, premul);
+        }
+    }
 }
 
 float forge_backend_measure_text_width(const char* text, size_t len, float font_size) {
