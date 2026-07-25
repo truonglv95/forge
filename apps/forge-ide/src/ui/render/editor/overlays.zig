@@ -4,17 +4,19 @@ const editor_scroll = @import("../../editor/editor_scroll.zig");
 const tabs_ui = @import("../../editor/tabs.zig");
 const Workbench = @import("../../../workbench.zig").Workbench;
 const Buffer = @import("forge-editor").Buffer;
+const theme_mod = @import("../theme.zig");
 
 pub fn drawHoverTooltip(wb: *Workbench, editor_x: f32, editor_w: f32) void {
     const text = wb.lsp.hover.text orelse return;
     if (text.len == 0) return;
 
-    const font_size: f32 = 11.0;
-    const line_h: f32 = 14.0;
-    const padding: f32 = 8.0;
-    const max_w: f32 = @min(420, editor_w - 24);
-    const max_lines: usize = 12;
-    const max_chars_per_line: usize = 64;
+    const theme = &wb.theme;
+    const font_size: f32 = 12.0;
+    const line_h: f32 = 16.0;
+    const padding: f32 = 10.0;
+    const max_w: f32 = @min(480, editor_w - 24);
+    const max_lines: usize = 15;
+    const max_chars_per_line: usize = 72;
 
     var lines: [max_lines][]const u8 = undefined;
     var line_is_code: [max_lines]bool = undefined;
@@ -62,7 +64,29 @@ pub fn drawHoverTooltip(wb: *Workbench, editor_x: f32, editor_w: f32) void {
     if (box_x < editor_x + 8) box_x = editor_x + 8;
     if (box_y < 70) box_y = wb.lsp.hover.anchor_y + 18;
 
-    renderer.Renderer.drawRect(box_x, box_y, box_w, box_h, .{ .r = 0.14, .g = 0.16, .b = 0.2, .a = 0.98 });
+    // Shadow effect (offset dark rect behind)
+    renderer.Renderer.drawRoundedRect(box_x + 2, box_y + 3, box_w, box_h, 8, .{ .r = 0, .g = 0, .b = 0, .a = 0.3 });
+
+    // Background — use theme panel bg with slight transparency
+    const bg_color = theme_mod.color(theme.colors.panel_bg);
+    renderer.Renderer.drawRoundedRect(box_x, box_y, box_w, box_h, 8, .{
+        .r = bg_color.r,
+        .g = bg_color.g,
+        .b = bg_color.b,
+        .a = 0.98,
+    });
+
+    // Border — subtle theme border
+    const border_color = theme_mod.color(theme.colors.border);
+    renderer.Renderer.drawRect(box_x, box_y, box_w, 1, border_color);
+    renderer.Renderer.drawRect(box_x, box_y + box_h - 1, box_w, 1, border_color);
+    renderer.Renderer.drawRect(box_x, box_y, 1, box_h, border_color);
+    renderer.Renderer.drawRect(box_x + box_w - 1, box_y, 1, box_h, border_color);
+
+    // Accent bar on left
+    const accent = theme_mod.color(theme.colors.accent);
+    renderer.Renderer.drawRoundedRect(box_x, box_y, 3, box_h, 1.5, accent);
+
     var y = box_y + padding;
     for (lines[0..line_count], line_is_code[0..line_count]) |line, is_code| {
         var buf: [256:0]u8 = undefined;
@@ -73,11 +97,12 @@ pub fn drawHoverTooltip(wb: *Workbench, editor_x: f32, editor_w: f32) void {
         const copy_len = @min(clipped.len, 255);
         @memcpy(buf[0..copy_len], clipped[0..copy_len]);
         buf[copy_len] = 0;
+        // Code: accent color, Regular text: primary text color
         const color = if (is_code)
-            renderer.Color{ .r = 0.75, .g = 0.9, .b = 1.0, .a = 1.0 }
+            theme_mod.color(theme.colors.type)
         else
-            renderer.Color{ .r = 0.92, .g = 0.92, .b = 0.92, .a = 1.0 };
-        renderer.Renderer.drawText(@ptrCast(&buf), box_x + padding, y, font_size, color);
+            theme_mod.color(theme.colors.text_primary);
+        renderer.Renderer.drawText(@ptrCast(&buf), box_x + padding + 4, y, font_size, color);
         y += line_h;
     }
 }

@@ -104,6 +104,15 @@ pub fn getBackend() Backend {
     return current_backend;
 }
 
+/// Global SDF atlas instance — loaded once at startup.
+pub var atlas: SDFAtlas = .{};
+
+/// Load SDF atlas from JSON metadata file. Call after GPU init.
+/// The PNG texture must be uploaded separately via the platform GPU backend.
+pub fn loadAtlasJson(json_data: []const u8) !void {
+    try atlas.loadFromJson(json_data);
+}
+
 /// SDF text atlas — single texture containing all glyphs as signed distance
 /// fields. Generated at build time from bundled fonts.
 ///
@@ -199,21 +208,21 @@ test "GPU init with Metal sets metal backend" {
 }
 
 test "SDFAtlas defaults" {
-    const atlas = SDFAtlas{};
-    try std.testing.expectEqual(@as(u32, 1024), atlas.texture_width);
-    try std.testing.expectEqual(@as(u32, 0), atlas.glyph_count);
-    try std.testing.expect(atlas.getGlyph('A') == null);
+    const a = SDFAtlas{};
+    try std.testing.expectEqual(@as(u32, 1024), a.texture_width);
+    try std.testing.expectEqual(@as(u32, 0), a.glyph_count);
+    try std.testing.expect(a.getGlyph('A') == null);
 }
 
 test "SDFAtlas loadFromJson parses metadata" {
-    var atlas = SDFAtlas{};
+    var a = SDFAtlas{};
     const json =
         \\{"atlas_width":512,"atlas_height":512,"glyph_count":1,"glyphs":[{"codepoint":65,"x":0,"y":0,"width":32,"height":40,"advance":28,"bearing_x":2,"bearing_y":38}]}
     ;
-    try atlas.loadFromJson(json);
-    try std.testing.expectEqual(@as(u32, 512), atlas.texture_width);
-    try std.testing.expectEqual(@as(u32, 1), atlas.glyph_count);
-    const g = atlas.getGlyph('A') orelse return error.GlyphNotFound;
+    try a.loadFromJson(json);
+    try std.testing.expectEqual(@as(u32, 512), a.texture_width);
+    try std.testing.expectEqual(@as(u32, 1), a.glyph_count);
+    const g = a.getGlyph('A') orelse return error.GlyphNotFound;
     try std.testing.expectEqual(@as(u32, 65), g.codepoint);
     try std.testing.expectEqual(@as(f32, 28.0), g.advance);
 }

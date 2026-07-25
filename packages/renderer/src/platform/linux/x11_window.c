@@ -705,6 +705,21 @@ void forge_backend_draw_svg(const char* svg, float x, float y, float w, float h,
         NSVGimage* image = nsvgParse(svg_copy, "px", 96.0f);
         if (!image) { free(svg_copy); return; }
 
+        /* Override shapes: for stroke-based icons (forge_icons), set stroke
+         * to white and keep stroke width. For fill-based icons, fill white. */
+        for (NSVGshape* shape = image->shapes; shape != NULL; shape = shape->next) {
+            if (shape->fill.type == NSVG_PAINT_NONE) {
+                /* Stroke-only icon: colorize stroke */
+                shape->stroke.type = NSVG_PAINT_COLOR;
+                shape->stroke.color = 0xFFFFFFFF;
+            } else {
+                /* Fill-based icon: fill white */
+                shape->fill.type = NSVG_PAINT_COLOR;
+                shape->fill.color = 0xFFFFFFFF;
+                shape->stroke.type = NSVG_PAINT_NONE;
+            }
+        }
+
         unsigned int rw = render_size;
         unsigned int rh = render_size;
         unsigned char* img = (unsigned char*)malloc((size_t)rw * rh * 4);

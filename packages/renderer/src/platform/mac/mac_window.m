@@ -162,11 +162,27 @@ typedef struct {
         return empty;
     }
     
-    // Override shapes with pure white so we can tint it in the shader
+    // Override shapes with pure white so we can tint it in the shader.
+    // For stroke-based icons (forge_icons use stroke="currentColor" fill="none"),
+    // we need to keep the stroke and color it white instead of discarding it.
     for (NSVGshape* shape = image->shapes; shape != NULL; shape = shape->next) {
-        shape->fill.type = NSVG_PAINT_COLOR;
-        shape->fill.color = 0xFFFFFFFF; // White
-        shape->stroke.type = NSVG_PAINT_NONE; // Optional: we could colorize strokes too
+        if (shape->stroke.type == NSVG_PAINT_COLOR || shape->stroke.type == NSVG_PAINT_NONE) {
+            // If shape has stroke (forge_icons) or no fill, render as stroke
+            if (shape->fill.type == NSVG_PAINT_NONE) {
+                // Stroke-only icon: set stroke to white, keep stroke width
+                shape->stroke.type = NSVG_PAINT_COLOR;
+                shape->stroke.color = 0xFFFFFFFF;
+            } else {
+                // Fill-based icon (octicons): fill white, no stroke
+                shape->fill.type = NSVG_PAINT_COLOR;
+                shape->fill.color = 0xFFFFFFFF;
+                shape->stroke.type = NSVG_PAINT_NONE;
+            }
+        } else {
+            shape->fill.type = NSVG_PAINT_COLOR;
+            shape->fill.color = 0xFFFFFFFF;
+            shape->stroke.type = NSVG_PAINT_NONE;
+        }
     }
     
     if (_currentX + w > 512) {

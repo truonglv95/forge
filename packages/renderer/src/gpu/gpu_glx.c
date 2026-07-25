@@ -264,6 +264,9 @@ int forge_gpu_glx_available(void* x11_display) {
 
 // --- SDF atlas texture upload ---
 
+/* Load SDF atlas from PNG file. Uses stb_image if available, otherwise
+ * reads raw RGBA. For now, the atlas is loaded by the Zig side which
+ * reads the PNG and passes raw pixel data. */
 void forge_gpu_glx_load_atlas(const unsigned char* pixel_data, int width, int height) {
     if (!g_gl_initialized) return;
     glGenTextures(1, &g_atlas_texture);

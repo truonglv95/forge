@@ -149,7 +149,12 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             if (!handled_cursor) renderer.Renderer.setCursor(0);
         }
 
-        if (wb.sidebar_visible) {
+        // Only set explorer hover when mouse is actually in the sidebar area.
+        // Before this fix, hovering the editor would also highlight rows in
+        // the explorer because we only checked sidebar_visible, not mouse X.
+        if (wb.sidebar_visible and geo.shell_mode == .ide and
+            event.x >= geo.explorer_x and event.x < geo.editor_x)
+        {
             state.explorer_hover_row = explorer_scroll.rowAtPoint(wb.explorer_scroll_y, event.y);
         } else {
             state.explorer_hover_row = null;
