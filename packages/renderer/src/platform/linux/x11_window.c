@@ -1112,6 +1112,11 @@ void forge_backend_create_window(const char* title, int width, int height) {
     g_width = width; g_height = height;
     int screen = DefaultScreen(g_display);
     g_window = XCreateSimpleWindow(g_display, RootWindow(g_display, screen), 0, 0, width, height, 0, BlackPixel(g_display, screen), BlackPixel(g_display, screen));
+    /* Set window background to the framebuffer clear colour (0x1E1E1E)
+     * so X11 Exposure events don't flash black before we redraw.
+     * Was BlackPixel which caused a black flash every time the WM sent
+     * an Expose event (every few seconds on some compositors). */
+    XSetWindowBackground(g_display, g_window, 0x1E1E1E);
     XStoreName(g_display, g_window, title ? title : "Forge");
     XSelectInput(g_display, g_window, ExposureMask|StructureNotifyMask|KeyPressMask|KeyReleaseMask|ButtonPressMask|ButtonReleaseMask|PointerMotionMask);
     Atom wm_delete = XInternAtom(g_display, "WM_DELETE_WINDOW", False);
