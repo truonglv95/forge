@@ -1724,39 +1724,24 @@ pub const Workbench = struct {
         custom_embedding_models: ?[]const u8,
         enable_hyde: bool,
     } {
-        // Read home settings first, then workspace settings (workspace
-        // takes priority). This matches the write path in ai_config_io.zig
-        // which tries workspace first, then home. Without reading both,
-        // settings saved to .forge/settings.toml were never loaded back.
-        var combined: std.ArrayList(u8) = .empty;
-        defer combined.deinit(allocator);
+        // Single source of truth: AI config is read ONLY from the workspace
+        // .forge/settings.toml. The previous code concatenated home +
+        // workspace, which produced duplicate [ai] sections when both files
+        // had AI keys — the parser's "last value wins" logic then produced
+        // inconsistent results depending on which file had which key.
+        //
+        // The home file (~/.forge/settings.toml) is still used for global
+        // UI settings (theme, font, etc.) but NOT for AI provider/model.
+        // This matches the write path in ai_config_io.zig which writes
+        // AI settings exclusively to the workspace file.
+        const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return error.FileNotFound;
+        const snap_const = workspace.snapshot.FileSnapshot.read(allocator, io, root, wp) catch return error.FileNotFound;
+        var snap = snap_const;
+        defer snap.deinit();
 
-        const home_settings = try workspace.global_store.joinHome(allocator, "settings.toml");
-        defer allocator.free(home_settings);
-        if (workspace.global_store.readAbsoluteFile(allocator, io, home_settings)) |content| {
-            defer allocator.free(content);
-            try combined.appendSlice(allocator, content);
-            if (content.len > 0 and content[content.len - 1] != '\n') {
-                try combined.append(allocator, '\n');
-            }
-        } else |_| {}
+        if (snap.content.len == 0) return error.FileNotFound;
 
-        // Also read workspace .forge/settings.toml
-        const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch null;
-        if (wp) |wsp| {
-            if (workspace.snapshot.FileSnapshot.read(allocator, io, root, wsp)) |snap_const| {
-                var snap = snap_const;
-                defer snap.deinit();
-                try combined.appendSlice(allocator, snap.content);
-                if (snap.content.len > 0 and snap.content[snap.content.len - 1] != '\n') {
-                    try combined.append(allocator, '\n');
-                }
-            } else |_| {}
-        }
-
-        if (combined.items.len == 0) return error.FileNotFound;
-
-        const config = parseAiSettingsContent(combined.items);
+        const config = parseAiSettingsContent(snap.content);
         const provider = try allocator.dupe(u8, config.ai_provider);
         errdefer allocator.free(provider);
         const model = if (config.ai_model) |value| try allocator.dupe(u8, value) else null;
@@ -1895,16 +1880,22 @@ pub const Workbench = struct {
             self.tab_switch_anim.triggerIn();
         }
         // Smooth scroll interpolation — exponentially approach the target.
-        // This produces a soft ~120ms settle that makes mouse-wheel / jump-to-def
+        // Produces a soft ~120ms settle that makes mouse-wheel / jump-to-def
         // feel less jarring without introducing visible lag during typing.
-        // Tuned per user feedback (Issue 2): previously 25 (~50ms) made
-        // bottom-up scroll feel "stuck" near the boundary; raising to 18
-        // (~120ms settle) gives the easing more time to settle smoothly.
+        //
+        // Jitter fix: the glyph renderer quantizes pen_y to integer pixels
+        // (FreeType bitmaps are rendered at integer positions). Animating
+        // below 1px produces no visible movement for several frames, then
+        // a sudden 1px jump — perceived as "jitter" at the end of the
+        // scroll. The snap threshold is 1.0px (was 0.25px): when the
+        // remaining delta is < 1px, the renderer can't display the
+        // difference anyway, so we snap immediately. This eliminates the
+        // "stuck then jump" effect at the end of bottom-up scrolls.
         const scroll_lerp = 1.0 - std.math.exp(-dt * 18.0);
         var scroll_anim_active = false;
         if (self.editor_scroll_target_y >= 0) {
             const delta = self.editor_scroll_target_y - self.editor_scroll_y;
-            if (@abs(delta) < 0.25) {
+            if (@abs(delta) < 1.0) {
                 self.editor_scroll_y = self.editor_scroll_target_y;
                 self.editor_scroll_target_y = -1;
             } else {
@@ -1914,7 +1905,7 @@ pub const Workbench = struct {
         }
         if (self.editor_scroll_target_x >= 0) {
             const delta = self.editor_scroll_target_x - self.editor_scroll_x;
-            if (@abs(delta) < 0.25) {
+            if (@abs(delta) < 1.0) {
                 self.editor_scroll_x = self.editor_scroll_target_x;
                 self.editor_scroll_target_x = -1;
             } else {
@@ -1924,7 +1915,7 @@ pub const Workbench = struct {
         }
         if (self.split_scroll_target_y >= 0) {
             const delta = self.split_scroll_target_y - self.split_scroll_y;
-            if (@abs(delta) < 0.25) {
+            if (@abs(delta) < 1.0) {
                 self.split_scroll_y = self.split_scroll_target_y;
                 self.split_scroll_target_y = -1;
             } else {
@@ -1934,7 +1925,7 @@ pub const Workbench = struct {
         }
         if (self.split_scroll_target_x >= 0) {
             const delta = self.split_scroll_target_x - self.split_scroll_x;
-            if (@abs(delta) < 0.25) {
+            if (@abs(delta) < 1.0) {
                 self.split_scroll_x = self.split_scroll_target_x;
                 self.split_scroll_target_x = -1;
             } else {

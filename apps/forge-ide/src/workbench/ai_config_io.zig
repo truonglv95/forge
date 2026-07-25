@@ -114,6 +114,85 @@ pub fn writeTomlQuotedString(
     try writeTomlKey(allocator, io, root, section_name, key, quoted);
 }
 
+/// Write both model AND provider to the [ai] section in a single file
+/// read-modify-write cycle. This avoids the race condition where two
+/// sequential calls (writeAiModel then writeAiProvider) each read the
+/// file independently — if the file had any edge cases, the two
+/// upserts could produce inconsistent results. By upserting both keys
+/// in a single pass through the file, we guarantee the [ai] section
+/// always has exactly one model and one provider key.
+pub fn writeAiChatConfig(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    model: []const u8,
+    provider: []const u8,
+) !void {
+    try writeMultipleKeys(allocator, io, root, "ai", &.{
+        .{ .key = "model", .value = model },
+        .{ .key = "provider", .value = provider },
+    });
+}
+
+/// Write both embedding model AND provider in a single file operation.
+pub fn writeAiEmbeddingConfig(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    model: []const u8,
+    provider: []const u8,
+) !void {
+    try writeMultipleKeys(allocator, io, root, "ai", &.{
+        .{ .key = "embedding_model", .value = model },
+        .{ .key = "embedding_provider", .value = provider },
+    });
+}
+
+/// Write multiple key-value pairs to the same TOML section in a single
+/// file read-modify-write. All keys are upserted into the section in
+/// one pass, guaranteeing no duplicate sections are created.
+const KeyValue = struct { key: []const u8, value: []const u8 };
+fn writeMultipleKeys(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    section_name: []const u8,
+    pairs: []const KeyValue,
+) !void {
+    if (pairs.len == 0) return;
+
+    const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return;
+
+    var workspace_content: []const u8 = "";
+    var snap_owned: ?workspace.snapshot.FileSnapshot = null;
+    if (workspace.snapshot.FileSnapshot.read(allocator, io, root, wp)) |snap_const| {
+        snap_owned = snap_const;
+        workspace_content = snap_owned.?.content;
+    } else |_| {}
+    defer if (snap_owned) |*s| s.deinit();
+
+    // Upsert each key sequentially in memory — no file I/O between
+    // upserts. upsertTomlValue handles edit-existing and create-new.
+    var current = try allocator.dupe(u8, workspace_content);
+    defer allocator.free(current);
+    for (pairs) |pair| {
+        var quoted_buf: [512]u8 = undefined;
+        const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{pair.value}) catch return;
+        const updated = @import("settings.zig").upsertTomlValue(allocator, current, section_name, pair.key, quoted) catch |err| {
+            if (err == error.WorkspaceFailed or err == error.AccessDenied) return;
+            return err;
+        };
+        allocator.free(current);
+        current = updated;
+    }
+
+    root.dir.createDirPath(io, ".forge") catch {};
+    workspace.atomic.replaceFile(io, root, wp, current) catch |err| {
+        if (err == error.WorkspaceFailed or err == error.AccessDenied) return;
+        return err;
+    };
+}
+
 pub fn writeAiProvider(
     allocator: std.mem.Allocator,
     io: std.Io,

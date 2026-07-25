@@ -608,14 +608,120 @@ void forge_backend_draw_rounded_rect(float xf, float yf, float wf, float hf, flo
     if (2 * rad > y1 - y0) rad = (y1 - y0) / 2;
     if (rad < 0) rad = 0;
     uint32_t color = rgba_to_bgra(r, g, b, a);
-    for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
-        int dx = 0, dy = 0;
-        if (x < x0 + rad && y < y0 + rad) { dx = x0 + rad - x; dy = y0 + rad - y; }
-        else if (x >= x1 - rad && y < y0 + rad) { dx = x - (x1 - rad - 1); dy = y0 + rad - y; }
-        else if (x < x0 + rad && y >= y1 - rad) { dx = x0 + rad - x; dy = y - (y1 - rad - 1); }
-        else if (x >= x1 - rad && y >= y1 - rad) { dx = x - (x1 - rad - 1); dy = y - (y1 - rad - 1); }
-        if (dx > 0 && dy > 0 && dx * dx + dy * dy > rad * rad) continue;
-        put_pixel(x, y, color);
+
+    /* Pre-compute clip rect bounds for direct framebuffer writes. */
+    int clip_x0 = 0, clip_y0 = 0, clip_x1 = g_width, clip_y1 = g_height;
+    if (g_clip_active) {
+        clip_x0 = g_clip_x; clip_y0 = g_clip_y;
+        clip_x1 = g_clip_x + g_clip_w; clip_y1 = g_clip_y + g_clip_h;
+    }
+    /* Clamp rect to clip rect. */
+    if (x0 < clip_x0) x0 = clip_x0;
+    if (y0 < clip_y0) y0 = clip_y0;
+    if (x1 > clip_x1) x1 = clip_x1;
+    if (y1 > clip_y1) y1 = clip_y1;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    /* Optimization: split the rounded rect into 5 regions:
+     *   - 4 corner regions (rad x rad each) — per-pixel circle test
+     *   - 1 inner region (the cross/plus shape) — fast row fill
+     * This avoids the per-pixel circle test for the majority of pixels.
+     * For a 400x300 rounded rect with rad=8, the corners are 8x8=64px
+     * each (256px total) vs 120,000px for the full rect — 468x fewer
+     * per-pixel iterations. */
+
+    /* Inner fill: rows that span the full width (y0+rad to y1-rad-1)
+     * and the center columns of the top/bottom corner rows. */
+    int inner_x0 = x0 + rad;
+    int inner_x1 = x1 - rad;
+    if (inner_x0 > inner_x1) inner_x0 = x0; /* rect too narrow for corners */
+
+    /* Fast fill the center band (full width, no corners). */
+    int center_y0 = y0 + rad;
+    int center_y1 = y1 - rad;
+    if (center_y0 < y0) center_y0 = y0;
+    if (center_y1 > y1) center_y1 = y1;
+    if (center_y0 < center_y1 && inner_x1 > inner_x0) {
+        int fill_count = inner_x1 - inner_x0;
+        for (int y = center_y0; y < center_y1; y++) {
+            uint32_t* row = &g_pixels[(size_t)y * g_width + inner_x0];
+            int x = 0;
+            for (; x + 4 <= fill_count; x += 4) {
+                row[x] = color; row[x+1] = color; row[x+2] = color; row[x+3] = color;
+            }
+            for (; x < fill_count; x++) row[x] = color;
+        }
+    }
+
+    /* Fill the left and right strips of the top and bottom corner rows
+     * (the parts of the corner rows that are NOT in the corner circle). */
+    if (center_y0 > y0) {
+        /* Top corner rows: y0 to center_y0-1 */
+        for (int y = y0; y < center_y0; y++) {
+            uint32_t* row = &g_pixels[(size_t)y * g_width];
+            /* Left strip: x0 to inner_x0-1 (only the non-corner part) */
+            /* Right strip: inner_x1 to x1-1 (only the non-corner part) */
+            /* For these rows, the full width between inner_x0 and inner_x1
+             * is interior, so fill that. */
+            if (inner_x1 > inner_x0) {
+                int fill_count = inner_x1 - inner_x0;
+                for (int x = 0; x < fill_count; x++) row[inner_x0 + x] = color;
+            }
+        }
+    }
+    if (center_y1 < y1) {
+        /* Bottom corner rows: center_y1 to y1-1 */
+        for (int y = center_y1; y < y1; y++) {
+            uint32_t* row = &g_pixels[(size_t)y * g_width];
+            if (inner_x1 > inner_x0) {
+                int fill_count = inner_x1 - inner_x0;
+                for (int x = 0; x < fill_count; x++) row[inner_x0 + x] = color;
+            }
+        }
+    }
+
+    /* Now handle the 4 corner regions with the per-pixel circle test.
+     * Only iterate the corner pixels — much fewer than the full rect. */
+
+    /* Top-left corner: center at (x0+rad, y0+rad) */
+    for (int y = y0; y < y0 + rad && y < center_y0; y++) {
+        uint32_t* row = &g_pixels[(size_t)y * g_width];
+        for (int x = x0; x < x0 + rad && x < inner_x0; x++) {
+            int dx = x0 + rad - x;
+            int dy = y0 + rad - y;
+            if (dx > 0 && dy > 0 && dx * dx + dy * dy > rad * rad) continue;
+            row[x] = color;
+        }
+    }
+    /* Top-right corner: center at (x1-rad-1, y0+rad) */
+    for (int y = y0; y < y0 + rad && y < center_y0; y++) {
+        uint32_t* row = &g_pixels[(size_t)y * g_width];
+        for (int x = inner_x1; x < x1; x++) {
+            int dx = x - (x1 - rad - 1);
+            int dy = y0 + rad - y;
+            if (dx > 0 && dy > 0 && dx * dx + dy * dy > rad * rad) continue;
+            row[x] = color;
+        }
+    }
+    /* Bottom-left corner: center at (x0+rad, y1-rad-1) */
+    for (int y = center_y1; y < y1; y++) {
+        uint32_t* row = &g_pixels[(size_t)y * g_width];
+        for (int x = x0; x < x0 + rad && x < inner_x0; x++) {
+            int dx = x0 + rad - x;
+            int dy = y - (y1 - rad - 1);
+            if (dx > 0 && dy > 0 && dx * dx + dy * dy > rad * rad) continue;
+            row[x] = color;
+        }
+    }
+    /* Bottom-right corner: center at (x1-rad-1, y1-rad-1) */
+    for (int y = center_y1; y < y1; y++) {
+        uint32_t* row = &g_pixels[(size_t)y * g_width];
+        for (int x = inner_x1; x < x1; x++) {
+            int dx = x - (x1 - rad - 1);
+            int dy = y - (y1 - rad - 1);
+            if (dx > 0 && dy > 0 && dx * dx + dy * dy > rad * rad) continue;
+            row[x] = color;
+        }
     }
 }
 

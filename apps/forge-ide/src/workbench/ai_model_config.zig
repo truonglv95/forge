@@ -153,8 +153,15 @@ pub fn select(wb: anytype, kind: ModelKind, index: usize) !void {
             wb.agent_ui.model = try wb.allocator.dupe(u8, model.id);
             wb.allocator.free(wb.agent_ui.provider);
             wb.agent_ui.provider = try wb.allocator.dupe(u8, model.provider);
-            try ai_config_io.writeAiModel(wb.allocator, wb.io, wb.workspace_root, model.id);
-            try ai_config_io.writeAiProvider(wb.allocator, wb.io, wb.workspace_root, model.provider);
+            // Write both model AND provider in a single file operation.
+            // The previous code called writeAiModel then writeAiProvider
+            // sequentially — each call read the file, upserted one key,
+            // and wrote it back. If the file had any parsing edge cases
+            // (e.g., duplicate [ai] sections from old writes), the two
+            // sequential upserts could produce inconsistent results.
+            // writeAiChatConfig reads the file once, upserts both keys
+            // in memory, and writes back atomically.
+            try ai_config_io.writeAiChatConfig(wb.allocator, wb.io, wb.workspace_root, model.id, model.provider);
             if (model.base_url) |url| try applyChatBaseUrl(wb, model.provider, url);
         },
         .embedding => {
@@ -162,8 +169,7 @@ pub fn select(wb: anytype, kind: ModelKind, index: usize) !void {
             wb.agent_ui.embedding_model = try wb.allocator.dupe(u8, model.id);
             if (wb.agent_ui.embedding_provider) |old| wb.allocator.free(old);
             wb.agent_ui.embedding_provider = try wb.allocator.dupe(u8, model.provider);
-            try ai_config_io.writeAiEmbeddingModel(wb.allocator, wb.io, wb.workspace_root, model.id);
-            try ai_config_io.writeAiEmbeddingProvider(wb.allocator, wb.io, wb.workspace_root, model.provider);
+            try ai_config_io.writeAiEmbeddingConfig(wb.allocator, wb.io, wb.workspace_root, model.id, model.provider);
             if (model.base_url) |url| {
                 if (wb.agent_ui.embedding_url) |old| wb.allocator.free(old);
                 wb.agent_ui.embedding_url = try wb.allocator.dupe(u8, url);
