@@ -7,23 +7,43 @@ pub fn handleFindKeys(wb: *Workbench, event: renderer.KeyEvent) void {
         @import("../../workbench/editor_ops.zig").closeEditorOverlay(wb);
         return;
     }
+    // Shift+Enter: previous match (regardless of replace mode)
+    if (event.keycode == 36 and event.modifiers & shared.shift_mask != 0) {
+        wb.dispatch(.editor_find_prev) catch |err| shared.reportInputError(wb, "Find previous", err);
+        return;
+    }
     if (event.keycode == 36) {
         if (wb.find_bar.replace_mode) {
-            if (wb.activeBuffer()) |buf| {
-                wb.find_bar.replaceCurrent(buf) catch |err| shared.reportInputError(wb, "Replace match", err);
-                @import("../../workbench/editor_ops.zig").scrollEditorToCursor(wb);
+            if (wb.find_bar.focus_replace) {
+                // In replace mode, when focused on replace field, Enter replaces
+                // current match and advances to next.
+                if (wb.activeBuffer()) |buf| {
+                    wb.find_bar.replaceCurrent(buf) catch |err| shared.reportInputError(wb, "Replace match", err);
+                    @import("../../workbench/editor_ops.zig").scrollEditorToCursor(wb);
+                }
+            } else {
+                // Find field focused: Enter goes to next match
+                wb.dispatch(.editor_find_next) catch |err| shared.reportInputError(wb, "Find next", err);
             }
         } else {
             wb.dispatch(.editor_find_next) catch |err| shared.reportInputError(wb, "Find next", err);
         }
         return;
     }
+    if (event.keycode == 14 and event.modifiers & (shared.cmd_mask | shared.shift_mask) == (shared.cmd_mask | shared.shift_mask)) {
+        wb.dispatch(.editor_find_prev) catch |err| shared.reportInputError(wb, "Find previous", err);
+        return;
+    }
     if (event.keycode == 14 and event.modifiers & shared.cmd_mask != 0) {
         wb.dispatch(.editor_find_next) catch |err| shared.reportInputError(wb, "Find next", err);
         return;
     }
-    if (event.keycode == 14 and event.modifiers & (shared.cmd_mask | shared.shift_mask) == (shared.cmd_mask | shared.shift_mask)) {
-        wb.dispatch(.editor_find_prev) catch |err| shared.reportInputError(wb, "Find previous", err);
+    // Cmd+Enter in replace mode: replace ALL matches
+    if (event.keycode == 36 and event.modifiers & shared.cmd_mask != 0 and wb.find_bar.replace_mode) {
+        if (wb.activeBuffer()) |buf| {
+            _ = wb.find_bar.replaceAll(buf) catch |err| shared.reportInputError(wb, "Replace all", err);
+            @import("../../workbench/editor_ops.zig").scrollEditorToCursor(wb);
+        }
         return;
     }
     if (event.keycode == 48 and wb.find_bar.replace_mode) {
