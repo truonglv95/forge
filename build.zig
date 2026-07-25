@@ -124,7 +124,7 @@ pub fn build(b: *std.Build) void {
             renderer.linkSystemLibrary("Xext", .{});
             renderer.linkSystemLibrary("freetype", .{});
             renderer.linkSystemLibrary("fontconfig", .{});
-            // GPU backend via GLX (desktop OpenGL) — uses libGL.so already installed.
+            // GPU backend via GLX — only on Linux. Guard with #ifdef __linux__.
             renderer.addCSourceFile(.{
                 .file = b.path("packages/renderer/src/gpu/gpu_glx.c"),
                 .flags = &.{"-DFORGE_HAS_GLX"},
