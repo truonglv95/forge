@@ -12,6 +12,7 @@ const lsp = @import("forge-lsp");
 const theme_mod = @import("../theme.zig");
 const editor_scroll = @import("../../editor/editor_scroll.zig");
 const tabs_ui = @import("../../editor/tabs.zig");
+const state = @import("../../core/state.zig");
 const Workbench = @import("../../../workbench.zig").Workbench;
 
 pub const height: f32 = 22;
@@ -76,8 +77,15 @@ pub fn drawBreadcrumbs(
     // Draw file basename first.
     const basename = std.fs.path.basename(file_path);
     var x = editor_x + 8;
+    const basename_w = editor_scroll.cursorX(basename, 0, font_size);
+    // Hover highlight for the file crumb.
+    if (state.last_mouse_y >= y and state.last_mouse_y < y + height and
+        state.last_mouse_x >= x and state.last_mouse_x < x + basename_w)
+    {
+        renderer.Renderer.drawRoundedRect(x - 4, y + 3, basename_w + 8, height - 6, 3, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 0.06 });
+    }
     renderer.Renderer.drawText(basename, x, y + 4, font_size, theme_mod.color(theme.colors.text_secondary));
-    x += editor_scroll.cursorX(basename, 0, font_size) + 6;
+    x += basename_w + 6;
 
     // Draw separator + symbol names.
     for (crumbs) |sym| {
@@ -93,8 +101,15 @@ pub fn drawBreadcrumbs(
             .Enum, .EnumMember => theme_mod.color(theme.colors.type),
             else => theme_mod.color(theme.colors.text_primary),
         };
+        const name_w = editor_scroll.cursorX(sym.name, 0, font_size);
+        // Hover highlight for the symbol crumb.
+        if (state.last_mouse_y >= y and state.last_mouse_y < y + height and
+            state.last_mouse_x >= x and state.last_mouse_x < x + name_w)
+        {
+            renderer.Renderer.drawRoundedRect(x - 3, y + 3, name_w + 6, height - 6, 3, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 0.06 });
+        }
         renderer.Renderer.drawText(sym.name, x, y + 4, font_size, color);
-        x += editor_scroll.cursorX(sym.name, 0, font_size) + 4;
+        x += name_w + 4;
 
         // Stop if we run out of space.
         if (x > editor_x + editor_w - 50) break;

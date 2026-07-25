@@ -132,7 +132,7 @@ fn drawIcon(action: Action, btn: Button, hover: bool) void {
     const c = color(btn.enabled, btn.active, hover);
     const svg = switch (action) {
         .toggle_sidebar => renderer.forge_icons.folder,
-        .nav_back => renderer.forge_icons.chevron_right,
+        .nav_back => renderer.forge_icons.chevron_left,
         .nav_forward => renderer.forge_icons.chevron_right,
         .toggle_bottom_panel => renderer.forge_icons.search,
         .toggle_agent => renderer.forge_icons.sparkle,
