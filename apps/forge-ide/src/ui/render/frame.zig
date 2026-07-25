@@ -107,9 +107,10 @@ pub fn onRenderFrame() void {
         state.perf_agent_ms = 0;
 
         if (geo.shell_mode == .ide) {
-            if (wb.sidebar_visible and geo.explorer_w > 0) {
+            if (wb.sidebar_visible and geo.explorer_w > 0 and (state.dirty_full or state.dirty_sidebar)) {
                 var sidebar_span = telemetry.startSpan("render", "sidebar");
                 const sidebar_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+                renderer.Renderer.setClipRect(0, layout.header_height, geo.explorer_x + geo.explorer_w, side_h);
                 sidebar_render.drawActivityBar(wb, geo.explorer_w, frame_alloc);
                 renderer.Renderer.drawRect(geo.explorer_x - 1, layout.header_height, 1, side_h, subtle_border);
                 renderer.Renderer.drawRect(geo.editor_x - 1, layout.header_height, 1, side_h, subtle_border);
@@ -122,36 +123,49 @@ pub fn onRenderFrame() void {
                     .outline => outline_panel.drawOutline(wb, geo.explorer_x, geo.explorer_w, h),
                     .ai => ai_render.drawAiPanel(wb, geo.explorer_x, geo.explorer_w, h),
                 }
+                renderer.Renderer.clearClipRect();
                 const sidebar_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 state.perf_sidebar_ms = @floatFromInt(sidebar_end_ms - sidebar_start_ms);
                 sidebar_span.end();
             }
-            var editor_span = telemetry.startSpan("render", "editor");
-            const editor_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
-            editor_render.drawEditorPanel(wb, editor_buf, geo.editor_x, geo.editor_w, geo.editor_h, w);
-            const editor_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
-            state.perf_editor_ms = @floatFromInt(editor_end_ms - editor_start_ms);
-            editor_span.end();
-            if (wb.bottom_panel_visible and geo.task_panel_h > 0) {
+            if (state.dirty_full or state.dirty_editor) {
+                var editor_span = telemetry.startSpan("render", "editor");
+                const editor_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+                renderer.Renderer.setClipRect(geo.editor_x, layout.header_height, geo.editor_w, geo.editor_h);
+                editor_render.drawEditorPanel(wb, editor_buf, geo.editor_x, geo.editor_w, geo.editor_h, w);
+                renderer.Renderer.clearClipRect();
+                const editor_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+                state.perf_editor_ms = @floatFromInt(editor_end_ms - editor_start_ms);
+                editor_span.end();
+            }
+            if (wb.bottom_panel_visible and geo.task_panel_h > 0 and (state.dirty_full or state.dirty_bottom_panel)) {
                 var panel_span = telemetry.startSpan("render", "panel");
                 const panel_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+                renderer.Renderer.setClipRect(geo.editor_x, geo.task_panel_y, geo.editor_w, geo.task_panel_h);
                 task_panel_render.drawTaskPanel(wb, geo.editor_x, geo.editor_w, geo.task_panel_y, geo.task_panel_h);
+                renderer.Renderer.clearClipRect();
                 const panel_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 state.perf_panel_ms = @floatFromInt(panel_end_ms - panel_start_ms);
                 panel_span.end();
             }
         }
-        if (wb.agent_panel_visible and geo.agent_w > 0) {
+        if (wb.agent_panel_visible and geo.agent_w > 0 and (state.dirty_full or state.dirty_agent)) {
             var agent_span = telemetry.startSpan("render", "agent");
             const agent_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+            renderer.Renderer.setClipRect(geo.agent_x, layout.header_height, geo.agent_w, side_h);
             renderer.Renderer.drawRect(geo.agent_x, layout.header_height, geo.agent_w, side_h, .{ .r = 0.055, .g = 0.055, .b = 0.06, .a = 1.0 });
             renderer.Renderer.drawRect(geo.agent_x - 1, layout.header_height, 1, side_h, subtle_border);
             agent_render.drawAgentPanel(wb, geo.agent_x, geo.agent_w, h);
+            renderer.Renderer.clearClipRect();
             const agent_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
             state.perf_agent_ms = @floatFromInt(agent_end_ms - agent_start_ms);
             agent_span.end();
         }
-        status_bar_render.drawStatusBar(wb, w, h, geo.shell_mode);
+        if (state.dirty_full or state.dirty_status_bar) {
+            renderer.Renderer.setClipRect(0, h - layout.status_height, w, layout.status_height);
+            status_bar_render.drawStatusBar(wb, w, h, geo.shell_mode);
+            renderer.Renderer.clearClipRect();
+        }
         // P1-4: Toast notifications (bottom-right corner, on top of everything).
         notifications_render.drawNotifications(wb, w, h);
         header_toolbar.drawHoverTooltip(w, wb.headerToolbarState(), state.header_hover_action);
