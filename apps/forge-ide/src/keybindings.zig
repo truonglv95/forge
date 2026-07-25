@@ -106,6 +106,10 @@ pub const Registry = struct {
             .{ .key = "cmd+alt+right", .palette_id = "terminal.focus_switch" },
             // Preferences
             .{ .key = "cmd+k+cmd+s", .palette_id = "keybinding.open_editor" },
+            // Proactive AI suggestions
+            .{ .key = "cmd+shift+e", .palette_id = "ai.fix_diagnostic" },
+            .{ .key = "cmd+shift+i", .palette_id = "ai.implement_todo" },
+            .{ .key = "cmd+shift+r", .palette_id = "ai.review_selection" },
             // P0-2: Inline edit (Cmd+K already maps to agent.edit_selection,
             // which opens the inline_edit state when a selection is active).
             .{ .key = "enter", .palette_id = "inline_edit.submit" },

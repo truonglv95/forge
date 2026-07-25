@@ -115,6 +115,15 @@ pub const Workbench = struct {
     editor: EditorController,
     agent_ui: AgentController,
     debug: DebugController,
+    /// RAG index for codebase-aware completion and semantic search.
+    /// Initialized lazily on first use (or when indexing is enabled).
+    rag_index: ?ai.rag.RagIndex = null,
+    /// Completion cache — avoids redundant LLM calls for same cursor position.
+    completion_cache: ?ai.inline_completion.CompletionCache = null,
+    /// Debounce state for inline completion requests.
+    completion_debounce: ai.inline_completion.DebounceState = .{},
+    /// Proactive completion — when true, auto-trigger completion after 1s idle.
+    proactive_completion_enabled: bool = true,
 
     lsp_initialized: bool = false,
     marketplace_catalog: ?plugin.MarketplaceCatalog = null,
@@ -576,6 +585,8 @@ pub const Workbench = struct {
             self.editor.deinit();
             self.agent_ui.deinit();
             self.debug.deinit();
+            if (self.rag_index) |*idx| idx.deinit();
+            if (self.completion_cache) |*cache| cache.deinit();
         }
         self.wrap_cache.deinit();
         self.max_line_len_cache.deinit();

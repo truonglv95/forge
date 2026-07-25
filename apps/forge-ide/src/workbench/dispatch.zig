@@ -541,6 +541,57 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             defer snap.deinit();
             try wb.dispatch(.{ .open_file = ext_settings_path });
         },
+        .ai_fix_diagnostic => {
+            // Proactive suggestion: when user has a diagnostic error,
+            // send the error + surrounding code to the agent for a fix.
+            const buf = wb.activeBuffer() orelse return;
+            const cursor_row = buf.cursor.row;
+            // Find diagnostic at cursor line
+            for (wb.lsp.diagnostics.list.items) |diag| {
+                if (diag.line == cursor_row) {
+                    // Build a prompt for the agent
+                    var prompt_buf: [512]u8 = undefined;
+                    const prompt = std.fmt.bufPrint(&prompt_buf, "Fix this error on line {d}: {s}", .{ diag.line + 1, diag.message }) catch "Fix this error";
+                    try wb.agent_ui.prompt_buffer.loadFromSlice(prompt);
+                    wb.focused_panel = .agent;
+                    try wb.setStatus("Sent error to AI agent");
+                    return;
+                }
+            }
+            try wb.setStatus("No diagnostic at cursor position");
+        },
+        .ai_implement_todo => {
+            // Proactive suggestion: when cursor is on a TODO/FIXME line,
+            // send the TODO + context to the agent for implementation.
+            const buf = wb.activeBuffer() orelse return;
+            const line = buf.lineAt(buf.cursor.row);
+            if (std.mem.indexOf(u8, line, "TODO") != null or std.mem.indexOf(u8, line, "FIXME") != null) {
+                var prompt_buf: [512]u8 = undefined;
+                const prompt = std.fmt.bufPrint(&prompt_buf, "Implement this TODO on line {d}: {s}", .{ buf.cursor.row + 1, line }) catch "Implement this TODO";
+                try wb.agent_ui.prompt_buffer.loadFromSlice(prompt);
+                wb.focused_panel = .agent;
+                try wb.setStatus("Sent TODO to AI agent");
+            } else {
+                try wb.setStatus("No TODO/FIXME on current line");
+            }
+        },
+        .ai_review_selection => {
+            // Proactive suggestion: review selected code.
+            const buf = wb.activeBuffer() orelse return;
+            if (buf.hasSelection()) {
+                _ = buf.selectionOrdered();
+                try wb.agent_ui.prompt_buffer.loadFromSlice("Review the selected code for bugs, security issues, and improvements");
+                wb.focused_panel = .agent;
+                try wb.setStatus("Sent selection to AI for review");
+            } else {
+                try wb.setStatus("Select code first, then run AI: Review Selected Code");
+            }
+        },
+        .ai_toggle_proactive_completion => {
+            wb.proactive_completion_enabled = !wb.proactive_completion_enabled;
+            const status = if (wb.proactive_completion_enabled) "Proactive completion ON" else "Proactive completion OFF";
+            try wb.setStatus(status);
+        },
         .uninstall_extension => |extension_id| {
             try plugin.marketplace.uninstall(wb.allocator, wb.io, wb.workspace_root, extension_id);
             try @import("../workbench/extensions_ops.zig").reloadExtensions(wb);

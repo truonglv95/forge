@@ -1,3 +1,8 @@
+//! Inline code completion — AI-powered multi-line FIM (Fill-In-the-Middle)
+//! completion engine with caching, debounce, and codebase-aware context.
+//!
+//! This is Forge's equivalent of Cursor Tab: proactive multi-line completions
+//! that use RAG-retrieved code context for higher accuracy.
 const std = @import("std");
 const workspace = @import("forge-workspace");
 const provider = @import("provider.zig");
@@ -19,18 +24,152 @@ pub const CompletionRequest = struct {
     language: ?[]const u8 = null,
     recent_lines: []const []const u8 = &.{},
     file_header: ?[]const u8 = null,
-    max_tokens: u32 = 64,
+    /// RAG-retrieved similar code chunks for context-aware completion.
+    similar_chunks: []const []const u8 = &.{},
+    /// Symbols from LSP document symbols for the current file.
+    file_symbols: []const []const u8 = &.{},
+    max_tokens: u32 = 256, // Increased from 64 for multi-line
     timeout_ms: u64 = 3000,
+    /// Whether this is a proactive (auto-triggered) completion.
+    proactive: bool = false,
 };
 
 pub const CompletionResult = struct {
     text: []const u8,
     is_multiline: bool,
     confidence: f32 = 0,
+    /// Number of lines in the completion.
+    line_count: usize = 1,
 
     pub fn deinit(self: *CompletionResult, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
         self.* = undefined;
+    }
+};
+
+/// Cache key for completion results — keyed by (file, row, col, buffer_hash).
+const CacheKey = struct {
+    file_hash: u64,
+    row: u32,
+    col: u32,
+    buffer_revision: u64,
+
+    pub fn hash(self: CacheKey) u64 {
+        var h = std.hash.Wyhash.init(0);
+        h.update(std.mem.asBytes(&self.file_hash));
+        h.update(std.mem.asBytes(&self.row));
+        h.update(std.mem.asBytes(&self.col));
+        h.update(std.mem.asBytes(&self.buffer_revision));
+        return h.final();
+    }
+};
+
+/// Completion cache — avoids redundant LLM calls for the same cursor position.
+/// Entries are invalidated when the buffer revision changes.
+pub const CompletionCache = struct {
+    allocator: std.mem.Allocator,
+    entries: [64]?Entry = [_]?Entry{null} ** 64,
+    hits: u64 = 0,
+    misses: u64 = 0,
+
+    const Entry = struct {
+        key_hash: u64,
+        text: []const u8,
+        is_multiline: bool,
+        confidence: f32,
+        timestamp: i64,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) CompletionCache {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *CompletionCache) void {
+        for (&self.entries) |*e| {
+            if (e.*) |entry| {
+                self.allocator.free(entry.text);
+                e.* = null;
+            }
+        }
+    }
+
+    pub fn get(self: *CompletionCache, key: CacheKey) ?CompletionResult {
+        const h = key.hash();
+        const slot = h % self.entries.len;
+        if (self.entries[slot]) |entry| {
+            if (entry.key_hash == h) {
+                self.hits += 1;
+                const text = self.allocator.dupe(u8, entry.text) catch return null;
+                return .{
+                    .text = text,
+                    .is_multiline = entry.is_multiline,
+                    .confidence = entry.confidence,
+                };
+            }
+        }
+        self.misses += 1;
+        return null;
+    }
+
+    pub fn put(self: *CompletionCache, key: CacheKey, result: CompletionResult) void {
+        const h = key.hash();
+        const slot = h % self.entries.len;
+        if (self.entries[slot]) |old| {
+            self.allocator.free(old.text);
+        }
+        const text = self.allocator.dupe(u8, result.text) catch return;
+        self.entries[slot] = .{
+            .key_hash = h,
+            .text = text,
+            .is_multiline = result.is_multiline,
+            .confidence = result.confidence,
+            .timestamp = 0,
+        };
+    }
+
+    pub fn invalidate(self: *CompletionCache) void {
+        for (&self.entries) |*e| {
+            if (e.*) |entry| {
+                self.allocator.free(entry.text);
+                e.* = null;
+            }
+        }
+    }
+};
+
+/// Debounce state — prevents excessive LLM calls during rapid typing.
+pub const DebounceState = struct {
+    last_request_time: f64 = 0,
+    last_row: u32 = 0,
+    last_col: u32 = 0,
+    /// Minimum time between completion requests (in seconds).
+    min_delay: f64 = 0.35, // 350ms
+
+    /// Returns true if a new completion request should be sent.
+    pub fn shouldRequest(self: *DebounceState, current_time: f64, row: u32, col: u32) bool {
+        // If cursor moved to a different line, allow immediately.
+        if (row != self.last_row) {
+            self.last_request_time = current_time;
+            self.last_row = row;
+            self.last_col = col;
+            return true;
+        }
+        // If same position, don't re-request.
+        if (col == self.last_col) return false;
+        // Check debounce timer.
+        if (current_time - self.last_request_time < self.min_delay) {
+            self.last_col = col;
+            return false;
+        }
+        self.last_request_time = current_time;
+        self.last_row = row;
+        self.last_col = col;
+        return true;
+    }
+
+    /// Check if the user has been idle long enough for proactive completion.
+    pub fn isIdle(self: *const DebounceState, current_time: f64) bool {
+        return current_time - self.last_request_time >= 1.0;
     }
 };
 
@@ -60,6 +199,13 @@ pub fn detectLanguage(file_path: []const u8) []const u8 {
     return "text";
 }
 
+/// Build a FIM (Fill-In-the-Middle) prompt with codebase context.
+/// Includes:
+/// - File header (imports, type declarations)
+/// - Code before cursor (prefix, up to 2048 chars)
+/// - Code after cursor (suffix, up to 512 chars)
+/// - RAG-retrieved similar code chunks (for codebase-aware completion)
+/// - LSP document symbols (for knowing what functions exist in the file)
 pub fn buildPrompt(allocator: std.mem.Allocator, request: CompletionRequest) ![]u8 {
     const language = request.language orelse detectLanguage(request.file_path);
     const prefix = if (request.prefix.len > 2048) request.prefix[request.prefix.len - 2048 ..] else request.prefix;
@@ -68,39 +214,76 @@ pub fn buildPrompt(allocator: std.mem.Allocator, request: CompletionRequest) ![]
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "You are an inline code completion engine. ");
-    try buf.appendSlice(allocator, "Complete the code at the cursor position marked by <CURSOR>. ");
-    try buf.appendSlice(allocator, "Return ONLY the completion text (no markdown fences, no explanation). ");
-    try buf.appendSlice(allocator, "The completion should be the text that replaces <CURSOR>.\n\n");
+    // System prompt — instruct the model to complete code only.
+    try buf.appendSlice(allocator, "You are an advanced code completion engine. ");
+    try buf.appendSlice(allocator, "Complete the code at <CURSOR>. ");
+    try buf.appendSlice(allocator, "Return ONLY the completion text — no markdown, no explanation. ");
+    try buf.appendSlice(allocator, "Complete as many lines as needed. ");
+    try buf.appendSlice(allocator, "Match the existing code style and indentation.\n\n");
+
     {
         const lang_line = std.fmt.allocPrint(allocator, "Language: {s}\n", .{language}) catch return error.OutOfMemory;
         defer allocator.free(lang_line);
         try buf.appendSlice(allocator, lang_line);
     }
     {
-        const file_line = std.fmt.allocPrint(allocator, "File: {s}\n\n", .{request.file_path}) catch return error.OutOfMemory;
+        const file_line = std.fmt.allocPrint(allocator, "File: {s}\n", .{request.file_path}) catch return error.OutOfMemory;
         defer allocator.free(file_line);
         try buf.appendSlice(allocator, file_line);
     }
 
+    // File header (imports, declarations)
     if (request.file_header) |header| {
         const header_clipped = if (header.len > 512) header[0..512] else header;
-        try buf.appendSlice(allocator, "--- file header ---\n");
+        try buf.appendSlice(allocator, "\n--- file header ---\n");
         try buf.appendSlice(allocator, header_clipped);
-        try buf.appendSlice(allocator, "\n--- end header ---\n\n");
+        try buf.appendSlice(allocator, "\n--- end header ---\n");
     }
 
-    try buf.appendSlice(allocator, "--- code before cursor ---\n");
+    // File symbols (from LSP — helps the model know what exists)
+    if (request.file_symbols.len > 0) {
+        try buf.appendSlice(allocator, "\n--- symbols in this file ---\n");
+        for (request.file_symbols) |sym| {
+            try buf.appendSlice(allocator, sym);
+            try buf.append(allocator, '\n');
+        }
+        try buf.appendSlice(allocator, "--- end symbols ---\n");
+    }
+
+    // RAG-retrieved similar code (codebase-aware completion)
+    if (request.similar_chunks.len > 0) {
+        try buf.appendSlice(allocator, "\n--- similar code from codebase ---\n");
+        for (request.similar_chunks) |chunk| {
+            const clipped = if (chunk.len > 256) chunk[0..256] else chunk;
+            try buf.appendSlice(allocator, clipped);
+            try buf.appendSlice(allocator, "\n---\n");
+        }
+        try buf.appendSlice(allocator, "--- end similar code ---\n");
+    }
+
+    // Recent lines (what the user just typed)
+    if (request.recent_lines.len > 0) {
+        try buf.appendSlice(allocator, "\n--- recent edits ---\n");
+        for (request.recent_lines) |line| {
+            try buf.appendSlice(allocator, line);
+            try buf.append(allocator, '\n');
+        }
+        try buf.appendSlice(allocator, "--- end recent ---\n");
+    }
+
+    // Main FIM context
+    try buf.appendSlice(allocator, "\n--- code before cursor ---\n");
     try buf.appendSlice(allocator, prefix);
     try buf.appendSlice(allocator, "\n<CURSOR>\n");
     try buf.appendSlice(allocator, "--- code after cursor ---\n");
     try buf.appendSlice(allocator, suffix);
     try buf.appendSlice(allocator, "\n--- end ---\n\n");
-    try buf.appendSlice(allocator, "Completion (text only, no fences):\n");
+    try buf.appendSlice(allocator, "Completion (text only):\n");
 
     return buf.toOwnedSlice(allocator);
 }
 
+/// Request a completion from the provider. Supports caching and cancellation.
 pub fn complete(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -109,8 +292,6 @@ pub fn complete(
     provider_options: provider_factory.Options,
     cancel_token: ?*const kernel.cancellation.CancellationToken,
 ) CompletionError!CompletionResult {
-    // Pass through all provider options (including fake_response) so the fake
-    // provider can return a deterministic completion in tests.
     var provider_handle = provider_factory.create(allocator, io, environ_map, provider_options) catch return error.ProviderFailed;
     defer provider_handle.deinit(allocator);
 
@@ -121,13 +302,9 @@ pub fn complete(
     const prompt = try buildPrompt(allocator, request);
     defer allocator.free(prompt);
 
-    // Use the streaming ask API for inline completion. This avoids the
-    // tool-loop completeTurn path (which returns tool_call, not text) and
-    // works with both fake and real providers.
     var response_writer: std.Io.Writer.Allocating = .init(allocator);
     defer response_writer.deinit();
 
-    // Create a non-cancelling token if none provided (ask API requires one).
     var no_cancel_source = kernel.cancellation.CancellationTokenSource.init(allocator) catch return error.OutOfMemory;
     defer no_cancel_source.deinit();
     var no_cancel_token = no_cancel_source.getToken();
@@ -139,9 +316,51 @@ pub fn complete(
     if (cleaned.len == 0) return error.NoCompletion;
 
     const is_multiline = std.mem.indexOfScalar(u8, cleaned, '\n') != null;
+    const line_count = countLines(cleaned);
     const text = allocator.dupe(u8, cleaned) catch return error.OutOfMemory;
 
-    return .{ .text = text, .is_multiline = is_multiline, .confidence = 0.5 };
+    // Confidence heuristic: multi-line completions with proper indentation
+    // get higher confidence than single-word completions.
+    const confidence: f32 = if (is_multiline and line_count > 2)
+        0.8
+    else if (is_multiline)
+        0.6
+    else if (text.len > 10)
+        0.5
+    else
+        0.3;
+
+    return .{
+        .text = text,
+        .is_multiline = is_multiline,
+        .confidence = confidence,
+        .line_count = line_count,
+    };
+}
+
+/// Accept the first line of a multi-line completion (partial accept).
+/// Returns the accepted line and the remaining completion.
+pub fn partialAccept(allocator: std.mem.Allocator, completion: []const u8) !struct {
+    accepted: []const u8,
+    remaining: []const u8,
+} {
+    if (std.mem.indexOfScalar(u8, completion, '\n')) |nl| {
+        const accepted = try allocator.dupe(u8, completion[0..nl]);
+        const remaining = try allocator.dupe(u8, completion[nl + 1 ..]);
+        return .{ .accepted = accepted, .remaining = remaining };
+    }
+    // Single line — accept all
+    const accepted = try allocator.dupe(u8, completion);
+    const remaining = try allocator.dupe(u8, "");
+    return .{ .accepted = accepted, .remaining = remaining };
+}
+
+fn countLines(text: []const u8) usize {
+    var count: usize = 1;
+    for (text) |c| {
+        if (c == '\n') count += 1;
+    }
+    return count;
 }
 
 fn stripFences(text: []const u8) []const u8 {
@@ -182,7 +401,70 @@ test "buildPrompt includes language and cursor marker" {
     try std.testing.expect(std.mem.indexOf(u8, prompt, "fn main() {") != null);
 }
 
+test "buildPrompt includes similar chunks" {
+    const allocator = std.testing.allocator;
+    const chunks = [_][]const u8{ "fn similar() void {}", "const x = 42;" };
+    const prompt = try buildPrompt(allocator, .{
+        .prefix = "fn main() {",
+        .suffix = "}",
+        .file_path = "main.zig",
+        .similar_chunks = &chunks,
+    });
+    defer allocator.free(prompt);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "similar code") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "fn similar") != null);
+}
+
 test "stripFences removes markdown wrappers" {
     try std.testing.expectEqualStrings("hello", stripFences("```zig\nhello\n```"));
     try std.testing.expectEqualStrings("world", stripFences("  world  "));
+}
+
+test "CompletionCache stores and retrieves" {
+    const allocator = std.testing.allocator;
+    var cache = CompletionCache.init(allocator);
+    defer cache.deinit();
+
+    const key = CacheKey{ .file_hash = 123, .row = 5, .col = 10, .buffer_revision = 1 };
+    const result = CompletionResult{
+        .text = try allocator.dupe(u8, "test completion"),
+        .is_multiline = false,
+        .confidence = 0.8,
+    };
+    defer allocator.free(result.text);
+
+    cache.put(key, result);
+
+    const cached = cache.get(key);
+    try std.testing.expect(cached != null);
+    try std.testing.expectEqualStrings("test completion", cached.?.text);
+    defer if (cached) |c| allocator.free(c.text);
+
+    try std.testing.expectEqual(@as(u64, 1), cache.hits);
+}
+
+test "CompletionCache returns null for missing key" {
+    const allocator = std.testing.allocator;
+    var cache = CompletionCache.init(allocator);
+    defer cache.deinit();
+
+    const key = CacheKey{ .file_hash = 999, .row = 0, .col = 0, .buffer_revision = 0 };
+    try std.testing.expect(cache.get(key) == null);
+    try std.testing.expectEqual(@as(u64, 1), cache.misses);
+}
+
+test "DebounceState allows immediate on row change" {
+    var ds = DebounceState{};
+    try std.testing.expect(ds.shouldRequest(1.0, 0, 5));
+    try std.testing.expect(!ds.shouldRequest(1.1, 0, 6)); // Same row, too soon
+    try std.testing.expect(ds.shouldRequest(1.2, 1, 0)); // Different row
+}
+
+test "partialAccept splits at first newline" {
+    const allocator = std.testing.allocator;
+    const result = try partialAccept(allocator, "line1\nline2\nline3");
+    defer allocator.free(result.accepted);
+    defer allocator.free(result.remaining);
+    try std.testing.expectEqualStrings("line1", result.accepted);
+    try std.testing.expectEqualStrings("line2\nline3", result.remaining);
 }
