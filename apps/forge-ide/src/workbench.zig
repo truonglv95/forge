@@ -177,6 +177,18 @@ pub const Workbench = struct {
     editor_scroll_x: f32 = 0,
     split_scroll_y: f32 = 0,
     split_scroll_x: f32 = 0,
+    // Smooth scroll targets — when set, the actual scroll position is animated
+    // toward these values each frame. -1 means "no active animation; the
+    // scroll_y/scroll_x fields hold the final value already".
+    editor_scroll_target_y: f32 = -1,
+    editor_scroll_target_x: f32 = -1,
+    split_scroll_target_y: f32 = -1,
+    split_scroll_target_x: f32 = -1,
+    // Tab save flash — when set to a positive value, indicates the time (in
+    // seconds since startup) when a save happened. Tab renderers compare this
+    // against state.time to draw a brief green flash on the just-saved tab.
+    last_save_flash_at: f32 = -10,
+    last_save_flash_path: ?[]const u8 = null,
     editor_split: bool = false,
     editor_pane_focus: EditorPane = .primary,
     split_tab_index: usize = 0,
@@ -1769,6 +1781,57 @@ pub const Workbench = struct {
         self.tab_switch_anim.update(dt_ms);
         if (!self.tab_switch_anim.fade.isAnimating() and self.tab_switch_anim.fade.current < 0.5) {
             self.tab_switch_anim.triggerIn();
+        }
+        // Smooth scroll interpolation — exponentially approach the target.
+        // This produces a soft ~80ms settle that makes mouse-wheel / jump-to-def
+        // feel less jarring without introducing visible lag during typing.
+        const scroll_lerp = 1.0 - std.math.exp(-dt * 18.0); // ~80ms time constant
+        var scroll_anim_active = false;
+        if (self.editor_scroll_target_y >= 0) {
+            const delta = self.editor_scroll_target_y - self.editor_scroll_y;
+            if (@abs(delta) < 0.5) {
+                self.editor_scroll_y = self.editor_scroll_target_y;
+                self.editor_scroll_target_y = -1;
+            } else {
+                self.editor_scroll_y += delta * scroll_lerp;
+                scroll_anim_active = true;
+            }
+        }
+        if (self.editor_scroll_target_x >= 0) {
+            const delta = self.editor_scroll_target_x - self.editor_scroll_x;
+            if (@abs(delta) < 0.5) {
+                self.editor_scroll_x = self.editor_scroll_target_x;
+                self.editor_scroll_target_x = -1;
+            } else {
+                self.editor_scroll_x += delta * scroll_lerp;
+                scroll_anim_active = true;
+            }
+        }
+        if (self.split_scroll_target_y >= 0) {
+            const delta = self.split_scroll_target_y - self.split_scroll_y;
+            if (@abs(delta) < 0.5) {
+                self.split_scroll_y = self.split_scroll_target_y;
+                self.split_scroll_target_y = -1;
+            } else {
+                self.split_scroll_y += delta * scroll_lerp;
+                scroll_anim_active = true;
+            }
+        }
+        if (self.split_scroll_target_x >= 0) {
+            const delta = self.split_scroll_target_x - self.split_scroll_x;
+            if (@abs(delta) < 0.5) {
+                self.split_scroll_x = self.split_scroll_target_x;
+                self.split_scroll_target_x = -1;
+            } else {
+                self.split_scroll_x += delta * scroll_lerp;
+                scroll_anim_active = true;
+            }
+        }
+        if (scroll_anim_active) {
+            // Request a redraw so the smooth scroll is visible even when no
+            // other input is happening. The cost is one extra frame per tick
+            // while the animation is running (~6 frames).
+            renderer.Renderer.requestRedraw();
         }
         try @import("workbench/agent_ops.zig").flushAgentUi(self);
         _ = try @import("workbench/search_ops.zig").flushSearchResults(self);

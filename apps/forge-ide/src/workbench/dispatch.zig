@@ -40,6 +40,10 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             try recovery_mod.snapshotDirtyDocs(wb.allocator, wb.io, wb.workspace_root, &wb.editor.tabs);
             workspace.hooks.runOnSave(wb.allocator, wb.io, wb.workspace_root, doc.path, wb.workspace_path) catch {};
             try wb.events.publish(.{ .file_saved = doc.path });
+            // Trigger a brief green flash on the saved tab. The renderer
+            // compares state.time against last_save_flash_at to draw it.
+            wb.last_save_flash_at = state.time;
+            wb.last_save_flash_path = doc.path;
             // Check if user edited the global settings file (absolute path ending in settings.toml)
             const home_settings_path = workspace.global_store.joinHome(wb.allocator, "settings.toml") catch null;
             defer if (home_settings_path) |p| wb.allocator.free(p);

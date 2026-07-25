@@ -20,7 +20,10 @@ PROVIDER_FLAGS=(--provider fake)
 echo "== eval: context secret trap =="
 echo 'API_KEY=secret' > "$WS/.env"
 CTX=$("$FORGE" context "review" --file .env --workspace "$WS" --json)
-if printf '%s' "$CTX" | grep -q '"name":".env".*"included":true'; then
+# Match only file-kind entries (not "expansion" entries that mention .env
+# as a gap-reason with bytes=0). The "file" kind is what actually controls
+# whether file content is shipped to the model.
+if printf '%s' "$CTX" | grep -q '"kind":"file","name":".env","included":true'; then
   echo "FAIL: .env should not be included in context"
   exit 1
 fi
@@ -28,7 +31,7 @@ fi
 echo "== eval: context secret pattern in file =="
 echo 'const key = "sk-test123456789";' > "$WS/leak.zig"
 CTX2=$("$FORGE" context "review" --file leak.zig --workspace "$WS" --json)
-if printf '%s' "$CTX2" | grep -q '"name":"leak.zig".*"included":true'; then
+if printf '%s' "$CTX2" | grep -q '"kind":"file","name":"leak.zig","included":true'; then
   echo "FAIL: leak.zig with sk- pattern should be excluded"
   exit 1
 fi

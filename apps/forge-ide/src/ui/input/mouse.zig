@@ -881,12 +881,22 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
         } else if (geo.shell_mode == .ide and mx >= geo.editor_x and mx < geo.agent_splitter_x and my > @import("../editor/editor_scroll.zig").content_top and my < geo.task_panel_y - 35) {
             const pane = wb.paneAt(geo.editor_x, geo.editor_w, mx);
             if (pane == .secondary) {
-                wb.split_scroll_y += scroll_delta_y;
-                wb.split_scroll_x += scroll_delta_x;
+                // Smooth-scroll: accumulate target scroll position; the
+                // tickFrame loop animates the actual scroll position toward
+                // it. This makes mouse-wheel / trackpad scrolling feel soft
+                // (~80ms settle) rather than instantly jumping.
+                if (wb.split_scroll_target_y < 0) wb.split_scroll_target_y = wb.split_scroll_y;
+                if (wb.split_scroll_target_x < 0) wb.split_scroll_target_x = wb.split_scroll_x;
+                wb.split_scroll_target_y += scroll_delta_y;
+                wb.split_scroll_target_x += scroll_delta_x;
             } else {
-                wb.editor_scroll_y += scroll_delta_y;
-                wb.editor_scroll_x += scroll_delta_x;
+                if (wb.editor_scroll_target_y < 0) wb.editor_scroll_target_y = wb.editor_scroll_y;
+                if (wb.editor_scroll_target_x < 0) wb.editor_scroll_target_x = wb.editor_scroll_x;
+                wb.editor_scroll_target_y += scroll_delta_y;
+                wb.editor_scroll_target_x += scroll_delta_x;
             }
+            // clampEditorScroll clamps both the current scroll and the targets
+            // to the document bounds (handles word_wrap, max line len, etc.).
             wb.clampEditorScroll(geo.editor_w, geo.editor_h);
         }
     }

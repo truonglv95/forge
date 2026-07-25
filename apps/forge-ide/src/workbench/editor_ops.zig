@@ -256,6 +256,16 @@ pub fn scrollEditorToCursor(wb: anytype) void {
     const pane_w = wb.paneWidth(geo.editor_w);
     const scroll_y: *f32 = if (pane == .secondary) &wb.split_scroll_y else &wb.editor_scroll_y;
     const scroll_x: *f32 = if (pane == .secondary) &wb.split_scroll_x else &wb.editor_scroll_x;
+    // For smooth-scroll: when the cursor moves (typing, arrow keys, goto-def),
+    // animate toward the new required scroll position rather than snapping.
+    // This makes jump-to-def and large cursor moves feel less jarring.
+    // The animation only kicks in when the delta is large (>2 lines); for
+    // single-line moves we snap immediately to avoid feeling laggy during
+    // normal typing.
+    const target_y_ptr: *f32 = if (pane == .secondary) &wb.split_scroll_target_y else &wb.editor_scroll_target_y;
+    const target_x_ptr: *f32 = if (pane == .secondary) &wb.split_scroll_target_x else &wb.editor_scroll_target_x;
+    const prev_y = scroll_y.*;
+    const prev_x = scroll_x.*;
     if (wb.user_settings.word_wrap) {
         const word_wrap = @import("../ui/editor/word_wrap.zig");
         const viewport_w = @import("../ui/editor/editor_scroll.zig").viewportWidth(pane_w, &wb.theme);
@@ -272,6 +282,20 @@ pub fn scrollEditorToCursor(wb: anytype) void {
         );
         scroll_y.* = scrolled.y;
         scroll_x.* = scrolled.x;
+    }
+    const delta_y = @abs(scroll_y.* - prev_y);
+    const delta_x = @abs(scroll_x.* - prev_x);
+    const line_h = @import("../ui/editor/editor_scroll.zig").lineHeight(&wb.theme);
+    if (delta_y > line_h * 2.0 or delta_x > 80.0) {
+        // Large jump (e.g. goto-def, click far away): animate the scroll.
+        target_y_ptr.* = scroll_y.*;
+        target_x_ptr.* = scroll_x.*;
+        scroll_y.* = prev_y;
+        scroll_x.* = prev_x;
+    } else {
+        // Small move (typing, single-line nav): snap immediately, no animation.
+        target_y_ptr.* = -1;
+        target_x_ptr.* = -1;
     }
 }
 

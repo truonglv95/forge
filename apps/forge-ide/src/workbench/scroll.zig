@@ -37,12 +37,11 @@ pub fn clampEditorScroll(wb: anytype, editor_w: f32, editor_h: f32) void {
 
     if (wb.docForPane(.primary)) |doc| {
         if (wrap) {
-            wb.editor_scroll_y = std.math.clamp(
-                wb.editor_scroll_y,
-                0,
-                word_wrap.maxScrollY(&doc.buffer, editor_h, viewport_w, wb.theme.editor_font_size, &wb.theme),
-            );
+            const wrap_max = word_wrap.maxScrollY(&doc.buffer, editor_h, viewport_w, wb.theme.editor_font_size, &wb.theme);
+            wb.editor_scroll_y = std.math.clamp(wb.editor_scroll_y, 0, wrap_max);
             wb.editor_scroll_x = 0;
+            if (wb.editor_scroll_target_y >= 0) wb.editor_scroll_target_y = std.math.clamp(wb.editor_scroll_target_y, 0, wrap_max);
+            if (wb.editor_scroll_target_x >= 0) wb.editor_scroll_target_x = 0;
         } else {
             const max_line_len = blk: {
                 const hash = std.hash.CityHash64.hash(doc.path);
@@ -54,22 +53,27 @@ pub fn clampEditorScroll(wb: anytype, editor_w: f32, editor_h: f32) void {
                 break :blk len;
             };
             const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&wb.theme);
-            wb.editor_scroll_y = scroll.clampScrollY(wb.editor_scroll_y, doc.buffer.lineCount(), editor_h, &wb.theme);
-            wb.editor_scroll_x = scroll.clampScrollX(wb.editor_scroll_x, content_w, pane_w, &wb.theme);
+            const max_y = scroll.maxScrollY(doc.buffer.lineCount(), editor_h, &wb.theme);
+            const max_x = scroll.maxScrollX(content_w, pane_w, &wb.theme);
+            wb.editor_scroll_y = std.math.clamp(wb.editor_scroll_y, 0, max_y);
+            wb.editor_scroll_x = std.math.clamp(wb.editor_scroll_x, 0, max_x);
+            if (wb.editor_scroll_target_y >= 0) wb.editor_scroll_target_y = std.math.clamp(wb.editor_scroll_target_y, 0, max_y);
+            if (wb.editor_scroll_target_x >= 0) wb.editor_scroll_target_x = std.math.clamp(wb.editor_scroll_target_x, 0, max_x);
         }
     } else {
         wb.editor_scroll_y = 0;
         wb.editor_scroll_x = 0;
+        wb.editor_scroll_target_y = -1;
+        wb.editor_scroll_target_x = -1;
     }
     if (wb.editor_split) {
         if (wb.docForPane(.secondary)) |doc| {
             if (wrap) {
-                wb.split_scroll_y = std.math.clamp(
-                    wb.split_scroll_y,
-                    0,
-                    word_wrap.maxScrollY(&doc.buffer, editor_h, viewport_w, wb.theme.editor_font_size, &wb.theme),
-                );
+                const wrap_max = word_wrap.maxScrollY(&doc.buffer, editor_h, viewport_w, wb.theme.editor_font_size, &wb.theme);
+                wb.split_scroll_y = std.math.clamp(wb.split_scroll_y, 0, wrap_max);
                 wb.split_scroll_x = 0;
+                if (wb.split_scroll_target_y >= 0) wb.split_scroll_target_y = std.math.clamp(wb.split_scroll_target_y, 0, wrap_max);
+                if (wb.split_scroll_target_x >= 0) wb.split_scroll_target_x = 0;
             } else {
                 const max_line_len = blk: {
                     const hash = std.hash.CityHash64.hash(doc.path);
@@ -81,12 +85,18 @@ pub fn clampEditorScroll(wb: anytype, editor_w: f32, editor_h: f32) void {
                     break :blk len;
                 };
                 const content_w = @as(f32, @floatFromInt(max_line_len)) * scroll.charWidth(&wb.theme);
-                wb.split_scroll_y = scroll.clampScrollY(wb.split_scroll_y, doc.buffer.lineCount(), editor_h, &wb.theme);
-                wb.split_scroll_x = scroll.clampScrollX(wb.split_scroll_x, content_w, pane_w, &wb.theme);
+                const max_y = scroll.maxScrollY(doc.buffer.lineCount(), editor_h, &wb.theme);
+                const max_x = scroll.maxScrollX(content_w, pane_w, &wb.theme);
+                wb.split_scroll_y = std.math.clamp(wb.split_scroll_y, 0, max_y);
+                wb.split_scroll_x = std.math.clamp(wb.split_scroll_x, 0, max_x);
+                if (wb.split_scroll_target_y >= 0) wb.split_scroll_target_y = std.math.clamp(wb.split_scroll_target_y, 0, max_y);
+                if (wb.split_scroll_target_x >= 0) wb.split_scroll_target_x = std.math.clamp(wb.split_scroll_target_x, 0, max_x);
             }
         } else {
             wb.split_scroll_y = 0;
             wb.split_scroll_x = 0;
+            wb.split_scroll_target_y = -1;
+            wb.split_scroll_target_x = -1;
         }
     }
 }

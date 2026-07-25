@@ -69,6 +69,25 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
             }
         }
 
+        // Save flash — if this tab was just saved (< 600ms ago), draw a brief
+        // green tint that fades out. Gives the user confirmation that the save
+        // actually happened, even if they didn't notice the status bar update.
+        if (wb.last_save_flash_path) |flash_path| {
+            if (std.mem.eql(u8, flash_path, doc.path)) {
+                const elapsed = state.time - wb.last_save_flash_at;
+                if (elapsed >= 0 and elapsed < 0.6) {
+                    const t = elapsed / 0.6;
+                    const flash_alpha: f32 = (1.0 - t) * 0.35;
+                    renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, tabs_ui.tab_height, .{
+                        .r = 0.3,
+                        .g = 0.85,
+                        .b = 0.4,
+                        .a = flash_alpha,
+                    });
+                }
+            }
+        }
+
         // Draw icon
         const res = @import("../icon_resolver.zig").resolveIcon(label);
         renderer.Renderer.drawSvg(res.svg, tab_layout.x + 12, tabs_ui.centeredY(tabs_ui.file_icon_size), tabs_ui.file_icon_size, tabs_ui.file_icon_size, res.color);
@@ -97,7 +116,20 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
             renderer.Renderer.drawRoundedRect(close_button_x + 1, close_button_y, tabs_ui.close_button_size, tabs_ui.close_button_size, 4, syntax.color(theme.colors.selection));
         }
         const close_color = if (is_active or hovered_close) syntax.color(theme.colors.text_secondary) else syntax.color(theme.colors.text_muted);
-        renderer.Renderer.drawSvg(renderer.icons.x, tabs_ui.closeIconX(tab_layout), tabs_ui.centeredY(tabs_ui.close_icon_size), tabs_ui.close_icon_size, tabs_ui.close_icon_size, close_color);
+
+        // Dirty indicator: show a filled dot instead of the close icon when the
+        // document has unsaved changes and the tab is not hovered. This matches
+        // VSCode's behavior and gives users persistent visual feedback about
+        // which files need saving before commit/exit.
+        const is_dirty = doc.isDirty();
+        if (is_dirty and !hovered_close and !doc.external_conflict) {
+            const dot_x = close_button_x + tabs_ui.close_button_width * 0.5 - 3;
+            const dot_y = tabs_ui.centeredY(tabs_ui.close_button_size) + tabs_ui.close_button_size * 0.5 - 3;
+            const dirty_color = if (is_active) syntax.color(theme.colors.accent) else syntax.color(theme.colors.text_muted);
+            renderer.Renderer.drawRoundedRect(dot_x, dot_y, 6, 6, 3, dirty_color);
+        } else {
+            renderer.Renderer.drawSvg(renderer.icons.x, tabs_ui.closeIconX(tab_layout), tabs_ui.centeredY(tabs_ui.close_icon_size), tabs_ui.close_icon_size, tabs_ui.close_icon_size, close_color);
+        }
     }
 
     const max_tab_scroll = tabs_ui.maxScroll(wb, visible_tab_w);
@@ -174,11 +206,24 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
         const focus_x = wb.paneOriginX(editor_x, editor_w, wb.focusedPane());
         const focus_w = pane_w;
         const popup_x = focus_x + gutter + 8;
-        const popup_y: f32 = 90;
         const popup_w = @min(focus_w - gutter - 16, 360);
         const row_h: f32 = 16;
         const count = @min(wb.lsp.completions.list.items.len, 10);
         const popup_h = @as(f32, @floatFromInt(count)) * row_h + 8;
+
+        // Compute cursor Y in screen coords to decide whether to flip the popup
+        // above the cursor. This avoids the popup being clipped at the bottom
+        // of the viewport when the cursor is on a late line.
+        const active_buf = wb.activeBuffer() orelse return;
+        const line_h = editor_scroll.lineHeight(theme);
+        const cursor_screen_y = editor_scroll.content_top + editor_scroll.text_inset_y +
+            (@as(f32, @floatFromInt(active_buf.cursor.row)) * line_h) - wb.editor_scroll_y;
+        const space_below = editor_h - cursor_screen_y - line_h;
+        const popup_y: f32 = if (space_below < popup_h + 12 and cursor_screen_y > popup_h + 12)
+            cursor_screen_y - popup_h - 4
+        else
+            cursor_screen_y + line_h + 4;
+
         renderer.Renderer.drawRoundedRect(popup_x, popup_y, popup_w, popup_h, 6, .{ .r = 0.14, .g = 0.16, .b = 0.22, .a = 0.98 });
         var row: usize = 0;
         while (row < count) : (row += 1) {
