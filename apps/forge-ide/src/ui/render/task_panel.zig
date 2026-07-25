@@ -220,48 +220,47 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
         },
         .terminal => {
             const terminal_panel = @import("../panel/terminal_panel.zig");
-            const terminal = wb.activeTerminal();
-            terminal.lock();
-            defer terminal.unlock();
-
             const content_top = terminal_panel.contentTop(panel_y);
             const content_h = panel_h - (content_top - panel_y);
-            renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
             const git_ptr: ?*const @import("../../git/status.zig").Status = if (wb.git.status) |*status| status else null;
             const show_cursor = @mod(state.time, 1.0) < 0.5;
             const show_terminal_cursor = show_cursor and wb.focused_panel == .terminal;
 
-            if (wb.terminal_selection) |sel| {
-                terminal_panel.drawSelection(editor_x, panel_y, wb.task_scroll_y, terminal.lines.items, sel);
-            }
-            const line_h = terminal_panel.line_h;
-            const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
-            const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
-            const end_idx = @min(terminal.lines.items.len, start_idx + visual_count);
+            if (wb.terminals.split_enabled and wb.terminals.splitSession() != null) {
+                // Split mode: render two terminal panes side by side
+                const split_w = (editor_w - 4) * 0.5;
+                const left_x = editor_x;
+                const right_x = editor_x + split_w + 4;
+                const divider_x = editor_x + split_w;
 
-            var line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
-            for (terminal.lines.items[start_idx..end_idx]) |line| {
-                if (line_y + line_h >= content_top and line_y < content_top + content_h) {
-                    terminal_panel.drawStyledLine(editor_x, editor_w, line_y, line, wb.workspace_path, git_ptr);
+                // Divider line
+                renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
+                renderer.Renderer.drawRect(divider_x, content_top, 4, content_h, syntax_mod.color(theme.colors.border));
+
+                // Left pane (primary terminal)
+                {
+                    const terminal = &wb.terminals.sessions.items[wb.terminals.active];
+                    terminal.lock();
+                    defer terminal.unlock();
+                    renderer.Renderer.setClipRect(left_x, content_top, split_w, content_h);
+                    const is_focused = wb.terminals.split_focus == 0;
+                    drawTerminalPane(terminal, left_x, split_w, content_top, content_h, wb, git_ptr, show_terminal_cursor and is_focused);
                 }
-                line_y += line_h;
-            }
-            if (terminal.local_input != null or terminal.isActive()) {
-                if (line_y + terminal_panel.line_h >= content_top and line_y < content_top + content_h) {
-                    var active_buf: [512]u8 = undefined;
-                    const active = terminal.activeLine(&active_buf);
-                    terminal_panel.drawStyledLine(editor_x, editor_w, line_y, active, wb.workspace_path, git_ptr);
-                    const col = active.len;
-                    terminal_panel.drawInputCursor(editor_x, line_y, active, col, show_terminal_cursor);
+                // Right pane (split terminal)
+                if (wb.terminals.splitSession()) |split_term| {
+                    split_term.lock();
+                    defer split_term.unlock();
+                    renderer.Renderer.setClipRect(right_x, content_top, split_w, content_h);
+                    const is_focused = wb.terminals.split_focus == 1;
+                    drawTerminalPane(split_term, right_x, split_w, content_top, content_h, wb, git_ptr, show_terminal_cursor and is_focused);
                 }
-            } else if (terminal.lines.items.len == 0) {
-                const hint = if (terminal.isActive())
-                    "Shell running — type here."
-                else if (terminal.exited)
-                    "Shell exited — click TERMINAL tab to restart."
-                else
-                    "Starting terminal…";
-                renderer.Renderer.drawText(hint, editor_x + 20, content_top + 8, 12.0, .{ .r = 0.50, .g = 0.58, .b = 0.68, .a = 1.0 });
+            } else {
+                // Single terminal mode
+                const terminal = wb.activeTerminal();
+                terminal.lock();
+                defer terminal.unlock();
+                renderer.Renderer.setClipRect(editor_x, content_top, editor_w, content_h);
+                drawTerminalPane(terminal, editor_x, editor_w, content_top, content_h, wb, git_ptr, show_terminal_cursor);
             }
         },
         .debug_console => {
@@ -381,4 +380,46 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
         bottom_sb_hover,
         false,
     );
+}
+
+fn drawTerminalPane(
+    terminal: anytype,
+    x: f32,
+    w: f32,
+    content_top: f32,
+    content_h: f32,
+    wb: *Workbench,
+    git_ptr: ?*const @import("../../git/status.zig").Status,
+    show_cursor: bool,
+) void {
+    const terminal_panel = @import("../panel/terminal_panel.zig");
+    const line_h = terminal_panel.line_h;
+    const start_idx: usize = if (wb.task_scroll_y > 0) @as(usize, @intFromFloat(wb.task_scroll_y / line_h)) else 0;
+    const visual_count: usize = @as(usize, @intFromFloat(content_h / line_h)) + 2;
+    const end_idx = @min(terminal.lines.items.len, start_idx + visual_count);
+
+    var line_y = content_top - wb.task_scroll_y + @as(f32, @floatFromInt(start_idx)) * line_h;
+    for (terminal.lines.items[start_idx..end_idx]) |line| {
+        if (line_y + line_h >= content_top and line_y < content_top + content_h) {
+            terminal_panel.drawStyledLine(x, w, line_y, line, wb.workspace_path, git_ptr);
+        }
+        line_y += line_h;
+    }
+    if (terminal.local_input != null or terminal.isActive()) {
+        if (line_y + terminal_panel.line_h >= content_top and line_y < content_top + content_h) {
+            var active_buf: [512]u8 = undefined;
+            const active = terminal.activeLine(&active_buf);
+            terminal_panel.drawStyledLine(x, w, line_y, active, wb.workspace_path, git_ptr);
+            const col = active.len;
+            terminal_panel.drawInputCursor(x, line_y, active, col, show_cursor);
+        }
+    } else if (terminal.lines.items.len == 0) {
+        const hint = if (terminal.isActive())
+            "Shell running — type here."
+        else if (terminal.exited)
+            "Shell exited — click TERMINAL tab to restart."
+        else
+            "Starting terminal…";
+        renderer.Renderer.drawText(hint, x + 12, content_top + 8, 12.0, .{ .r = 0.50, .g = 0.58, .b = 0.68, .a = 1.0 });
+    }
 }

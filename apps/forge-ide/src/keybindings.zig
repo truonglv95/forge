@@ -100,6 +100,12 @@ pub const Registry = struct {
             .{ .key = "cmd+shift+s", .palette_id = "profile.save" },
             // Diff view
             .{ .key = "cmd+shift+d", .palette_id = "diff.open" },
+            // Terminal split
+            .{ .key = "cmd+\\", .palette_id = "terminal.split" },
+            .{ .key = "cmd+alt+left", .palette_id = "terminal.focus_switch" },
+            .{ .key = "cmd+alt+right", .palette_id = "terminal.focus_switch" },
+            // Preferences
+            .{ .key = "cmd+k+cmd+s", .palette_id = "keybinding.open_editor" },
             // P0-2: Inline edit (Cmd+K already maps to agent.edit_selection,
             // which opens the inline_edit state when a selection is active).
             .{ .key = "enter", .palette_id = "inline_edit.submit" },

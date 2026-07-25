@@ -483,6 +483,64 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             }
             try wb.setStatus("Layout loaded from .forge/profile.toml");
         },
+        .terminal_split => {
+            try wb.terminals.toggleSplit();
+            try wb.setStatus(if (wb.terminals.split_enabled) "Terminal split ON" else "Terminal split OFF");
+        },
+        .terminal_focus_switch => {
+            wb.terminals.switchSplitFocus();
+        },
+        .keybinding_open_editor => {
+            // Open the keybindings file (~/.forge/keybindings.toml) in the
+            // editor so users can view and edit their shortcuts. The file
+            // is created with default content if it doesn't exist.
+            const kb_path = try workspace.global_store.joinHome(wb.allocator, "keybindings.toml");
+            defer wb.allocator.free(kb_path);
+            const content = workspace.global_store.readAbsoluteFile(wb.allocator, wb.io, kb_path) catch blk: {
+                const default =
+                    \\# Forge IDE Keybindings
+                    \\# Format: [shortcut]
+                    \\# key = "cmd+shift+p"
+                    \\# command = "palette.open"
+                    \\# Uncomment and edit to customize:
+                    \\
+                    \\# [shortcut]
+                    \\# key = "cmd+shift+p"
+                    \\# command = "palette.open"
+                    \\
+                ;
+                try workspace.global_store.replaceAbsoluteFile(wb.io, kb_path, default);
+                break :blk try wb.allocator.dupe(u8, default);
+            };
+            defer wb.allocator.free(content);
+            try wb.dispatch(.{ .open_file = kb_path });
+        },
+        .extension_open_settings => {
+            // Open the extensions settings file (.forge/extensions.toml)
+            // in the editor so users can configure installed extensions.
+            const ext_settings_path = ".forge/extensions.toml";
+            const wp = workspace.WorkspacePath.parse(ext_settings_path) catch {
+                try wb.setStatus("Cannot open extension settings");
+                return;
+            };
+            var snap = workspace.snapshot.FileSnapshot.read(wb.allocator, wb.io, wb.workspace_root, wp) catch {
+                const default =
+                    \\# Extension Settings
+                    \\# Each section is an extension ID.
+                    \\# Settings under each section are extension-specific.
+                    \\
+                    \\# [example.extension]
+                    \\# enabled = true
+                    \\# setting1 = "value"
+                    \\
+                ;
+                try workspace.atomic.replaceFile(wb.io, wb.workspace_root, wp, default);
+                try wb.dispatch(.{ .open_file = ext_settings_path });
+                return;
+            };
+            defer snap.deinit();
+            try wb.dispatch(.{ .open_file = ext_settings_path });
+        },
         .uninstall_extension => |extension_id| {
             try plugin.marketplace.uninstall(wb.allocator, wb.io, wb.workspace_root, extension_id);
             try @import("../workbench/extensions_ops.zig").reloadExtensions(wb);
