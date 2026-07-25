@@ -83,6 +83,7 @@ pub const Command = union(enum) {
     git_log: void,
     git_blame: void,
     file_quick_open: void,
+    workspace_replace_all: void,
     uninstall_extension: []const u8,
     extensions_show_detail: usize,
     extensions_back_from_detail: void,

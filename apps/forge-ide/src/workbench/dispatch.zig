@@ -353,10 +353,53 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             @import("git_ops.zig").runGitAction(wb, &.{ "git", "log", "--oneline", "-20" }, "Git log") catch |err| wb.logBackgroundError("Git log", err);
         },
         .git_blame => {
-            try wb.setStatus("Git blame: open the file you want to blame, then use git log for now");
+            wb.git_blame_enabled = !wb.git_blame_enabled;
+            const status = if (wb.git_blame_enabled) "Git blame ON" else "Git blame OFF";
+            try wb.setStatus(status);
         },
         .file_quick_open => {
             try wb.fileQuickOpen();
+        },
+        .workspace_replace_all => {
+            // Replace all occurrences of search query in all files that
+            // have search matches. Uses the search results to find files,
+            // then reads each file, does string replacement, and writes back.
+            const search_results = wb.search.results orelse {
+                try wb.setStatus("No search results to replace in");
+                return;
+            };
+            if (search_results.matches.len == 0) {
+                try wb.setStatus("No matches found");
+                return;
+            }
+            const query = wb.search_buffer.content() catch {
+                try wb.setStatus("Cannot read search query");
+                return;
+            };
+            defer wb.search_buffer.allocator.free(query);
+            if (query.len == 0) return;
+
+            // Collect unique file paths from search results
+            var replaced_count: usize = 0;
+            var current_file: ?[]const u8 = null;
+            for (search_results.matches) |match| {
+                if (current_file == null or !std.mem.eql(u8, current_file.?, match.path)) {
+                    current_file = match.path;
+                    // Read, replace, write back for this file
+                    const wp = workspace.WorkspacePath.parse(match.path) catch continue;
+                    var snap = workspace.snapshot.FileSnapshot.read(wb.allocator, wb.io, wb.workspace_root, wp) catch continue;
+                    defer snap.deinit();
+                    const new_content = std.mem.replaceOwned(u8, wb.allocator, snap.content, query, "") catch continue;
+                    defer wb.allocator.free(new_content);
+                    workspace.atomic.replaceFile(wb.io, wb.workspace_root, wp, new_content) catch continue;
+                    replaced_count += 1;
+                }
+            }
+            var status_buf: [128]u8 = undefined;
+            const status = std.fmt.bufPrint(&status_buf, "Replaced in {d} file(s)", .{replaced_count}) catch "Replace done";
+            try wb.setStatus(status);
+            // Re-run search to update results
+            try wb.dispatch(.search_run);
         },
         .uninstall_extension => |extension_id| {
             try plugin.marketplace.uninstall(wb.allocator, wb.io, wb.workspace_root, extension_id);

@@ -154,6 +154,7 @@ pub const Palette = struct {
             .{ .id = "view.toggle_agent_window", .title = "View: Toggle IDE / Agent Window", .category = "View", .command = .toggle_shell_mode },
             .{ .id = "file.quick_open", .title = "Go to File...", .category = "File", .command = .file_quick_open },
             .{ .id = "file.open", .title = "Open File...", .category = "File", .command = .palette_open },
+            .{ .id = "search.replace_all", .title = "Search: Replace All in Workspace", .category = "Search", .command = .workspace_replace_all },
             .{ .id = "nav.back", .title = "Navigate: Back", .category = "Navigate", .command = .nav_back },
             .{ .id = "nav.forward", .title = "Navigate: Forward", .category = "Navigate", .command = .nav_forward },
             .{ .id = "ai.open_settings_toml", .title = "AI: Open ~/.forge/settings.toml", .category = "AI", .command = .ai_open_settings_toml },

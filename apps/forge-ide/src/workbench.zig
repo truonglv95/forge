@@ -138,6 +138,8 @@ pub const Workbench = struct {
     quick_open_selected: usize = 0,
     quick_open_query: [256]u8 = [_]u8{0} ** 256,
     quick_open_query_len: usize = 0,
+    // Git blame — when true, editor gutter shows blame annotations.
+    git_blame_enabled: bool = false,
     workspace_symbol_picker: workspace_symbol_picker_mod.Picker,
     git_branch_picker: git_branch_picker_mod.Picker,
     output_channels: std.StringHashMap(*@import("workbench/output_channel.zig").OutputChannel),

@@ -62,7 +62,11 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
     const accent = theme_mod.color(theme.colors.accent);
     const viewport_bg = theme_mod.color(theme.colors.accent_soft);
 
-    const minimap_x = editor_x + editor_w - minimap_width;
+    // Minimap is positioned to the LEFT of the scrollbar, not at the
+    // very right edge. The scrollbar occupies the rightmost ~10px of
+    // editor_w, so we offset the minimap left by that amount.
+    const scrollbar_reserve: f32 = 10.0;
+    const minimap_x = editor_x + editor_w - minimap_width - scrollbar_reserve;
     const minimap_y = editor_scroll.content_top;
     const minimap_h = editor_h - editor_scroll.content_top;
 
@@ -156,7 +160,8 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
 
 /// Check if a click position is within the minimap area.
 pub fn isMinimapClick(editor_x: f32, editor_w: f32, click_x: f32, click_y: f32, editor_h: f32) bool {
-    const minimap_x = editor_x + editor_w - minimap_width;
+    const scrollbar_reserve: f32 = 10.0;
+    const minimap_x = editor_x + editor_w - minimap_width - scrollbar_reserve;
     return click_x >= minimap_x and click_x <= minimap_x + minimap_width and
         click_y >= editor_scroll.content_top and click_y <= editor_h;
 }

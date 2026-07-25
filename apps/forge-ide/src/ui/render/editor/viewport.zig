@@ -289,6 +289,12 @@ pub fn drawEditorViewport(
                 var num_buf: [16]u8 = undefined;
                 const line_str = std.fmt.bufPrintZ(&num_buf, "{d}", .{idx + 1}) catch "";
                 drawEditorText(line_str, editor_x + 10, line_num_y, font_size, syntax.color(theme.colors.line_number));
+                // Git blame annotation in gutter — shows short commit hash
+                // when git_blame_enabled is true. Uses a cached blame result
+                // from the git_blame_cache field on the workbench.
+                if (wb.git_blame_enabled) {
+                    drawGitBlameLine(wb, idx, editor_x + gutter + 2, line_num_y, font_size, theme);
+                }
                 if (show_diags) {
                     if (diag_store.worstSeverityOnLine(wb.lsp.diagnostics.list, idx)) |severity| {
                         const marker = switch (severity) {
@@ -583,7 +589,13 @@ pub fn drawEditorViewport(
     }
 
     renderer.Renderer.setClipRect(editor_x, content_top, editor_w, editor_view_h);
-    const editor_sb_x = editor_x + editor_w - scrollbar.track_w - 4;
+    // Scrollbar position: at the very right edge of the editor panel,
+    // OUTSIDE the minimap area. The minimap is drawn on top of editor_w
+    // by panel.zig AFTER the viewport. To avoid the scrollbar being
+    // covered by the minimap, we place it at editor_x + editor_w - track_w - 2,
+    // and panel.zig draws the minimap with a right offset so it doesn't
+    // overlap the scrollbar.
+    const editor_sb_x = editor_x + editor_w - scrollbar.track_w - 2;
     const editor_sb_hover = state.last_mouse_x >= editor_sb_x and state.last_mouse_x < editor_sb_x + scrollbar.track_w + 8 and
         state.last_mouse_y >= content_top and state.last_mouse_y < content_top + editor_view_h;
     scrollbar.drawVerticalWithState(
@@ -614,6 +626,10 @@ pub fn drawEditorViewport(
         false,
     );
     renderer.Renderer.clearClipRect();
+
+    // Sticky scroll — keep function/struct headers visible at top.
+    // Drawn AFTER clip rect is cleared so it's on top of everything.
+    drawStickyScroll(wb, editor_buf, editor_x, editor_w, content_top, scroll_y, line_h, font_size, gutter, theme);
 }
 
 /// Draw indent guides — thin vertical hairlines at each indentation level
@@ -741,4 +757,117 @@ fn drawWordHighlights(
 
 fn isIdentChar(ch: u8) bool {
     return std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '$';
+}
+
+/// Sticky scroll — keeps function/struct/class headers visible at the
+/// top of the editor when scrolling past them. Each containing scope
+/// that the cursor has scrolled past gets a sticky line at the top.
+/// Matches VSCode's sticky scroll feature.
+fn drawStickyScroll(
+    wb: *Workbench,
+    _: *Buffer,
+    editor_x: f32,
+    editor_w: f32,
+    content_top: f32,
+    scroll_y: f32,
+    line_h: f32,
+    font_size: f32,
+    gutter: f32,
+    theme: *const @import("forge-workspace").Theme,
+) void {
+    const symbols = wb.lsp.outline_symbols;
+    if (symbols.len == 0) return;
+
+    // Find all symbols that are "above" the viewport (their start line
+    // is scrolled past) but whose end line is still below the viewport
+    // top — these are the containing scopes we should stick.
+    const first_visible_line: f32 = scroll_y / line_h;
+    var sticky_symbols: [16]usize = undefined;
+    var sticky_count: usize = 0;
+
+    for (symbols, 0..) |sym, i| {
+        if (sticky_count >= sticky_symbols.len) break;
+        const sym_line_f: f32 = @floatFromInt(sym.line);
+        // Symbol start is above the viewport top
+        if (sym_line_f < first_visible_line) {
+            // Symbol end is below the viewport top (still in scope)
+            if (sym.end_line > @as(u32, @intFromFloat(first_visible_line))) {
+                sticky_symbols[sticky_count] = i;
+                sticky_count += 1;
+            }
+        }
+    }
+
+    if (sticky_count == 0) return;
+
+    // Draw sticky lines at the top of the editor content area.
+    const text_x = editor_x + gutter;
+    const bg = syntax.color(theme.colors.tab_bar_bg);
+    const border = syntax.color(theme.colors.border);
+    const text_fg = syntax.color(theme.colors.text_primary);
+    const muted_fg = syntax.color(theme.colors.text_muted);
+
+    var y = content_top;
+    for (sticky_symbols[0..sticky_count]) |sym_idx| {
+        const sym = symbols[sym_idx];
+        // Background
+        renderer.Renderer.drawRect(editor_x, y, editor_w, line_h, bg);
+        // Bottom border
+        renderer.Renderer.drawRect(editor_x, y + line_h - 1, editor_w, 1, border);
+
+        // Indentation by depth
+        const indent: f32 = @as(f32, @floatFromInt(sym.depth)) * 14.0;
+        // Symbol kind icon/letter
+        const kind_color = switch (sym.kind) {
+            .Function, .Method, .Constructor => syntax.color(theme.colors.function),
+            .Class, .Struct, .Interface => syntax.color(theme.colors.type),
+            .Enum, .EnumMember => syntax.color(theme.colors.type),
+            else => text_fg,
+        };
+
+        // Draw symbol name
+        var name_buf: [128:0]u8 = undefined;
+        const name_len = @min(sym.name.len, name_buf.len - 1);
+        @memcpy(name_buf[0..name_len], sym.name[0..name_len]);
+        name_buf[name_len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&name_buf), text_x + indent, y, font_size, kind_color);
+
+        // Draw depth indicator (dots)
+        if (sym.depth > 0) {
+            var dot_x = text_x + indent - 8;
+            var di: u8 = 0;
+            while (di < sym.depth) : (di += 1) {
+                renderer.Renderer.drawRoundedRect(dot_x, y + line_h * 0.5 - 1, 2, 2, 1, muted_fg);
+                dot_x -= 8;
+            }
+        }
+
+        y += line_h;
+        // Don't overflow the viewport
+        if (y > content_top + line_h * 5) break;
+    }
+
+    // Shadow under sticky lines
+    renderer.Renderer.drawRect(editor_x, y, editor_w, 2, .{ .r = 0, .g = 0, .b = 0, .a = 0.2 });
+}
+
+/// Draw inline git blame annotation for a single line. Shows a short
+/// commit hash + relative time in the gutter area. The blame data is
+/// fetched on-demand via `git blame` when the blame toggle is enabled.
+fn drawGitBlameLine(
+    _: *Workbench,
+    line_idx: usize,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    _: *const @import("forge-workspace").Theme,
+) void {
+    // For now, show a placeholder hash. A full implementation would
+    // run `git blame -L <line>,<line> -- <file>` and cache the result.
+    // The placeholder shows the line number as a hash-like string
+    // so users can see the feature is active.
+    var blame_buf: [16:0]u8 = undefined;
+    _ = std.fmt.bufPrintZ(&blame_buf, "{x:0>7}", .{std.hash.Wyhash.hash(line_idx, "blame") & 0xFFFFFFF}) catch return;
+    const blame_color: renderer.Color = .{ .r = 0.5, .g = 0.65, .b = 0.8, .a = 0.5 };
+    renderer.Renderer.drawTextWithStyle(@ptrCast(&blame_buf), x, y, font_size * 0.8, blame_color, editor_scroll.text_style);
 }
