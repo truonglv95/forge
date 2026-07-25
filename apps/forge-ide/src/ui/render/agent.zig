@@ -62,13 +62,13 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     if (mx >= rx and mx < rx + 16 and my >= hover_y and my < hover_y + 20) {
         renderer.Renderer.drawRoundedRect(rx - 2, hover_y, 20, 20, 4, hover_c);
     }
-    renderer.Renderer.drawSvg(renderer.icons.x, rx, icon_y, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.forge_icons.close, rx, icon_y, 16, 16, icon_c);
     rx -= 30;
 
     if (mx >= rx and mx < rx + 16 and my >= hover_y and my < hover_y + 20) {
         renderer.Renderer.drawRoundedRect(rx - 2, hover_y, 20, 20, 4, hover_c);
     }
-    renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx, icon_y, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.forge_icons.kebab, rx, icon_y, 16, 16, icon_c);
 
     wb.clampPromptScroll(agent_w);
     wb.agent_ui.session.lock();

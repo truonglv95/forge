@@ -509,7 +509,7 @@ pub fn draw(
     if (scope_hover) {
         renderer.Renderer.drawRoundedRect(layout_info.scope_btn.x, layout_info.scope_btn.y, layout_info.scope_btn.w, layout_info.scope_btn.h, 4, .{ .r = 0.25, .g = 0.25, .b = 0.3, .a = 1.0 });
     }
-    renderer.Renderer.drawSvg(renderer.icons.paperclip, layout_info.scope_btn.x + 2, layout_info.scope_btn.y + 2, 20, 20, .{ .r = 0.68, .g = 0.72, .b = 0.78, .a = 1.0 });
+    renderer.Renderer.drawSvg(renderer.forge_icons.paperclip, layout_info.scope_btn.x + 2, layout_info.scope_btn.y + 2, 20, 20, .{ .r = 0.68, .g = 0.72, .b = 0.78, .a = 1.0 });
 
     // Render Send button
     const send_hover = if (controls_disabled) false else state.last_mouse_x >= layout_info.send_btn.x and state.last_mouse_x < layout_info.send_btn.x + layout_info.send_btn.w and state.last_mouse_y >= layout_info.send_btn.y and state.last_mouse_y < layout_info.send_btn.y + layout_info.send_btn.h;
@@ -517,7 +517,7 @@ pub fn draw(
         renderer.Renderer.drawRoundedRect(layout_info.send_btn.x, layout_info.send_btn.y, layout_info.send_btn.w, layout_info.send_btn.h, 4, .{ .r = 0.25, .g = 0.25, .b = 0.3, .a = 1.0 });
     }
     const send_c = if (controls_disabled) renderer.Color{ .r = 0.4, .g = 0.4, .b = 0.4, .a = 1.0 } else renderer.Color{ .r = 0.72, .g = 0.76, .b = 0.84, .a = 1.0 };
-    renderer.Renderer.drawSvg(renderer.icons.send, layout_info.send_btn.x + 2, layout_info.send_btn.y + 2, 20, 20, send_c);
+    renderer.Renderer.drawSvg(renderer.forge_icons.send, layout_info.send_btn.x + 2, layout_info.send_btn.y + 2, 20, 20, send_c);
 
     drawDropdownButton(layout_info.mode_btn, modeLabel(mode), mode_menu_open, !controls_disabled, "", null);
     drawDropdownButton(layout_info.model_btn, modelLabel(models, model_id), model_menu_open, !controls_disabled, "", null);

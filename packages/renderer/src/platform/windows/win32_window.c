@@ -23,6 +23,11 @@
 #include <string.h>
 #include <stdlib.h>
 
+#define NANOSVG_IMPLEMENTATION
+#include "nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "nanosvgrast.h"
+
 #include "backend.h"
 
 // --- Constants ---
@@ -249,10 +254,120 @@ void forge_backend_draw_styled_text(const char* text, size_t len, float x, float
     forge_backend_draw_text_len(text, len, x, y, font_size, 0.85f, 0.85f, 0.85f, 1.0f);
 }
 
+/* SVG icon cache for Win32 — same approach as Linux x11 backend. */
+#define WIN_SVG_CACHE_SIZE 128
+typedef struct {
+    const char* svg_ptr;
+    unsigned int size;
+    unsigned char* data; /* RGBA */
+    unsigned int width;
+    unsigned int height;
+} WinCachedSvg;
+static WinCachedSvg g_win_svg_cache[WIN_SVG_CACHE_SIZE];
+static int g_win_svg_cache_init = 0;
+static NSVGrasterizer* g_win_svg_rast = NULL;
+
 void forge_backend_draw_svg(const char* svg_string, float x, float y, float w, float h, float angle, float r, float g, float b, float a) {
-    // SVG rendering not supported in Win32 GDI backend — draw a placeholder rect.
     (void)angle;
-    forge_backend_draw_rect(x, y, w, h, r, g, b, a);
+    if (!svg_string || w <= 0 || h <= 0 || !g_back_dc) return;
+
+    unsigned int render_size = (unsigned int)(w > h ? w : h);
+    if (render_size < 8) render_size = 8;
+    if (render_size > 256) render_size = 256;
+
+    /* Cache lookup */
+    WinCachedSvg* cv = NULL;
+    if (!g_win_svg_cache_init) {
+        for (int i = 0; i < WIN_SVG_CACHE_SIZE; i++) {
+            g_win_svg_cache[i].svg_ptr = NULL;
+            g_win_svg_cache[i].data = NULL;
+        }
+        g_win_svg_rast = nsvgCreateRasterizer();
+        g_win_svg_cache_init = 1;
+    }
+    for (int i = 0; i < WIN_SVG_CACHE_SIZE; i++) {
+        if (g_win_svg_cache[i].svg_ptr == svg_string && g_win_svg_cache[i].size == render_size) {
+            cv = &g_win_svg_cache[i];
+            break;
+        }
+    }
+
+    if (!cv) {
+        /* Parse + rasterize */
+        size_t svg_len = strlen(svg_string);
+        char* svg_copy = (char*)malloc(svg_len + 1);
+        if (!svg_copy) return;
+        memcpy(svg_copy, svg_string, svg_len + 1);
+
+        NSVGimage* image = nsvgParse(svg_copy, "px", 96.0f);
+        if (!image) { free(svg_copy); return; }
+
+        unsigned int rw = render_size, rh = render_size;
+        unsigned char* img = (unsigned char*)malloc((size_t)rw * rh * 4);
+        if (!img) { free(svg_copy); nsvgDelete(image); return; }
+
+        if (g_win_svg_rast) {
+            float scale = render_size / image->width;
+            if (image->height > image->width) scale = render_size / image->height;
+            nsvgRasterize(g_win_svg_rast, image, 0, 0, scale, img, rw, rh, rw * 4);
+        }
+        nsvgDelete(image);
+        free(svg_copy);
+
+        /* Find empty slot */
+        for (int i = 0; i < WIN_SVG_CACHE_SIZE; i++) {
+            if (g_win_svg_cache[i].svg_ptr == NULL) {
+                g_win_svg_cache[i].svg_ptr = svg_string;
+                g_win_svg_cache[i].size = render_size;
+                g_win_svg_cache[i].data = img;
+                g_win_svg_cache[i].width = rw;
+                g_win_svg_cache[i].height = rh;
+                cv = &g_win_svg_cache[i];
+                break;
+            }
+        }
+        if (!cv) {
+            /* Evict slot 0 */
+            if (g_win_svg_cache[0].data) free(g_win_svg_cache[0].data);
+            g_win_svg_cache[0].svg_ptr = svg_string;
+            g_win_svg_cache[0].size = render_size;
+            g_win_svg_cache[0].data = img;
+            g_win_svg_cache[0].width = rw;
+            g_win_svg_cache[0].height = rh;
+            cv = &g_win_svg_cache[0];
+        }
+    }
+
+    if (!cv || !cv->data) return;
+
+    /* Blend RGBA bitmap into GDI DC using transparent blit.
+     * Simple approach: create a temp bitmap, SetPixel for each non-transparent
+     * pixel. Slow but works for small icons (16-32px). */
+    uint8_t R = (uint8_t)(r * 255.0f + 0.5f);
+    uint8_t G = (uint8_t)(g * 255.0f + 0.5f);
+    uint8_t B = (uint8_t)(b * 255.0f + 0.5f);
+
+    float draw_x = x + (w - (float)cv->width) * 0.5f;
+    float draw_y = y + (h - (float)cv->height) * 0.5f;
+
+    for (unsigned int py = 0; py < cv->height; py++) {
+        int dst_y = (int)(draw_y + py);
+        if (dst_y < 0 || dst_y >= g_back_h) continue;
+        for (unsigned int px = 0; px < cv->width; px++) {
+            int dst_x = (int)(draw_x + px);
+            if (dst_x < 0 || dst_x >= g_back_w) continue;
+            size_t idx = ((size_t)py * cv->width + px) * 4;
+            uint8_t sa = cv->data[idx + 3];
+            if (sa == 0) continue;
+            float alpha = (sa / 255.0f) * a;
+            COLORREF bg = GetPixel(g_back_dc, dst_x, dst_y);
+            uint8_t br = GetRValue(bg), bgg = GetGValue(bg), bb = GetBValue(bg);
+            uint8_t nr = (uint8_t)(R * alpha + br * (1 - alpha));
+            uint8_t ng = (uint8_t)(G * alpha + bgg * (1 - alpha));
+            uint8_t nb = (uint8_t)(B * alpha + bb * (1 - alpha));
+            SetPixel(g_back_dc, dst_x, dst_y, RGB(nr, ng, nb));
+        }
+    }
 }
 
 // --- Font / text metrics ---

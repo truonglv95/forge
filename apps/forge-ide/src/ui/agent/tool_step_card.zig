@@ -194,7 +194,7 @@ pub fn drawStep(
 
     const is_parent = step.child_count > 0 or step.is_thought or step.content != null;
     if (is_parent) {
-        const icon = if (step.expanded) renderer.icons.chevron_down else renderer.icons.chevron_right;
+        const icon = if (step.expanded) renderer.forge_icons.chevron_down else renderer.forge_icons.chevron_right;
         renderer.Renderer.drawSvg(icon, card_x + card_w - 20, y + 6, 16, 16, .{ .r = 0.5, .g = 0.5, .b = 0.55, .a = 1.0 });
     }
 

@@ -39,15 +39,15 @@ pub fn drawTaskPanel(wb: *Workbench, editor_x: f32, editor_w: f32, panel_y: f32,
         const icon_y = tab_y + 3;
         const icon_color = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.6, .a = 1.0 };
 
-        renderer.Renderer.drawSvg(renderer.icons.x, rx - 24, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.icons.chevron_up, rx - 44, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx - 64, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.icons.trash, rx - 88, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.icons.split, rx - 112, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.icons.chevron_down, rx - 136, icon_y, 16, 16, icon_color);
-        renderer.Renderer.drawSvg(renderer.icons.plus, rx - 156, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.forge_icons.close, rx - 24, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.forge_icons.chevron_down, rx - 44, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.forge_icons.kebab, rx - 64, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.forge_icons.close, rx - 88, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.forge_icons.folder, rx - 112, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.forge_icons.chevron_down, rx - 136, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.forge_icons.plus, rx - 156, icon_y, 16, 16, icon_color);
         renderer.Renderer.drawText("zsh", rx - 188, icon_y + 3, 11.0, icon_color);
-        renderer.Renderer.drawSvg(renderer.icons.terminal, rx - 208, icon_y, 16, 16, icon_color);
+        renderer.Renderer.drawSvg(renderer.forge_icons.terminal, rx - 208, icon_y, 16, 16, icon_color);
     }
 
     switch (wb.bottom_panel_mode) {

@@ -54,17 +54,21 @@ static int g_fallback_count = 0;
 /* Glyph cache — avoids re-rendering the same glyph every frame.
  * Keyed by (codepoint, font_size). Stores rendered bitmap + metrics.
  * This is the #1 performance fix: without it, every drawText call
- * re-runs FT_Load_Glyph + FT_Render_Glyph which is extremely slow. */
+ * re-runs FT_Load_Glyph + FT_Render_Glyph which is extremely slow.
+ * Supports both normal (FT_PIXEL_MODE_GRAY) and LCD (FT_PIXEL_MODE_LCD)
+ * subpixel rendering modes. */
 #define GLYPH_CACHE_SIZE 4096
+#define USE_LCD_SUBPIXEL 1  /* 1 = LCD subpixel rendering, 0 = normal AA */
 typedef struct {
     unsigned long cp;       /* codepoint, 0 = empty slot */
     unsigned int font_size; /* pixel size */
     int bitmap_left;
     int bitmap_top;
     int advance_x;          /* in pixels (already >> 6) */
-    unsigned int width;
+    unsigned int width;     /* bitmap width (for LCD: 3x logical) */
     unsigned int rows;
     unsigned char* data;    /* owned, malloc'd */
+    int is_lcd;             /* 1 if LCD subpixel bitmap, 0 if gray */
 } CachedGlyph;
 static CachedGlyph g_glyph_cache[GLYPH_CACHE_SIZE];
 static int g_glyph_cache_init = 0;
@@ -99,6 +103,8 @@ static CachedGlyph* glyph_cache_lookup(unsigned long cp, unsigned int fs) {
 static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, FT_GlyphSlot slot) {
     if (!g_glyph_cache_init) init_glyph_cache();
     unsigned int start = glyph_cache_hash(cp, fs);
+    /* Determine if this is an LCD bitmap (width = 3x logical, pixel_mode = LCD) */
+    int is_lcd = (slot->bitmap.pixel_mode == FT_PIXEL_MODE_LCD) ? 1 : 0;
     for (int i = 0; i < 8; i++) {
         unsigned int idx = (start + i) % GLYPH_CACHE_SIZE;
         if (g_glyph_cache[idx].cp == 0 || (g_glyph_cache[idx].cp == cp && g_glyph_cache[idx].font_size == fs)) {
@@ -111,6 +117,7 @@ static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, FT_GlyphS
             g->advance_x = (int)(slot->advance.x >> 6);
             g->width = slot->bitmap.width;
             g->rows = slot->bitmap.rows;
+            g->is_lcd = is_lcd;
             size_t sz = (size_t)g->width * g->rows;
             g->data = (unsigned char*)malloc(sz ? sz : 1);
             if (g->data && sz) memcpy(g->data, slot->bitmap.buffer, sz);
@@ -128,6 +135,7 @@ static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, FT_GlyphS
     g->advance_x = (int)(slot->advance.x >> 6);
     g->width = slot->bitmap.width;
     g->rows = slot->bitmap.rows;
+    g->is_lcd = is_lcd;
     size_t sz = (size_t)g->width * g->rows;
     g->data = (unsigned char*)malloc(sz ? sz : 1);
     if (g->data && sz) memcpy(g->data, slot->bitmap.buffer, sz);
@@ -387,6 +395,41 @@ static void draw_glyph_bitmap(FT_Bitmap* bitmap, int dx, int dy, float r, float 
     }
 }
 
+/* LCD subpixel rendering — uses FT_LOAD_TARGET_LCD which renders
+ * 3 separate alpha values per pixel (R, G, B subpixels). This gives
+ * 3x horizontal resolution for text, making it crisper on LCD screens.
+ * The glyph bitmap width is 3x the logical width. */
+static void draw_glyph_lcd(FT_Bitmap* bitmap, int dx, int dy, float r, float g, float b, float a) {
+    uint8_t R = (uint8_t)(r*255), G = (uint8_t)(g*255), B = (uint8_t)(b*255);
+    /* LCD bitmaps have width = 3 * logical_width, pixel_mode = FT_PIXEL_MODE_LCD */
+    unsigned int logical_width = bitmap->width / 3;
+    for (unsigned int y = 0; y < bitmap->rows; y++) {
+        int py = dy + (int)y; if (py < 0 || py >= g_height) continue;
+        for (unsigned int x = 0; x < logical_width; x++) {
+            int px = dx + (int)x; if (px < 0 || px >= g_width) continue;
+            if (!in_clip(px, py)) continue;
+            /* 3 bytes per logical pixel: R, G, B subpixel coverage */
+            size_t idx = (size_t)y * bitmap->pitch + x * 3;
+            uint8_t sr = bitmap->buffer[idx];     /* red subpixel */
+            uint8_t sg = bitmap->buffer[idx + 1]; /* green subpixel */
+            uint8_t sb = bitmap->buffer[idx + 2]; /* blue subpixel */
+            if (sr == 0 && sg == 0 && sb == 0) continue;
+            /* Blend each subpixel channel independently for crisp text */
+            uint32_t* dst = &g_pixels[(size_t)py * g_width + px];
+            uint8_t dr = (uint8_t)(*dst >> 16);
+            uint8_t dg = (uint8_t)(*dst >> 8);
+            uint8_t db = (uint8_t)(*dst);
+            float ar = (sr / 255.0f) * a;
+            float ag = (sg / 255.0f) * a;
+            float ab = (sb / 255.0f) * a;
+            uint8_t nr = (uint8_t)(R * ar + dr * (1 - ar));
+            uint8_t ng = (uint8_t)(G * ag + dg * (1 - ag));
+            uint8_t nb = (uint8_t)(B * ab + db * (1 - ab));
+            *dst = (uint32_t)255 << 24 | (uint32_t)nr << 16 | (uint32_t)ng << 8 | (uint32_t)nb;
+        }
+    }
+}
+
 static void render_text_run(const char* text, size_t len, float x, float y, float font_size, float r, float g, float b, float a) {
     if (len == 0 || !g_face) return;
     pthread_mutex_lock(&g_ft_lock);
@@ -434,19 +477,30 @@ static void render_text_run(const char* text, size_t len, float x, float y, floa
         /* Glyph cache lookup — avoids FT_Load_Glyph + FT_Render_Glyph on every call */
         CachedGlyph* cg = glyph_cache_lookup(cp, fs_px);
         if (!cg) {
-            if (FT_Load_Glyph(draw_face, gi, FT_LOAD_RENDER) != 0) continue;
+            /* Use LCD subpixel rendering for crisper text on LCD screens.
+             * FT_LOAD_TARGET_LCD renders 3 bytes per pixel (R,G,B subpixels). */
+            FT_Int32 load_flags = FT_LOAD_RENDER;
+#if USE_LCD_SUBPIXEL
+            load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD;
+#endif
+            if (FT_Load_Glyph(draw_face, gi, load_flags) != 0) continue;
             cg = glyph_cache_put(cp, fs_px, draw_face->glyph);
             if (!cg) continue;
         }
-        /* Draw from cached bitmap */
+        /* Draw from cached bitmap — use LCD or gray renderer based on cache entry */
         if (cg->data && cg->width > 0 && cg->rows > 0) {
             FT_Bitmap tmp_bm;
             tmp_bm.rows = cg->rows;
             tmp_bm.width = cg->width;
             tmp_bm.pitch = (int)cg->width;
             tmp_bm.buffer = cg->data;
-            tmp_bm.pixel_mode = FT_PIXEL_MODE_GRAY;
-            draw_glyph_bitmap(&tmp_bm, (int)pen_x + cg->bitmap_left, (int)pen_y - cg->bitmap_top, r, g, b, a);
+            if (cg->is_lcd) {
+                tmp_bm.pixel_mode = FT_PIXEL_MODE_LCD;
+                draw_glyph_lcd(&tmp_bm, (int)pen_x + cg->bitmap_left, (int)pen_y - cg->bitmap_top, r, g, b, a);
+            } else {
+                tmp_bm.pixel_mode = FT_PIXEL_MODE_GRAY;
+                draw_glyph_bitmap(&tmp_bm, (int)pen_x + cg->bitmap_left, (int)pen_y - cg->bitmap_top, r, g, b, a);
+            }
         }
         pen_x += (float)cg->advance_x;
     }

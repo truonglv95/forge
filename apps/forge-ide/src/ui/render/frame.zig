@@ -183,4 +183,17 @@ pub fn onRenderFrame() void {
         state.continuous_rendering_enabled = continuous;
         renderer.Renderer.setContinuousRendering(continuous);
     }
+
+    // Frame timing — log slow frames (>16ms = dropped 60fps frame)
+    const frame_duration = frame_end_ms - frame_start_ms;
+    state.perf_last_frame_ms = frame_duration;
+    if (frame_duration > 16 and state.perf_frame_count % 60 == 0) {
+        // Log every 60th slow frame to avoid spam
+        std.debug.print("[perf] slow frame: {d}ms (tick={d}ms layout={d}ms)\n", .{
+            frame_duration,
+            tick_end_ms - tick_start_ms,
+            layout_end_ms - layout_start_ms,
+        });
+    }
+    state.perf_frame_count += 1;
 }

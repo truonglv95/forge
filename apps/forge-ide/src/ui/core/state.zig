@@ -23,6 +23,8 @@ pub var perf_markdown_height_misses: u64 = 0;
 pub var perf_redraw_requests: u64 = 0;
 pub var perf_frames: u64 = 0;
 pub var perf_agent_queue_coalesced: u64 = 0;
+pub var perf_last_frame_ms: i64 = 0;
+pub var perf_frame_count: u64 = 0;
 pub var continuous_rendering_enabled: bool = false;
 
 pub const DirtyPanel = enum(u3) {

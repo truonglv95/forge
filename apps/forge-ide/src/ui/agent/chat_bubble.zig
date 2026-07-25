@@ -257,7 +257,7 @@ pub fn drawAgentMessageWithCache(
 
     const icon_x = @max(agent_x + tokens.space.sm, inner_x);
     renderer.Renderer.drawRoundedRect(icon_x, y, agent_icon_size, agent_icon_size, 4, .{ .r = 0.02, .g = 0.43, .b = 1.0, .a = 1.0 });
-    renderer.Renderer.drawSvg(renderer.icons.gear, icon_x + 3, y + 3, 14, 14, .{ .r = 0.92, .g = 0.96, .b = 1.0, .a = 1.0 });
+    renderer.Renderer.drawSvg(renderer.forge_icons.gear, icon_x + 3, y + 3, 16, 16, .{ .r = 0.92, .g = 0.96, .b = 1.0, .a = 1.0 });
 
     const text_x = inner_x;
     const text_y = y + agent_header_h;
@@ -352,7 +352,7 @@ pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) 
     const pill_h: f32 = 32;
     renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 6, .{ .r = 0.03, .g = 0.24, .b = 0.43, .a = 1.0 });
     renderer.Renderer.drawRoundedRect(inner_x + 1, y + 1, pill_w - 2, pill_h - 2, 5, .{ .r = 0.07, .g = 0.12, .b = 0.18, .a = 1.0 });
-    renderer.Renderer.drawSvg(renderer.icons.sparkle, inner_x + 14, y + 8, 14, 14, .{ .r = 0.18, .g = 0.58, .b = 0.95, .a = 1.0 });
+    renderer.Renderer.drawSvg(renderer.forge_icons.sparkle, inner_x + 14, y + 8, 16, 16, .{ .r = 0.18, .g = 0.58, .b = 0.95, .a = 1.0 });
     renderer.Renderer.drawTextWithStyle(label_buf[0..label_len], inner_x + 34, y + 8, 12.0, .{ .r = 0.24, .g = 0.62, .b = 0.95, .a = 1.0 }, metrics.typography.strong_style);
     return thinkingLineHeight();
 }

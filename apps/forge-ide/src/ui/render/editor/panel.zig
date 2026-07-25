@@ -99,13 +99,13 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
     if (mx >= rx and mx < rx + 16 and my >= layout.header_height + 4 and my < layout.header_height + 24) {
         renderer.Renderer.drawRoundedRect(rx - 2, layout.header_height + 4, 20, 20, 4, hover_c);
     }
-    renderer.Renderer.drawSvg(renderer.icons.kebab_horizontal, rx, layout.header_height + 7, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.forge_icons.kebab, rx, layout.header_height + 7, 16, 16, icon_c);
     rx -= 24;
 
     if (mx >= rx and mx < rx + 16 and my >= layout.header_height + 4 and my < layout.header_height + 24) {
         renderer.Renderer.drawRoundedRect(rx - 2, layout.header_height + 4, 20, 20, 4, hover_c);
     }
-    renderer.Renderer.drawSvg(renderer.icons.repo, rx, layout.header_height + 7, 16, 16, icon_c);
+    renderer.Renderer.drawSvg(renderer.forge_icons.repo, rx, layout.header_height + 7, 16, 16, icon_c);
 
     if (wb.welcome_visible and wb.editor.tabs.tabs.items.len == 0) {
         welcome.draw(wb, editor_x, editor_w, editor_h);
