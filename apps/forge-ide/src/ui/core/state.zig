@@ -27,6 +27,46 @@ pub var perf_last_frame_ms: i64 = 0;
 pub var perf_frame_count: u64 = 0;
 pub var continuous_rendering_enabled: bool = false;
 
+// Persistent frame arena — reused across frames to avoid init/deinit
+// overhead. Reset (not deinit) at frame start for O(1) cleanup.
+pub var frame_arena: ?std.heap.ArenaAllocator = null;
+pub var frame_arena_inited: bool = false;
+
+// Dirty region tracking — marks which panels need redraw.
+// When a panel is dirty, only that panel is redrawn; other panels
+// retain their previous framebuffer content. When ALL panels are
+// dirty (or on first frame), full redraw is performed.
+pub var dirty_sidebar: bool = true;
+pub var dirty_editor: bool = true;
+pub var dirty_agent: bool = true;
+pub var dirty_bottom_panel: bool = true;
+pub var dirty_status_bar: bool = true;
+pub var dirty_full: bool = true; // Force full redraw
+pub var first_frame: bool = true;
+
+pub fn markAllDirty() void {
+    dirty_sidebar = true;
+    dirty_editor = true;
+    dirty_agent = true;
+    dirty_bottom_panel = true;
+    dirty_status_bar = true;
+    dirty_full = true;
+}
+
+pub fn clearDirty() void {
+    dirty_sidebar = false;
+    dirty_editor = false;
+    dirty_agent = false;
+    dirty_bottom_panel = false;
+    dirty_status_bar = false;
+    dirty_full = false;
+    first_frame = false;
+}
+
+pub fn anyDirty() bool {
+    return dirty_full or dirty_sidebar or dirty_editor or dirty_agent or dirty_bottom_panel or dirty_status_bar;
+}
+
 pub const DirtyPanel = enum(u3) {
     sidebar,
     editor,
@@ -35,20 +75,15 @@ pub const DirtyPanel = enum(u3) {
     status,
 };
 
-pub var dirty_panels: u8 = 0xff;
-
 pub fn markDirty(panel: DirtyPanel) void {
-    dirty_panels |= @as(u8, 1) << @intFromEnum(panel);
+    switch (panel) {
+        .sidebar => dirty_sidebar = true,
+        .editor => dirty_editor = true,
+        .bottom_panel => dirty_bottom_panel = true,
+        .agent => dirty_agent = true,
+        .status => dirty_status_bar = true,
+    }
     renderer.Renderer.requestRedraw();
-}
-
-pub fn markAllDirty() void {
-    dirty_panels = 0xff;
-    renderer.Renderer.requestRedraw();
-}
-
-pub fn clearDirty() void {
-    dirty_panels = 0;
 }
 pub var root_view: ?*renderer.View = null;
 pub var header_view: ?*renderer.View = null;

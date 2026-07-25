@@ -27,6 +27,8 @@ pub const Color = view.Color;
 pub const icons = @import("octicons.zig");
 pub const forge_icons = @import("forge_icons.zig");
 pub const file_icons = @import("file_icons.zig").icons;
+pub const gpu = @import("gpu/gpu_backend.zig");
+pub const sdf_atlas = @import("gpu/sdf_atlas.zig");
 
 pub const TextSpan = extern struct {
     offset: usize,

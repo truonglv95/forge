@@ -40,9 +40,14 @@ pub fn onRenderFrame() void {
     const wb = state.wb orelse return;
     const frame_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
 
-    // Frame Allocator for Declarative UI
-    var frame_arena = std.heap.ArenaAllocator.init(wb.allocator);
-    defer frame_arena.deinit();
+    // Reuse persistent frame arena — reset instead of init/deinit per frame.
+    // This avoids the overhead of ArenaAllocator.init + deinit every frame.
+    if (!state.frame_arena_inited) {
+        state.frame_arena = std.heap.ArenaAllocator.init(wb.allocator);
+        state.frame_arena_inited = true;
+    }
+    var frame_arena = &state.frame_arena.?;
+    _ = frame_arena.reset(.retain_capacity);
     const frame_alloc = frame_arena.allocator();
 
     const editor_buf = wb.activeBuffer();

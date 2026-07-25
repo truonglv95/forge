@@ -190,12 +190,23 @@ static void init_svg_cache(void) {
     g_svg_cache_init = 1;
 }
 
+/* Hash function for SVG cache: based on pointer + size.
+ * Open addressing with 8 probes per slot (same as glyph cache). */
+static unsigned int svg_cache_hash(const char* svg_ptr, unsigned int size) {
+    /* Knuth multiplicative hash on pointer bits + size */
+    uintptr_t ptr_val = (uintptr_t)svg_ptr;
+    return (unsigned int)((ptr_val ^ (ptr_val >> 8) ^ (size * 2654435761u)) % SVG_CACHE_SIZE);
+}
+
 static CachedSvg* svg_cache_lookup(const char* svg_ptr, unsigned int size) {
     if (!g_svg_cache_init) init_svg_cache();
-    for (int i = 0; i < SVG_CACHE_SIZE; i++) {
-        if (g_svg_cache[i].svg_ptr == svg_ptr && g_svg_cache[i].size == size) {
-            return &g_svg_cache[i];
+    unsigned int start = svg_cache_hash(svg_ptr, size);
+    for (int i = 0; i < 8; i++) {
+        unsigned int idx = (start + i) % SVG_CACHE_SIZE;
+        if (g_svg_cache[idx].svg_ptr == svg_ptr && g_svg_cache[idx].size == size) {
+            return &g_svg_cache[idx];
         }
+        if (g_svg_cache[idx].svg_ptr == NULL) return NULL;
     }
     return NULL;
 }
@@ -800,11 +811,39 @@ static void handle_event(XEvent* ev) {
     }
 }
 
+/* Pre-warm glyph cache: render common ASCII characters at common font
+ * sizes so the first frame doesn't stall on cache misses. This covers
+ * ~95% of UI text (lowercase, uppercase, digits, punctuation). */
+static void prewarm_glyph_cache(void) {
+    if (!g_face) return;
+    pthread_mutex_lock(&g_ft_lock);
+    /* Common font sizes used in the IDE UI */
+    const unsigned int sizes[] = {11, 12, 13, 14, 16, 18, 24, 34};
+    /* ASCII printable range (space to ~) covers most UI text */
+    for (size_t si = 0; si < sizeof(sizes)/sizeof(sizes[0]); si++) {
+        unsigned int fs_px = sizes[si];
+        FT_Set_Pixel_Sizes(g_face, 0, fs_px);
+        for (unsigned long cp = 32; cp < 127; cp++) {
+            if (glyph_cache_lookup(cp, fs_px)) continue; /* already cached */
+            FT_UInt gi = FT_Get_Char_Index(g_face, cp);
+            if (gi == 0) continue;
+            FT_Int32 load_flags = FT_LOAD_RENDER;
+#if USE_LCD_SUBPIXEL
+            load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LCD;
+#endif
+            if (FT_Load_Glyph(g_face, gi, load_flags) != 0) continue;
+            glyph_cache_put(cp, fs_px, g_face->glyph);
+        }
+    }
+    pthread_mutex_unlock(&g_ft_lock);
+}
+
 void forge_backend_init(void) {
     g_display = XOpenDisplay(NULL);
     if (!g_display) { fprintf(stderr, "forge: cannot open X display\n"); return; }
     detect_dpi_scale();
     load_font();
+    prewarm_glyph_cache();
 }
 
 void forge_backend_create_window(const char* title, int width, int height) {
