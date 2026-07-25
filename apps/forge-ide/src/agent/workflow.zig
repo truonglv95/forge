@@ -681,7 +681,7 @@ fn resumeWorker(ctx: *ResumeContext) void {
     };
     errdefer host.allocator.free(chat_owned);
 
-    enqueueRunFinished(host, run_id, proposal_rel, chat_owned, manifest_owned, null) catch {
+    enqueueRunFinished(host, run_id, proposal_rel, chat_owned, manifest_owned, null, result.usage, result.estimated_cost_usd) catch {
         enqueueRunFailed(host, error.ProviderFailed);
     };
 }
@@ -816,7 +816,7 @@ fn generateInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
         host.agent.unlock();
     }
 
-    try enqueueRunFinished(host, result.run_id, result.proposal_rel, chat_owned, manifest_owned, plan_owned);
+    try enqueueRunFinished(host, result.run_id, result.proposal_rel, chat_owned, manifest_owned, plan_owned, result.usage, result.estimated_cost_usd);
 }
 
 fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Options, capability_profile: ai.tools.CapabilityProfile) AgentError!void {
@@ -925,7 +925,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
     const chat_owned = host.allocator.dupe(u8, chat_line) catch return error.ProviderFailed;
     errdefer host.allocator.free(chat_owned);
 
-    try enqueueRunFinished(host, run_id, proposal_rel, chat_owned, manifest_owned, null);
+    try enqueueRunFinished(host, run_id, proposal_rel, chat_owned, manifest_owned, null, result.usage, result.estimated_cost_usd);
 }
 
 fn buildManifestText(
@@ -951,6 +951,8 @@ fn enqueueRunFinished(
     chat_owned: []const u8,
     manifest_owned: []const u8,
     plan_owned: ?[]const u8,
+    usage: ai.provider.TokenUsage,
+    cost_usd: f64,
 ) AgentError!void {
     // `chat_owned`, `manifest_owned`, and `plan_owned` transfer ownership to the UI queue.
     const run_id_owned = host.allocator.dupe(u8, run_id) catch return error.ProviderFailed;
@@ -965,6 +967,10 @@ fn enqueueRunFinished(
             .chat_text = chat_owned,
             .manifest_text = manifest_owned,
             .plan_text = plan_owned,
+            .prompt_tokens = @intCast(usage.prompt_tokens),
+            .completion_tokens = @intCast(usage.completion_tokens),
+            .total_tokens = @intCast(usage.total_tokens),
+            .cost_usd = cost_usd,
         },
     });
 }

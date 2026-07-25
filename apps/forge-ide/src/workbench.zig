@@ -126,6 +126,10 @@ pub const Workbench = struct {
     proactive_completion_enabled: bool = true,
     /// Rate limiter for AI provider calls — prevents API rate limit errors.
     rate_limiter: ai.rate_limiter.RateLimiter = undefined,
+    /// Cumulative token usage tracker — accumulates tokens across all AI
+    /// requests in this session. Displayed in the status bar so users can
+    /// monitor spend in real time. See RFC-0018.
+    usage_tracker: ai.usage_tracker.UsageTracker = undefined,
 
     lsp_initialized: bool = false,
     marketplace_catalog: ?plugin.MarketplaceCatalog = null,
@@ -484,6 +488,7 @@ pub const Workbench = struct {
 
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
         self.rate_limiter = ai.rate_limiter.RateLimiter.init(allocator);
+        self.usage_tracker = ai.usage_tracker.UsageTracker.init(allocator);
         self.user_settings = settings_mod.load(allocator, io, root) catch |err| blk: {
             self.logBackgroundError("Load settings", err);
             break :blk .{};
@@ -597,6 +602,7 @@ pub const Workbench = struct {
             if (self.rag_index) |*idx| idx.deinit();
             if (self.completion_cache) |*cache| cache.deinit();
             self.rate_limiter.deinit();
+            self.usage_tracker.deinit();
         }
         self.wrap_cache.deinit();
         self.max_line_len_cache.deinit();

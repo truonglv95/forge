@@ -19,6 +19,14 @@ pub const Op = union(enum) {
         chat_text: []const u8,
         manifest_text: []const u8,
         plan_text: ?[]const u8 = null,
+        /// Token usage for this run (prompt, completion, total).
+        /// Zero values mean the provider did not report usage (e.g. fake
+        /// provider, network error before any tokens were billed).
+        prompt_tokens: u64 = 0,
+        completion_tokens: u64 = 0,
+        total_tokens: u64 = 0,
+        /// Estimated cost in USD for this single run.
+        cost_usd: f64 = 0.0,
     },
     run_failed: struct {
         phase: agent_session.Phase,

@@ -64,6 +64,10 @@ pub const Result = struct {
     proposal_body: []const u8,
     plan_body: ?[]const u8 = null,
     plan_rel: ?[]const u8 = null,
+    /// Token usage reported by the provider for this run (best-effort).
+    usage: provider.TokenUsage = .{},
+    /// Estimated cost in USD for this run.
+    estimated_cost_usd: f64 = 0.0,
 };
 
 pub fn validateProposalBody(allocator: std.mem.Allocator, proposal_body: []const u8) WorkflowError!void {
@@ -231,6 +235,13 @@ pub fn generateAndPersist(
             .proposal_body = allocator.dupe(u8, "") catch return error.ProviderFailed,
             .plan_body = owned_plan_body,
             .plan_rel = owned_plan_rel,
+            .usage = llm.usage(),
+            .estimated_cost_usd = blk: {
+                var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator);
+                defer tracker.deinit();
+                tracker.record(meta.provider_name, meta.model_name, llm.usage(), 0) catch {};
+                break :blk tracker.estimatedCostUsd(meta.provider_name, meta.model_name);
+            },
         };
     }
 
@@ -402,6 +413,13 @@ pub fn generateAndPersist(
         .proposal_body = final_body,
         .plan_body = owned_plan_body,
         .plan_rel = owned_plan_rel,
+        .usage = llm.usage(),
+        .estimated_cost_usd = blk: {
+            var tracker = @import("usage_tracker.zig").UsageTracker.init(allocator);
+            defer tracker.deinit();
+            tracker.record(meta.provider_name, meta.model_name, llm.usage(), 0) catch {};
+            break :blk tracker.estimatedCostUsd(meta.provider_name, meta.model_name);
+        },
     };
 }
 

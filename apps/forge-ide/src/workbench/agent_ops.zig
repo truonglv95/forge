@@ -570,6 +570,22 @@ pub fn flushAgentUi(wb: anytype) !void {
                 agent_workflow.refreshRunHistory(&host) catch |err| {
                     wb.logBackgroundError("Refresh AI run history", err);
                 };
+                // Record token usage from this run into the session-wide
+                // usage tracker so it can be displayed in the status bar.
+                // Skip when the provider reported zero tokens (e.g. fake
+                // provider, or a network error before any tokens billed).
+                if (payload.total_tokens > 0) {
+                    const provider_name = wb.agent_ui.provider;
+                    const model_name = wb.agent_ui.model orelse "";
+                    const ts_now_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+                    wb.usage_tracker.record(provider_name, model_name, .{
+                        .prompt_tokens = @intCast(payload.prompt_tokens),
+                        .completion_tokens = @intCast(payload.completion_tokens),
+                        .total_tokens = @intCast(payload.total_tokens),
+                    }, ts_now_ms) catch |err| {
+                        wb.logBackgroundError("Record AI token usage", err);
+                    };
+                }
                 try appendAgentRunChat(wb, payload.chat_text, payload.plan_text, stream_snapshot, thinking_snapshot);
                 wb.allocator.free(stream_snapshot);
                 wb.allocator.free(thinking_snapshot);

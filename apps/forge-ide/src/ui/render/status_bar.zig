@@ -32,6 +32,9 @@ pub const ItemAction = enum {
     open_problems,
     open_language_settings,
     open_command_palette,
+    /// Show token usage details (toast with breakdown of prompt/completion
+    /// tokens, total cost, and recent run count).
+    open_usage_details,
 };
 
 pub const Item = struct {
@@ -198,6 +201,40 @@ pub fn drawStatusBar(wb: *Workbench, w: f32, h: f32, shell_mode: layout.ShellMod
     // ---- RIGHT ITEMS ----
     var right_x = w - 8;
 
+    // Token usage — cumulative session total. Displayed as "12.3K · $0.04"
+    // when there are tokens recorded. Hidden when no AI calls have been
+    // made yet (so the bar isn't cluttered on a fresh session).
+    if (wb.usage_tracker.total.total_tokens > 0) {
+        var usage_buf: [64]u8 = undefined;
+        const usage_label = formatTokenUsage(
+            &usage_buf,
+            wb.usage_tracker.total.total_tokens,
+            wb.usage_tracker.estimatedCostUsd(wb.agent_ui.provider, wb.agent_ui.model orelse ""),
+        );
+        const usage_w = estimateWidth(usage_label, font_size) + 16;
+        right_x -= usage_w;
+        const is_usage_hover = isHovered(wb, right_x, bar_y, usage_w, bar_height);
+        if (is_usage_hover) {
+            renderer.Renderer.drawRect(right_x, bar_y, usage_w, bar_height, .{ .r = 0.2, .g = 0.22, .b = 0.28, .a = 1.0 });
+        }
+        // Use a subtle green tint to differentiate from the model name's
+        // accent color and signal "this is a usage/cost indicator".
+        const usage_color = renderer.Color{ .r = 0.55, .g = 0.85, .b = 0.65, .a = 1.0 };
+        renderer.Renderer.drawText(usage_label, right_x + 8, bar_y + 4, font_size, usage_color);
+        wb.status_bar_items[wb.status_bar_item_count] = .{
+            .icon = "usage",
+            .label = usage_label,
+            .action = .open_usage_details,
+            .hovered = is_usage_hover,
+            .x = right_x,
+            .y = bar_y,
+            .w = usage_w,
+            .h = bar_height,
+        };
+        wb.status_bar_item_count += 1;
+        right_x -= 8;
+    }
+
     // Agent model
     if (wb.agent_ui.model) |model| {
         const model_w = estimateWidth(model, font_size) + 16;
@@ -332,6 +369,47 @@ fn estimateWidth(text: []const u8, font_size: f32) f32 {
     return @as(f32, @floatFromInt(text.len)) * font_size * 0.6;
 }
 
+/// Format token usage into a compact status-bar label.
+///
+/// Examples:
+///   980 tokens, $0.00  → "980 tok"
+///   12_300 tokens, $0.04 → "12.3K tok · $0.04"
+///   1_200_000 tokens, $1.23 → "1.20M tok · $1.23"
+///   500 tokens, $0.00 (free provider) → "500 tok"
+///
+/// The cost segment is omitted when it rounds to $0.00 (e.g. Ollama,
+/// or very small requests on cheap models) to keep the bar uncluttered.
+fn formatTokenUsage(buf: []u8, total_tokens: u64, cost_usd: f64) []const u8 {
+    // Token count with K/M suffix — format into a small scratch buffer
+    // first, then combine with cost into `buf`. Using a scratch buffer
+    // avoids aliasing issues when `buf` is both the destination and
+    // (indirectly) the source via token_part.
+    var scratch: [32]u8 = undefined;
+    var token_part: []const u8 = "tok";
+    if (total_tokens < 1000) {
+        token_part = std.fmt.bufPrint(&scratch, "{d} tok", .{total_tokens}) catch "tok";
+    } else if (total_tokens < 1_000_000) {
+        const k: f64 = @as(f64, @floatFromInt(total_tokens)) / 1000.0;
+        token_part = std.fmt.bufPrint(&scratch, "{d:.1}K tok", .{k}) catch "tok";
+    } else {
+        const m: f64 = @as(f64, @floatFromInt(total_tokens)) / 1_000_000.0;
+        token_part = std.fmt.bufPrint(&scratch, "{d:.2}M tok", .{m}) catch "tok";
+    }
+
+    // Cost — only show when > $0.005 (rounds to $0.01). Otherwise just
+    // copy token_part into buf so the returned slice has stable storage.
+    if (cost_usd > 0.005) {
+        // Format combined label into buf. On overflow (buf too small),
+        // fall back to just the token portion copied into buf.
+        if (std.fmt.bufPrint(buf, "{s} · ${d:.2}", .{ token_part, cost_usd })) |result| {
+            return result;
+        } else |_| {}
+    }
+    if (token_part.len > buf.len) return "tok";
+    @memcpy(buf[0..token_part.len], token_part);
+    return buf[0..token_part.len];
+}
+
 /// Hit-test a click on the status bar. Returns the action to dispatch,
 /// or .none if the click missed all items.
 pub fn hitTest(wb: *Workbench, click_x: f32, click_y: f32) ItemAction {
@@ -357,5 +435,52 @@ pub fn dispatchAction(wb: *Workbench, action: ItemAction) void {
         .open_problems => wb.dispatch(.{ .set_bottom_panel_mode = .problems }) catch {},
         .open_language_settings => wb.dispatch(.open_settings_modal) catch {},
         .open_command_palette => wb.dispatch(.palette_open) catch {},
+        .open_usage_details => showUsageDetails(wb),
     }
+}
+
+/// Show a toast with detailed token usage breakdown when the user clicks
+/// the token usage indicator in the status bar.
+fn showUsageDetails(wb: *Workbench) void {
+    const total = wb.usage_tracker.total;
+    const provider_name = wb.agent_ui.provider;
+    const model_name = wb.agent_ui.model orelse "";
+    const cost = wb.usage_tracker.estimatedCostUsd(provider_name, model_name);
+    const run_count = wb.usage_tracker.entries.items.len;
+
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "AI usage — runs: {d}  prompt: {d}  completion: {d}  total: {d}  est. cost: ${d:.4}", .{
+        run_count,
+        total.prompt_tokens,
+        total.completion_tokens,
+        total.total_tokens,
+        cost,
+    }) catch "AI usage details unavailable";
+    wb.setStatus(msg) catch {};
+    _ = wb.notifications.info(msg) catch {};
+}
+
+test "formatTokenUsage small tokens no cost" {
+    var buf: [64]u8 = undefined;
+    const result = formatTokenUsage(&buf, 980, 0.0);
+    try std.testing.expectEqualStrings("980 tok", result);
+}
+
+test "formatTokenUsage K suffix with cost" {
+    var buf: [64]u8 = undefined;
+    const result = formatTokenUsage(&buf, 12300, 0.04);
+    try std.testing.expectEqualStrings("12.3K tok · $0.04", result);
+}
+
+test "formatTokenUsage M suffix with cost" {
+    var buf: [64]u8 = undefined;
+    const result = formatTokenUsage(&buf, 1_200_000, 1.23);
+    try std.testing.expectEqualStrings("1.20M tok · $1.23", result);
+}
+
+test "formatTokenUsage zero cost omits segment" {
+    var buf: [64]u8 = undefined;
+    // 500 tokens, free provider (cost = 0) — should not show "· $0.00"
+    const result = formatTokenUsage(&buf, 500, 0.0);
+    try std.testing.expectEqualStrings("500 tok", result);
 }
