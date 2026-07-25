@@ -62,10 +62,13 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
     const accent = theme_mod.color(theme.colors.accent);
     const viewport_bg = theme_mod.color(theme.colors.accent_soft);
 
-    // Minimap is positioned to the LEFT of the scrollbar, not at the
-    // very right edge. The scrollbar occupies the rightmost ~10px of
-    // editor_w, so we offset the minimap left by that amount.
-    const scrollbar_reserve: f32 = 10.0;
+    // Minimap is positioned to the LEFT of the scrollbar. The scrollbar
+    // occupies the rightmost ~10px (track_w + content_gap) of editor_w,
+    // and the scrollbar gutter is reserved OUTSIDE the editor's content
+    // clip rect (see viewport.zig). The minimap sits between the editor
+    // text area and the scrollbar gutter.
+    const scrollbar = @import("../core/scrollbar.zig");
+    const scrollbar_reserve: f32 = scrollbar.track_w + scrollbar.content_gap;
     const minimap_x = editor_x + editor_w - minimap_width - scrollbar_reserve;
     const minimap_y = editor_scroll.content_top;
     const minimap_h = editor_h - editor_scroll.content_top;
@@ -160,7 +163,8 @@ pub fn drawMinimap(wb: *Workbench, editor_x: f32, editor_w: f32, editor_h: f32) 
 
 /// Check if a click position is within the minimap area.
 pub fn isMinimapClick(editor_x: f32, editor_w: f32, click_x: f32, click_y: f32, editor_h: f32) bool {
-    const scrollbar_reserve: f32 = 10.0;
+    const scrollbar = @import("../core/scrollbar.zig");
+    const scrollbar_reserve: f32 = scrollbar.track_w + scrollbar.content_gap;
     const minimap_x = editor_x + editor_w - minimap_width - scrollbar_reserve;
     return click_x >= minimap_x and click_x <= minimap_x + minimap_width and
         click_y >= editor_scroll.content_top and click_y <= editor_h;

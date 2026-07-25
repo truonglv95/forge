@@ -358,22 +358,60 @@ pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) 
     // Animated pulsing dots — three dots with phase-shifted opacity.
     // Pill width adapts to text length so longer status messages (e.g.
     // "Reading context: 12 files…") fit inside without clipping.
-    var label_w: f32 = 0;
-    if (text.len > 0) {
-        label_w = @as(f32, @floatFromInt(text.len)) * 6.0;
+    // For very long status text, the pill wraps onto multiple lines and
+    // grows in height so the entire label is always visible (Issue 3:
+    // previously long streaming labels were truncated, hiding "Thinking…").
+    const prose_style = renderer.TextStyle.prose;
+    const label_font_size: f32 = 11.0;
+    // Measure the actual text width rather than using a per-char estimate
+    // (the previous `text.len * 6.0` estimate was too narrow for prose
+    // at 11px, causing the pill background to not cover the text).
+    const label_w: f32 = if (text.len > 0)
+        renderer.Renderer.measureTextWithStyle(text, label_font_size, prose_style)
+    else
+        0;
+
+    // Pill layout — single-line if it fits, otherwise wrap.
+    // Cap the pill width so very long status messages wrap onto multiple
+    // lines instead of running off the right edge of the agent panel.
+    // The cap is generous (~480px) so common status messages stay on
+    // one line; only truly long streaming text wraps.
+    const max_pill_w: f32 = 480.0;
+    const dot_area_w: f32 = 38 + 42; // sparkle icon + 3 dots + gap before text
+    const min_pill_w: f32 = 100.0;
+    const natural_pill_w: f32 = dot_area_w + label_w + 16;
+
+    var pill_w: f32 = @max(min_pill_w, @min(natural_pill_w, max_pill_w));
+    var pill_h: f32 = 32.0;
+
+    // If text overflows the pill, wrap it. Compute number of wrapped
+    // lines and grow pill_h accordingly.
+    var line_count: usize = 1;
+    if (label_w > 0 and natural_pill_w > max_pill_w) {
+        const available_text_w = max_pill_w - dot_area_w - 16;
+        // Rough wrap estimate: chars-per-line proportional to width.
+        // Using measureText on full text is accurate enough for height.
+        const chars_per_line = @max(1, @as(usize, @intFromFloat(@floor(
+            @as(f32, @floatFromInt(text.len)) * available_text_w / label_w,
+        ))));
+        line_count = (text.len + chars_per_line - 1) / chars_per_line;
+        line_count = @max(1, line_count);
+        pill_h = 14.0 + @as(f32, @floatFromInt(line_count)) * 14.0;
+        pill_w = max_pill_w;
     }
-    const pill_w: f32 = @max(100, 38 + label_w + 16);
-    const pill_h: f32 = 32;
+
     // Pill background — subtle accent
-    renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 16, .{ .r = 0.10, .g = 0.12, .b = 0.16, .a = 1.0 });
-    renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 16, .{ .r = 0.15, .g = 0.27, .b = 0.48, .a = 0.3 });
+    renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 14, .{ .r = 0.10, .g = 0.12, .b = 0.16, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(inner_x, y, pill_w, pill_h, 14, .{ .r = 0.15, .g = 0.27, .b = 0.48, .a = 0.3 });
 
-    // Sparkle icon
-    renderer.Renderer.drawSvg(renderer.forge_icons.sparkle, inner_x + 12, y + 8, 16, 16, .{ .r = 0.27, .g = 0.53, .b = 1.0, .a = 0.9 });
+    // Sparkle icon (vertically centered in the pill)
+    const icon_y = y + (pill_h - 16.0) / 2.0;
+    renderer.Renderer.drawSvg(renderer.forge_icons.sparkle, inner_x + 12, icon_y, 16, 16, .{ .r = 0.27, .g = 0.53, .b = 1.0, .a = 0.9 });
 
-    // Three pulsing dots — each phase-shifted by 0.33s
+    // Three pulsing dots — each phase-shifted by 0.33s.
+    // Vertically centered in the pill.
     const dot_base_x = inner_x + 38;
-    const dot_y = y + 14;
+    const dot_y = y + (pill_h - 5.0) / 2.0;
     var di: usize = 0;
     while (di < 3) : (di += 1) {
         const phase = @mod(anim_time * 2.0 + @as(f32, @floatFromInt(di)) * 0.33, 1.5);
@@ -389,20 +427,71 @@ pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) 
 
     // Optional status text (e.g. "Reading context", "Generating diff")
     // — drawn after the dots so users can see what the agent is doing
-    // instead of just watching dots pulse.
+    // instead of just watching dots pulse. When the label is long
+    // enough to wrap, draw each wrapped segment on its own line.
     if (text.len > 0) {
-        var label_buf: [128:0]u8 = undefined;
-        const clipped = if (text.len > 127) text[0..127] else text;
-        @memcpy(label_buf[0..clipped.len], clipped);
-        label_buf[clipped.len] = 0;
-        renderer.Renderer.drawText(@ptrCast(&label_buf), dot_base_x + 42, y + 9, 11.0, .{ .r = 0.7, .g = 0.78, .b = 0.92, .a = 0.9 });
+        const text_x = dot_base_x + 42;
+        const available_text_w = pill_w - dot_area_w - 8;
+        if (line_count == 1) {
+            // Single-line — draw whole text.
+            var label_buf: [128:0]u8 = undefined;
+            const clipped = if (text.len > 127) text[0..127] else text;
+            @memcpy(label_buf[0..clipped.len], clipped);
+            label_buf[clipped.len] = 0;
+            const text_y = y + (pill_h - 11.0) / 2.0;
+            renderer.Renderer.drawText(@ptrCast(&label_buf), text_x, text_y, label_font_size, .{ .r = 0.7, .g = 0.78, .b = 0.92, .a = 0.9 });
+        } else {
+            // Multi-line wrap — chunk the text by approximate character
+            // count per line (chars_per_line) and draw each chunk.
+            const chars_per_line = @max(1, @as(usize, @intFromFloat(@floor(
+                @as(f32, @floatFromInt(text.len)) * available_text_w / label_w,
+            ))));
+            var line_idx: usize = 0;
+            var pos: usize = 0;
+            const line_h: f32 = 14.0;
+            const start_y = y + 8.0;
+            while (pos < text.len and line_idx < line_count) {
+                const end = @min(pos + chars_per_line, text.len);
+                const chunk = text[pos..end];
+                var chunk_buf: [128:0]u8 = undefined;
+                const clamped_chunk = if (chunk.len > 127) chunk[0..127] else chunk;
+                @memcpy(chunk_buf[0..clamped_chunk.len], clamped_chunk);
+                chunk_buf[clamped_chunk.len] = 0;
+                renderer.Renderer.drawText(@ptrCast(&chunk_buf), text_x, start_y + @as(f32, @floatFromInt(line_idx)) * line_h, label_font_size, .{ .r = 0.7, .g = 0.78, .b = 0.92, .a = 0.9 });
+                pos = end;
+                line_idx += 1;
+            }
+        }
     }
 
-    return thinkingLineHeight();
+    return pill_h + bubble_gap;
 }
 
 pub fn thinkingLineHeight() f32 {
+    // Conservative default — actual height returned by drawThinkingLine
+    // varies when the status text wraps. Callers that need the exact
+    // height should use drawThinkingLine's return value.
     return 32.0 + bubble_gap;
+}
+
+/// Compute the height that drawThinkingLine will produce for the given
+/// text WITHOUT drawing. Used by layout passes to reserve vertical
+/// space before rendering.
+pub fn thinkingLineHeightFor(text: []const u8) f32 {
+    if (text.len == 0) return 32.0 + bubble_gap;
+    const prose_style = renderer.TextStyle.prose;
+    const label_font_size: f32 = 11.0;
+    const label_w = renderer.Renderer.measureTextWithStyle(text, label_font_size, prose_style);
+    const max_pill_w: f32 = 480.0;
+    const dot_area_w: f32 = 38 + 42;
+    const natural_pill_w: f32 = dot_area_w + label_w + 16;
+    if (natural_pill_w <= max_pill_w) return 32.0 + bubble_gap;
+    const available_text_w = max_pill_w - dot_area_w - 16;
+    const chars_per_line = @max(1, @as(usize, @intFromFloat(@floor(
+        @as(f32, @floatFromInt(text.len)) * available_text_w / label_w,
+    ))));
+    const line_count = @max(@as(usize, 1), (text.len + chars_per_line - 1) / chars_per_line);
+    return 14.0 + @as(f32, @floatFromInt(line_count)) * 14.0 + bubble_gap;
 }
 
 pub fn drawStatusLine(inner_x: f32, y: f32, text: []const u8) f32 {

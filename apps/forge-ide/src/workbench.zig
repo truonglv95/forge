@@ -1895,13 +1895,16 @@ pub const Workbench = struct {
             self.tab_switch_anim.triggerIn();
         }
         // Smooth scroll interpolation — exponentially approach the target.
-        // This produces a soft ~80ms settle that makes mouse-wheel / jump-to-def
+        // This produces a soft ~120ms settle that makes mouse-wheel / jump-to-def
         // feel less jarring without introducing visible lag during typing.
-        const scroll_lerp = 1.0 - std.math.exp(-dt * 25.0); // ~50ms settle, was 18 (~80ms)
+        // Tuned per user feedback (Issue 2): previously 25 (~50ms) made
+        // bottom-up scroll feel "stuck" near the boundary; raising to 18
+        // (~120ms settle) gives the easing more time to settle smoothly.
+        const scroll_lerp = 1.0 - std.math.exp(-dt * 18.0);
         var scroll_anim_active = false;
         if (self.editor_scroll_target_y >= 0) {
             const delta = self.editor_scroll_target_y - self.editor_scroll_y;
-            if (@abs(delta) < 0.5) {
+            if (@abs(delta) < 0.25) {
                 self.editor_scroll_y = self.editor_scroll_target_y;
                 self.editor_scroll_target_y = -1;
             } else {
@@ -1911,7 +1914,7 @@ pub const Workbench = struct {
         }
         if (self.editor_scroll_target_x >= 0) {
             const delta = self.editor_scroll_target_x - self.editor_scroll_x;
-            if (@abs(delta) < 0.5) {
+            if (@abs(delta) < 0.25) {
                 self.editor_scroll_x = self.editor_scroll_target_x;
                 self.editor_scroll_target_x = -1;
             } else {
@@ -1921,7 +1924,7 @@ pub const Workbench = struct {
         }
         if (self.split_scroll_target_y >= 0) {
             const delta = self.split_scroll_target_y - self.split_scroll_y;
-            if (@abs(delta) < 0.5) {
+            if (@abs(delta) < 0.25) {
                 self.split_scroll_y = self.split_scroll_target_y;
                 self.split_scroll_target_y = -1;
             } else {
@@ -1931,7 +1934,7 @@ pub const Workbench = struct {
         }
         if (self.split_scroll_target_x >= 0) {
             const delta = self.split_scroll_target_x - self.split_scroll_x;
-            if (@abs(delta) < 0.5) {
+            if (@abs(delta) < 0.25) {
                 self.split_scroll_x = self.split_scroll_target_x;
                 self.split_scroll_target_x = -1;
             } else {

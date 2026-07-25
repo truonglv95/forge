@@ -84,12 +84,42 @@ fn liveContentHeight(wb: anytype, content_w: f32) f32 {
 
     var h: f32 = 0;
     if (worker_running and wb.agent_ui.session.stream_text.items.len == 0) {
-        h += chat_bubble_mod.thinkingLineHeight() + thinking_bottom_padding;
+        // Use the actual streaming status label so the layout reserves
+        // enough vertical space when the pill wraps onto multiple lines
+        // (Issue 3). Falls back to a fixed height when no label is set.
+        const status_label = wb.agent_ui.session.thinking_text.items;
+        const label_for_height = if (status_label.len > 0) status_label else "";
+        h += chat_bubble_mod.thinkingLineHeightFor(label_for_height) + thinking_bottom_padding;
     }
     if (wb.agent_ui.session.stream_text.items.len > 0) {
-        h += chat_message_lines_mod.layoutHeight(wb.chat_layout.stream_entry, false, wb.agent_ui.session.stream_text.items, content_w);
+        // When the stream is actively growing and the layout cache is
+        // stale (older than the current stream_text), recompute the
+        // height directly from the markdown height. This is O(n) per
+        // frame but the alternative — letting the height lag behind the
+        // text — would cause the streaming cursor to overflow the
+        // bubble's clip rect (Issue 5). The cache catches up via the
+        // throttled rebuild in ensureForWidth (every 128 bytes) so the
+        // direct path only handles the trailing bytes between rebuilds.
+        const stream_text = wb.agent_ui.session.stream_text.items;
+        const cache_built_len = wb.chat_layout.stream_built_len;
+        if (stream_text.len != cache_built_len) {
+            // Cache is stale — recompute height directly.
+            const direct_h = chat_markdown_height(stream_text, chat_bubble_mod.agentTextWidth(content_w));
+            h += chat_bubble_mod.agent_header_h + direct_h + chat_bubble_mod.bubble_gap + 8.0;
+        } else {
+            h += chat_message_lines_mod.layoutHeight(wb.chat_layout.stream_entry, false, stream_text, content_w);
+        }
     }
     return h;
+}
+
+/// Direct markdown height computation — used as a fallback when the
+/// cached stream_entry is stale during active streaming. Delegates to
+/// chat_markdown.contentHeight which scans the text for code fences,
+/// paragraphs, etc. and returns the rendered height in pixels.
+fn chat_markdown_height(text: []const u8, content_w: f32) f32 {
+    const chat_markdown = @import("../ui/agent/chat_markdown.zig");
+    return chat_markdown.contentHeight(text, content_w);
 }
 
 fn appendMessageMetrics(cache: *Cache, wb: anytype, msg_h: f32, line_entry: chat_message_lines_mod.Entry) void {
@@ -372,7 +402,21 @@ pub fn ensureForWidth(wb: anytype, agent_h: f32, agent_w: f32) void {
     if (history_dirty) rebuildHistory(wb, cache, content_w);
 
     if (history_dirty or live_dirty) {
-        if (stream_len != cache.stream_built_len) {
+        // Stream layout cache strategy (Issue 5: streaming jank):
+        // We rebuild the cache when (a) the stream is final — the worker
+        // has stopped and the cache may be stale by a few trailing bytes —
+        // or (b) the stream has grown by at least `stream_rebuild_threshold`
+        // bytes. During active streaming we let `drawAgentMessageWithCache`
+        // fall back to the direct (uncached) draw path when the cache is
+        // older than the current stream_text, so users see every new byte
+        // without paying for a full markdown re-parse on every chunk.
+        // The cache is still useful for the final, stable message height
+        // and for re-layouts triggered by panel resize / scroll.
+        const stream_rebuild_threshold: usize = 128;
+        const stream_grew = stream_len > cache.stream_built_len;
+        const stream_grew_enough = stream_len >= cache.stream_built_len + stream_rebuild_threshold;
+        const stream_finished = !worker_running and stream_len != cache.stream_built_len;
+        if (stream_grew and (stream_grew_enough or stream_finished)) {
             cache.stream_entry.deinit(wb.allocator);
             wb.agent_ui.session.lock();
             const stream_text = wb.agent_ui.session.stream_text.items;

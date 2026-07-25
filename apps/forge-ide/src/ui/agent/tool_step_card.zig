@@ -93,7 +93,12 @@ pub fn stepHeight(
     const connect_to_content = should_connect and step.expanded and step.content != null;
 
     const current_card_gap = if (connect_to_content) 0.0 else card_gap;
-    var h = card_h + current_card_gap;
+    // Dynamic card height — grows when the title wraps onto multiple
+    // lines (Issue 4: previously long tool-call titles were clipped at
+    // card_h, hiding the suffix and leaving users unable to tell what
+    // the step was doing).
+    const dyn_card_h = computeCardHeight(step, steps, step_i, content_w);
+    var h = dyn_card_h + current_card_gap;
     if (!step.expanded) return h;
 
     if (step.is_thought) {
@@ -122,6 +127,138 @@ pub fn stepHeight(
         }
     }
     return if (has_detail) h + expanded_content_pad else h;
+}
+
+/// Title font size used for tool-step card titles.
+const title_font_size: f32 = 11.5;
+/// Title horizontal padding inside the card (status dot + spacing).
+const title_x_pad: f32 = 24.0;
+/// Title right padding (chevron icon + spacing).
+const title_right_pad: f32 = 28.0;
+/// Title line height for wrapped titles.
+const title_line_h: f32 = 14.0;
+/// Vertical padding inside the card (top + bottom = 2 * title_v_pad).
+const title_v_pad: f32 = 6.0;
+
+/// Compute the dynamic card height needed to fit the step's title,
+/// wrapping onto multiple lines if necessary. The minimum height is
+/// the standard `card_h` (28px); wrapped titles grow by `title_line_h`
+/// per extra line.
+pub fn computeCardHeight(
+    step: *const agent_session.AgentStep,
+    steps: []const agent_session.AgentStep,
+    step_i: usize,
+    content_w: f32,
+) f32 {
+    // Format the title the same way drawStep does so the height matches.
+    var title_buf: [384]u8 = undefined;
+    const formatted = formatTitle(step, steps, step_i, &title_buf);
+    // Use the running-step compact title path too.
+    var compact_buf: [220]u8 = undefined;
+    const title = if (step.running)
+        compactTitle(step.summary, &compact_buf)
+    else
+        compactTitle(formatted, &compact_buf);
+
+    if (title.len == 0) return card_h;
+
+    const title_max_w = @max(0, content_w - title_x_pad - title_right_pad);
+    if (title_max_w <= 0) return card_h;
+
+    const title_w = renderer.Renderer.measureText(title, title_font_size);
+    if (title_w <= title_max_w) return card_h;
+
+    // Need to wrap. Estimate line count by chunking on word boundaries.
+    const line_count = estimateWrappedLines(title, title_max_w);
+    if (line_count <= 1) return card_h;
+    // Height = top pad + line_count * line_h + bottom pad, with a
+    // minimum of the standard card_h.
+    const natural_h = title_v_pad * 2.0 + @as(f32, @floatFromInt(line_count)) * title_line_h;
+    return @max(card_h, natural_h);
+}
+
+/// Estimate the number of lines a piece of text will occupy when
+/// rendered with `title_font_size` inside `max_w` pixels. Uses a
+/// greedy word-wrap algorithm with `measureText` for accurate widths.
+fn estimateWrappedLines(text: []const u8, max_w: f32) usize {
+    if (text.len == 0 or max_w <= 0) return 1;
+    var lines: usize = 1;
+    var line_start: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        // Find next whitespace boundary.
+        if (text[i] == ' ' or text[i] == '\t') {
+            const candidate_w = renderer.Renderer.measureText(text[line_start..i], title_font_size);
+            if (candidate_w > max_w) {
+                // Wrap: line_start..i doesn't fit, push the word to next line.
+                if (i > line_start) {
+                    lines += 1;
+                    line_start = i + 1; // skip the space
+                }
+            }
+        }
+    }
+    // Check the last segment.
+    if (line_start < text.len) {
+        const last_w = renderer.Renderer.measureText(text[line_start..], title_font_size);
+        if (last_w > max_w and line_start > 0) {
+            // The last word is on its own line and is still too wide —
+            // assume it fits or wraps further; we've already counted one line.
+        }
+    }
+    return @max(1, lines);
+}
+
+/// Draw wrapped title text. Returns the number of lines used.
+fn drawWrappedTitle(text: []const u8, x: f32, y: f32, max_w: f32, color: renderer.Color) usize {
+    if (text.len == 0) return 1;
+    // Try single-line first — fast path.
+    const w = renderer.Renderer.measureText(text, title_font_size);
+    if (w <= max_w) {
+        renderer.Renderer.drawText(text, x, y, title_font_size, color);
+        return 1;
+    }
+    // Word-wrap. Greedy: pack as many words as fit per line.
+    var lines: usize = 0;
+    var line_y = y;
+    var line_start: usize = 0;
+    var i: usize = 0;
+    while (i <= text.len) : (i += 1) {
+        const at_end = i == text.len;
+        const at_space = !at_end and (text[i] == ' ' or text[i] == '\t');
+        if (at_end or at_space) {
+            const candidate_w = renderer.Renderer.measureText(text[line_start..i], title_font_size);
+            if (candidate_w > max_w and i > line_start + 1) {
+                // The accumulated segment doesn't fit — flush the previous
+                // line (line_start..prev_break), then start a new line.
+                // Find the previous word break (last space before i).
+                var prev_break = i;
+                while (prev_break > line_start and text[prev_break - 1] != ' ' and text[prev_break - 1] != '\t') {
+                    prev_break -= 1;
+                }
+                if (prev_break > line_start) {
+                    renderer.Renderer.drawText(text[line_start..prev_break], x, line_y, title_font_size, color);
+                    lines += 1;
+                    line_y += title_line_h;
+                    line_start = if (prev_break < text.len and (text[prev_break] == ' ' or text[prev_break] == '\t')) prev_break + 1 else prev_break;
+                }
+                // If even a single word doesn't fit, just render it and advance.
+                if (line_start == i and i < text.len) {
+                    // single word longer than max_w — render anyway.
+                    renderer.Renderer.drawText(text[line_start..i], x, line_y, title_font_size, color);
+                    lines += 1;
+                    line_y += title_line_h;
+                    line_start = i + 1;
+                }
+            }
+        }
+    }
+    // Final segment.
+    if (line_start < text.len) {
+        renderer.Renderer.drawText(text[line_start..], x, line_y, title_font_size, color);
+        lines += 1;
+    }
+    return @max(1, lines);
 }
 
 pub fn totalStepsHeight(steps: []agent_session.AgentStep, content_w: f32, mode: agent_session.Mode) f32 {
@@ -163,8 +300,12 @@ pub fn drawStep(
     const border_color: renderer.Color = tokens.color.border;
     const card_bg: renderer.Color = tokens.color.surface_raised;
 
-    renderer.Renderer.drawRoundedRect(card_x, y, card_w, card_h, tokens.radius.md, border_color);
-    renderer.Renderer.drawRoundedRect(card_x + 1, y + 1, card_w - 2, card_h - 2, tokens.radius.md - 1, card_bg);
+    // Dynamic card height — matches computeCardHeight so the rendered
+    // border/background covers all wrapped title lines (Issue 4).
+    const dyn_card_h = computeCardHeight(step, steps, step_i, content_w);
+
+    renderer.Renderer.drawRoundedRect(card_x, y, card_w, dyn_card_h, tokens.radius.md, border_color);
+    renderer.Renderer.drawRoundedRect(card_x + 1, y + 1, card_w - 2, dyn_card_h - 2, tokens.radius.md - 1, card_bg);
 
     const is_propose = std.mem.eql(u8, step.kind, "propose");
     const is_write = std.mem.eql(u8, step.kind, "write_to_file");
@@ -174,12 +315,12 @@ pub fn drawStep(
     const connect_to_content = should_connect and step.expanded and step.content != null;
 
     if (connect_to_content) {
-        renderer.Renderer.drawRect(card_x, y + card_h - 6, card_w, 6, border_color);
-        renderer.Renderer.drawRect(card_x + 1, y + card_h - 6, card_w - 2, 6, card_bg);
+        renderer.Renderer.drawRect(card_x, y + dyn_card_h - 6, card_w, 6, border_color);
+        renderer.Renderer.drawRect(card_x + 1, y + dyn_card_h - 6, card_w - 2, 6, card_bg);
     }
 
-    // Draw the status dot
-    const dot_y = y + (card_h - 6.0) / 2.0;
+    // Draw the status dot (vertically centered in the dynamic card)
+    const dot_y = y + (dyn_card_h - 6.0) / 2.0;
     if (step.running) {
         const pulse = 0.45 + 0.35 * @sin(anim_time * 6.0);
         renderer.Renderer.drawRoundedRect(card_x + 10, dot_y, 6, 6, 3, .{
@@ -195,7 +336,9 @@ pub fn drawStep(
     const is_parent = step.child_count > 0 or step.is_thought or step.content != null;
     if (is_parent) {
         const icon = if (step.expanded) renderer.forge_icons.chevron_down else renderer.forge_icons.chevron_right;
-        renderer.Renderer.drawSvg(icon, card_x + card_w - 20, y + 6, 16, 16, .{ .r = 0.5, .g = 0.5, .b = 0.55, .a = 1.0 });
+        // Vertically center the chevron in the dynamic card.
+        const chevron_y = y + (dyn_card_h - 16.0) / 2.0;
+        renderer.Renderer.drawSvg(icon, card_x + card_w - 20, chevron_y, 16, 16, .{ .r = 0.5, .g = 0.5, .b = 0.55, .a = 1.0 });
     }
 
     var title_buf: [384:0]u8 = undefined;
@@ -215,33 +358,51 @@ pub fn drawStep(
         break :blk title_buf[0..n :0];
     };
 
-    // Draw the title text
+    // Draw the title text — wraps onto multiple lines when too long.
+    // The clip rect is now the full dynamic card height so wrapped
+    // lines are not clipped (Issue 4).
     const title_fg = if (step.running)
         renderer.Color{ .r = 0.72, .g = 0.78, .b = 0.86, .a = 1.0 }
     else
         renderer.Color{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 };
 
-    const title_x = card_x + 24;
-    const title_max_w = @max(0, card_w - 52);
+    const title_x = card_x + title_x_pad;
+    const title_max_w = @max(0, card_w - title_x_pad - title_right_pad);
 
-    renderer.Renderer.pushClipRect(title_x, y + 4, title_max_w, card_h - 6);
+    renderer.Renderer.pushClipRect(title_x, y + title_v_pad, title_max_w, dyn_card_h - title_v_pad * 2);
 
-    // Check if the title can be split (e.g. "Read file.ts")
+    // Check if the title can be split (e.g. "Read file.ts") — short verb
+    // gets the title color, the rest gets a muted color. We only split
+    // when the verb is short (<15 chars) and the rest fits on one line;
+    // otherwise we fall through to wrapped rendering.
     const space_idx = std.mem.indexOf(u8, title, " ");
-    if (space_idx != null and space_idx.? < 15) {
-        const verb = title[0..space_idx.?];
-        const rest = title[space_idx.? + 1 ..];
-
-        renderer.Renderer.drawText(verb, title_x, y + 8, 11.5, title_fg);
-        const verb_w = renderer.Renderer.measureText(verb, 11.5);
-        renderer.Renderer.drawText(rest, title_x + verb_w + 4, y + 8, 11.5, .{ .r = 0.6, .g = 0.6, .b = 0.65, .a = 1.0 });
+    const full_w = renderer.Renderer.measureText(title, title_font_size);
+    if (full_w <= title_max_w) {
+        // Single-line fast path — try verb split for nicer styling.
+        if (space_idx != null and space_idx.? < 15) {
+            const verb = title[0..space_idx.?];
+            const rest = title[space_idx.? + 1 ..];
+            const title_y = y + (dyn_card_h - title_font_size) / 2.0;
+            renderer.Renderer.drawText(verb, title_x, title_y, title_font_size, title_fg);
+            const verb_w = renderer.Renderer.measureText(verb, title_font_size);
+            renderer.Renderer.drawText(rest, title_x + verb_w + 4, title_y, title_font_size, .{ .r = 0.6, .g = 0.6, .b = 0.65, .a = 1.0 });
+        } else {
+            const title_y = y + (dyn_card_h - title_font_size) / 2.0;
+            renderer.Renderer.drawText(title, title_x, title_y, title_font_size, title_fg);
+        }
     } else {
-        renderer.Renderer.drawText(title, title_x, y + 8, 11.5, title_fg);
+        // Wrapped path — use drawWrappedTitle. Verb split is skipped
+        // here because wrapping interferes with verb/rest coloring.
+        // Vertically center the wrapped block.
+        const line_count = estimateWrappedLines(title, title_max_w);
+        const block_h = @as(f32, @floatFromInt(line_count)) * title_line_h;
+        const start_y = y + (dyn_card_h - block_h) / 2.0;
+        _ = drawWrappedTitle(title, title_x, start_y, title_max_w, title_fg);
     }
     renderer.Renderer.popClipRect();
 
     const current_card_gap = if (connect_to_content) 0.0 else card_gap;
-    var content_y = y + card_h + current_card_gap;
+    var content_y = y + dyn_card_h + current_card_gap;
 
     if (step.expanded) {
         if (step.is_thought) {
@@ -338,10 +499,11 @@ pub fn hitTestStep(
     const is_parent = step.child_count > 0 or step.is_thought or step.content != null;
     if (!is_parent) return null;
 
-    if (y >= content_y and y < content_y + card_h) return step_i;
+    const dyn_card_h = computeCardHeight(step, steps, step_i, content_w);
+    if (y >= content_y and y < content_y + dyn_card_h) return step_i;
 
     if (step.expanded and !step.is_thought) {
-        var cy = content_y + card_h + card_gap;
+        var cy = content_y + dyn_card_h + card_gap;
         var child_j = step_i + 1;
         while (child_j < steps.len) : (child_j += 1) {
             const child = &steps[child_j];

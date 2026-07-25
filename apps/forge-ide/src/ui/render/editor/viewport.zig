@@ -55,6 +55,15 @@ pub fn drawEditorViewport(
 
     const content_top = editor_scroll.content_top;
 
+    // Scrollbar reservation — the editor's content clip rect is shrunk by
+    // (track_w + content_gap) so text never renders under the scrollbar.
+    // The scrollbar itself is drawn at the outer right edge of editor_w,
+    // visually separated from code by `content_gap` pixels. This matches
+    // VSCode/Sublime where the scrollbar sits in a thin gutter outside
+    // the text area rather than overlaying it.
+    const sb_reserve = scrollbar.track_w + scrollbar.content_gap;
+    const content_clip_w = @max(0, editor_w - sb_reserve);
+
     if (pane_focused and wb.editor_split) {
         renderer.Renderer.drawRect(editor_x, content_top, editor_w, 2, syntax.color(theme.colors.tab_active_bg));
     }
@@ -318,7 +327,7 @@ pub fn drawEditorViewport(
         }
     }
 
-    renderer.Renderer.setClipRect(editor_x + gutter, content_top, editor_w - gutter, editor_view_h);
+    renderer.Renderer.setClipRect(editor_x + gutter, content_top, content_clip_w - gutter, editor_view_h);
     line_num_y = initial_line_num_y;
 
     if (wrap_enabled) {
@@ -589,13 +598,12 @@ pub fn drawEditorViewport(
     }
 
     renderer.Renderer.setClipRect(editor_x, content_top, editor_w, editor_view_h);
-    // Scrollbar position: at the very right edge of the editor panel,
-    // OUTSIDE the minimap area. The minimap is drawn on top of editor_w
-    // by panel.zig AFTER the viewport. To avoid the scrollbar being
-    // covered by the minimap, we place it at editor_x + editor_w - track_w - 2,
-    // and panel.zig draws the minimap with a right offset so it doesn't
-    // overlap the scrollbar.
-    const editor_sb_x = editor_x + editor_w - scrollbar.track_w - 2;
+    // Scrollbar position: at the very right edge of the editor panel.
+    // The content clip rect was shrunk by `sb_reserve` above so text
+    // never renders under the scrollbar. We draw the scrollbar at
+    // `editor_x + editor_w - track_w - content_gap/2` (centered in the
+    // reserve) so it sits OUTSIDE the text area in a dedicated gutter.
+    const editor_sb_x = editor_x + editor_w - scrollbar.track_w - @floor(scrollbar.content_gap / 2);
     const editor_sb_hover = state.last_mouse_x >= editor_sb_x and state.last_mouse_x < editor_sb_x + scrollbar.track_w + 8 and
         state.last_mouse_y >= content_top and state.last_mouse_y < content_top + editor_view_h;
     scrollbar.drawVerticalWithState(
@@ -610,17 +618,19 @@ pub fn drawEditorViewport(
         editor_sb_hover,
         false,
     );
+    // Horizontal scrollbar — confined to the content area (excluding the
+    // vertical scrollbar gutter) so it doesn't overlap the vertical thumb.
     const h_sb_y = content_top + editor_view_h - scrollbar.track_w - 2;
     const h_sb_hover = state.last_mouse_y >= h_sb_y and state.last_mouse_y < h_sb_y + scrollbar.track_w + 4 and
-        state.last_mouse_x >= editor_x + gutter and state.last_mouse_x < editor_x + gutter + viewport_w;
+        state.last_mouse_x >= editor_x + gutter and state.last_mouse_x < editor_x + gutter + (content_clip_w - gutter);
     scrollbar.drawHorizontalWithState(
         editor_x + gutter,
         h_sb_y,
-        viewport_w,
+        content_clip_w - gutter,
         scroll_x,
         max_scroll_x,
         content_w,
-        viewport_w,
+        content_clip_w - gutter,
         true,
         h_sb_hover,
         false,

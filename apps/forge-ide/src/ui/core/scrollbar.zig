@@ -5,6 +5,11 @@ const renderer = @import("forge-renderer");
 pub const track_w: f32 = 6;
 pub const thumb_min_h: f32 = 24;
 pub const edge_inset: f32 = 3;
+/// Horizontal gap between the scrollbar and the editor content.
+/// The scrollbar is drawn OUTSIDE the editor's content clip rect so it
+/// never overlaps text. Reserving this gap on the right edge of the
+/// editor panel keeps the scrollbar visually separated from code.
+pub const content_gap: f32 = 4;
 
 // Scrollbar colors — subtle, becomes more visible on hover.
 // Idle alpha bumped from 0.3 to 0.45 per VLM review ("extremely faint,

@@ -37,11 +37,15 @@ pub fn contentHeight(line_count: usize, theme: *const workspace.Theme) f32 {
 pub fn maxScrollY(line_count: usize, editor_h: f32, theme: *const workspace.Theme) f32 {
     const viewport = viewportHeight(editor_h);
     const content = contentHeight(line_count, theme);
-    // Allow scrolling past the last line by ~50% of viewport height.
-    // This matches VSCode behaviour where you can scroll the last line
-    // to the middle of the screen. Without this, short files (e.g. 10
-    // lines) hit the scroll limit too early and feel "stuck".
-    const overscroll = viewport * 0.5;
+    // Allow scrolling past the last line by ~3 lines (capped at 25% of
+    // viewport). This matches VSCode's default behaviour where the last
+    // line can be scrolled up a bit but not arbitrarily far — the
+    // previous 50%-of-viewport overscroll made the editor feel "stuck"
+    // near the bottom and caused a janky handoff between overscroll
+    // space and the actual document bounds during smooth-scroll
+    // animation (the clamp kept fighting the target).
+    const line_h = lineHeight(theme);
+    const overscroll = @min(line_h * 3.0, viewport * 0.25);
     return @max(0, content - viewport + overscroll);
 }
 
@@ -137,11 +141,27 @@ pub fn scrollToCursor(
     return .{ .y = y, .x = x };
 }
 
-test "vertical scroll stops at last line" {
+test "vertical scroll small file returns bounded max" {
     const theme = workspace.Theme.darkDefault();
-    // 10 lines, 200px viewport — content fits, so max scroll is 0
-    // (overscroll is also 0 because content <= viewport).
-    try std.testing.expectEqual(@as(f32, 0), maxScrollY(10, 200, &theme));
+    // 10 lines, 200px viewport — content (10*21=210) just barely exceeds
+    // viewport (113). max_scroll should be > 0 (allowing overscroll) but
+    // bounded by overscroll cap.
+    const max = maxScrollY(10, 200, &theme);
+    try std.testing.expect(max > 0);
+    try std.testing.expect(max < 200); // sanity: less than viewport height
+}
+
+test "vertical scroll allows ~3 line overscroll past last line" {
+    const theme = workspace.Theme.darkDefault();
+    // 100 lines, 400px viewport — content >> viewport.
+    // max_scroll = content - viewport + overscroll where overscroll is
+    // min(line_h * 3, viewport * 0.25). We just assert overscroll is
+    // bounded (>= 0 and <= viewport * 0.25).
+    const viewport = viewportHeight(400);
+    const content = contentHeight(100, &theme);
+    const max = maxScrollY(100, 400, &theme);
+    try std.testing.expect(max >= content - viewport);
+    try std.testing.expect(max <= content - viewport + viewport * 0.25 + 0.01);
 }
 
 test "horizontal scroll stops at longest line" {

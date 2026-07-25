@@ -212,6 +212,19 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                 const thinking_label = if (thinking_src.len > 0) thinking_src else snap.status_line;
                 content_y += chat_bubble.drawThinkingLine(inner_x, content_y, thinking_label, state.time);
             } else {
+                // Stream cache freshness check (Issue 5: streaming jank).
+                // When the cache is older than the current stream_text we
+                // pass `null` as the line cache, forcing the draw path to
+                // render directly from `stream_src` so users see every new
+                // byte. The cache catches up in ensureForWidth (throttled
+                // rebuild every 128 bytes) so the direct path only handles
+                // the trailing bytes between cache rebuilds — keeping
+                // overall rendering fast while staying visually responsive.
+                const cache_built_len = wb.chat_layout.stream_built_len;
+                const line_cache: ?*const chat_message_lines.Entry = if (cache_built_len == stream_src.len)
+                    &wb.chat_layout.stream_entry
+                else
+                    null;
                 content_y += chat_bubble.drawAgentMessageWithCache(
                     wb.allocator,
                     agent_x,
@@ -220,7 +233,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                     content_y,
                     stream_src,
                     chat_bubble.agent_text_style,
-                    &wb.chat_layout.stream_entry,
+                    line_cache,
                     wb,
                     wb.agent_ui.chat_history.items.len,
                 );
