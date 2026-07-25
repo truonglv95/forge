@@ -308,6 +308,18 @@ pub const Workbench = struct {
         y: f32,
         w: f32,
         h: f32,
+        // Copy button rect (top-right of header). When user clicks inside
+        // this rect, the code text is copied to clipboard. (0,0,0,0) means
+        // no copy button was rendered (e.g. code block has no lang header).
+        copy_btn_x: f32 = 0,
+        copy_btn_y: f32 = 0,
+        copy_btn_w: f32 = 0,
+        copy_btn_h: f32 = 0,
+        // Owned copy of the code text — duped at render time so the click
+        // handler can read it without re-parsing the chat message. Freed
+        // when the rendered_code_blocks list is cleared at next frame.
+        // null means no copy button rendered (lang header absent).
+        code_text: ?[]const u8 = null,
     };
 
     pub const WrapCache = @import("ui/editor/word_wrap.zig").WrapCache;
@@ -574,6 +586,9 @@ pub const Workbench = struct {
         launch_config_mod.freeConfigs(self.allocator, self.launch_configs);
         self.notifications.deinit();
         self.code_scroll_x.deinit();
+        for (self.rendered_code_blocks.items) |block| {
+            if (block.code_text) |text| self.allocator.free(text);
+        }
         self.rendered_code_blocks.deinit(self.allocator);
 
         var wrap_cache_iter = self.wrap_cache.iterator();

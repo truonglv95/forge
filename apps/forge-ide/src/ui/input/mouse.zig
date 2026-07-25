@@ -296,6 +296,20 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             }
         } else if (geo.shell_mode == .ide and event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
+            // Code block copy button — check before composer/menu hit tests
+            // since the button lives in the chat viewport area (above the
+            // composer). Click inside the copy rect → copy code to clipboard.
+            for (wb.rendered_code_blocks.items) |block| {
+                if (block.copy_btn_w > 0 and block.code_text != null) {
+                    if (event.x >= block.copy_btn_x and event.x < block.copy_btn_x + block.copy_btn_w and
+                        event.y >= block.copy_btn_y and event.y < block.copy_btn_y + block.copy_btn_h)
+                    {
+                        renderer.Renderer.setClipboardText(block.code_text.?);
+                        _ = wb.notifications.success("Code copied to clipboard") catch {};
+                        return;
+                    }
+                }
+            }
             const agent_panel = @import("../agent/agent_panel.zig");
             const agent_composer_mod = @import("../agent/agent_composer.zig");
             wb.agent_ui.session.lock();

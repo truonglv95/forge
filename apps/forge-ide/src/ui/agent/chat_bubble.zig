@@ -256,8 +256,15 @@ pub fn drawAgentMessageWithCache(
     if (text.len == 0) return 0;
 
     const icon_x = @max(agent_x + tokens.space.sm, inner_x);
-    renderer.Renderer.drawRoundedRect(icon_x, y, agent_icon_size, agent_icon_size, 4, .{ .r = 0.02, .g = 0.43, .b = 1.0, .a = 1.0 });
-    renderer.Renderer.drawSvg(renderer.forge_icons.gear, icon_x + 3, y + 3, 16, 16, .{ .r = 0.92, .g = 0.96, .b = 1.0, .a = 1.0 });
+    // Agent avatar — gradient blue background with sparkle icon.
+    // Was a flat blue rect with gear icon; sparkle reads more "AI"
+    // and matches the thinking pill's icon for consistency.
+    // Outer ring (slightly brighter) gives the avatar depth.
+    renderer.Renderer.drawRoundedRect(icon_x - 1, y - 1, agent_icon_size + 2, agent_icon_size + 2, 5, .{ .r = 0.15, .g = 0.32, .b = 0.62, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(icon_x, y, agent_icon_size, agent_icon_size, 4, .{ .r = 0.08, .g = 0.24, .b = 0.52, .a = 1.0 });
+    // Sparkle icon in white — signals "AI agent" (matches Cursor's
+    // composer icon convention).
+    renderer.Renderer.drawSvg(renderer.forge_icons.sparkle, icon_x + 3, y + 3, 14, 14, .{ .r = 0.92, .g = 0.96, .b = 1.0, .a = 1.0 });
 
     const text_x = inner_x;
     const text_y = y + agent_header_h;
@@ -326,6 +333,17 @@ pub const agent_text_style = chat_markdown.Style{
     .quote_bg = .{ .r = 0.1, .g = 0.115, .b = 0.14, .a = 0.62 },
     .quote_bar = .{ .r = 0.34, .g = 0.56, .b = 0.88, .a = 0.72 },
     .list_marker = .{ .r = 0.34, .g = 0.72, .b = 0.76, .a = 0.82 },
+    // Use the shared syntax palette so code blocks inside agent messages
+    // get the same vibrant highlighting as standalone code blocks.
+    .syntax_keyword = tokens.color.syntax_keyword,
+    .syntax_type = tokens.color.syntax_type,
+    .syntax_function = tokens.color.syntax_function,
+    .syntax_string = tokens.color.syntax_string,
+    .syntax_number = tokens.color.syntax_number,
+    .syntax_punct = tokens.color.syntax_punct,
+    .syntax_comment = tokens.color.syntax_comment,
+    .heading_fg = tokens.color.heading_fg,
+    .heading_rule = tokens.color.heading_rule,
 };
 
 pub const thinking_text_style = chat_markdown.Style{

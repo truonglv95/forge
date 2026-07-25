@@ -884,6 +884,22 @@ fn drawCodeBlockLine(
 }
 
 pub fn drawCodeBlock(code: []const u8, x: f32, y: f32, content_w: f32, style: Style, lang: []const u8, scroll_x: f32, out_max_w: *f32) f32 {
+    return drawCodeBlockWithCopy(code, x, y, content_w, style, lang, scroll_x, out_max_w, null);
+}
+
+/// Variant that reports the copy-button rect + whether it's hovered.
+/// Used by the click handler in mouse.zig to copy code on click.
+pub fn drawCodeBlockWithCopy(
+    code: []const u8,
+    x: f32,
+    y: f32,
+    content_w: f32,
+    style: Style,
+    lang: []const u8,
+    scroll_x: f32,
+    out_max_w: *f32,
+    copy_btn_out: ?*CopyButtonRect,
+) f32 {
     const h = codeBlockHeight(code);
     const block_h = h - code_gap;
     // Header strip — shows the language tag at the top of the code block,
@@ -924,14 +940,34 @@ pub fn drawCodeBlock(code: []const u8, x: f32, y: f32, content_w: f32, style: St
             lang_buf[i] = std.ascii.toUpper(c);
         }
         renderer.Renderer.drawTextWithStyle(lang_buf[0..lang_len], x + code_pad + 4, y + 5, 10.0, .{ .r = 0.6, .g = 0.78, .b = 0.95, .a = 0.95 }, code_text_style);
-        // Three dots in top-right corner — purely decorative, signals
-        // "this is a code card with actions" (copy, etc.) like GitHub.
-        const dot_y = y + 10;
-        var dot_x = x + content_w - 24;
-        var di: usize = 0;
-        while (di < 3) : (di += 1) {
-            renderer.Renderer.drawRoundedRect(dot_x, dot_y, 3, 3, 1.5, .{ .r = 0.5, .g = 0.55, .b = 0.6, .a = 0.6 });
-            dot_x += 6;
+
+        // Copy button — top-right corner. Clickable (handled in mouse.zig
+        // via the rect we report back). Renders a "Copy" label with a
+        // subtle bg pill that brightens on hover.
+        const copy_w: f32 = 50;
+        const copy_h: f32 = 16;
+        const copy_x = x + content_w - copy_w - 6;
+        const copy_y = y + 3;
+        var copy_hover = false;
+        if (current_render_context) |ctx| {
+            if (ctx.hit_test) |hit| {
+                if (hit.x >= copy_x and hit.x < copy_x + copy_w and hit.y >= copy_y and hit.y < copy_y + copy_h) {
+                    copy_hover = true;
+                }
+            }
+        }
+        // Always draw the button (skip only during hit-test pass).
+        if (current_render_context == null or current_render_context.?.hit_test == null) {
+            const pill_bg: renderer.Color = if (copy_hover) .{ .r = 0.22, .g = 0.3, .b = 0.42, .a = 0.85 } else .{ .r = 0.16, .g = 0.18, .b = 0.22, .a = 0.6 };
+            renderer.Renderer.drawRoundedRect(copy_x, copy_y, copy_w, copy_h, 3, pill_bg);
+            // "Copy" label — brightened on hover so users get feedback.
+            const label_color: renderer.Color = if (copy_hover) .{ .r = 0.95, .g = 0.97, .b = 1.0, .a = 1.0 } else .{ .r = 0.7, .g = 0.76, .b = 0.85, .a = 0.85 };
+            const label = "Copy";
+            const label_w = measureStyledText(label, 9.5, code_text_style);
+            renderer.Renderer.drawTextWithStyle(label, copy_x + (copy_w - label_w) * 0.5, copy_y + 3, 9.5, label_color, code_text_style);
+        }
+        if (copy_btn_out) |out| {
+            out.* = .{ .x = copy_x, .y = copy_y, .w = copy_w, .h = copy_h };
         }
     }
 
@@ -951,6 +987,13 @@ pub fn drawCodeBlock(code: []const u8, x: f32, y: f32, content_w: f32, style: St
     out_max_w.* = max_w;
     return h;
 }
+
+pub const CopyButtonRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
 
 pub fn drawSimpleContent(text: []const u8, x: f32, y: f32, content_w: f32, fg: renderer.Color) f32 {
     if (text.len == 0) return body_line_h;
@@ -1028,7 +1071,8 @@ pub fn drawContent(
             }
 
             var max_w: f32 = 0;
-            const block_h = drawCodeBlock(code, x, cursor_y, content_w, style, lang, scroll_x, &max_w);
+            var copy_rect: CopyButtonRect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+            const block_h = drawCodeBlockWithCopy(code, x, cursor_y, content_w, style, lang, scroll_x, &max_w, &copy_rect);
 
             if (wb) |w| {
                 var scroll_state = w.code_scroll_x.get(code_hash) orelse @import("../../workbench.zig").Workbench.CodeScrollState{};
@@ -1036,12 +1080,21 @@ pub fn drawContent(
                 scroll_state.max_scroll_x = max_scroll;
                 w.code_scroll_x.put(code_hash, scroll_state) catch {};
 
+                // Dupe the code text so the click handler can copy it
+                // without re-parsing the chat message. Freed at next frame
+                // in drawAgentPanel / deinit.
+                const code_owned = allocator.dupe(u8, code) catch null;
                 w.rendered_code_blocks.append(allocator, .{
                     .hash = code_hash,
                     .x = x,
                     .y = cursor_y,
                     .w = content_w,
                     .h = block_h,
+                    .copy_btn_x = copy_rect.x,
+                    .copy_btn_y = copy_rect.y,
+                    .copy_btn_w = copy_rect.w,
+                    .copy_btn_h = copy_rect.h,
+                    .code_text = code_owned,
                 }) catch {};
             }
 

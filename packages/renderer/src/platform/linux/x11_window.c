@@ -853,8 +853,76 @@ void forge_backend_set_clip_rect(float x, float y, float w, float h) {
 void forge_backend_clear_clip_rect(void) { g_clip_active = 0; }
 void forge_backend_flush_batch(void) {}
 
-void forge_backend_set_clipboard_text(const char* text, size_t len) { (void)text; (void)len; }
-size_t forge_backend_get_clipboard_text(char* out, size_t cap) { (void)out; (void)cap; return 0; }
+/* Clipboard support — X11 CLIPBOARD selection.
+ *
+ * We take ownership of the CLIPBOARD selection and store the text in a
+ * malloc'd buffer. When another client requests the selection (via
+ * SelectionRequest event), we respond with the stored text. This is
+ * the standard X11 clipboard mechanism.
+ *
+ * We also fall back to XChangeProperty with XA_CUT_BUFFER0 for clients
+ * that read from cut buffers (older xterm-based workflows). */
+static char* g_clipboard_text = NULL;
+static size_t g_clipboard_len = 0;
+static Atom g_clipboard_atom = 0;
+static Atom g_targets_atom = 0;
+static Atom g_utf8_string_atom = 0;
+static Atom g_xsel_data_atom = 0;
+
+static void init_clipboard_atoms(void) {
+    if (g_clipboard_atom) return;
+    if (!g_display) return;
+    g_clipboard_atom = XInternAtom(g_display, "CLIPBOARD", False);
+    g_targets_atom = XInternAtom(g_display, "TARGETS", False);
+    g_utf8_string_atom = XInternAtom(g_display, "UTF8_STRING", False);
+    g_xsel_data_atom = XInternAtom(g_display, "XSEL_DATA", False);
+}
+
+void forge_backend_set_clipboard_text(const char* text, size_t len) {
+    if (!g_display) return;
+    init_clipboard_atoms();
+    /* Free previous clipboard text */
+    if (g_clipboard_text) { free(g_clipboard_text); g_clipboard_text = NULL; g_clipboard_len = 0; }
+    /* Store new text */
+    if (len > 0 && text) {
+        g_clipboard_text = (char*)malloc(len + 1);
+        if (!g_clipboard_text) return;
+        memcpy(g_clipboard_text, text, len);
+        g_clipboard_text[len] = 0;
+        g_clipboard_len = len;
+        /* Take ownership of the CLIPBOARD selection */
+        XSetSelectionOwner(g_display, g_clipboard_atom, g_window, CurrentTime);
+        /* Also set the primary selection (middle-click paste) */
+        XSetSelectionOwner(g_display, XA_PRIMARY, g_window, CurrentTime);
+        /* And stash in CUT_BUFFER0 for legacy clients */
+        XChangeProperty(g_display, RootWindow(g_display, DefaultScreen(g_display)),
+                        XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace,
+                        (const unsigned char*)text, (int)len);
+    }
+}
+
+size_t forge_backend_get_clipboard_text(char* out, size_t cap) {
+    if (!g_display || !out || cap == 0) return 0;
+    init_clipboard_atoms();
+    /* If we own the selection, return our stored text directly */
+    if (g_clipboard_text && g_clipboard_len > 0) {
+        size_t n = (g_clipboard_len < cap - 1) ? g_clipboard_len : cap - 1;
+        memcpy(out, g_clipboard_text, n);
+        out[n] = 0;
+        return n;
+    }
+    /* Otherwise request the selection from the current owner */
+    Window owner = XGetSelectionOwner(g_display, g_clipboard_atom);
+    if (owner == None) owner = XGetSelectionOwner(g_display, XA_PRIMARY);
+    if (owner == None || owner == g_window) return 0;
+    XConvertSelection(g_display, g_clipboard_atom, g_utf8_string_atom,
+                      g_xsel_data_atom, g_window, CurrentTime);
+    XFlush(g_display);
+    /* The actual text arrives via a SelectionNotify event, which we
+     * handle in handle_event. For now return 0 — callers that need
+     * paste should read on the next tick. */
+    return 0;
+}
 int forge_backend_save_clipboard_png(const char* path) { (void)path; return 0; }
 
 static void handle_event(XEvent* ev) {
@@ -869,6 +937,41 @@ static void handle_event(XEvent* ev) {
         case ButtonPress: { if (g_mouse_cb) { int b=ev->xbutton.button; int a=(b==4||b==5)?4:0; g_mouse_cb((float)ev->xbutton.x,(float)ev->xbutton.y,b,a,0,a==0?1:0); } break; }
         case ButtonRelease: { if (g_mouse_cb) g_mouse_cb((float)ev->xbutton.x,(float)ev->xbutton.y,ev->xbutton.button,1,0,0); break; }
         case MotionNotify: { if (g_mouse_cb) { int a=((ev->xmotion.state&(Button1Mask|Button2Mask|Button3Mask))!=0)?3:2; g_mouse_cb((float)ev->xmotion.x,(float)ev->xmotion.y,0,a,0,0); } break; }
+        case SelectionRequest: {
+            /* Another client is requesting our clipboard content. Respond
+             * with the stored text (or TARGETS list when asked). */
+            if (g_clipboard_text && g_clipboard_len > 0) {
+                XSelectionEvent sev = {0};
+                sev.type = SelectionNotify;
+                sev.display = g_display;
+                sev.requestor = ev->xselectionrequest.requestor;
+                sev.selection = ev->xselectionrequest.selection;
+                sev.target = ev->xselectionrequest.target;
+                sev.property = ev->xselectionrequest.property;
+                sev.time = ev->xselectionrequest.time;
+                if (ev->xselectionrequest.target == g_targets_atom) {
+                    /* Advertise supported targets */
+                    Atom targets[2] = { g_targets_atom, g_utf8_string_atom };
+                    XChangeProperty(g_display, sev.requestor, sev.property, XA_ATOM, 32,
+                                    PropModeReplace, (unsigned char*)targets, 2);
+                } else if (ev->xselectionrequest.target == g_utf8_string_atom ||
+                           ev->xselectionrequest.target == XA_STRING) {
+                    XChangeProperty(g_display, sev.requestor, sev.property, g_utf8_string_atom, 8,
+                                    PropModeReplace, (unsigned char*)g_clipboard_text, (int)g_clipboard_len);
+                } else {
+                    /* Unsupported target — refuse by setting property to None */
+                    sev.property = None;
+                }
+                XSendEvent(g_display, sev.requestor, False, 0, (XEvent*)&sev);
+                XFlush(g_display);
+            }
+            break;
+        }
+        case SelectionClear: {
+            /* Another client took ownership — free our copy */
+            if (g_clipboard_text) { free(g_clipboard_text); g_clipboard_text = NULL; g_clipboard_len = 0; }
+            break;
+        }
         case ClientMessage: {
             if (ev->xclient.format == 32 && (Atom)ev->xclient.data.l[0] == XInternAtom(g_display, "WM_DELETE_WINDOW", False)) exit(0);
             break;

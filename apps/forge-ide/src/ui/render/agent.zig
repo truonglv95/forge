@@ -27,6 +27,11 @@ fn phaseShowsLive(phase: anytype) bool {
 }
 
 pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
+    // Free any owned code_text from the previous frame before clearing the
+    // list. Each entry's code_text is allocator.dup'd at render time.
+    for (wb.rendered_code_blocks.items) |block| {
+        if (block.code_text) |text| wb.allocator.free(text);
+    }
     wb.rendered_code_blocks.clearRetainingCapacity();
     const pad: f32 = metrics.chat.outer_pad;
     const inner_x = agent_x + pad;
