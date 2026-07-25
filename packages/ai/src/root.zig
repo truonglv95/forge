@@ -134,3 +134,11 @@ comptime {
     _ = route_resolver;
     _ = @import("providers/fake/provider_test.zig");
 }
+pub const multi_model = @import("multi_model.zig");
+pub const rag = @import("rag/index.zig");
+pub const code_review = @import("code_review.zig");
+pub const test_gen = @import("test_gen.zig");
+pub const commit_gen = @import("commit_gen.zig");
+pub const debug_assist = @import("debug_assist.zig");
+pub const nl_search = @import("nl_search.zig");
+pub const refactor = @import("refactor.zig");
