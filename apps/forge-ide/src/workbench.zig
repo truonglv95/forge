@@ -506,6 +506,12 @@ pub const Workbench = struct {
         self.editor.ghost.setEnvironMap(self.environ_map);
 
         try self.reloadAiConfigFromDisk();
+        // Re-apply font size AFTER AI config is loaded — the AI config
+        // load may overwrite agent_ui.model/provider, but font size is
+        // a user_settings value that was already loaded. Re-apply to
+        // ensure the markdown renderer uses the correct font size.
+        settings_mod.applyToTheme(self.user_settings, &self.theme);
+        @import("ui/agent/chat_markdown.zig").configureFontSize(self.user_settings.ai_panel_font_size);
         std.debug.print("wb.agent_ui.models.len = {}, embed_models.len = {}\n", .{ self.agent_ui.models.len, self.agent_ui.embedding_models.len });
 
         try self.restoreSessionTabs();

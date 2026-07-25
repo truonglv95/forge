@@ -145,13 +145,13 @@ pub fn spawnGenerate(host: *const Host, intent: []const u8, scope_files: []const
         defer host.allocator.free(provider_label);
         host.agent.setProviderLabel(provider_label) catch {};
         var start_buf: [160]u8 = undefined;
-        const start_status = std.fmt.bufPrint(&start_buf, "Starting ({s}) — building context...", .{provider_label}) catch "Building context...";
+        const start_status = std.fmt.bufPrint(&start_buf, "Starting ({s}) — Thinking...", .{provider_label}) catch "Thinking...";
         host.agent.setPhase(.building_context, start_status) catch {};
         host.set_status(host.context, start_status);
     } else |_| {
         host.agent.setProviderLabel("unknown") catch {};
-        host.agent.setPhase(.building_context, "Building context...") catch {};
-        host.set_status(host.context, "Building context...");
+        host.agent.setPhase(.building_context, "Thinking...") catch {};
+        host.set_status(host.context, "Thinking...");
     }
     host.agent.lock();
     host.agent.worker_running = true;
@@ -984,7 +984,7 @@ fn phaseBridge(context: ?*anyopaque, phase: ai.progress.Phase) void {
         .proposal_ready => .proposal_ready,
     };
     const label = switch (phase) {
-        .context_built => "Building context...",
+        .context_built => "Thinking...",
         .planning => "Planning implementation...",
         .plan_ready => "Plan ready — generating proposal...",
         .sending => "Sending to provider...",

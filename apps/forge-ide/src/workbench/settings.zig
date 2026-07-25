@@ -247,21 +247,24 @@ pub fn writeAiPanelFontSize(
     const value_text = try std.fmt.allocPrint(allocator, "{d:.1}", .{value});
     defer allocator.free(value_text);
 
+    // Try workspace .forge/settings.toml first — read current content,
+    // upsert the font_size key, write back. This preserves all other
+    // settings in the file.
     if (readWorkspaceSettings(allocator, io, root)) |workspace_content| {
         defer allocator.free(workspace_content);
-        if (settingsContentHasKey(workspace_content, "ai_panel", "font_size")) {
-            const updated = try upsertTomlValue(allocator, workspace_content, "ai_panel", "font_size", value_text);
-            defer allocator.free(updated);
-            const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
-            try workspace.atomic.replaceFile(io, root, wp, updated);
-            return;
-        }
+        const updated = try upsertTomlValue(allocator, workspace_content, "ai_panel", "font_size", value_text);
+        defer allocator.free(updated);
+        const wp = try workspace.WorkspacePath.parse(".forge/settings.toml");
+        try workspace.atomic.replaceFile(io, root, wp, updated);
+        return;
     } else |_| {}
 
+    // Fallback: write to home ~/.forge/settings.toml
     const home_settings = try workspace.global_store.joinHome(allocator, "settings.toml");
     defer allocator.free(home_settings);
 
     const content = workspace.global_store.readAbsoluteFile(allocator, io, home_settings) catch {
+        // File doesn't exist — create with just this setting
         const default_content = try std.fmt.allocPrint(allocator, "[ai_panel]\nfont_size = {s}\n", .{value_text});
         defer allocator.free(default_content);
         try workspace.global_store.replaceAbsoluteFile(io, home_settings, default_content);
@@ -269,6 +272,7 @@ pub fn writeAiPanelFontSize(
     };
     defer allocator.free(content);
 
+    // File exists — upsert the key into existing content
     const updated = try upsertTomlValue(allocator, content, "ai_panel", "font_size", value_text);
     defer allocator.free(updated);
     try workspace.global_store.replaceAbsoluteFile(io, home_settings, updated);
