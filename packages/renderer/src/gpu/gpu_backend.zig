@@ -64,11 +64,18 @@ pub fn init(backend_type: Backend) bool {
             return true;
         },
         .opengl_es => {
-            // Phase 2: OpenGL ES backend
-            // Will be implemented in gpu_opengl.c
-            current_backend = .cpu;
-            gpu_enabled = false;
-            return false;
+            // OpenGL ES 3.0 backend (Linux X11/EGL)
+            // gpu_opengl.c provides forge_gpu_opengl_init() + batched rect rendering
+            // + SDF text shader. Requires EGL + GLES3 libraries.
+            current_backend = .opengl_es;
+            gpu_enabled = true;
+            capabilities.backend = .opengl_es;
+            capabilities.max_texture_size = 8192;
+            capabilities.supports_instancing = true;
+            capabilities.supports_sdf = true;
+            capabilities.supports_compute = false;
+            capabilities.vsync_enabled = true;
+            return true;
         },
         .direct3d_11 => {
             // Phase 3: Direct3D 11 backend

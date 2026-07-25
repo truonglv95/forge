@@ -89,7 +89,20 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     defer span.end();
     if (!event.is_down) return;
     const wb = state.wb orelse return;
-    state.markAllDirty();
+
+    // Dirty flag propagation: mark only the focused panel as dirty.
+    // This avoids redrawing unchanged panels on every keystroke.
+    // For global shortcuts (palette, theme toggle, etc.), markAllDirty.
+    switch (wb.focused_panel) {
+        .editor => {
+            state.dirty_editor = true;
+            state.dirty_status_bar = true;
+        },
+        .explorer, .search, .git, .run, .extensions, .ai => state.dirty_sidebar = true,
+        .agent => state.dirty_agent = true,
+        .terminal => state.dirty_bottom_panel = true,
+        else => state.markAllDirty(),
+    }
 
     var win_h: f32 = 768;
     var win_w: f32 = 1024;

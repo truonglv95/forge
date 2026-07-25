@@ -65,6 +65,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
     var span = telemetry.startSpan("input", "mouse_event");
     defer span.end();
     const wb = state.wb orelse return;
+
+    // Dirty flag propagation: mouse events affect the panel under cursor.
+    // For simplicity, mark all dirty on mouse events (hover, click, drag
+    // can affect multiple panels). Optimization: detect which panel the
+    // mouse is in and mark only that panel.
+    // For now, keep markAllDirty for mouse (UI feedback needs immediate
+    // response). Key events use targeted dirty marking.
     state.markAllDirty();
 
     var w: f32 = 0;
