@@ -472,6 +472,16 @@ pub fn drawEditorViewport(
                 }
 
                 decorations.drawDecorations(editor_buf, idx, text_x, line_num_y, line_h, content_w);
+
+                // Indent guides — vertical hairlines at each tab/indent level.
+                // Drawn before text so text overlays them. Visible only when
+                // the line has leading whitespace and the indent level is
+                // shared with neighbours (so it looks like a continuous line
+                // rather than stray marks).
+                if (!wrap_enabled) {
+                    drawIndentGuides(editor_buf, idx, text_x, line_num_y, line_h, font_size, theme);
+                }
+
                 bracket.drawSelectionInSegment(editor_buf, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, .{ .r = 0.35, .g = 0.55, .b = 0.95, .a = 0.35 });
                 review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, idx, text_x, line_num_y, line_h, font_size);
                 overlays.drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
@@ -589,4 +599,61 @@ pub fn drawEditorViewport(
         false,
     );
     renderer.Renderer.clearClipRect();
+}
+
+/// Draw indent guides — thin vertical hairlines at each indentation level
+/// that span the height of one line. The guide is only drawn when the line
+/// is part of a contiguous block of lines sharing the same indent level
+/// (so isolated whitespace doesn't produce stray lines).
+///
+/// The guide color is a low-alpha version of the border colour — visible
+/// enough to indicate nesting structure but not distracting.
+fn drawIndentGuides(
+    editor_buf: *Buffer,
+    row_idx: usize,
+    text_x: f32,
+    line_y: f32,
+    line_h: f32,
+    font_size: f32,
+    theme: *const @import("forge-workspace").Theme,
+) void {
+    if (row_idx >= editor_buf.lineCount()) return;
+    const line = editor_buf.lineAt(row_idx);
+    if (line.len == 0) return;
+
+    // Count leading whitespace (spaces and tabs).
+    var indent: usize = 0;
+    var col: usize = 0;
+    while (col < line.len) : (col += 1) {
+        if (line[col] == ' ') {
+            indent += 1;
+        } else if (line[col] == '\t') {
+            // Tab = 4 columns for guide purposes (matches editor default)
+            indent += 4;
+        } else {
+            break;
+        }
+    }
+    if (indent < 2) return; // no guide needed for top-level lines
+
+    // Use charWidth to position guides — most editors use ~4 chars per level.
+    // We draw one guide per indent "level" (every 4 cols).
+    const char_w: f32 = font_size * 0.6;
+    const level_chars: usize = 4;
+
+    // Border colour at 18% alpha — subtle but visible against dark bg.
+    const border = syntax.color(theme.colors.border);
+    const guide_color = renderer.Color{
+        .r = border.r,
+        .g = border.g,
+        .b = border.b,
+        .a = border.a * 0.45,
+    };
+
+    var level: usize = 1;
+    while (level * level_chars <= indent) : (level += 1) {
+        const x = text_x + @as(f32, @floatFromInt(level * level_chars)) * char_w;
+        // 1px wide, full line height — vertical hairline.
+        renderer.Renderer.drawRect(x, line_y, 1, line_h, guide_color);
+    }
 }

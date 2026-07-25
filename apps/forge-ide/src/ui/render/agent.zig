@@ -120,6 +120,41 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         };
         const history_prefix = content_y - (chat_top - wb.chat_scroll_y);
         const history_count = wb.agent_ui.chat_history.items.len;
+
+        // Empty state — when there are no chat messages and the worker isn't
+        // running, show a friendly welcome with example prompts. This helps
+        // users understand what the agent can do without reading docs.
+        if (history_count == 0 and !snap.worker_running and !phaseShowsLive(snap.phase)) {
+            const cx = agent_x + agent_w * 0.5;
+            const cy = chat_top + 32;
+
+            // Sparkle icon — large, in accent colour
+            renderer.Renderer.drawSvg(renderer.forge_icons.sparkle, cx - 18, cy, 36, 36, .{ .r = 0.27, .g = 0.53, .b = 1.0, .a = 0.9 });
+
+            // Welcome heading
+            drawCenteredText("Ask me anything about your code", cx, cy + 48, 15.0, tokens.color.text_primary);
+            drawCenteredText("I can search, edit files, run tests, and answer questions", cx, cy + 70, 12.0, tokens.color.text_muted);
+
+            // Example prompt chips — clickable suggestions
+            const chip_w: f32 = 220;
+            const chip_h: f32 = 30;
+            const chip_y_start = cy + 100;
+            const chip_x = cx - chip_w * 0.5;
+            const examples = [_][]const u8{
+                "Explain the structure of this project",
+                "Find all TODO comments",
+                "Add a unit test for the editor module",
+            };
+            for (examples, 0..) |example, ei| {
+                const chip_y = chip_y_start + @as(f32, @floatFromInt(ei)) * (chip_h + 6);
+                const chip_hover = mx >= chip_x and mx < chip_x + chip_w and my >= chip_y and my < chip_y + chip_h;
+                const chip_bg: renderer.Color = if (chip_hover) .{ .r = 0.18, .g = 0.27, .b = 0.48, .a = 0.6 } else .{ .r = 0.14, .g = 0.16, .b = 0.2, .a = 0.8 };
+                renderer.Renderer.drawRoundedRect(chip_x, chip_y, chip_w, chip_h, 6, chip_bg);
+                renderer.Renderer.drawRoundedRect(chip_x, chip_y, chip_w, chip_h, 6, .{ .r = 0.2, .g = 0.22, .b = 0.28, .a = 0.7 });
+                drawCenteredText(example, cx, chip_y + 9, 11.0, if (chip_hover) tokens.color.text_primary else tokens.color.text_secondary);
+            }
+        }
+
         const start_i = chat_layout.firstVisibleIndex(&wb.chat_layout, wb.chat_scroll_y, history_prefix);
         const base_y = chat_top - wb.chat_scroll_y + history_prefix;
         const end_i = chat_layout.lastVisibleIndex(&wb.chat_layout, wb.chat_scroll_y, history_prefix, chat_viewport_h);
@@ -429,4 +464,13 @@ pub fn drawScopePicker(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void 
         renderer.Renderer.drawText(@ptrCast(&line_buf), box_x + 14, row_y, 11.0, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
         row_y += 20;
     }
+}
+
+fn drawCenteredText(text: []const u8, cx: f32, y: f32, size: f32, color: renderer.Color) void {
+    var buf: [256:0]u8 = undefined;
+    const n = @min(text.len, buf.len - 1);
+    @memcpy(buf[0..n], text[0..n]);
+    buf[n] = 0;
+    const w = renderer.Renderer.measureText(@ptrCast(&buf), size);
+    renderer.Renderer.drawText(@ptrCast(&buf), cx - w * 0.5, y, size, color);
 }
