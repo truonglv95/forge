@@ -189,6 +189,13 @@ pub const Workbench = struct {
     // against state.time to draw a brief green flash on the just-saved tab.
     last_save_flash_at: f32 = -10,
     last_save_flash_path: ?[]const u8 = null,
+    // Pending paste — when X11 paste is async, the first paste call triggers
+    // the selection request but returns empty. The tick loop retries the
+    // paste at pending_paste_at (50ms later) once SelectionNotify has filled
+    // the clipboard backend's pending buffer. pending_paste_panel records
+    // which panel should receive the pasted text.
+    pending_paste_panel: PanelFocus = .editor,
+    pending_paste_at: f32 = -10,
     editor_split: bool = false,
     editor_pane_focus: EditorPane = .primary,
     split_tab_index: usize = 0,
@@ -1843,6 +1850,16 @@ pub const Workbench = struct {
 
     pub fn tickFrame(self: *Workbench, dt: f32) !void {
         self.workspace_symbol_picker.tick(dt);
+        // Retry pending paste — X11 clipboard reads are async. The first
+        // paste call triggers the selection request; 50ms later the text
+        // has arrived via SelectionNotify and we can complete the paste.
+        if (self.pending_paste_at > 0 and @import("ui/core/state.zig").time >= self.pending_paste_at) {
+            self.pending_paste_at = -10;
+            const saved_focus = self.focused_panel;
+            self.focused_panel = self.pending_paste_panel;
+            @import("ui/input/shared.zig").pasteIntoActiveBuffer(self);
+            self.focused_panel = saved_focus;
+        }
         // Update panel animations (subtle transitions on collapse/expand).
         const dt_ms = dt * 1000.0;
         self.sidebar_anim.update(dt_ms);

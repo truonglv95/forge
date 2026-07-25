@@ -42,7 +42,15 @@ pub fn pasteIntoActiveBuffer(wb: *Workbench) void {
         return;
     };
     defer state.gpa.free(text);
-    if (text.len == 0) return;
+    // If clipboard read returned empty, it may be because X11 paste is
+    // async — the first call triggers the selection request, the text
+    // arrives via SelectionNotify on the next frame. Set a flag so the
+    // workbench's tick can retry the paste once the text is available.
+    if (text.len == 0) {
+        wb.pending_paste_panel = wb.focused_panel;
+        wb.pending_paste_at = @import("../core/state.zig").time + 0.05; // retry in 50ms
+        return;
+    }
 
     const buffer = if (wb.focused_panel == .editor)
         wb.activeBuffer() orelse return

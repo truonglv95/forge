@@ -331,56 +331,123 @@ static int allocate_framebuffer(int width, int height) {
 static int load_font(void) {
     pthread_mutex_lock(&g_ft_lock);
     if (g_face) { FT_Done_Face(g_face); g_face = NULL; }
+    if (g_face_bold) { FT_Done_Face(g_face_bold); g_face_bold = NULL; }
     if (!g_ft) { if (FT_Init_FreeType(&g_ft) != 0) { pthread_mutex_unlock(&g_ft_lock); return 0; } }
 
-    /* Try bundled fonts first — ensures consistent rendering across systems
-     * without depending on system font installation. */
-    const char* bundled_fonts[] = {
-        "packages/renderer/assets/fonts/DejaVuSansMono.ttf",
-        "packages/renderer/assets/fonts/LiberationSans-Regular.ttf",
-    };
-    const char* bundled_bold_fonts[] = {
-        "packages/renderer/assets/fonts/DejaVuSansMono-Bold.ttf",
-        "packages/renderer/assets/fonts/LiberationSans-Bold.ttf",
-    };
+    /* Try system fonts first via fontconfig — prefers JetBrains Mono
+     * (a programmer font with clear 0/O, 1/l/I distinction) when
+     * available, then falls back to bundled DejaVu. This gives users
+     * who install JetBrains Mono a nicer editing experience without
+     * breaking systems that don't have it. */
     int is_mono = (strstr(g_font_family, "Mono") != NULL || strstr(g_font_family, "mono") != NULL ||
                    strstr(g_font_family, "Menlo") != NULL || strstr(g_font_family, "Consolas") != NULL);
-    const char* bundled = is_mono ? bundled_fonts[0] : bundled_fonts[1];
-    const char* bundled_bold = is_mono ? bundled_bold_fonts[0] : bundled_bold_fonts[1];
 
-    /* Check if bundled font file exists relative to CWD or executable */
-    if (FT_New_Face(g_ft, bundled, 0, &g_face) == 0) {
-        FT_Select_Charmap(g_face, FT_ENCODING_UNICODE);
-        /* Load bold variant for font weight support */
-        if (g_face_bold) { FT_Done_Face(g_face_bold); g_face_bold = NULL; }
-        FT_New_Face(g_ft, bundled_bold, 0, &g_face_bold);
-        if (g_face_bold) FT_Select_Charmap(g_face_bold, FT_ENCODING_UNICODE);
-        /* Load fallbacks from system fonts */
-        FcConfig* cfg = FcInitLoadConfigAndFonts();
-        if (cfg) {
-            g_fallback_count = 0;
-            const char* fallback_families[] = {"DejaVu Sans", "Noto Sans", "Liberation Sans", "DejaVu Sans Mono"};
-            for (size_t fi = 0; fi < sizeof(fallback_families)/sizeof(fallback_families[0]) && g_fallback_count < MAX_FALLBACK_FACES; fi++) {
-                FcPattern* fpat = FcPatternCreate();
-                FcPatternAddString(fpat, FC_FAMILY, (const FcChar8*)fallback_families[fi]);
-                FcConfigSubstitute(cfg, fpat, FcMatchPattern);
-                FcDefaultSubstitute(fpat);
-                FcResult fresult;
-                FcPattern* fmatch = FcFontMatch(cfg, fpat, &fresult);
-                FcChar8* ffile = NULL;
-                if (fmatch) FcPatternGetString(fmatch, FC_FILE, 0, &ffile);
-                if (ffile) {
-                    FT_Face fface = NULL;
-                    if (FT_New_Face(g_ft, (const char*)ffile, 0, &fface) == 0) {
-                        FT_Select_Charmap(fface, FT_ENCODING_UNICODE);
-                        g_fallback_faces[g_fallback_count++] = fface;
-                    }
+    /* Preferred font families in order — first one that fontconfig
+     * finds on the system wins. */
+    const char* preferred_mono[] = {
+        "JetBrains Mono",
+        "Fira Code",
+        "Cascadia Code",
+        "Source Code Pro",
+        "DejaVu Sans Mono",
+        "Liberation Mono",
+    };
+    const char* preferred_sans[] = {
+        "Inter",
+        "SF Pro Text",
+        "Liberation Sans",
+        "DejaVu Sans",
+    };
+    const char** preferred = is_mono ? preferred_mono : preferred_sans;
+    const size_t preferred_count = is_mono ? (sizeof(preferred_mono)/sizeof(preferred_mono[0])) : (sizeof(preferred_sans)/sizeof(preferred_sans[0]));
+
+    FcConfig* cfg = FcInitLoadConfigAndFonts();
+    int loaded = 0;
+    if (cfg) {
+        for (size_t fi = 0; fi < preferred_count && !loaded; fi++) {
+            FcPattern* fpat = FcPatternCreate();
+            FcPatternAddString(fpat, FC_FAMILY, (const FcChar8*)preferred[fi]);
+            FcConfigSubstitute(cfg, fpat, FcMatchPattern);
+            FcDefaultSubstitute(fpat);
+            FcResult fresult;
+            FcPattern* fmatch = FcFontMatch(cfg, fpat, &fresult);
+            FcChar8* ffile = NULL;
+            if (fmatch) FcPatternGetString(fmatch, FC_FILE, 0, &ffile);
+            if (ffile) {
+                if (FT_New_Face(g_ft, (const char*)ffile, 0, &g_face) == 0) {
+                    FT_Select_Charmap(g_face, FT_ENCODING_UNICODE);
+                    /* Look for bold variant of same family */
+                    FcPatternDestroy(fmatch);
+                    FcPatternDestroy(fpat);
+                    FcPattern* bpat = FcPatternCreate();
+                    FcPatternAddString(bpat, FC_FAMILY, (const FcChar8*)preferred[fi]);
+                    FcPatternAddInteger(bpat, FC_WEIGHT, FC_WEIGHT_BOLD);
+                    FcConfigSubstitute(cfg, bpat, FcMatchPattern);
+                    FcDefaultSubstitute(bpat);
+                    FcPattern* bmatch = FcFontMatch(cfg, bpat, &fresult);
+                    FcChar8* bfile = NULL;
+                    if (bmatch) FcPatternGetString(bmatch, FC_FILE, 0, &bfile);
+                    if (g_face_bold) { FT_Done_Face(g_face_bold); g_face_bold = NULL; }
+                    if (bfile) FT_New_Face(g_ft, (const char*)bfile, 0, &g_face_bold);
+                    if (g_face_bold) FT_Select_Charmap(g_face_bold, FT_ENCODING_UNICODE);
+                    if (bmatch) FcPatternDestroy(bmatch);
+                    FcPatternDestroy(bpat);
+                    loaded = 1;
                 }
-                if (fmatch) FcPatternDestroy(fmatch);
-                FcPatternDestroy(fpat);
             }
-            FcConfigDestroy(cfg);
+            if (fmatch) FcPatternDestroy(fmatch);
+            if (fpat) FcPatternDestroy(fpat);
         }
+    }
+
+    /* Fall back to bundled fonts if no system font matched */
+    if (!loaded) {
+        const char* bundled_fonts[] = {
+            "packages/renderer/assets/fonts/DejaVuSansMono.ttf",
+            "packages/renderer/assets/fonts/LiberationSans-Regular.ttf",
+        };
+        const char* bundled_bold_fonts[] = {
+            "packages/renderer/assets/fonts/DejaVuSansMono-Bold.ttf",
+            "packages/renderer/assets/fonts/LiberationSans-Bold.ttf",
+        };
+        const char* bundled = is_mono ? bundled_fonts[0] : bundled_fonts[1];
+        const char* bundled_bold = is_mono ? bundled_bold_fonts[0] : bundled_bold_fonts[1];
+        if (FT_New_Face(g_ft, bundled, 0, &g_face) == 0) {
+            FT_Select_Charmap(g_face, FT_ENCODING_UNICODE);
+            if (g_face_bold) { FT_Done_Face(g_face_bold); g_face_bold = NULL; }
+            FT_New_Face(g_ft, bundled_bold, 0, &g_face_bold);
+            if (g_face_bold) FT_Select_Charmap(g_face_bold, FT_ENCODING_UNICODE);
+            loaded = 1;
+        }
+    }
+
+    if (loaded && cfg) {
+        /* Load fallbacks from system fonts for missing glyphs */
+        g_fallback_count = 0;
+        const char* fallback_families[] = {"DejaVu Sans", "Noto Sans", "Liberation Sans", "DejaVu Sans Mono"};
+        for (size_t fi = 0; fi < sizeof(fallback_families)/sizeof(fallback_families[0]) && g_fallback_count < MAX_FALLBACK_FACES; fi++) {
+            FcPattern* fpat = FcPatternCreate();
+            FcPatternAddString(fpat, FC_FAMILY, (const FcChar8*)fallback_families[fi]);
+            FcConfigSubstitute(cfg, fpat, FcMatchPattern);
+            FcDefaultSubstitute(fpat);
+            FcResult fresult;
+            FcPattern* fmatch = FcFontMatch(cfg, fpat, &fresult);
+            FcChar8* ffile = NULL;
+            if (fmatch) FcPatternGetString(fmatch, FC_FILE, 0, &ffile);
+            if (ffile) {
+                FT_Face fface = NULL;
+                if (FT_New_Face(g_ft, (const char*)ffile, 0, &fface) == 0) {
+                    FT_Select_Charmap(fface, FT_ENCODING_UNICODE);
+                    g_fallback_faces[g_fallback_count++] = fface;
+                }
+            }
+            if (fmatch) FcPatternDestroy(fmatch);
+            FcPatternDestroy(fpat);
+        }
+        FcConfigDestroy(cfg);
+    }
+
+    if (loaded) {
         /* Clear glyph cache */
         if (g_glyph_cache_init) {
             for (int i = 0; i < GLYPH_CACHE_SIZE; i++) {
@@ -392,70 +459,38 @@ static int load_font(void) {
         return 1;
     }
 
-    /* Fallback to fontconfig system fonts */
-    FcConfig* cfg = FcInitLoadConfigAndFonts();
-    if (!cfg) { pthread_mutex_unlock(&g_ft_lock); return 0; }
+    /* Last resort: try fontconfig without family preference */
+    if (cfg) FcConfigDestroy(cfg);
+    FcConfig* cfg2 = FcInitLoadConfigAndFonts();
+    if (!cfg2) { pthread_mutex_unlock(&g_ft_lock); return 0; }
     FcPattern* pat = FcPatternCreate();
     FcPatternAddString(pat, FC_FAMILY, (const FcChar8*)g_font_family);
     int fc_weight = FC_WEIGHT_REGULAR;
     switch (g_font_weight) { case 1: fc_weight = FC_WEIGHT_MEDIUM; break; case 2: fc_weight = FC_WEIGHT_DEMIBOLD; break; case 3: fc_weight = FC_WEIGHT_BOLD; break; default: break; }
     FcPatternAddInteger(pat, FC_WEIGHT, fc_weight);
-    FcConfigSubstitute(cfg, pat, FcMatchPattern);
+    FcConfigSubstitute(cfg2, pat, FcMatchPattern);
     FcDefaultSubstitute(pat);
     FcResult result;
-    FcPattern* match = FcFontMatch(cfg, pat, &result);
+    FcPattern* match = FcFontMatch(cfg2, pat, &result);
     FcChar8* font_file = NULL;
     if (match) FcPatternGetString(match, FC_FILE, 0, &font_file);
     int ok = 0;
     if (font_file) {
         if (FT_New_Face(g_ft, (const char*)font_file, 0, &g_face) == 0) {
+            FT_Select_Charmap(g_face, FT_ENCODING_UNICODE);
+            if (g_face_bold) { FT_Done_Face(g_face_bold); g_face_bold = NULL; }
             ok = 1;
-            /* Enable auto-hinting for sharper text at small sizes.
-             * FT_LOAD_TARGET_NORMAL uses anti-aliased rendering. */
-            if (FT_HAS_HORIZONTAL(g_face)) {
-                /* Select charmap if available */
-                FT_Select_Charmap(g_face, FT_ENCODING_UNICODE);
-            }
         }
     }
-    /* Clear glyph cache when font changes */
+    if (match) FcPatternDestroy(match);
+    FcPatternDestroy(pat);
+    FcConfigDestroy(cfg2);
     if (g_glyph_cache_init) {
         for (int i = 0; i < GLYPH_CACHE_SIZE; i++) {
             if (g_glyph_cache[i].data) { free(g_glyph_cache[i].data); g_glyph_cache[i].data = NULL; }
             g_glyph_cache[i].cp = 0;
         }
     }
-
-    /* Load fallback fonts for missing glyphs (CJK, emoji, symbols).
-     * Try: DejaVu Sans, Noto Sans, Liberation Sans, monospace. */
-    for (int fi = 0; fi < g_fallback_count; fi++) {
-        if (g_fallback_faces[fi]) { FT_Done_Face(g_fallback_faces[fi]); g_fallback_faces[fi] = NULL; }
-    }
-    g_fallback_count = 0;
-    const char* fallback_families[] = {"DejaVu Sans", "Noto Sans", "Liberation Sans", "DejaVu Sans Mono"};
-    for (size_t fi = 0; fi < sizeof(fallback_families)/sizeof(fallback_families[0]) && g_fallback_count < MAX_FALLBACK_FACES; fi++) {
-        FcPattern* fpat = FcPatternCreate();
-        FcPatternAddString(fpat, FC_FAMILY, (const FcChar8*)fallback_families[fi]);
-        FcConfigSubstitute(cfg, fpat, FcMatchPattern);
-        FcDefaultSubstitute(fpat);
-        FcResult fresult;
-        FcPattern* fmatch = FcFontMatch(cfg, fpat, &fresult);
-        FcChar8* ffile = NULL;
-        if (fmatch) FcPatternGetString(fmatch, FC_FILE, 0, &ffile);
-        if (ffile) {
-            FT_Face fface = NULL;
-            if (FT_New_Face(g_ft, (const char*)ffile, 0, &fface) == 0) {
-                FT_Select_Charmap(fface, FT_ENCODING_UNICODE);
-                g_fallback_faces[g_fallback_count++] = fface;
-            }
-        }
-        if (fmatch) FcPatternDestroy(fmatch);
-        FcPatternDestroy(fpat);
-    }
-
-    if (match) FcPatternDestroy(match);
-    FcPatternDestroy(pat);
-    FcConfigDestroy(cfg);
     pthread_mutex_unlock(&g_ft_lock);
     return ok;
 }
@@ -861,13 +896,24 @@ void forge_backend_flush_batch(void) {}
  * the standard X11 clipboard mechanism.
  *
  * We also fall back to XChangeProperty with XA_CUT_BUFFER0 for clients
- * that read from cut buffers (older xterm-based workflows). */
+ * that read from cut buffers (older xterm-based workflows).
+ *
+ * PASTE: X11 clipboard reads are async — we request the selection, then
+ * the actual text arrives via SelectionNotify. We store it in
+ * g_pending_paste and the next call to forge_backend_get_clipboard_text
+ * returns it. This means paste works on the second call (first call
+ * triggers the request, second call reads the result). */
 static char* g_clipboard_text = NULL;
 static size_t g_clipboard_len = 0;
 static Atom g_clipboard_atom = 0;
 static Atom g_targets_atom = 0;
 static Atom g_utf8_string_atom = 0;
 static Atom g_xsel_data_atom = 0;
+/* Pending paste text — filled by SelectionNotify, consumed by
+ * forge_backend_get_clipboard_text. */
+static char* g_pending_paste = NULL;
+static size_t g_pending_paste_len = 0;
+static int g_paste_requested = 0;
 
 static void init_clipboard_atoms(void) {
     if (g_clipboard_atom) return;
@@ -904,6 +950,18 @@ void forge_backend_set_clipboard_text(const char* text, size_t len) {
 size_t forge_backend_get_clipboard_text(char* out, size_t cap) {
     if (!g_display || !out || cap == 0) return 0;
     init_clipboard_atoms();
+    /* If we have pending paste text from a previous SelectionNotify,
+     * consume and return it. */
+    if (g_pending_paste && g_pending_paste_len > 0) {
+        size_t n = (g_pending_paste_len < cap - 1) ? g_pending_paste_len : cap - 1;
+        memcpy(out, g_pending_paste, n);
+        out[n] = 0;
+        free(g_pending_paste);
+        g_pending_paste = NULL;
+        g_pending_paste_len = 0;
+        g_paste_requested = 0;
+        return n;
+    }
     /* If we own the selection, return our stored text directly */
     if (g_clipboard_text && g_clipboard_len > 0) {
         size_t n = (g_clipboard_len < cap - 1) ? g_clipboard_len : cap - 1;
@@ -911,16 +969,19 @@ size_t forge_backend_get_clipboard_text(char* out, size_t cap) {
         out[n] = 0;
         return n;
     }
-    /* Otherwise request the selection from the current owner */
-    Window owner = XGetSelectionOwner(g_display, g_clipboard_atom);
-    if (owner == None) owner = XGetSelectionOwner(g_display, XA_PRIMARY);
-    if (owner == None || owner == g_window) return 0;
-    XConvertSelection(g_display, g_clipboard_atom, g_utf8_string_atom,
-                      g_xsel_data_atom, g_window, CurrentTime);
-    XFlush(g_display);
-    /* The actual text arrives via a SelectionNotify event, which we
-     * handle in handle_event. For now return 0 — callers that need
-     * paste should read on the next tick. */
+    /* Otherwise request the selection from the current owner. The text
+     * will arrive via SelectionNotify and be stored in g_pending_paste.
+     * Caller should retry on the next tick. */
+    if (!g_paste_requested) {
+        Window owner = XGetSelectionOwner(g_display, g_clipboard_atom);
+        if (owner == None) owner = XGetSelectionOwner(g_display, XA_PRIMARY);
+        if (owner != None && owner != g_window) {
+            XConvertSelection(g_display, g_clipboard_atom, g_utf8_string_atom,
+                              g_xsel_data_atom, g_window, CurrentTime);
+            XFlush(g_display);
+            g_paste_requested = 1;
+        }
+    }
     return 0;
 }
 int forge_backend_save_clipboard_png(const char* path) { (void)path; return 0; }
@@ -970,6 +1031,37 @@ static void handle_event(XEvent* ev) {
         case SelectionClear: {
             /* Another client took ownership — free our copy */
             if (g_clipboard_text) { free(g_clipboard_text); g_clipboard_text = NULL; g_clipboard_len = 0; }
+            break;
+        }
+        case SelectionNotify: {
+            /* Response to our XConvertSelection request — the selection
+             * owner has placed the text in our g_xsel_data_atom property.
+             * Read it into g_pending_paste so the next
+             * forge_backend_get_clipboard_text call can consume it. */
+            if (ev->xselection.property != None && ev->xselection.property == g_xsel_data_atom) {
+                Atom actual_type;
+                int actual_format;
+                unsigned long nitems, bytes_after;
+                unsigned char* prop_data = NULL;
+                if (XGetWindowProperty(g_display, g_window, g_xsel_data_atom,
+                                       0, 65536, False, AnyPropertyType,
+                                       &actual_type, &actual_format, &nitems,
+                                       &bytes_after, &prop_data) == Success) {
+                    if (prop_data && nitems > 0) {
+                        /* Free any previous pending paste */
+                        if (g_pending_paste) { free(g_pending_paste); g_pending_paste = NULL; }
+                        g_pending_paste = (char*)malloc(nitems + 1);
+                        if (g_pending_paste) {
+                            memcpy(g_pending_paste, prop_data, nitems);
+                            g_pending_paste[nitems] = 0;
+                            g_pending_paste_len = nitems;
+                        }
+                    }
+                    if (prop_data) XFree(prop_data);
+                }
+                /* Delete the property so the owner knows we read it */
+                XDeleteProperty(g_display, g_window, g_xsel_data_atom);
+            }
             break;
         }
         case ClientMessage: {
