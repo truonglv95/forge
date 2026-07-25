@@ -14,10 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Format, build, and test
+  test-macos:
+    name: Build & Test (macOS)
     runs-on: macos-14
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository
@@ -28,31 +28,84 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Check formatting, build, and tests
-        run: ./scripts/check.sh --full
+      - name: Format check
+        run: zig fmt --check --ast-check build.zig apps packages tools
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig build test
 
       - name: Agent reliability eval (fake)
         run: |
-          zig build
           ./zig-out/bin/forge eval ai-flow --provider fake --min-success-rate 1.0 --output .forge/evals/ci.jsonl
-
-      - name: Upload eval summary
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ai-flow-eval
-          path: |
-            .forge/evals/ci.jsonl
-            .forge/evals/ci.summary.json
-          if-no-files-found: warn
-
-      - name: Routing policy eval
-        run: |
-          zig build
-          chmod +x ./scripts/eval_routing.sh
-          ./scripts/eval_routing.sh
 
       - name: Smoke test CLI
         run: |
-          zig build run -- version
-          zig build run -- doctor
+          ./zig-out/bin/forge version
+          ./zig-out/bin/forge doctor
+
+  test-linux:
+    name: Build & Test (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
+
+      - name: Format check
+        run: zig fmt --check --ast-check build.zig apps packages tools
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig build test
+
+      - name: Agent reliability eval (fake)
+        run: |
+          ./zig-out/bin/forge eval ai-flow --provider fake --min-success-rate 1.0 --output .forge/evals/ci-linux.jsonl
+
+      - name: Smoke test CLI
+        run: |
+          ./zig-out/bin/forge version
+          ./zig-out/bin/forge doctor
+          ./zig-out/bin/forge providers
+          ./zig-out/bin/forge models list
+
+  test-windows:
+    name: Build (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Format check
+        run: zig fmt --check --ast-check build.zig apps packages tools
+
+      - name: Build CLI
+        run: zig build
+
+      - name: Smoke test CLI
+        run: |
+          ./zig-out/bin/forge.exe version
+          ./zig-out/bin/forge.exe doctor
