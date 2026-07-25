@@ -373,6 +373,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         show_prompt_cursor,
         snap.worker_running,
         snap.show_review,
+        wb.focused_panel == .agent,
     );
 
     if (snap.show_review and !wb.proposal_review_open) {

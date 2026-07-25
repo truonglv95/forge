@@ -406,11 +406,23 @@ pub fn draw(
     show_cursor: bool,
     worker_running: bool,
     show_review: bool,
+    focused: bool,
 ) void {
     const controls_disabled = worker_running;
     _ = show_review;
     const bg = renderer.Color{ .r = 0.22, .g = 0.22, .b = 0.22, .a = 1.0 };
-    const outline_color = renderer.Color{ .r = 0.38, .g = 0.44, .b = 0.52, .a = 0.9 };
+    // Outline colour brightens when the composer is focused — gives users
+    // a clear "I'm typing here" affordance. Was a flat grey that didn't
+    // change on focus, which VLM review flagged as "blends too much with
+    // the surrounding panel background".
+    const outline_color = if (focused)
+        renderer.Color{ .r = 0.45, .g = 0.62, .b = 0.95, .a = 1.0 }
+    else
+        renderer.Color{ .r = 0.38, .g = 0.44, .b = 0.52, .a = 0.9 };
+    // Subtle outer glow when focused — 2px wider outline at low alpha.
+    if (focused) {
+        renderer.Renderer.drawRoundedRect(layout_info.box_x - 1, layout_info.composer_top - 1, layout_info.box_w + 2, (layout_info.composer_h - composer_chrome_h) + 2, 7, .{ .r = 0.3, .g = 0.5, .b = 0.85, .a = 0.3 });
+    }
 
     const input_box_h = layout_info.composer_h - composer_chrome_h;
     renderer.Renderer.drawRoundedRect(layout_info.box_x, layout_info.composer_top, layout_info.box_w, input_box_h, 6, outline_color);
