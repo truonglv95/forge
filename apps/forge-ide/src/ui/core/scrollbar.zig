@@ -7,9 +7,11 @@ pub const thumb_min_h: f32 = 24;
 pub const edge_inset: f32 = 3;
 
 // Scrollbar colors — subtle, becomes more visible on hover.
-const thumb_idle = renderer.Color{ .r = 0.5, .g = 0.5, .b = 0.55, .a = 0.3 };
-const thumb_hover = renderer.Color{ .r = 0.6, .g = 0.6, .b = 0.65, .a = 0.6 };
-const thumb_dragging = renderer.Color{ .r = 0.7, .g = 0.7, .b = 0.75, .a = 0.85 };
+// Idle alpha bumped from 0.3 to 0.45 per VLM review ("extremely faint,
+// almost invisible against the dark background").
+const thumb_idle = renderer.Color{ .r = 0.5, .g = 0.5, .b = 0.55, .a = 0.45 };
+const thumb_hover = renderer.Color{ .r = 0.65, .g = 0.65, .b = 0.7, .a = 0.75 };
+const thumb_dragging = renderer.Color{ .r = 0.75, .g = 0.75, .b = 0.8, .a = 0.9 };
 
 /// Returns the appropriate thumb color based on interaction state.
 /// Active state: user is currently dragging the thumb.
