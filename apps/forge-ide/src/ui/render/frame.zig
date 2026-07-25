@@ -171,6 +171,7 @@ pub fn onRenderFrame() void {
         header_toolbar.drawHoverTooltip(w, wb.headerToolbarState(), state.header_hover_action);
 
         if (wb.palette.open) dialogs.drawPalette(wb, w, h);
+        if (wb.quick_open_open) dialogs.drawQuickOpen(wb, w, h);
         if (wb.workspace_symbol_picker.open) dialogs.drawWorkspaceSymbolPicker(wb, w, h);
         if (wb.git_branch_picker.open) dialogs.drawGitBranchPicker(wb, w, h);
         if (wb.output_channel_picker.open) dialogs.drawOutputChannelPicker(wb, w, h);

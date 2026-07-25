@@ -132,6 +132,12 @@ pub const Workbench = struct {
     terminals_initialized: bool = false,
     events: kernel.EventBus(Event),
     palette: palette_mod.Palette,
+    // Quick open file picker (Cmd+P) — fuzzy search files in workspace.
+    quick_open_open: bool = false,
+    quick_open_files: []const []const u8 = &.{},
+    quick_open_selected: usize = 0,
+    quick_open_query: [256]u8 = [_]u8{0} ** 256,
+    quick_open_query_len: usize = 0,
     workspace_symbol_picker: workspace_symbol_picker_mod.Picker,
     git_branch_picker: git_branch_picker_mod.Picker,
     output_channels: std.StringHashMap(*@import("workbench/output_channel.zig").OutputChannel),
@@ -2143,6 +2149,28 @@ pub const Workbench = struct {
         for (paths) |snap_path| {
             try recovery_mod.deleteSnapshot(self.allocator, self.io, self.workspace_root, snap_path);
         }
+    }
+
+    pub fn fileQuickOpen(self: *Workbench) !void {
+        // Build a list of all file paths from the explorer cache.
+        // The quick open picker reuses the palette UI but with file
+        // entries instead of command entries.
+        var file_list: std.ArrayList([]const u8) = .empty;
+        defer file_list.deinit(self.allocator);
+        for (self.explorer.all_paths) |cached| {
+            if (cached.kind == .file) {
+                try file_list.append(self.allocator, cached.path);
+            }
+        }
+        if (file_list.items.len == 0) return;
+
+        // Store the file list for the palette to use.
+        self.quick_open_files = try file_list.toOwnedSlice(self.allocator);
+        self.quick_open_query_len = 0;
+        self.quick_open_selected = 0;
+        self.quick_open_open = true;
+        self.previous_focus = self.focused_panel;
+        self.focused_panel = .palette;
     }
 };
 

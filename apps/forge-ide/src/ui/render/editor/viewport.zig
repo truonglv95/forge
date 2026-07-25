@@ -486,6 +486,13 @@ pub fn drawEditorViewport(
                     drawIndentGuides(editor_buf, idx, text_x, line_num_y, line_h, font_size, theme);
                 }
 
+                // Word highlight — highlight all occurrences of the word
+                // under the cursor. Matches VSCode's automatic word
+                // highlight feature.
+                if (!wrap_enabled) {
+                    drawWordHighlights(editor_buf, idx, text_x, line_num_y, line_h, font_size, theme);
+                }
+
                 bracket.drawSelectionInSegment(editor_buf, idx, 0, editor_buf.lineAt(idx).len, text_x, line_num_y, line_h, font_size, .{ .r = 0.35, .g = 0.55, .b = 0.95, .a = 0.35 });
                 review_overlay.drawReviewLineOverlay(resolved_hunks.slice(), theme, editor_buf, idx, text_x, line_num_y, line_h, font_size);
                 overlays.drawFindHighlights(wb, editor_buf, idx, text_x, line_num_y, line_h, font_size);
@@ -664,4 +671,74 @@ fn drawIndentGuides(
         // 1px wide, full line height — vertical hairline.
         renderer.Renderer.drawRect(x, line_y, 1, line_h, guide_color);
     }
+}
+
+/// Highlight all occurrences of the word under the cursor on the current
+/// line. This is a simplified version of VSCode's word highlight — it
+/// only scans the visible line (not the whole file) for performance.
+/// The highlight is a subtle read-only selection colour rect behind
+/// matching words.
+fn drawWordHighlights(
+    editor_buf: *Buffer,
+    row_idx: usize,
+    text_x: f32,
+    line_y: f32,
+    line_h: f32,
+    font_size: f32,
+    theme: *const @import("forge-workspace").Theme,
+) void {
+    if (row_idx != editor_buf.cursor.row) return;
+    const line = editor_buf.lineAt(row_idx);
+    if (line.len == 0) return;
+
+    // Find the word at cursor position.
+    var col = editor_buf.cursor.col;
+    if (col >= line.len) return;
+    // If cursor is on whitespace, no word to highlight.
+    if (!isIdentChar(line[col])) {
+        if (col == 0 or !isIdentChar(line[col - 1])) return;
+        col -= 1;
+    }
+
+    // Find word boundaries.
+    var word_start = col;
+    while (word_start > 0 and isIdentChar(line[word_start - 1])) : (word_start -= 1) {}
+    var word_end = col + 1;
+    while (word_end < line.len and isIdentChar(line[word_end])) : (word_end += 1) {}
+
+    if (word_start >= word_end) return;
+    const target_word = line[word_start..word_end];
+    if (target_word.len < 2) return; // Don't highlight single-char words
+
+    // Scan the line for all occurrences of target_word.
+    const hl = syntax.color(theme.colors.selection);
+    const hl_color = renderer.Color{
+        .r = hl.r,
+        .g = hl.g,
+        .b = hl.b,
+        .a = 0.15,
+    };
+
+    var i: usize = 0;
+    while (i < line.len) {
+        if (i + target_word.len > line.len) break;
+        // Check if this position starts a word match
+        const is_word_boundary_before = (i == 0) or !isIdentChar(line[i - 1]);
+        if (is_word_boundary_before and std.mem.eql(u8, line[i .. i + target_word.len], target_word)) {
+            const is_word_boundary_after = (i + target_word.len >= line.len) or
+                !isIdentChar(line[i + target_word.len]);
+            if (is_word_boundary_after) {
+                const x0 = text_x + editor_scroll.cursorX(line, i, font_size);
+                const x1 = text_x + editor_scroll.cursorX(line, i + target_word.len, font_size);
+                renderer.Renderer.drawRect(x0, line_y, @max(2, x1 - x0), line_h, hl_color);
+                i += target_word.len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
+fn isIdentChar(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '$';
 }

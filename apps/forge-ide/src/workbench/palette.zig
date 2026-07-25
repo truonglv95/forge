@@ -152,7 +152,7 @@ pub const Palette = struct {
             .{ .id = "view.toggle_agent", .title = "View: Toggle Agent Panel", .category = "View", .command = .toggle_agent_panel },
             .{ .id = "view.focus_agent", .title = "View: Focus Agent Panel", .category = "View", .command = .focus_agent },
             .{ .id = "view.toggle_agent_window", .title = "View: Toggle IDE / Agent Window", .category = "View", .command = .toggle_shell_mode },
-            .{ .id = "file.quick_open", .title = "Go to File...", .category = "File", .command = .palette_open },
+            .{ .id = "file.quick_open", .title = "Go to File...", .category = "File", .command = .file_quick_open },
             .{ .id = "file.open", .title = "Open File...", .category = "File", .command = .palette_open },
             .{ .id = "nav.back", .title = "Navigate: Back", .category = "Navigate", .command = .nav_back },
             .{ .id = "nav.forward", .title = "Navigate: Forward", .category = "Navigate", .command = .nav_forward },

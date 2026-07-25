@@ -88,8 +88,6 @@ pub const Registry = struct {
             .{ .key = "cmd+shift+g", .palette_id = "git.refresh" },
             // Editor navigation
             .{ .key = "cmd+p", .palette_id = "file.quick_open" },
-            .{ .key = "cmd+shift+p", .palette_id = "palette.open" },
-            .{ .key = "cmd+o", .palette_id = "file.open" },
             // View toggles
             .{ .key = "cmd+shift+a", .palette_id = "view.toggle" },
             .{ .key = "cmd+m", .palette_id = "view.toggle_agent_window" },

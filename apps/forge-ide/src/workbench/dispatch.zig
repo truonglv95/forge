@@ -355,6 +355,9 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .git_blame => {
             try wb.setStatus("Git blame: open the file you want to blame, then use git log for now");
         },
+        .file_quick_open => {
+            try wb.fileQuickOpen();
+        },
         .uninstall_extension => |extension_id| {
             try plugin.marketplace.uninstall(wb.allocator, wb.io, wb.workspace_root, extension_id);
             try @import("../workbench/extensions_ops.zig").reloadExtensions(wb);

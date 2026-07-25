@@ -123,6 +123,11 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
         return;
     }
 
+    if (wb.quick_open_open) {
+        handleQuickOpenKeys(wb, event);
+        return;
+    }
+
     if (event.keycode == 9 and event.modifiers & shared.cmd_mask != 0) {
         if (wb.focused_panel == .find or wb.focused_panel == .goto_line or wb.focused_panel == .rename or wb.focused_panel == .agent or wb.focused_panel == .editor or wb.focused_panel == .search) {
             shared.pasteIntoActiveBuffer(wb);
@@ -605,5 +610,56 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
 
     if (wb.focused_panel == .agent) {
         @import("../../workbench/agent_ops.zig").ensurePromptCursorVisible(wb);
+    }
+}
+
+fn handleQuickOpenKeys(wb: *Workbench, event: renderer.KeyEvent) void {
+    if (event.keycode == 53) { // Escape
+        wb.quick_open_open = false;
+        wb.focused_panel = wb.previous_focus;
+        if (wb.quick_open_files.len > 0) {
+            wb.allocator.free(wb.quick_open_files);
+            wb.quick_open_files = &.{};
+        }
+        wb.quick_open_query_len = 0;
+        return;
+    }
+    if (event.keycode == 36 or event.keycode == 76) { // Enter
+        if (wb.quick_open_selected < wb.quick_open_files.len) {
+            const path = wb.quick_open_files[wb.quick_open_selected];
+            wb.dispatch(.{ .open_file = path }) catch {};
+        }
+        wb.quick_open_open = false;
+        wb.focused_panel = .editor;
+        if (wb.quick_open_files.len > 0) {
+            wb.allocator.free(wb.quick_open_files);
+            wb.quick_open_files = &.{};
+        }
+        wb.quick_open_query_len = 0;
+        return;
+    }
+    if (event.keycode == 125) { // Down
+        if (wb.quick_open_selected < wb.quick_open_files.len - 1) {
+            wb.quick_open_selected += 1;
+        }
+        return;
+    }
+    if (event.keycode == 126) { // Up
+        if (wb.quick_open_selected > 0) {
+            wb.quick_open_selected -= 1;
+        }
+        return;
+    }
+    if (event.keycode == 51) { // Backspace
+        if (wb.quick_open_query_len > 0) {
+            wb.quick_open_query_len -= 1;
+            wb.quick_open_selected = 0;
+        }
+        return;
+    }
+    if (event.chars.len > 0 and event.chars[0] >= 32 and wb.quick_open_query_len < 255) {
+        wb.quick_open_query[wb.quick_open_query_len] = event.chars[0];
+        wb.quick_open_query_len += 1;
+        wb.quick_open_selected = 0;
     }
 }

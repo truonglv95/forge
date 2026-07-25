@@ -281,3 +281,106 @@ pub fn drawOutputChannelPicker(wb: *@import("../../workbench.zig").Workbench, w:
         row_y += 26;
     }
 }
+
+pub fn drawQuickOpen(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32) void {
+    if (!wb.quick_open_open) return;
+
+    const overlay = syntax.color(.{ .r = 0, .g = 0, .b = 0, .a = 0.55 });
+    renderer.Renderer.drawRect(0, 0, w, h, overlay);
+
+    const box_w: f32 = 600;
+    const box_h: f32 = 400;
+    const box_x = (w - box_w) / 2;
+    const box_y = (h - box_h) / 3;
+
+    // Drop shadow
+    renderer.Renderer.drawRoundedRect(box_x + 4, box_y + 6, box_w, box_h, 12, .{ .r = 0, .g = 0, .b = 0, .a = 0.35 });
+    // Panel
+    const panel_bg = syntax.color(wb.theme.colors.sidebar_bg);
+    const accent = syntax.color(wb.theme.colors.accent);
+    renderer.Renderer.drawRoundedRect(box_x, box_y, box_w, box_h, 12, panel_bg);
+    renderer.Renderer.drawRoundedRect(box_x, box_y, box_w, 3, 1.5, accent);
+
+    // Header
+    drawZText("Go to File", box_x + 16, box_y + 14, 13, syntax.color(wb.theme.colors.text_muted));
+    drawZText("Type to search files", box_x + box_w - 180, box_y + 14, 11, syntax.color(wb.theme.colors.text_muted));
+
+    // Input box
+    const input_bg = syntax.color(wb.theme.colors.tab_bar_bg);
+    const border = syntax.color(wb.theme.colors.border);
+    renderer.Renderer.drawRoundedRect(box_x + 12, box_y + 36, box_w - 24, 32, 6, input_bg);
+    renderer.Renderer.drawRect(box_x + 12, box_y + 36 + 31, box_w - 24, 1, border);
+
+    // Search icon
+    renderer.Renderer.drawSvg(renderer.forge_icons.search, box_x + 18, box_y + 42, 16, 16, accent);
+
+    // Query text
+    var query_buf: [320:0]u8 = undefined;
+    @memcpy(query_buf[0..wb.quick_open_query_len], wb.quick_open_query[0..wb.quick_open_query_len]);
+    query_buf[wb.quick_open_query_len] = 0;
+    renderer.Renderer.drawText(@ptrCast(&query_buf), box_x + 42, box_y + 43, 14.0, syntax.color(wb.theme.colors.text_primary));
+
+    // Blinking cursor
+    const blink_phase = @mod(@import("../core/state.zig").time, 1.06);
+    if (blink_phase < 0.53) {
+        renderer.Renderer.drawRect(box_x + 42 + @as(f32, @floatFromInt(wb.quick_open_query_len)) * 8, box_y + 42, 1, 16, accent);
+    }
+
+    // Results — fuzzy match files
+    var row_y = box_y + 82;
+    const max_rows: usize = 11;
+    var visible_count: usize = 0;
+    for (wb.quick_open_files) |path| {
+        if (visible_count >= max_rows) break;
+        // Simple fuzzy: check if query is a substring (case-insensitive)
+        if (wb.quick_open_query_len > 0) {
+            const query = wb.quick_open_query[0..wb.quick_open_query_len];
+            if (!fuzzyMatch(query, path)) continue;
+        }
+
+        const selected = visible_count == wb.quick_open_selected;
+        if (selected) {
+            renderer.Renderer.drawRoundedRect(box_x + 10, row_y - 3, box_w - 20, 26, 5, syntax.color(wb.theme.colors.accent_soft));
+            renderer.Renderer.drawRoundedRect(box_x + 10, row_y - 3, 3, 26, 1.5, accent);
+        }
+
+        // Show filename (bold) + path (muted)
+        const basename = std.fs.path.basename(path);
+        const dir = std.fs.path.dirname(path) orelse "";
+        var name_buf: [128:0]u8 = undefined;
+        const name_len = @min(basename.len, name_buf.len - 1);
+        @memcpy(name_buf[0..name_len], basename[0..name_len]);
+        name_buf[name_len] = 0;
+        renderer.Renderer.drawText(@ptrCast(&name_buf), box_x + 20, row_y, 13.0, if (selected) syntax.color(wb.theme.colors.text_primary) else syntax.color(wb.theme.colors.text_secondary));
+
+        var dir_buf: [256:0]u8 = undefined;
+        const dir_len = @min(dir.len, dir_buf.len - 1);
+        @memcpy(dir_buf[0..dir_len], dir[0..dir_len]);
+        dir_buf[dir_len] = 0;
+        const dir_w = @as(f32, @floatFromInt(dir_len)) * 6.0;
+        renderer.Renderer.drawText(@ptrCast(&dir_buf), box_x + box_w - 24 - dir_w - 8, row_y, 11.0, syntax.color(wb.theme.colors.text_muted));
+
+        row_y += 26;
+        visible_count += 1;
+    }
+
+    // Footer
+    renderer.Renderer.drawRect(box_x, box_y + box_h - 28, box_w, 1, border);
+    drawZText("↑↓ navigate  ↵ open  esc close", box_x + 16, box_y + box_h - 20, 11, syntax.color(wb.theme.colors.text_muted));
+    var count_buf: [64:0]u8 = undefined;
+    const count_msg = std.fmt.bufPrint(&count_buf, "{d} files", .{wb.quick_open_files.len}) catch "";
+    count_buf[count_msg.len] = 0;
+    drawZText(@ptrCast(&count_buf), box_x + box_w - 100, box_y + box_h - 20, 11, syntax.color(wb.theme.colors.text_muted));
+}
+
+fn fuzzyMatch(query: []const u8, text: []const u8) bool {
+    if (query.len == 0) return true;
+    var qi: usize = 0;
+    for (text) |ch| {
+        if (qi >= query.len) break;
+        if (std.ascii.toLower(ch) == std.ascii.toLower(query[qi])) {
+            qi += 1;
+        }
+    }
+    return qi >= query.len;
+}

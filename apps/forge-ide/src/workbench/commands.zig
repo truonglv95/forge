@@ -82,6 +82,7 @@ pub const Command = union(enum) {
     git_create_branch: void,
     git_log: void,
     git_blame: void,
+    file_quick_open: void,
     uninstall_extension: []const u8,
     extensions_show_detail: usize,
     extensions_back_from_detail: void,
