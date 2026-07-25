@@ -149,3 +149,10 @@ pub const voice_input = @import("voice_input.zig");
 pub const rate_limiter = @import("rate_limiter.zig");
 pub const error_parser = @import("error_parser.zig");
 pub const model_capabilities = @import("model_capabilities.zig");
+
+// Auth module — Supabase Auth REST client + session management.
+// Used by the Forge Cloud provider to authenticate users and proxy
+// LLM calls through a backend (Phase 2 of the login integration plan).
+pub const auth = @import("auth/supabase_auth.zig");
+pub const auth_token_store = @import("auth/token_store.zig");
+pub const auth_session = @import("auth/session.zig");
