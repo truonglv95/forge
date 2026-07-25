@@ -40,4 +40,28 @@ pub const color = struct {
     pub const code_fg: renderer.Color = .{ .r = 0.88, .g = 0.9, .b = 0.94, .a = 1.0 };
     pub const inline_code_fg: renderer.Color = .{ .r = 0.85, .g = 0.92, .b = 1.0, .a = 1.0 };
     pub const inline_code_bg: renderer.Color = .{ .r = 0.22, .g = 0.24, .b = 0.3, .a = 1.0 };
+
+    // Code-block chrome — slightly deeper than the surrounding bubble so the
+    // block visually separates from prose. Tuned to read as "this is a
+    // distinct unit of code", not just a tinted paragraph.
+    pub const code_block_bg: renderer.Color = .{ .r = 0.07, .g = 0.075, .b = 0.09, .a = 1.0 };
+    pub const code_block_border: renderer.Color = .{ .r = 0.18, .g = 0.19, .b = 0.22, .a = 1.0 };
+    pub const code_block_header_bg: renderer.Color = .{ .r = 0.1, .g = 0.105, .b = 0.12, .a = 1.0 };
+
+    // Syntax highlighting palette — vibrant, GitHub-Dark-inspired.
+    // Tuned for high contrast on dark bg: keywords pop purple, types
+    // cyan, strings green, numbers orange, comments muted grey.
+    // Saturation boosted from v1 — was too washed out per VLM review.
+    pub const syntax_keyword: renderer.Color = .{ .r = 0.92, .g = 0.55, .b = 1.0, .a = 1.0 }; // vibrant purple
+    pub const syntax_type: renderer.Color = .{ .r = 0.35, .g = 0.92, .b = 1.0, .a = 1.0 }; // bright cyan
+    pub const syntax_function: renderer.Color = .{ .r = 0.55, .g = 0.85, .b = 1.0, .a = 1.0 }; // sky blue
+    pub const syntax_string: renderer.Color = .{ .r = 0.55, .g = 0.95, .b = 0.45, .a = 1.0 }; // lime green
+    pub const syntax_number: renderer.Color = .{ .r = 1.0, .g = 0.7, .b = 0.35, .a = 1.0 }; // warm orange
+    pub const syntax_punct: renderer.Color = .{ .r = 0.72, .g = 0.76, .b = 0.82, .a = 1.0 }; // bright grey
+    pub const syntax_comment: renderer.Color = .{ .r = 0.55, .g = 0.6, .b = 0.65, .a = 0.9 }; // dim grey
+
+    // Heading colour — accent tinted toward cyan so headings visually mark
+    // a new section without being a wall of identical white text.
+    pub const heading_fg: renderer.Color = .{ .r = 0.92, .g = 0.95, .b = 1.0, .a = 1.0 };
+    pub const heading_rule: renderer.Color = .{ .r = 0.4, .g = 0.55, .b = 0.85, .a = 0.4 };
 };

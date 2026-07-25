@@ -34,27 +34,28 @@ pub const typography = struct {
 };
 
 pub const markdown = struct {
-    pub const default_body_font_size: f32 = 15.5;
+    pub const default_body_font_size: f32 = 14.0;
     pub var body_font_size: f32 = default_body_font_size;
-    pub var body_line_h: f32 = 26.0;
-    pub var code_font_size: f32 = 13.0;
-    pub var code_line_h: f32 = 22.0;
-    pub var code_pad: f32 = tokens.space.md + 2.0;
-    pub var code_gap: f32 = tokens.space.md;
-    pub var heading_font_size: f32 = 17.0;
-    pub var heading_line_h: f32 = 28.0;
-    pub var list_indent: f32 = 20.0;
-    pub var quote_indent: f32 = 14.0;
-    pub var paragraph_gap: f32 = 13.0;
-    pub var list_item_gap: f32 = 7.0;
+    pub var body_line_h: f32 = 21.0;
+    pub var code_font_size: f32 = 12.5;
+    pub var code_line_h: f32 = 19.0;
+    pub var code_pad: f32 = 10.0;
+    pub var code_gap: f32 = 10.0;
+    pub var heading_font_size: f32 = 15.5;
+    pub var heading_line_h: f32 = 22.0;
+    pub var list_indent: f32 = 18.0;
+    pub var quote_indent: f32 = 12.0;
+    pub var paragraph_gap: f32 = 9.0;
+    pub var list_item_gap: f32 = 4.0;
     pub var quote_pad_x: f32 = 10.0;
-    pub var quote_pad_y: f32 = 8.0;
-    pub var inline_code_pad_x: f32 = 3.5;
+    pub var quote_pad_y: f32 = 6.0;
+    pub var inline_code_pad_x: f32 = 4.0;
+    pub var inline_code_pad_y: f32 = 1.5;
     pub var inline_code_gap: f32 = 4.0;
-    pub var block_gap: f32 = 10.0;
-    pub var heading_gap_top: f32 = 15.0;
-    pub var heading_gap_bottom: f32 = 10.0;
-    pub var runtime_safety_pad: f32 = 72.0;
+    pub var block_gap: f32 = 8.0;
+    pub var heading_gap_top: f32 = 12.0;
+    pub var heading_gap_bottom: f32 = 6.0;
+    pub var runtime_safety_pad: f32 = 60.0;
 };
 
 pub const bubble = struct {
@@ -110,14 +111,16 @@ pub const tool_step = struct {
 pub fn configureAiPanelFontSize(raw_size: f32) void {
     const size = std.math.clamp(raw_size, 12.0, 20.0);
     markdown.body_font_size = size;
-    markdown.body_line_h = @round(size * 1.68);
-    markdown.code_font_size = @max(11.5, size - 2.0);
-    markdown.code_line_h = @round(markdown.code_font_size * 1.62);
+    // Tighter line height (1.5x) — was 1.68x which felt too airy.
+    markdown.body_line_h = @round(size * 1.5);
+    markdown.code_font_size = @max(11.0, size - 1.5);
+    markdown.code_line_h = @round(markdown.code_font_size * 1.52);
     markdown.heading_font_size = size + 1.5;
-    markdown.heading_line_h = @round(markdown.heading_font_size * 1.62);
-    markdown.paragraph_gap = @round(size * 0.82);
-    markdown.list_item_gap = @round(size * 0.46);
-    markdown.heading_gap_top = @round(size * 1.15);
-    markdown.heading_gap_bottom = @round(size * 0.72);
+    markdown.heading_line_h = @round(markdown.heading_font_size * 1.42);
+    // Tighter paragraph gap (0.6x) — was 0.82x which left too much air.
+    markdown.paragraph_gap = @round(size * 0.6);
+    markdown.list_item_gap = @round(size * 0.32);
+    markdown.heading_gap_top = @round(size * 0.85);
+    markdown.heading_gap_bottom = @round(size * 0.45);
     markdown.runtime_safety_pad = markdown.body_line_h * 3.0;
 }

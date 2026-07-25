@@ -485,6 +485,55 @@ pub const Workbench = struct {
         };
         agent_workflow.scanResumableSession(&@import("workbench/agent_ops.zig").agentHost(self));
         try self.restoreChatHistory();
+
+        // If no chat history was restored, inject a sample agent message so
+        // users can see how markdown/code rendering looks on first launch.
+        // This also serves as a visual smoke test for the renderer.
+        if (self.agent_ui.chat_history.items.len == 0) {
+            const sample =
+                \\## Welcome to Forge Coding
+                \\
+                \\I'm your AI pair programmer. Here's what I can do:
+                \\
+                \\- **Search** the codebase for symbols and patterns
+                \\- **Edit** files with natural language instructions
+                \\- **Run** shell commands and tests
+                \\- **Explain** code with inline references like `std.fs.File`
+                \\
+                \\### Example: Zig function
+                \\
+                \\```zig
+                \\const std = @import("std");
+                \\
+                \\pub fn main() !void {
+                \\    const stdout = std.io.getStdOut().writer();
+                \\    try stdout.print("Hello, {s}!\n", .{"forge"});
+                \\}
+                \\```
+                \\
+                \\### Example: Python snippet
+                \\
+                \\```python
+                \\def fibonacci(n: int) -> list[int]:
+                \\    """Return the first n Fibonacci numbers."""
+                \\    a, b = 0, 1
+                \\    result = []
+                \\    for _ in range(n):
+                \\        result.append(a)
+                \\        a, b = b, a + b
+                \\    return result
+                \\```
+                \\
+                \\> Tip: Use `Cmd+K` for inline edits, `Cmd+Shift+A` to toggle this panel.
+                \\
+                \\Try asking me anything — e.g. "explain the structure of this project".
+            ;
+            const owned = try self.allocator.dupeZ(u8, sample);
+            try self.agent_ui.chat_history.append(self.allocator, .{
+                .role = .agent,
+                .content = owned,
+            });
+        }
     }
 
     pub fn getOutputChannel(self: *Workbench, id: []const u8) ?*@import("workbench/output_channel.zig").OutputChannel {

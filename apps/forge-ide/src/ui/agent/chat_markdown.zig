@@ -35,11 +35,22 @@ pub const Style = struct {
     inline_code_fg: renderer.Color = tokens.color.inline_code_fg,
     inline_code_bg: renderer.Color = tokens.color.inline_code_bg,
     code_block_fg: renderer.Color = tokens.color.code_fg,
-    code_block_bg: renderer.Color = tokens.color.surface_recessed,
-    code_block_border: renderer.Color = tokens.color.border,
+    code_block_bg: renderer.Color = tokens.color.code_block_bg,
+    code_block_border: renderer.Color = tokens.color.code_block_border,
+    code_block_header_bg: renderer.Color = tokens.color.code_block_header_bg,
     quote_bg: renderer.Color = .{ .r = 0.12, .g = 0.13, .b = 0.16, .a = 0.62 },
     quote_bar: renderer.Color = tokens.color.accent,
     list_marker: renderer.Color = tokens.color.accent,
+    // Syntax highlighting palette — vibrant, GitHub-Dark-inspired.
+    syntax_keyword: renderer.Color = tokens.color.syntax_keyword,
+    syntax_type: renderer.Color = tokens.color.syntax_type,
+    syntax_function: renderer.Color = tokens.color.syntax_function,
+    syntax_string: renderer.Color = tokens.color.syntax_string,
+    syntax_number: renderer.Color = tokens.color.syntax_number,
+    syntax_punct: renderer.Color = tokens.color.syntax_punct,
+    syntax_comment: renderer.Color = tokens.color.syntax_comment,
+    heading_fg: renderer.Color = tokens.color.heading_fg,
+    heading_rule: renderer.Color = tokens.color.heading_rule,
     top_square: bool = false,
 };
 
@@ -228,8 +239,13 @@ fn codeBlockVisualLineCount(code: []const u8) usize {
 }
 
 fn codeBlockHeight(code: []const u8) f32 {
+    return codeBlockHeightWithLang(code, "");
+}
+
+fn codeBlockHeightWithLang(code: []const u8, lang: []const u8) f32 {
     const lines = codeBlockVisualLineCount(code);
-    return code_pad * 2 + @as(f32, @floatFromInt(lines)) * code_line_h + code_gap;
+    const header_h: f32 = if (lang.len > 0) 22.0 else 0.0;
+    return code_pad * 2 + header_h + @as(f32, @floatFromInt(lines)) * code_line_h + code_gap;
 }
 
 fn measureStyledText(text: []const u8, font_size: f32, text_style: renderer.TextStyle) f32 {
@@ -469,7 +485,8 @@ pub fn contentHeight(text: []const u8, content_w: f32) f32 {
             }
             var code = text[fence.open_end..fence.close_start];
             code = std.mem.trimEnd(u8, code, " \n\r\t");
-            total += codeBlockHeight(code);
+            const lang = std.mem.trim(u8, text[open_start + 3 .. fence.open_end - 1], &std.ascii.whitespace);
+            total += codeBlockHeightWithLang(code, lang);
             cursor = fence.close_start + 3;
             if (cursor < text.len and text[cursor] == '\n') cursor += 1;
             continue;
@@ -642,9 +659,14 @@ fn drawInlineLine(
                     cursor_x = x;
                 }
                 if (current_render_context == null or current_render_context.?.hit_test == null) {
-                    renderer.Renderer.drawRoundedRect(cursor_x, line_y + 2, w, code_line_h - 4, 4, style.inline_code_bg);
+                    // Inline code chip — rounded bg + subtle border, makes
+                    // `code` actually pop out of prose instead of looking
+                    // like a faintly-tinted word. Vertical centering tuned
+                    // for the new tighter line height.
+                    renderer.Renderer.drawRoundedRect(cursor_x, line_y + 3, w, body_font_size + 2, 3, style.inline_code_bg);
+                    renderer.Renderer.drawRoundedRect(cursor_x, line_y + 3, w, body_font_size + 2, 3, .{ .r = 0.3, .g = 0.32, .b = 0.38, .a = 0.5 });
                 }
-                handleTextHitAndDraw(slice, cursor_x + inline_code_pad_x, line_y + 1, body_line_h, code_font_size, style.inline_code_fg, code_text_style);
+                handleTextHitAndDraw(slice, cursor_x + inline_code_pad_x, line_y + 3, body_line_h, code_font_size, style.inline_code_fg, code_text_style);
                 cursor_x += w + inline_code_gap;
             },
         }
@@ -685,15 +707,22 @@ fn drawMarkdownLine(
     const max_w = word_wrap.maxWidth(content_w);
     if (headingBody(line)) |body| {
         const text_y = y + heading_gap_top;
-        const drawn = drawPlainWrappedLineWith(body, x, text_y, max_w, heading_font_size, heading_line_h, style.bold_fg, bold_text_style);
+        // Heading rule — a full-width hairline below the heading text,
+        // gives the heading more "section break" weight. Uses accent-tinted
+        // rule colour at low alpha so it's visible but not loud.
+        const drawn = drawPlainWrappedLineWith(body, x, text_y, max_w, heading_font_size, heading_line_h, style.heading_fg, bold_text_style);
         if (current_render_context == null or current_render_context.?.hit_test == null) {
-            renderer.Renderer.drawRoundedRect(x, text_y + drawn + 1.0, @min(max_w, 44.0), 1.0, 0.5, .{ .r = style.quote_bar.r, .g = style.quote_bar.g, .b = style.quote_bar.b, .a = 0.42 });
+            // Full-width rule instead of the previous 44px stub — was too
+            // subtle to register as a section break.
+            renderer.Renderer.drawRect(x, text_y + drawn + 2.0, @min(max_w, content_w), 1.0, style.heading_rule);
         }
         return heading_gap_top + drawn + heading_gap_bottom;
     }
     if (bulletBody(line)) |body| {
         if (current_render_context == null or current_render_context.?.hit_test == null) {
-            renderer.Renderer.drawRoundedRect(x + 4.0, y + 7.0, 4.0, 4.0, 2.0, style.list_marker);
+            // Slightly larger bullet (5px) with rounded corners — was 4px,
+            // felt too small against the new tighter line height.
+            renderer.Renderer.drawRoundedRect(x + 4.0, y + 7.0, 5.0, 5.0, 2.5, style.list_marker);
         }
         return try drawInlineLine(allocator, body, x + list_indent, y, @max(20.0, max_w - list_indent), style) + list_item_gap;
     }
@@ -710,7 +739,9 @@ fn drawMarkdownLine(
         const quote_w = @max(20.0, max_w - quote_indent);
         if (current_render_context == null or current_render_context.?.hit_test == null) {
             renderer.Renderer.drawRoundedRect(quote_x, y, quote_w, h, 6, style.quote_bg);
-            renderer.Renderer.drawRoundedRect(quote_x, y + 3, 3, @max(4.0, h - 6), 2, style.quote_bar);
+            // Thicker accent bar (4px instead of 3px) — more visible as
+            // a quote indicator without being heavy.
+            renderer.Renderer.drawRoundedRect(quote_x, y + 3, 4, @max(4.0, h - 6), 2, style.quote_bar);
         }
         _ = try drawInlineLine(allocator, body, quote_x + quote_pad_x, y + quote_pad_y, @max(20.0, quote_w - quote_pad_x * 2), style);
         return h;
@@ -769,13 +800,18 @@ fn drawCodeBlockLine(
             while (i < part.len and span_count < spans.len) {
                 const word_start = i;
                 var c = default_fg;
-                if (part[i] == ' ') {
+                // Comment detection — line starts with // or # (after optional whitespace).
+                // Whole rest of line is a comment. Drawn in muted grey.
+                if ((part[i] == '/' and i + 1 < part.len and part[i + 1] == '/') or part[i] == '#') {
+                    c = style.syntax_comment;
+                    i = part.len;
+                } else if (part[i] == ' ') {
                     i += 1;
                 } else if (isPunctuation(part[i])) {
-                    c = .{ .r = 0.55, .g = 0.6, .b = 0.65, .a = 1.0 };
+                    c = style.syntax_punct;
                     i += 1;
                 } else if (part[i] == '"' or part[i] == '\'') {
-                    c = .{ .r = 0.5, .g = 0.8, .b = 0.5, .a = 1.0 };
+                    c = style.syntax_string;
                     const quote = part[i];
                     i += 1;
                     while (i < part.len and part[i] != quote) : (i += 1) {
@@ -783,17 +819,20 @@ fn drawCodeBlockLine(
                     }
                     if (i < part.len) i += 1;
                 } else if (std.ascii.isDigit(part[i])) {
-                    c = .{ .r = 0.9, .g = 0.6, .b = 0.4, .a = 1.0 };
+                    c = style.syntax_number;
                     while (i < part.len and (std.ascii.isDigit(part[i]) or part[i] == '.' or part[i] == 'x' or part[i] == 'a' or part[i] == 'b' or part[i] == 'c' or part[i] == 'd' or part[i] == 'e' or part[i] == 'f')) : (i += 1) {}
                 } else {
                     while (i < part.len and !isPunctuation(part[i]) and part[i] != ' ') : (i += 1) {}
                     const word = part[word_start..i];
                     if (isKeyword(word)) {
-                        c = .{ .r = 0.8, .g = 0.5, .b = 0.8, .a = 1.0 };
+                        c = style.syntax_keyword;
                     } else if (word.len > 0 and word[0] >= 'A' and word[0] <= 'Z') {
-                        c = .{ .r = 0.4, .g = 0.8, .b = 0.8, .a = 1.0 };
+                        c = style.syntax_type;
                     } else if (i < part.len and part[i] == '(') {
-                        c = .{ .r = 0.4, .g = 0.7, .b = 1.0, .a = 1.0 };
+                        c = style.syntax_function;
+                    } else if (i < part.len and (part[i] == '.' or part[i] == ':')) {
+                        // Module/namespace access — slightly brighter than var name.
+                        c = .{ .r = 0.78, .g = 0.82, .b = 0.88, .a = 1.0 };
                     }
                 }
                 spans[span_count] = .{ .offset = @intCast(word_start), .length = @intCast(i - word_start), .r = c.r, .g = c.g, .b = c.b, .a = c.a };
@@ -847,15 +886,59 @@ fn drawCodeBlockLine(
 pub fn drawCodeBlock(code: []const u8, x: f32, y: f32, content_w: f32, style: Style, lang: []const u8, scroll_x: f32, out_max_w: *f32) f32 {
     const h = codeBlockHeight(code);
     const block_h = h - code_gap;
-    renderer.Renderer.drawRoundedRect(x, y, content_w, block_h, 6, style.code_block_border);
-    renderer.Renderer.drawRoundedRect(x + 1, y + 1, @max(1.0, content_w - 2), @max(1.0, block_h - 2), 5, style.code_block_bg);
+    // Header strip — shows the language tag at the top of the code block,
+    // giving it a "window" feel like VSCode's code cells. ~22px tall.
+    const header_h: f32 = if (lang.len > 0) 22.0 else 0.0;
+    const body_h = @max(1.0, block_h - header_h);
+
+    // Outer card: border + bg. Rounded top corners only when header is
+    // present, fully rounded otherwise (matches GitHub's code card style).
+    const corner_r: f32 = 6.0;
+    // Shadow under the card — gives depth so the block "floats" above the
+    // bubble bg instead of looking pasted on. 2px offset, low alpha black.
+    renderer.Renderer.drawRoundedRect(x + 2, y + 3, content_w, block_h, corner_r, .{ .r = 0, .g = 0, .b = 0, .a = 0.25 });
+    renderer.Renderer.drawRoundedRect(x, y, content_w, block_h, corner_r, style.code_block_border);
+    renderer.Renderer.drawRoundedRect(x + 1, y + 1, @max(1.0, content_w - 2), @max(1.0, block_h - 2), corner_r - 1, style.code_block_bg);
     if (style.top_square) {
         renderer.Renderer.drawRect(x + 1, y + 1, @max(1.0, content_w - 2), 6, style.code_block_bg);
     }
-    const common_indent = getCommonIndent(code);
-    var line_y = y + code_pad;
+    // Left accent bar — 3px coloured stripe at the left edge of the card.
+    // Uses the accent colour at low alpha so it reads as "this is a code
+    // unit" without being loud. Matches the visual weight of GitHub's
+    // code-block left border.
+    renderer.Renderer.drawRect(x + 1, y + 1, 3, @max(1.0, block_h - 2), .{ .r = style.syntax_function.r, .g = style.syntax_function.g, .b = style.syntax_function.b, .a = 0.35 });
 
-    renderer.Renderer.pushClipRect(x + 1, y + 1, @max(1.0, content_w - 2), @max(1.0, block_h - 2));
+    // Header strip — only when a language was specified on the fence.
+    // Shows lang tag (uppercase, accent colour) + a subtle bottom border
+    // that separates the header from the code body.
+    if (header_h > 0) {
+        renderer.Renderer.drawRect(x + 1, y + 1, @max(1.0, content_w - 2), header_h, style.code_block_header_bg);
+        renderer.Renderer.drawRect(x + 1, y + header_h, @max(1.0, content_w - 2), 1, style.code_block_border);
+        // Language tag — uppercased, accent-tinted, monospace small.
+        var lang_buf: [32]u8 = undefined;
+        const lang_clipped = if (lang.len > 16) lang[0..16] else lang;
+        const lang_len = @min(lang_clipped.len, lang_buf.len);
+        @memcpy(lang_buf[0..lang_len], lang_clipped[0..lang_len]);
+        // Uppercase the lang for that "code-block-label" look.
+        for (lang_buf[0..lang_len], 0..) |c, i| {
+            lang_buf[i] = std.ascii.toUpper(c);
+        }
+        renderer.Renderer.drawTextWithStyle(lang_buf[0..lang_len], x + code_pad + 4, y + 5, 10.0, .{ .r = 0.6, .g = 0.78, .b = 0.95, .a = 0.95 }, code_text_style);
+        // Three dots in top-right corner — purely decorative, signals
+        // "this is a code card with actions" (copy, etc.) like GitHub.
+        const dot_y = y + 10;
+        var dot_x = x + content_w - 24;
+        var di: usize = 0;
+        while (di < 3) : (di += 1) {
+            renderer.Renderer.drawRoundedRect(dot_x, dot_y, 3, 3, 1.5, .{ .r = 0.5, .g = 0.55, .b = 0.6, .a = 0.6 });
+            dot_x += 6;
+        }
+    }
+
+    const common_indent = getCommonIndent(code);
+    var line_y = y + header_h + code_pad;
+
+    renderer.Renderer.pushClipRect(x + 1, y + header_h + 1, @max(1.0, content_w - 2), @max(1.0, body_h - 2));
     var lines = std.mem.splitScalar(u8, code, '\n');
     var max_w: f32 = 0;
     while (lines.next()) |line| {
