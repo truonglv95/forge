@@ -106,8 +106,24 @@ pub fn onRenderFrame() void {
         state.perf_panel_ms = 0;
         state.perf_agent_ms = 0;
 
+        // Dirty-region optimization: skip drawing panels whose content hasn't
+        // changed. The XdbeCopied swap action preserves the previous frame's
+        // pixels, so undrawed panels retain their last-rendered content.
+        // This is the single biggest perf win for typing/scrolling UX —
+        // typing in the editor no longer redraws the sidebar/agent/status bar
+        // every frame.
+        //
+        // We always redraw on first frame, layout changes (dirty_full), and
+        // when continuous rendering is active (agent streaming, animations).
+        const force_all = state.first_frame or state.dirty_full or state.continuous_rendering_enabled;
+        const draw_sidebar = force_all or state.dirty_sidebar;
+        const draw_editor = force_all or state.dirty_editor;
+        const draw_panel = force_all or state.dirty_bottom_panel;
+        const draw_agent = force_all or state.dirty_agent;
+        const draw_status = force_all or state.dirty_status_bar;
+
         if (geo.shell_mode == .ide) {
-            if (wb.sidebar_visible and geo.explorer_w > 0) {
+            if (wb.sidebar_visible and geo.explorer_w > 0 and draw_sidebar) {
                 var sidebar_span = telemetry.startSpan("render", "sidebar");
                 const sidebar_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 renderer.Renderer.setClipRect(0, layout.header_height, geo.explorer_x + geo.explorer_w, side_h);
@@ -128,7 +144,7 @@ pub fn onRenderFrame() void {
                 state.perf_sidebar_ms = @floatFromInt(sidebar_end_ms - sidebar_start_ms);
                 sidebar_span.end();
             }
-            {
+            if (draw_editor) {
                 var editor_span = telemetry.startSpan("render", "editor");
                 const editor_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 renderer.Renderer.setClipRect(geo.editor_x, layout.header_height, geo.editor_w, geo.editor_h);
@@ -138,7 +154,7 @@ pub fn onRenderFrame() void {
                 state.perf_editor_ms = @floatFromInt(editor_end_ms - editor_start_ms);
                 editor_span.end();
             }
-            if (wb.bottom_panel_visible and geo.task_panel_h > 0) {
+            if (wb.bottom_panel_visible and geo.task_panel_h > 0 and draw_panel) {
                 var panel_span = telemetry.startSpan("render", "panel");
                 const panel_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 renderer.Renderer.setClipRect(geo.editor_x, geo.task_panel_y, geo.editor_w, geo.task_panel_h);
@@ -149,7 +165,7 @@ pub fn onRenderFrame() void {
                 panel_span.end();
             }
         }
-        if (wb.agent_panel_visible and geo.agent_w > 0) {
+        if (wb.agent_panel_visible and geo.agent_w > 0 and draw_agent) {
             var agent_span = telemetry.startSpan("render", "agent");
             const agent_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
             renderer.Renderer.setClipRect(geo.agent_x, layout.header_height, geo.agent_w, side_h);
@@ -161,7 +177,7 @@ pub fn onRenderFrame() void {
             state.perf_agent_ms = @floatFromInt(agent_end_ms - agent_start_ms);
             agent_span.end();
         }
-        {
+        if (draw_status) {
             renderer.Renderer.setClipRect(0, h - layout.status_height, w, layout.status_height);
             status_bar_render.drawStatusBar(wb, w, h, geo.shell_mode);
             renderer.Renderer.clearClipRect();

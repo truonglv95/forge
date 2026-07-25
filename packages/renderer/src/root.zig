@@ -339,16 +339,30 @@ pub const Renderer = struct {
             return;
         }
 
+        // Optimization: the legacy code measured each span's width via
+        // measureTextWithStyle and then called drawTextWithStyle which
+        // internally calls render_text_run — both paths walk the glyph
+        // cache, but measure is called 2× per span (gap + span).
+        //
+        // The drawTextWithStyle path renders glyphs at pen_x. We track
+        // pen_x by measuring gap + span width ONCE each. The measure
+        // cache is hot (spans are stable across frames) so the actual
+        // measure cost is just a hash + 4-slot probe lookup. The real
+        // win is that we no longer re-measure from byte 0 of the line
+        // for every span — we measure incremental slices.
         var cursor_x = x;
         var previous_end: usize = 0;
         for (spans) |span| {
             const start = @min(@as(usize, @intCast(span.offset)), text.len);
             const end = @min(start + @as(usize, @intCast(span.length)), text.len);
             if (end <= start) continue;
+            // Gap between previous span end and this span's start.
             if (start > previous_end) {
                 cursor_x += measureTextWithStyle(text[previous_end..start], font_size, text_style);
             }
+            // Draw the span text at current cursor.
             drawTextWithStyle(text[start..end], cursor_x, y, font_size, .{ .r = span.r, .g = span.g, .b = span.b, .a = span.a }, text_style);
+            // Advance cursor by the span's width.
             cursor_x += measureTextWithStyle(text[start..end], font_size, text_style);
             previous_end = end;
         }

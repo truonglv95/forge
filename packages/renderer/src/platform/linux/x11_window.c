@@ -82,6 +82,7 @@ static int g_fallback_count = 0;
 typedef struct {
     unsigned long cp;       /* codepoint, 0 = empty slot */
     unsigned int font_size; /* pixel size */
+    unsigned int glyph_index; /* FT_Get_Char_Index result, cached for kerning */
     int bitmap_left;
     int bitmap_top;
     int advance_x;          /* in pixels (already >> 6) */
@@ -120,7 +121,7 @@ static CachedGlyph* glyph_cache_lookup(unsigned long cp, unsigned int fs) {
     return NULL;
 }
 
-static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, FT_GlyphSlot slot) {
+static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, unsigned int glyph_index, FT_GlyphSlot slot) {
     if (!g_glyph_cache_init) init_glyph_cache();
     unsigned int start = glyph_cache_hash(cp, fs);
     /* Determine if this is an LCD bitmap (width = 3x logical, pixel_mode = LCD) */
@@ -132,6 +133,7 @@ static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, FT_GlyphS
             CachedGlyph* g = &g_glyph_cache[idx];
             g->cp = cp;
             g->font_size = fs;
+            g->glyph_index = glyph_index;
             g->bitmap_left = slot->bitmap_left;
             g->bitmap_top = slot->bitmap_top;
             g->advance_x = (int)(slot->advance.x >> 6);
@@ -150,6 +152,7 @@ static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, FT_GlyphS
     CachedGlyph* g = &g_glyph_cache[idx];
     g->cp = cp;
     g->font_size = fs;
+    g->glyph_index = glyph_index;
     g->bitmap_left = slot->bitmap_left;
     g->bitmap_top = slot->bitmap_top;
     g->advance_x = (int)(slot->advance.x >> 6);
@@ -825,7 +828,18 @@ static void render_text_run(const char* text, size_t len, float x, float y, floa
     if (len == 0 || !g_face) return;
     pthread_mutex_lock(&g_ft_lock);
     unsigned int fs_px = (unsigned int)(font_size + 0.5f);
-    FT_Set_Pixel_Sizes(g_face, 0, fs_px);
+    /* Skip FT_Set_Pixel_Sizes if the size hasn't changed. FT_Set_Pixel_Sizes
+     * recomputes the face's size metrics every call — calling it on every
+     * render_text_run (one per visible text span) is expensive. Cache the
+     * last-set size and skip if unchanged. Typical frames use 1-3 distinct
+     * font sizes (editor body, gutter numbers, status bar). */
+    static unsigned int s_last_fs_px = 0;
+    static FT_Face s_last_face = NULL;
+    if (fs_px != s_last_fs_px || g_face != s_last_face) {
+        FT_Set_Pixel_Sizes(g_face, 0, fs_px);
+        s_last_fs_px = fs_px;
+        s_last_face = g_face;
+    }
     float pen_x = x;
     float pen_y = y + (g_face->size->metrics.ascender >> 6);
     FT_UInt prev_gi = 0;
@@ -840,23 +854,51 @@ static void render_text_run(const char* text, size_t len, float x, float y, floa
         else { adv = 1; }
         i += adv;
 
-        /* Font fallback: if glyph not in primary face, try fallback faces */
-        FT_UInt gi = FT_Get_Char_Index(g_face, cp);
+        /* Glyph cache lookup FIRST — avoids FT_Get_Char_Index on every
+         * character. FT_Get_Char_Index does a charmap lookup which is
+         * O(log n) in the cmap table; calling it per-character × per-frame
+         * is expensive when the glyph is already cached. The cache stores
+         * the rendered bitmap + advance, so if we hit we can skip both
+         * FT_Get_Char_Index AND FT_Load_Glyph. */
+        CachedGlyph* cg = glyph_cache_lookup(cp, fs_px);
         FT_Face draw_face = g_face;
-        if (gi == 0) {
-            /* Try fallback faces (monospace, sans-serif default) */
-            for (int fi = 0; fi < g_fallback_count; fi++) {
-                FT_UInt alt_gi = FT_Get_Char_Index(g_fallback_faces[fi], cp);
-                if (alt_gi != 0) {
-                    draw_face = g_fallback_faces[fi];
-                    gi = alt_gi;
-                    FT_Set_Pixel_Sizes(draw_face, 0, fs_px);
-                    break;
+        FT_UInt gi = 0;
+        if (cg) {
+            gi = cg->glyph_index; /* cached glyph index */
+        } else {
+            /* Cache miss — must call FT_Get_Char_Index and possibly load
+             * fallback faces. */
+            gi = FT_Get_Char_Index(g_face, cp);
+            if (gi == 0) {
+                /* Try fallback faces (monospace, sans-serif default) */
+                for (int fi = 0; fi < g_fallback_count; fi++) {
+                    FT_UInt alt_gi = FT_Get_Char_Index(g_fallback_faces[fi], cp);
+                    if (alt_gi != 0) {
+                        draw_face = g_fallback_faces[fi];
+                        gi = alt_gi;
+                        if (fs_px != s_last_fs_px || draw_face != s_last_face) {
+                            FT_Set_Pixel_Sizes(draw_face, 0, fs_px);
+                            s_last_fs_px = fs_px;
+                            s_last_face = draw_face;
+                        }
+                        break;
+                    }
                 }
             }
+            /* Load + cache the glyph. */
+            FT_Int32 load_flags = FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT;
+#if USE_LCD_SUBPIXEL
+            load_flags = FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LCD;
+#endif
+            if (FT_Load_Glyph(draw_face, gi, load_flags) == 0) {
+                cg = glyph_cache_put(cp, fs_px, gi, draw_face->glyph);
+            }
         }
+        if (!cg) continue;
 
-        /* Kerning: apply kerning delta between prev glyph and current */
+        /* Kerning: apply kerning delta between prev glyph and current.
+         * Only call FT_Get_Kerning when we have a previous glyph (saves
+         * a function call on the first character of every run). */
         if (prev_gi != 0 && FT_HAS_KERNING(draw_face)) {
             FT_Vector delta;
             if (FT_Get_Kerning(draw_face, prev_gi, gi, FT_KERNING_DEFAULT, &delta) == 0) {
@@ -865,19 +907,6 @@ static void render_text_run(const char* text, size_t len, float x, float y, floa
         }
         prev_gi = gi;
 
-        /* Glyph cache lookup — avoids FT_Load_Glyph + FT_Render_Glyph on every call */
-        CachedGlyph* cg = glyph_cache_lookup(cp, fs_px);
-        if (!cg) {
-            /* Use LCD subpixel rendering for crisper text on LCD screens.
-             * FT_LOAD_TARGET_LCD renders 3 bytes per pixel (R,G,B subpixels). */
-            FT_Int32 load_flags = FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT;
-#if USE_LCD_SUBPIXEL
-            load_flags = FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LCD;
-#endif
-            if (FT_Load_Glyph(draw_face, gi, load_flags) != 0) continue;
-            cg = glyph_cache_put(cp, fs_px, draw_face->glyph);
-            if (!cg) continue;
-        }
         /* Draw from cached bitmap — use LCD or gray renderer based on cache entry */
         if (cg->data && cg->width > 0 && cg->rows > 0) {
             FT_Bitmap tmp_bm;
@@ -920,12 +949,30 @@ void forge_backend_draw_text_len_style(const char* text, size_t len, float x, fl
 void forge_backend_draw_styled_text(const char* text, size_t len, float x, float y, float fs, const ForgeTextSpan* spans, size_t n) {
     if (!text || len == 0) return;
     if (n == 0) { forge_backend_draw_text_len(text, len, x, y, fs, 1, 1, 1, 1); return; }
+    /* Optimization: track pen position across spans instead of measuring
+     * from the start of the text for every span. The previous code called
+     * forge_backend_measure_text_width(text, spans[i].offset, fs) per span,
+     * which re-measures from byte 0 each time — O(n²) per line where n is
+     * the number of spans. For a 96-span line that's 96 full measures.
+     *
+     * New approach: advance the pen by the gap width (measured once per
+     * gap) and the span width (measured once per span). Each span now
+     * costs exactly 1 measure + 1 draw, not 2 measures + 1 draw. */
+    float pen_x = x;
+    size_t prev_end = 0;
     for (size_t i = 0; i < n; i++) {
         if (spans[i].offset >= len) continue;
         size_t end = spans[i].offset + spans[i].length; if (end > len) end = len;
         if (end <= spans[i].offset) continue;
-        float pw = forge_backend_measure_text_width(text, spans[i].offset, fs);
-        forge_backend_draw_text_len(text + spans[i].offset, end - spans[i].offset, x + pw, y, fs, spans[i].r, spans[i].g, spans[i].b, spans[i].a);
+        /* Measure gap from prev_end to this span's start. */
+        if (spans[i].offset > prev_end) {
+            pen_x += forge_backend_measure_text_width(text + prev_end, spans[i].offset - prev_end, fs);
+        }
+        /* Draw span text at current pen position. */
+        forge_backend_draw_text_len(text + spans[i].offset, end - spans[i].offset, pen_x, y, fs, spans[i].r, spans[i].g, spans[i].b, spans[i].a);
+        /* Advance pen by span width — measured once. */
+        pen_x += forge_backend_measure_text_width(text + spans[i].offset, end - spans[i].offset, fs);
+        prev_end = end;
     }
 }
 
@@ -1020,7 +1067,17 @@ float forge_backend_measure_text_width(const char* text, size_t len, float font_
     if (!text || len == 0 || !g_face) return 0.0f;
     pthread_mutex_lock(&g_ft_lock);
     unsigned int fs_px = (unsigned int)(font_size + 0.5f);
-    FT_Set_Pixel_Sizes(g_face, 0, fs_px);
+    /* Skip FT_Set_Pixel_Sizes if unchanged — same optimization as
+     * render_text_run. measure is called 2× per text span (gap + span
+     * width), so skipping the size setup saves significant CPU on
+     * text-heavy frames. */
+    static unsigned int s_last_fs_px = 0;
+    static FT_Face s_last_face = NULL;
+    if (fs_px != s_last_fs_px || g_face != s_last_face) {
+        FT_Set_Pixel_Sizes(g_face, 0, fs_px);
+        s_last_fs_px = fs_px;
+        s_last_face = g_face;
+    }
     float width = 0.0f;
     size_t i = 0;
     while (i < len) {
@@ -1290,7 +1347,7 @@ static void prewarm_glyph_cache(void) {
             load_flags = FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LCD;
 #endif
             if (FT_Load_Glyph(g_face, gi, load_flags) != 0) continue;
-            glyph_cache_put(cp, fs_px, g_face->glyph);
+            glyph_cache_put(cp, fs_px, gi, g_face->glyph);
         }
     }
     pthread_mutex_unlock(&g_ft_lock);
