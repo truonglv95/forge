@@ -37,7 +37,12 @@ pub fn contentHeight(line_count: usize, theme: *const workspace.Theme) f32 {
 pub fn maxScrollY(line_count: usize, editor_h: f32, theme: *const workspace.Theme) f32 {
     const viewport = viewportHeight(editor_h);
     const content = contentHeight(line_count, theme);
-    return @max(0, content - viewport);
+    // Allow scrolling past the last line by ~50% of viewport height.
+    // This matches VSCode behaviour where you can scroll the last line
+    // to the middle of the screen. Without this, short files (e.g. 10
+    // lines) hit the scroll limit too early and feel "stuck".
+    const overscroll = viewport * 0.5;
+    return @max(0, content - viewport + overscroll);
 }
 
 pub fn longestLineLen(buf: *const editor.Buffer) usize {
@@ -134,6 +139,8 @@ pub fn scrollToCursor(
 
 test "vertical scroll stops at last line" {
     const theme = workspace.Theme.darkDefault();
+    // 10 lines, 200px viewport — content fits, so max scroll is 0
+    // (overscroll is also 0 because content <= viewport).
     try std.testing.expectEqual(@as(f32, 0), maxScrollY(10, 200, &theme));
 }
 

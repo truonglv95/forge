@@ -141,7 +141,7 @@ pub fn runGitWithOutput(wb: *@import("../workbench.zig").Workbench, args: []cons
     return result.exit_code;
 }
 
-fn runGitAction(wb: *@import("../workbench.zig").Workbench, args: []const []const u8, action: []const u8) !void {
+pub fn runGitAction(wb: *@import("../workbench.zig").Workbench, args: []const []const u8, action: []const u8) !void {
     const exit_code = process_spawn.runWait(wb.allocator, args, .{ .cwd = wb.workspace_path }) catch |err| {
         wb.logBackgroundError(action, err);
         return err;

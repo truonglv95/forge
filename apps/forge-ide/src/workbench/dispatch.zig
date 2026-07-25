@@ -338,6 +338,23 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         },
         .git_stage_all => try @import("../workbench/git_ops.zig").stageAll(wb),
         .git_unstage_all => try @import("../workbench/git_ops.zig").unstageAll(wb),
+        .git_stash => {
+            @import("git_ops.zig").runGitAction(wb, &.{ "git", "stash" }, "Stash changes") catch |err| wb.logBackgroundError("Git stash", err);
+        },
+        .git_stash_pop => {
+            @import("git_ops.zig").runGitAction(wb, &.{ "git", "stash", "pop" }, "Pop stash") catch |err| wb.logBackgroundError("Git stash pop", err);
+        },
+        .git_create_branch => {
+            try wb.setStatus("Use branch picker to create a new branch");
+            try wb.dispatch(.palette_git_switch_branch);
+        },
+        .git_log => {
+            // Open git log in output channel
+            @import("git_ops.zig").runGitAction(wb, &.{ "git", "log", "--oneline", "-20" }, "Git log") catch |err| wb.logBackgroundError("Git log", err);
+        },
+        .git_blame => {
+            try wb.setStatus("Git blame: open the file you want to blame, then use git log for now");
+        },
         .uninstall_extension => |extension_id| {
             try plugin.marketplace.uninstall(wb.allocator, wb.io, wb.workspace_root, extension_id);
             try @import("../workbench/extensions_ops.zig").reloadExtensions(wb);

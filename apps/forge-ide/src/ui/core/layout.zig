@@ -58,11 +58,11 @@ pub fn compute(
             const editor_x = explorer_x + explorer_w;
             const agent_w = if (agent_panel_visible) agent_panel_width else 0;
             const agent_x = window_w - agent_w;
-            // Reserve scrollbar width + padding on the right side of the
-            // editor so the scrollbar is not covered by the agent panel
-            // border. Without this, the scrollbar at editor_w - 10 overlaps
-            // with the agent panel's 1px border at agent_x - 1.
-            const scrollbar_reserve: f32 = 10.0;
+            // Editor width ends at agent_x with enough room for the scrollbar
+            // AND a 4px gap between the scrollbar and the agent panel border.
+            // scrollbar is 6px wide, drawn at editor_w - 6 - 4, so we need
+            // at least 14px reserve: 6 (scrollbar) + 4 (gap) + 4 (margin).
+            const scrollbar_reserve: f32 = 14.0;
             const editor_w = @max(120.0, agent_x - editor_x - scrollbar_reserve);
             const panel_h = if (bottom_panel_visible)
                 std.math.clamp(bottom_panel_height, 80.0, @max(80.0, content_h - 80.0))

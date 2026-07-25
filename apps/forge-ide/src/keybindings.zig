@@ -83,6 +83,21 @@ pub const Registry = struct {
             .{ .key = "alt+[", .palette_id = "editor.fold_toggle" },
             .{ .key = "alt+shift+[", .palette_id = "editor.fold_all" },
             .{ .key = "alt+shift+]", .palette_id = "editor.unfold_all" },
+            // Git shortcuts (VSCode-compatible)
+            .{ .key = "ctrl+shift+g", .palette_id = "view.git" },
+            .{ .key = "cmd+shift+g", .palette_id = "git.refresh" },
+            // Editor navigation
+            .{ .key = "cmd+p", .palette_id = "file.quick_open" },
+            .{ .key = "cmd+shift+p", .palette_id = "palette.open" },
+            .{ .key = "cmd+o", .palette_id = "file.open" },
+            // View toggles
+            .{ .key = "cmd+shift+a", .palette_id = "view.toggle" },
+            .{ .key = "cmd+m", .palette_id = "view.toggle_agent_window" },
+            // Terminal
+            .{ .key = "ctrl+`", .palette_id = "view.terminal" },
+            .{ .key = "ctrl+shift+`", .palette_id = "terminal.new" },
+            .{ .key = "ctrl+shift+]", .palette_id = "terminal.next" },
+            .{ .key = "ctrl+shift+[", .palette_id = "terminal.prev" },
             // P0-2: Inline edit (Cmd+K already maps to agent.edit_selection,
             // which opens the inline_edit state when a selection is active).
             .{ .key = "enter", .palette_id = "inline_edit.submit" },
