@@ -105,7 +105,11 @@ void forge_backend_init(void) {
     wc.hInstance = GetModuleHandleW(NULL);
     wc.lpszClassName = FORGE_WINDOW_CLASS_NAME;
     wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    /* Window background — dark grey matching the framebuffer clear colour.
+     * Was BLACK_BRUSH which caused a black flash every time the WM sent
+     * a WM_ERASEBKGND message (window resize, another window moving
+     * away, etc.). */
+    wc.hbrBackground = CreateSolidBrush(RGB(30, 30, 30));
     RegisterClassW(&wc);
 }
 

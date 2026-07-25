@@ -4,6 +4,12 @@
 #include <X11/Xatom.h>
 #include <X11/keysym.h>
 #include <X11/extensions/XShm.h>
+#ifdef __has_include
+  #if __has_include(<X11/extensions/Xdbe.h>)
+    #define FORGE_HAS_XDBE 1
+    #include <X11/extensions/Xdbe.h>
+  #endif
+#endif
 #include <sys/shm.h>
 #include <sys/ipc.h>
 #include <stdio.h>
@@ -34,6 +40,11 @@
 static Display* g_display = NULL;
 static Window g_window = 0;
 static GC g_gc = NULL;
+#ifdef FORGE_HAS_XDBE
+static XdbeBackBuffer g_dbe_back_buffer = 0;
+static XdbeSwapInfo g_dbe_swap_info;
+static int g_dbe_available = 0;
+#endif
 static XImage* g_image = NULL;
 static XShmSegmentInfo g_shm_info;
 static int g_shm_attached = 0;
@@ -1136,6 +1147,20 @@ void forge_backend_create_window(const char* title, int width, int height) {
     XMapWindow(g_display, g_window);
     XFlush(g_display);
 
+    /* Initialize Xdbe double-buffering if available. This eliminates
+     * the visual gap between clearing the framebuffer and rendering
+     * content by swapping the back buffer atomically. */
+#ifdef FORGE_HAS_XDBE
+    int dbe_major, dbe_minor;
+    if (XdbeQueryExtension(g_display, &dbe_major, &dbe_minor)) {
+        g_dbe_back_buffer = XdbeAllocateBackBufferName(g_display, g_window, XdbeUndefined);
+        if (g_dbe_back_buffer) {
+            g_dbe_available = 1;
+            fprintf(stderr, "[forge] Xdbe double-buffering enabled (eliminates flicker)\n");
+        }
+    }
+#endif
+
     /* GPU mode disabled — GLX init steals X11 window rendering context,
      * breaking CPU framebuffer compositing (XPutImage). GPU mode will be
      * re-enabled when SDF text rendering fully replaces FreeType CPU path,
@@ -1181,15 +1206,38 @@ void forge_backend_run(void) {
                 forge_gpu_glx_present(g_display, (unsigned long)g_window);
             } else {
 #endif
-                /* CPU mode: always clear framebuffer for correct rendering.
-                 * Dirty region skip-clear optimization is deferred until
-                 * per-panel framebuffer retention is implemented. */
+                /* CPU mode: clear framebuffer, render, then present.
+                 * When Xdbe is available, we render to a back buffer and
+                 * swap atomically — this eliminates the visual gap between
+                 * clearing and rendering that caused the flicker.
+                 * Without Xdbe, we fall back to XPutImage directly to the
+                 * window (the window background is set to the clear colour
+                 * to minimise the visible gap). */
                 for (int i = 0; i < g_width * g_height; i++) g_pixels[i] = 0xFF1E1E1E;
                 g_clip_active = 0;
                 if (g_render_cb) g_render_cb();
-                if (g_shm_attached) { memcpy(g_image->data, g_pixels, (size_t)g_width*g_height*4); XShmPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height, False); }
-                else if (g_image) XPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height);
-                XSync(g_display, False);
+#ifdef FORGE_HAS_XDBE
+                if (g_dbe_available && g_dbe_back_buffer) {
+                    /* Copy framebuffer to back buffer, then swap.
+                     * XdbeSwapBuffers is atomic — the window never shows
+                     * a partially-rendered frame. */
+                    if (g_shm_attached) {
+                        XShmPutImage(g_display, g_dbe_back_buffer, g_gc, g_image, 0, 0, 0, 0, g_width, g_height, False);
+                    } else if (g_image) {
+                        XPutImage(g_display, g_dbe_back_buffer, g_gc, g_image, 0, 0, 0, 0, g_width, g_height);
+                    }
+                    g_dbe_swap_info.swap_window = g_window;
+                    g_dbe_swap_info.swap_action = XdbeUndefined;
+                    XdbeSwapBuffers(g_display, &g_dbe_swap_info, 1);
+                    XSync(g_display, False);
+                } else {
+#endif
+                    if (g_shm_attached) { memcpy(g_image->data, g_pixels, (size_t)g_width*g_height*4); XShmPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height, False); }
+                    else if (g_image) XPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height);
+                    XSync(g_display, False);
+#ifdef FORGE_HAS_XDBE
+                }
+#endif
 #ifdef FORGE_HAS_GLX
             }
 #endif

@@ -1169,6 +1169,17 @@ void forge_mac_create_window(const char* title, int width, int height) {
         [window setTitle:[NSString stringWithUTF8String:title]];
         [window setRestorable:NO];
         [window setReleasedWhenClosed:NO];
+        /* Set window background colour to match the Metal clear colour.
+         * Without this, the window shows the system default background
+         * (which can be white in light mode or black during transitions)
+         * when the MTKView is paused and the window needs to repaint.
+         * This causes a visible flash. Setting it to the same dark
+         * blue-grey as the clear colour makes the flash invisible. */
+        [window setBackgroundColor:[NSColor colorWithDeviceRed:0.1
+                                                          green:0.1
+                                                           blue:0.15
+                                                           alpha:1.0]];
+        [window setOpaque:NO];
         [window setCollectionBehavior:NSWindowCollectionBehaviorManaged |
                                       NSWindowCollectionBehaviorMoveToActiveSpace];
         
