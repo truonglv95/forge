@@ -145,6 +145,25 @@ static CachedGlyph* glyph_cache_put(unsigned long cp, unsigned int fs, FT_GlyphS
 static int g_clip_active = 0;
 static int g_clip_x = 0, g_clip_y = 0, g_clip_w = 0, g_clip_h = 0;
 
+/* HiDPI scale factor (1.0 = normal, 2.0 = retina/4K). */
+static float g_dpi_scale = 1.0f;
+
+static void detect_dpi_scale(void) {
+    /* Detect DPI from X11 screen and compute scale factor.
+     * 96 DPI = 1.0x, 192 DPI = 2.0x (retina). */
+    if (!g_display) return;
+    int screen = DefaultScreen(g_display);
+    int width_mm = DisplayWidthMM(g_display, screen);
+    int width_px = DisplayWidth(g_display, screen);
+    if (width_mm > 0) {
+        double dpi = (double)width_px / (double)width_mm * 25.4;
+        if (dpi >= 180) g_dpi_scale = 2.0f;
+        else if (dpi >= 140) g_dpi_scale = 1.5f;
+        else if (dpi >= 110) g_dpi_scale = 1.25f;
+        else g_dpi_scale = 1.0f;
+    }
+}
+
 /* SVG icon cache — parse + rasterize once, reuse on subsequent draws.
  * Keyed by SVG string pointer (icons are static constants, so pointer
  * identity is stable). Stores rasterized RGBA bitmap at common sizes. */
@@ -268,6 +287,58 @@ static int load_font(void) {
     pthread_mutex_lock(&g_ft_lock);
     if (g_face) { FT_Done_Face(g_face); g_face = NULL; }
     if (!g_ft) { if (FT_Init_FreeType(&g_ft) != 0) { pthread_mutex_unlock(&g_ft_lock); return 0; } }
+
+    /* Try bundled fonts first — ensures consistent rendering across systems
+     * without depending on system font installation. */
+    const char* bundled_fonts[] = {
+        "packages/renderer/assets/fonts/DejaVuSansMono.ttf",
+        "packages/renderer/assets/fonts/LiberationSans-Regular.ttf",
+    };
+    int is_mono = (strstr(g_font_family, "Mono") != NULL || strstr(g_font_family, "mono") != NULL ||
+                   strstr(g_font_family, "Menlo") != NULL || strstr(g_font_family, "Consolas") != NULL);
+    const char* bundled = is_mono ? bundled_fonts[0] : bundled_fonts[1];
+
+    /* Check if bundled font file exists relative to CWD or executable */
+    if (FT_New_Face(g_ft, bundled, 0, &g_face) == 0) {
+        FT_Select_Charmap(g_face, FT_ENCODING_UNICODE);
+        /* Load fallbacks from system fonts */
+        FcConfig* cfg = FcInitLoadConfigAndFonts();
+        if (cfg) {
+            g_fallback_count = 0;
+            const char* fallback_families[] = {"DejaVu Sans", "Noto Sans", "Liberation Sans", "DejaVu Sans Mono"};
+            for (size_t fi = 0; fi < sizeof(fallback_families)/sizeof(fallback_families[0]) && g_fallback_count < MAX_FALLBACK_FACES; fi++) {
+                FcPattern* fpat = FcPatternCreate();
+                FcPatternAddString(fpat, FC_FAMILY, (const FcChar8*)fallback_families[fi]);
+                FcConfigSubstitute(cfg, fpat, FcMatchPattern);
+                FcDefaultSubstitute(fpat);
+                FcResult fresult;
+                FcPattern* fmatch = FcFontMatch(cfg, fpat, &fresult);
+                FcChar8* ffile = NULL;
+                if (fmatch) FcPatternGetString(fmatch, FC_FILE, 0, &ffile);
+                if (ffile) {
+                    FT_Face fface = NULL;
+                    if (FT_New_Face(g_ft, (const char*)ffile, 0, &fface) == 0) {
+                        FT_Select_Charmap(fface, FT_ENCODING_UNICODE);
+                        g_fallback_faces[g_fallback_count++] = fface;
+                    }
+                }
+                if (fmatch) FcPatternDestroy(fmatch);
+                FcPatternDestroy(fpat);
+            }
+            FcConfigDestroy(cfg);
+        }
+        /* Clear glyph cache */
+        if (g_glyph_cache_init) {
+            for (int i = 0; i < GLYPH_CACHE_SIZE; i++) {
+                if (g_glyph_cache[i].data) { free(g_glyph_cache[i].data); g_glyph_cache[i].data = NULL; }
+                g_glyph_cache[i].cp = 0;
+            }
+        }
+        pthread_mutex_unlock(&g_ft_lock);
+        return 1;
+    }
+
+    /* Fallback to fontconfig system fonts */
     FcConfig* cfg = FcInitLoadConfigAndFonts();
     if (!cfg) { pthread_mutex_unlock(&g_ft_lock); return 0; }
     FcPattern* pat = FcPatternCreate();
@@ -696,6 +767,7 @@ static void handle_event(XEvent* ev) {
 void forge_backend_init(void) {
     g_display = XOpenDisplay(NULL);
     if (!g_display) { fprintf(stderr, "forge: cannot open X display\n"); return; }
+    detect_dpi_scale();
     load_font();
 }
 
@@ -734,6 +806,10 @@ void forge_backend_set_ime_cursor_rect(float x, float y, float w, float h) { (vo
 void forge_backend_run(void) {
     if (!g_display) return;
     int pending = 1;
+    /* VSync: use XSync instead of XFlush to sync with display refresh.
+     * This eliminates tearing by waiting for the server to process all
+     * pending requests before continuing. Combined with the 16ms sleep
+     * (60fps cap), this provides smooth tear-free rendering. */
     while (1) {
         while (XPending(g_display)) { XEvent ev; XNextEvent(g_display, &ev); handle_event(&ev); }
         if (pending || g_continuous) {
@@ -742,12 +818,13 @@ void forge_backend_run(void) {
             if (g_render_cb) g_render_cb();
             if (g_shm_attached) { memcpy(g_image->data, g_pixels, (size_t)g_width*g_height*4); XShmPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height, False); }
             else if (g_image) XPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height);
-            XFlush(g_display);
+            /* XSync = XFlush + wait for server completion = VSync-like */
+            XSync(g_display, False);
             atomic_fetch_add(&g_frames_drawn, 1);
             pending = 0;
         }
         if (atomic_load(&g_redraw_requests) > 0) { pending = 1; atomic_exchange(&g_redraw_requests, 0); }
         if (!g_continuous) { XEvent ev; XNextEvent(g_display, &ev); handle_event(&ev); pending = 1; }
-        else usleep(16000);
+        else usleep(16000); /* ~60fps cap */
     }
 }

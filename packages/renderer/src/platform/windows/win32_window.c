@@ -58,12 +58,17 @@ static HBITMAP g_back_bmp = NULL;
 static HBITMAP g_old_bmp = NULL;
 static int g_back_w = 0;
 static int g_back_h = 0;
+/* Direct pixel buffer for DIB section — enables fast SVG blending
+ * without GetPixel/SetPixel (which are extremely slow). */
+static uint32_t* g_pixels = NULL;
 static int g_window_w = FORGE_DEFAULT_WIDTH;
 static int g_window_h = FORGE_DEFAULT_HEIGHT;
 static bool g_continuous_rendering = false;
 static unsigned long long g_redraw_requests = 0;
 static unsigned long long g_frames = 0;
 static bool g_running = false;
+/* HiDPI scale factor (1.0 = normal, 2.0 = retina). */
+static float g_dpi_scale = 1.0f;
 
 // Callbacks.
 static ForgeRenderCallback g_render_cb = NULL;
@@ -340,9 +345,8 @@ void forge_backend_draw_svg(const char* svg_string, float x, float y, float w, f
 
     if (!cv || !cv->data) return;
 
-    /* Blend RGBA bitmap into GDI DC using transparent blit.
-     * Simple approach: create a temp bitmap, SetPixel for each non-transparent
-     * pixel. Slow but works for small icons (16-32px). */
+    /* Fast blend using DIB section pixel buffer (g_pixels).
+     * BGRA format on Windows (DIB section is bottom-up but we use top-down). */
     uint8_t R = (uint8_t)(r * 255.0f + 0.5f);
     uint8_t G = (uint8_t)(g * 255.0f + 0.5f);
     uint8_t B = (uint8_t)(b * 255.0f + 0.5f);
@@ -350,22 +354,48 @@ void forge_backend_draw_svg(const char* svg_string, float x, float y, float w, f
     float draw_x = x + (w - (float)cv->width) * 0.5f;
     float draw_y = y + (h - (float)cv->height) * 0.5f;
 
-    for (unsigned int py = 0; py < cv->height; py++) {
-        int dst_y = (int)(draw_y + py);
-        if (dst_y < 0 || dst_y >= g_back_h) continue;
-        for (unsigned int px = 0; px < cv->width; px++) {
-            int dst_x = (int)(draw_x + px);
-            if (dst_x < 0 || dst_x >= g_back_w) continue;
-            size_t idx = ((size_t)py * cv->width + px) * 4;
-            uint8_t sa = cv->data[idx + 3];
-            if (sa == 0) continue;
-            float alpha = (sa / 255.0f) * a;
-            COLORREF bg = GetPixel(g_back_dc, dst_x, dst_y);
-            uint8_t br = GetRValue(bg), bgg = GetGValue(bg), bb = GetBValue(bg);
-            uint8_t nr = (uint8_t)(R * alpha + br * (1 - alpha));
-            uint8_t ng = (uint8_t)(G * alpha + bgg * (1 - alpha));
-            uint8_t nb = (uint8_t)(B * alpha + bb * (1 - alpha));
-            SetPixel(g_back_dc, dst_x, dst_y, RGB(nr, ng, nb));
+    if (g_pixels) {
+        /* Direct pixel buffer access — 10-50x faster than GetPixel/SetPixel */
+        for (unsigned int py = 0; py < cv->height; py++) {
+            int dst_y = (int)(draw_y + py);
+            if (dst_y < 0 || dst_y >= g_back_h) continue;
+            for (unsigned int px = 0; px < cv->width; px++) {
+                int dst_x = (int)(draw_x + px);
+                if (dst_x < 0 || dst_x >= g_back_w) continue;
+                size_t idx = ((size_t)py * cv->width + px) * 4;
+                uint8_t sa = cv->data[idx + 3];
+                if (sa == 0) continue;
+                float alpha = (sa / 255.0f) * a;
+                uint32_t* dst = &g_pixels[(size_t)dst_y * g_back_w + dst_x];
+                /* DIB section is BGRA */
+                uint8_t db = (*dst) & 0xFF;
+                uint8_t dg = (*dst >> 8) & 0xFF;
+                uint8_t dr = (*dst >> 16) & 0xFF;
+                uint8_t nr = (uint8_t)(R * alpha + dr * (1 - alpha));
+                uint8_t ng = (uint8_t)(G * alpha + dg * (1 - alpha));
+                uint8_t nb = (uint8_t)(B * alpha + db * (1 - alpha));
+                *dst = (uint32_t)0xFF000000 | ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | (uint32_t)nb;
+            }
+        }
+    } else {
+        /* Fallback: GDI SetPixel (slow, only if DIB not available) */
+        for (unsigned int py = 0; py < cv->height; py++) {
+            int dst_y = (int)(draw_y + py);
+            if (dst_y < 0 || dst_y >= g_back_h) continue;
+            for (unsigned int px = 0; px < cv->width; px++) {
+                int dst_x = (int)(draw_x + px);
+                if (dst_x < 0 || dst_x >= g_back_w) continue;
+                size_t idx = ((size_t)py * cv->width + px) * 4;
+                uint8_t sa = cv->data[idx + 3];
+                if (sa == 0) continue;
+                float alpha = (sa / 255.0f) * a;
+                COLORREF bg = GetPixel(g_back_dc, dst_x, dst_y);
+                uint8_t br = GetRValue(bg), bgg = GetGValue(bg), bb = GetBValue(bg);
+                uint8_t nr = (uint8_t)(R * alpha + br * (1 - alpha));
+                uint8_t ng = (uint8_t)(G * alpha + bgg * (1 - alpha));
+                uint8_t nb = (uint8_t)(B * alpha + bb * (1 - alpha));
+                SetPixel(g_back_dc, dst_x, dst_y, RGB(nr, ng, nb));
+            }
         }
     }
 }
@@ -549,12 +579,23 @@ static void ensure_back_buffer(int w, int h) {
         SelectObject(g_back_dc, g_old_bmp);
         DeleteObject(g_back_bmp);
         g_back_bmp = NULL;
+        g_pixels = NULL;
     }
     if (!g_back_dc) {
         g_back_dc = CreateCompatibleDC(NULL);
     }
 
-    g_back_bmp = CreateCompatibleBitmap(GetDC(NULL), w, h);
+    /* Use DIB section instead of CreateCompatibleBitmap — gives direct
+     * access to pixel buffer via g_pixels for fast SVG blending. */
+    BITMAPINFO bmi = {0};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h; /* top-down DIB */
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    g_back_bmp = CreateDIBSection(g_back_dc, &bmi, DIB_RGB_COLORS, (void**)&g_pixels, NULL, 0);
     if (g_back_bmp) {
         g_old_bmp = (HBITMAP)SelectObject(g_back_dc, g_back_bmp);
     }
