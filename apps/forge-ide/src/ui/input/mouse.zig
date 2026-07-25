@@ -522,7 +522,17 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 tabs_ui.collectLayouts(wb, geo.editor_x, geo.editor_w, &tab_layouts) catch |err| shared.reportInputError(wb, "Collect tab layouts", err);
                 switch (tabs_ui.hitTest(tab_layouts.items, event.x, event.y)) {
                     .close => |index| dispatchClick(wb, .{ .close_tab = index }, "Close tab"),
-                    .activate => |index| dispatchClick(wb, .{ .activate_tab = index }, "Activate tab"),
+                    .activate => |index| {
+                        dispatchClick(wb, .{ .activate_tab = index }, "Activate tab");
+                        // Begin potential tab drag — only kicks in if user
+                        // actually drags the mouse (not just clicks). The
+                        // drag handler in the .drag branch updates
+                        // tab_drag_target based on the current mouse X.
+                        state.tab_drag_source = index;
+                        state.tab_drag_target = index;
+                        state.tab_drag_start_x = event.x;
+                        state.tab_drag_start_y = event.y;
+                    },
                     .none => {},
                 }
             }
@@ -712,7 +722,58 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 if (!doc.buffer.hasSelection()) doc.buffer.clearSelection();
             }
         }
+        // Tab drag release — if user dragged a tab to a different position,
+        // reorder the tab list. We swap the source tab with the target
+        // position, then update the active index so the dragged tab stays
+        // focused (matches VSCode/Cursor behaviour).
+        if (state.tab_drag_source) |src| {
+            if (state.tab_drag_target) |tgt| {
+                if (src != tgt) {
+                    if (src < wb.editor.tabs.tabs.items.len and tgt < wb.editor.tabs.tabs.items.len) {
+                        // Swap the documents at src and tgt.
+                        const tmp = wb.editor.tabs.tabs.items[src];
+                        wb.editor.tabs.tabs.items[src] = wb.editor.tabs.tabs.items[tgt];
+                        wb.editor.tabs.tabs.items[tgt] = tmp;
+                        // Update active index so the dragged tab stays focused.
+                        if (wb.editor.tabs.active == src) {
+                            wb.editor.tabs.active = tgt;
+                        } else if (wb.editor.tabs.active == tgt) {
+                            wb.editor.tabs.active = src;
+                        }
+                    }
+                }
+            }
+            state.tab_drag_source = null;
+            state.tab_drag_target = null;
+            renderer.Renderer.requestRedraw();
+        }
     } else if (event.action == .drag) {
+        // Tab drag: if user is holding down on a tab and moves the mouse
+        // horizontally by more than a few pixels, treat it as a tab reorder
+        // drag. Update tab_drag_target so the renderer can show the drop
+        // indicator. The actual reorder happens on button release (below).
+        if (state.tab_drag_source) |_| {
+            const dx = @abs(event.x - state.tab_drag_start_x);
+            const dy = @abs(event.y - state.tab_drag_start_y);
+            // Only consider it a drag if movement is mostly horizontal
+            // and exceeds the small-click threshold. This avoids hijacking
+            // normal clicks that have a tiny bit of mouse jitter.
+            if (dx > 4 and dx > dy) {
+                var tab_layouts: std.ArrayList(tabs_ui.TabLayout) = .empty;
+                defer tab_layouts.deinit(state.gpa);
+                tabs_ui.collectLayouts(wb, geo.editor_x, geo.editor_w, &tab_layouts) catch {};
+                // Find which tab the mouse is currently over.
+                var new_target: ?usize = null;
+                for (tab_layouts.items) |tl| {
+                    if (event.x >= tl.x and event.x < tl.x + tl.width) {
+                        new_target = tl.index;
+                        break;
+                    }
+                }
+                state.tab_drag_target = new_target;
+                renderer.Renderer.requestRedraw();
+            }
+        }
         if (state.is_dragging_agent_splitter) {
             wb.agent_panel_width = w - event.x;
             wb.agent_panel_width = @max(200.0, @min(800.0, wb.agent_panel_width));

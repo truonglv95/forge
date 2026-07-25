@@ -114,6 +114,16 @@ pub var last_mouse_x: f32 = 0;
 pub var last_mouse_y: f32 = 0;
 pub var explorer_hover_row: ?usize = null;
 
+// Tab drag state — set when the user clicks and drags a tab to reorder it.
+// drag_source_index is the tab being dragged; drag_target_index is the
+// insertion target (where the tab would land if released now). -1 means
+// no drag in progress. The renderer reads these to draw the drag handle
+// indicator on the target tab.
+pub var tab_drag_source: ?usize = null;
+pub var tab_drag_target: ?usize = null;
+pub var tab_drag_start_x: f32 = 0;
+pub var tab_drag_start_y: f32 = 0;
+
 pub const StatusBridge = struct {
     pub fn setStatus(message: []const u8) void {
         const workbench = wb orelse return;

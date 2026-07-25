@@ -48,6 +48,17 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
             state.last_mouse_y >= tabs_ui.tab_y and
             state.last_mouse_y < tabs_ui.tab_y + tabs_ui.tab_height;
 
+        // Tab drag indicator — if this tab is the drop target of an active
+        // drag, draw a vertical accent bar at its left edge so the user
+        // sees where the dragged tab will land.
+        const is_drag_target = if (state.tab_drag_target) |t|
+            t == tab_index and t != state.tab_drag_source
+        else
+            false;
+        if (is_drag_target) {
+            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, 2, tabs_ui.tab_height, accent);
+        }
+
         if (is_active) {
             // Active tab background — matches editor bg
             renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, tabs_ui.tab_height + 1, syntax.color(theme.colors.editor_bg));
