@@ -127,7 +127,7 @@ pub fn clampExtensionsScroll(wb: anytype, window_h: f32) void {
 pub fn clampSearchScroll(wb: anytype, window_h: f32) void {
     const scroll = @import("../ui/sidebar/search_panel.zig");
     const count = if (wb.search.results) |results| results.matches.len else 0;
-    wb.search.scroll_y = scroll.clampScrollY(wb.search.scroll_y, count, window_h);
+    wb.search.scroll_y = scroll.clampScrollY(wb.search.scroll_y, count, window_h, false);
 }
 
 pub fn clampGitScroll(wb: anytype, window_h: f32) void {

@@ -253,8 +253,13 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 event.x,
                 event.y,
                 wb.search.scroll_y,
+                wb.search_show_replace,
             )) |hit| {
-                @import("../../workbench/search_ops.zig").handleSearchClick(wb, hit) catch |err| shared.reportInputError(wb, "Handle search click", err);
+                switch (hit) {
+                    .toggle_replace => wb.search_show_replace = !wb.search_show_replace,
+                    .replace_all => wb.dispatch(.workspace_replace_all) catch |err| shared.reportInputError(wb, "Replace all", err),
+                    else => @import("../../workbench/search_ops.zig").handleSearchClick(wb, hit) catch |err| shared.reportInputError(wb, "Handle search click", err),
+                }
             }
         } else if (geo.shell_mode == .ide and wb.sidebar_view == .git and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= layout.header_height + layout.activity_bar_height) {
             wb.focused_panel = .git;

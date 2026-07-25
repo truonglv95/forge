@@ -361,9 +361,6 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             try wb.fileQuickOpen();
         },
         .workspace_replace_all => {
-            // Replace all occurrences of search query in all files that
-            // have search matches. Uses the search results to find files,
-            // then reads each file, does string replacement, and writes back.
             const search_results = wb.search.results orelse {
                 try wb.setStatus("No search results to replace in");
                 return;
@@ -379,17 +376,18 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             defer wb.search_buffer.allocator.free(query);
             if (query.len == 0) return;
 
-            // Collect unique file paths from search results
+            const replacement = wb.search_replace_buffer.content() catch "";
+            defer wb.search_replace_buffer.allocator.free(replacement);
+
             var replaced_count: usize = 0;
             var current_file: ?[]const u8 = null;
             for (search_results.matches) |match| {
                 if (current_file == null or !std.mem.eql(u8, current_file.?, match.path)) {
                     current_file = match.path;
-                    // Read, replace, write back for this file
                     const wp = workspace.WorkspacePath.parse(match.path) catch continue;
                     var snap = workspace.snapshot.FileSnapshot.read(wb.allocator, wb.io, wb.workspace_root, wp) catch continue;
                     defer snap.deinit();
-                    const new_content = std.mem.replaceOwned(u8, wb.allocator, snap.content, query, "") catch continue;
+                    const new_content = std.mem.replaceOwned(u8, wb.allocator, snap.content, query, replacement) catch continue;
                     defer wb.allocator.free(new_content);
                     workspace.atomic.replaceFile(wb.io, wb.workspace_root, wp, new_content) catch continue;
                     replaced_count += 1;
@@ -398,8 +396,92 @@ pub fn dispatch(wb: anytype, command: Command) !void {
             var status_buf: [128]u8 = undefined;
             const status = std.fmt.bufPrint(&status_buf, "Replaced in {d} file(s)", .{replaced_count}) catch "Replace done";
             try wb.setStatus(status);
-            // Re-run search to update results
             try wb.dispatch(.search_run);
+        },
+        .diff_open => |path| {
+            // Open a diff view for the given file path. Uses the git-diff://
+            // protocol prefix that the editor already handles for diff display.
+            const diff_path = if (path.len > 0) path else blk: {
+                if (wb.activeFilePath()) |active| break :blk active;
+                try wb.setStatus("No active file to diff");
+                return;
+            };
+            var diff_buf: [512]u8 = undefined;
+            const diff_uri = std.fmt.bufPrint(&diff_buf, "git-diff://{s}", .{diff_path}) catch {
+                try wb.setStatus("Path too long for diff view");
+                return;
+            };
+            try wb.dispatch(.{ .open_file = diff_uri });
+        },
+        .snippet_insert => |snippet_text| {
+            if (wb.activeBuffer()) |buf| {
+                buf.insertString(snippet_text) catch {
+                    try wb.setStatus("Failed to insert snippet");
+                };
+            }
+        },
+        .profile_save => {
+            // Save current layout (open tabs, scroll positions, sidebar width,
+            // bottom panel height, etc.) to .forge/profile.toml
+            const profile_content = try std.fmt.allocPrint(wb.allocator,
+                \\[layout]
+                \\sidebar_width = {d}
+                \\bottom_panel_height = {d}
+                \\editor_split = {}
+                \\sidebar_visible = {}
+                \\bottom_panel_visible = {}
+                \\agent_panel_visible = {}
+                \\sidebar_view = "{s}"
+                \\bottom_panel_mode = "{s}"
+                \\
+            , .{
+                wb.sidebar_width,
+                wb.bottom_panel_height,
+                wb.editor_split,
+                wb.sidebar_visible,
+                wb.bottom_panel_visible,
+                wb.agent_panel_visible,
+                @tagName(wb.sidebar_view),
+                @tagName(wb.bottom_panel_mode),
+            });
+            defer wb.allocator.free(profile_content);
+            const wp = try workspace.WorkspacePath.parse(".forge/profile.toml");
+            try workspace.atomic.replaceFile(wb.io, wb.workspace_root, wp, profile_content);
+            try wb.setStatus("Layout saved to .forge/profile.toml");
+        },
+        .profile_load => {
+            // Load layout from .forge/profile.toml
+            const wp = workspace.WorkspacePath.parse(".forge/profile.toml") catch {
+                try wb.setStatus("No profile found");
+                return;
+            };
+            var snap = workspace.snapshot.FileSnapshot.read(wb.allocator, wb.io, wb.workspace_root, wp) catch {
+                try wb.setStatus("No profile found");
+                return;
+            };
+            defer snap.deinit();
+            // Simple TOML parse for our profile keys
+            var lines = std.mem.splitScalar(u8, snap.content, '\n');
+            while (lines.next()) |line| {
+                const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+                if (std.mem.startsWith(u8, trimmed, "sidebar_width = ")) {
+                    const val = trimmed["sidebar_width = ".len..];
+                    wb.sidebar_width = std.fmt.parseFloat(f32, val) catch wb.sidebar_width;
+                } else if (std.mem.startsWith(u8, trimmed, "bottom_panel_height = ")) {
+                    const val = trimmed["bottom_panel_height = ".len..];
+                    wb.bottom_panel_height = std.fmt.parseFloat(f32, val) catch wb.bottom_panel_height;
+                } else if (std.mem.startsWith(u8, trimmed, "sidebar_visible = ")) {
+                    const val = trimmed["sidebar_visible = ".len..];
+                    wb.sidebar_visible = std.mem.eql(u8, val, "true");
+                } else if (std.mem.startsWith(u8, trimmed, "bottom_panel_visible = ")) {
+                    const val = trimmed["bottom_panel_visible = ".len..];
+                    wb.bottom_panel_visible = std.mem.eql(u8, val, "true");
+                } else if (std.mem.startsWith(u8, trimmed, "agent_panel_visible = ")) {
+                    const val = trimmed["agent_panel_visible = ".len..];
+                    wb.agent_panel_visible = std.mem.eql(u8, val, "true");
+                }
+            }
+            try wb.setStatus("Layout loaded from .forge/profile.toml");
         },
         .uninstall_extension => |extension_id| {
             try plugin.marketplace.uninstall(wb.allocator, wb.io, wb.workspace_root, extension_id);

@@ -134,6 +134,8 @@ pub fn flushSearchResults(wb: *@import("../workbench.zig").Workbench) !bool {
 pub fn handleSearchClick(wb: anytype, hit: @import("../ui/sidebar/search_panel.zig").Hit) !void {
     switch (hit) {
         .run_search => try wb.dispatch(.search_run),
+        .toggle_replace => wb.search_show_replace = !wb.search_show_replace,
+        .replace_all => try wb.dispatch(.workspace_replace_all),
         .open_result => |index| {
             const results = wb.search.results orelse return;
             if (index >= results.matches.len) return;

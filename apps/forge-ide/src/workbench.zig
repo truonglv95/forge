@@ -124,6 +124,8 @@ pub const Workbench = struct {
     extensions_detail_index: ?usize = null,
     bottom_panel_mode: commands_mod.BottomPanelMode = .output,
     search_buffer: editor.Buffer,
+    search_replace_buffer: editor.Buffer,
+    search_show_replace: bool = false,
     search: SearchController = .{},
     sync_icon_angle: f32 = 0,
     run_scroll_y: f32 = 0,
@@ -390,6 +392,7 @@ pub const Workbench = struct {
             .scope_picker_filtered = .empty,
             .rename_buffer = try editor.Buffer.init(allocator),
             .search_buffer = try editor.Buffer.init(allocator),
+            .search_replace_buffer = try editor.Buffer.init(allocator),
             .find_bar = try editor_find_mod.FindBar.init(allocator),
             .goto_bar = try editor_find_mod.GotoBar.init(allocator),
             .rename_bar = try editor_find_mod.RenameBar.init(allocator),
@@ -549,6 +552,7 @@ pub const Workbench = struct {
         self.chat_layout.deinit(self.allocator);
         self.rename_buffer.deinit();
         self.search_buffer.deinit();
+        self.search_replace_buffer.deinit();
         self.search.deinit();
         if (self.git_initialized) self.git.deinit(self.allocator);
         recent_workspaces_mod.freePaths(self.allocator, self.recent_workspace_paths);

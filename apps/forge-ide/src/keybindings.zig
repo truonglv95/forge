@@ -96,6 +96,10 @@ pub const Registry = struct {
             .{ .key = "ctrl+shift+`", .palette_id = "terminal.new" },
             .{ .key = "ctrl+shift+]", .palette_id = "terminal.next" },
             .{ .key = "ctrl+shift+[", .palette_id = "terminal.prev" },
+            // Profile save/load
+            .{ .key = "cmd+shift+s", .palette_id = "profile.save" },
+            // Diff view
+            .{ .key = "cmd+shift+d", .palette_id = "diff.open" },
             // P0-2: Inline edit (Cmd+K already maps to agent.edit_selection,
             // which opens the inline_edit state when a selection is active).
             .{ .key = "enter", .palette_id = "inline_edit.submit" },
