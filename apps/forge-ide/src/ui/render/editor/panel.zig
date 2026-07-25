@@ -26,6 +26,7 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
     const theme = &wb.theme;
     const ui_size = theme.ui_font_size;
     const border = syntax.color(theme.colors.border);
+    const accent = syntax.color(theme.colors.accent);
     renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top, editor_w, tabs_ui.tab_bar_height, syntax.color(theme.colors.tab_bar_bg));
     renderer.Renderer.drawRect(editor_x, tabs_ui.tab_bar_top + tabs_ui.tab_bar_height - 1, editor_w, 1, border);
     const visible_tab_w = @max(10, editor_w - 60);
@@ -41,13 +42,30 @@ pub fn drawEditorPanel(wb: *Workbench, editor_buf: ?*Buffer, editor_x: f32, edit
         const label = wb.tabLabel(tab_index, &label_buf);
         const is_active = tab_index == wb.editor.tabs.active;
 
+        // Check hover state for tab
+        const is_hovered = state.last_mouse_x >= tab_layout.x and
+            state.last_mouse_x < tab_layout.x + tab_layout.width and
+            state.last_mouse_y >= tabs_ui.tab_y and
+            state.last_mouse_y < tabs_ui.tab_y + tabs_ui.tab_height;
+
         if (is_active) {
-            // Draw the active tab background
+            // Active tab background — matches editor bg
             renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, tabs_ui.tab_height + 1, syntax.color(theme.colors.editor_bg));
+            // Active tab bottom indicator — accent color line
+            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y + tabs_ui.tab_height - 2, tab_layout.width, 2, accent);
+        } else if (is_hovered) {
+            // Hover state — subtle highlight
+            const hover_bg = syntax.color(theme.colors.tab_active_bg);
+            renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y, tab_layout.width, tabs_ui.tab_height, .{
+                .r = hover_bg.r,
+                .g = hover_bg.g,
+                .b = hover_bg.b,
+                .a = 0.5,
+            });
         } else {
-            // Draw a subtle left separator for inactive tabs (unless it's the first tab)
+            // Inactive tab separator
             if (tab_index > 0 and tab_index - 1 != wb.editor.tabs.active) {
-                renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y + 8, 1, tabs_ui.tab_height - 16, .{ .r = border.r, .g = border.g, .b = border.b, .a = border.a * 0.5 });
+                renderer.Renderer.drawRect(tab_layout.x, tabs_ui.tab_y + 8, 1, tabs_ui.tab_height - 16, .{ .r = border.r, .g = border.g, .b = border.b, .a = border.a * 0.4 });
             }
         }
 

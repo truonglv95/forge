@@ -12,6 +12,7 @@
 #include <stdatomic.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <math.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <fontconfig/fontconfig.h>
@@ -528,6 +529,15 @@ void forge_backend_draw_rounded_rect(float xf, float yf, float wf, float hf, flo
     }
 }
 
+/* Gamma correction lookup table — corrects alpha for sRGB display.
+ * Without gamma correction, text at small sizes looks too thin/faint.
+ * gamma 2.2: alpha_corrected = pow(alpha, 1/2.2) ≈ sqrt(alpha). */
+static float gamma_correct(float alpha) {
+    /* Approximate sRGB gamma: linear → sRGB */
+    if (alpha <= 0.0031308f) return 12.92f * alpha;
+    return 1.055f * powf(alpha, 1.0f / 2.2f) - 0.055f;
+}
+
 static void draw_glyph_bitmap(FT_Bitmap* bitmap, int dx, int dy, float r, float g, float b, float a) {
     uint8_t R = (uint8_t)(r*255), G = (uint8_t)(g*255), B = (uint8_t)(b*255);
     for (unsigned int y = 0; y < bitmap->rows; y++) {
@@ -536,6 +546,8 @@ static void draw_glyph_bitmap(FT_Bitmap* bitmap, int dx, int dy, float r, float 
             int px = dx + (int)x; if (px < 0 || px >= g_width) continue;
             uint8_t ga = bitmap->buffer[y * bitmap->pitch + x]; if (ga == 0) continue;
             float alpha = (ga / 255.0f) * a;
+            /* Apply gamma correction for smoother text rendering */
+            alpha = gamma_correct(alpha);
             uint32_t premul = ((uint32_t)(alpha*255) << 24) | ((uint32_t)(R*alpha) << 16) | ((uint32_t)(G*alpha) << 8) | (uint32_t)(B*alpha);
             put_pixel(px, py, premul);
         }
@@ -914,13 +926,13 @@ void forge_backend_create_window(const char* title, int width, int height) {
     XMapWindow(g_display, g_window);
     XFlush(g_display);
 
-    /* Try GPU init — if GLX/OpenGL is available, enable GPU rect rendering. */
+    /* GPU mode disabled — GLX init steals X11 window rendering context,
+     * breaking CPU framebuffer compositing (XPutImage). GPU mode will be
+     * re-enabled when SDF text rendering fully replaces FreeType CPU path,
+     * eliminating the need for XPutImage compositing. */
 #ifdef FORGE_HAS_GLX
     if (forge_gpu_glx_available(g_display)) {
-        if (forge_gpu_glx_init(g_display, (unsigned long)g_window)) {
-            g_gpu_mode = 1;
-            fprintf(stderr, "[forge] GPU mode enabled (GLX/OpenGL)\n");
-        }
+        fprintf(stderr, "[forge] GPU available (GLX/OpenGL) — CPU mode active (GPU deferred)\n");
     }
 #endif
 }
@@ -959,10 +971,10 @@ void forge_backend_run(void) {
                 forge_gpu_glx_present(g_display, (unsigned long)g_window);
             } else {
 #endif
-                /* CPU mode: fill framebuffer (only if dirty_full), render, present */
-                if (g_full_clear_needed) {
-                    for (int i = 0; i < g_width * g_height; i++) g_pixels[i] = 0xFF1E1E1E;
-                }
+                /* CPU mode: always clear framebuffer for correct rendering.
+                 * Dirty region skip-clear optimization is deferred until
+                 * per-panel framebuffer retention is implemented. */
+                for (int i = 0; i < g_width * g_height; i++) g_pixels[i] = 0xFF1E1E1E;
                 g_clip_active = 0;
                 if (g_render_cb) g_render_cb();
                 if (g_shm_attached) { memcpy(g_image->data, g_pixels, (size_t)g_width*g_height*4); XShmPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height, False); }
