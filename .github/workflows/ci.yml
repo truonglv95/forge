@@ -93,9 +93,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
-      - name: Configure Git line endings
-        run: git config --global core.autocrlf false
+        with:
+          eol: lf
 
       - name: Install Zig 0.16.0
         uses: mlugg/setup-zig@v2
