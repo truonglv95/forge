@@ -473,6 +473,22 @@ void forge_backend_get_window_size(float* w, float* h) {
     if (h) *h = (float)g_window_h;
 }
 
+float forge_backend_get_dpi_scale(void) {
+    /* Windows HiDPI: use GetDpiForWindow if available (Windows 10+). */
+    if (g_hwnd) {
+        UINT dpi = GetDpiForWindow(g_hwnd);
+        if (dpi > 0) return (float)dpi / 96.0f;
+    }
+    /* Fallback: system DPI */
+    HDC hdc = GetDC(NULL);
+    if (hdc) {
+        int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+        ReleaseDC(NULL, hdc);
+        if (dpi > 0) return (float)dpi / 96.0f;
+    }
+    return 1.0f;
+}
+
 void forge_backend_set_clip_rect(float x, float y, float w, float h) {
     if (!g_back_dc) return;
     g_has_clip = true;
@@ -612,6 +628,17 @@ static void ensure_back_buffer(int w, int h) {
 static void present_back_buffer(HDC hdc) {
     if (!g_back_dc) return;
     BitBlt(hdc, 0, 0, g_back_w, g_back_h, g_back_dc, 0, 0, SRCCOPY);
+    /* VSync: DwmFlush waits for the next DWM compositor refresh,
+     * eliminating tearing on Windows. Available on Vista+. */
+    HMODULE dwm = LoadLibraryA("dwmapi.dll");
+    if (dwm) {
+        typedef HRESULT(WINAPI *DwmFlushFunc)(void);
+        DwmFlushFunc dwm_flush = (DwmFlushFunc)GetProcAddress(dwm, "DwmFlush");
+        if (dwm_flush) {
+            dwm_flush();
+        }
+        FreeLibrary(dwm);
+    }
 }
 
 static int get_modifiers() {

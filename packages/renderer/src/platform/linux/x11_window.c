@@ -42,6 +42,7 @@ static int g_continuous = 0;
 
 static FT_Library g_ft = NULL;
 static FT_Face g_face = NULL;
+static FT_Face g_face_bold = NULL; /* Bold variant for headings/UI emphasis */
 static pthread_mutex_t g_ft_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_font_family[256] = "sans-serif";
 static int g_font_weight = 0;
@@ -294,13 +295,22 @@ static int load_font(void) {
         "packages/renderer/assets/fonts/DejaVuSansMono.ttf",
         "packages/renderer/assets/fonts/LiberationSans-Regular.ttf",
     };
+    const char* bundled_bold_fonts[] = {
+        "packages/renderer/assets/fonts/DejaVuSansMono-Bold.ttf",
+        "packages/renderer/assets/fonts/LiberationSans-Bold.ttf",
+    };
     int is_mono = (strstr(g_font_family, "Mono") != NULL || strstr(g_font_family, "mono") != NULL ||
                    strstr(g_font_family, "Menlo") != NULL || strstr(g_font_family, "Consolas") != NULL);
     const char* bundled = is_mono ? bundled_fonts[0] : bundled_fonts[1];
+    const char* bundled_bold = is_mono ? bundled_bold_fonts[0] : bundled_bold_fonts[1];
 
     /* Check if bundled font file exists relative to CWD or executable */
     if (FT_New_Face(g_ft, bundled, 0, &g_face) == 0) {
         FT_Select_Charmap(g_face, FT_ENCODING_UNICODE);
+        /* Load bold variant for font weight support */
+        if (g_face_bold) { FT_Done_Face(g_face_bold); g_face_bold = NULL; }
+        FT_New_Face(g_ft, bundled_bold, 0, &g_face_bold);
+        if (g_face_bold) FT_Select_Charmap(g_face_bold, FT_ENCODING_UNICODE);
         /* Load fallbacks from system fonts */
         FcConfig* cfg = FcInitLoadConfigAndFonts();
         if (cfg) {
@@ -420,6 +430,22 @@ static void put_pixel(int x, int y, uint32_t premul_bgra) {
 
 void forge_backend_draw_rect(float xf, float yf, float wf, float hf, float r, float g, float b, float a) {
     if (a <= 0.0f) return;
+    /* Fast path: opaque fill — use memset for maximum speed */
+    if (a >= 0.999f) {
+        int x0 = (int)xf; if (x0 < 0) x0 = 0;
+        int y0 = (int)yf; if (y0 < 0) y0 = 0;
+        int x1 = (int)(xf + wf); if (x1 > g_width) x1 = g_width;
+        int y1 = (int)(yf + hf); if (y1 > g_height) y1 = g_height;
+        if (x0 >= x1 || y0 >= y1) return;
+        uint32_t color = ((uint32_t)255 << 24) | ((uint32_t)(r*255+0.5f) << 16) | ((uint32_t)(g*255+0.5f) << 8) | (uint32_t)(b*255+0.5f);
+        for (int y = y0; y < y1; y++) {
+            uint32_t* row = &g_pixels[(size_t)y * g_width + x0];
+            int count = x1 - x0;
+            /* Use 32-bit fill instead of per-pixel blend */
+            for (int x = 0; x < count; x++) row[x] = color;
+        }
+        return;
+    }
     int x0 = (int)xf, y0 = (int)yf;
     int x1 = (int)(xf + wf), y1 = (int)(yf + hf);
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
@@ -584,8 +610,17 @@ void forge_backend_draw_text_len(const char* text, size_t len, float x, float y,
 
 void forge_backend_draw_text_len_style(const char* text, size_t len, float x, float y, float fs, int role, int weight, float r, float g, float b, float a) {
     (void)role;
-    (void)weight;
-    forge_backend_draw_text_len(text, len, x, y, fs, r, g, b, a);
+    /* weight: 0=regular, 1=medium, 2=semibold, 3=bold.
+     * Use bold face for weight >= 2 if available. */
+    if (weight >= 2 && g_face_bold) {
+        /* Swap primary face to bold temporarily for this render */
+        FT_Face saved = g_face;
+        g_face = g_face_bold;
+        render_text_run(text, len, x, y, fs, r, g, b, a);
+        g_face = saved;
+    } else {
+        forge_backend_draw_text_len(text, len, x, y, fs, r, g, b, a);
+    }
 }
 
 void forge_backend_draw_styled_text(const char* text, size_t len, float x, float y, float fs, const ForgeTextSpan* spans, size_t n) {
@@ -729,6 +764,7 @@ void forge_backend_get_font_metrics(float fs, float* cw, float* lh, float* bl) {
 }
 
 void forge_backend_get_window_size(float* w, float* h) { if (w) *w = (float)g_width; if (h) *h = (float)g_height; }
+float forge_backend_get_dpi_scale(void) { return g_dpi_scale; }
 void forge_backend_set_clip_rect(float x, float y, float w, float h) {
     g_clip_x = (int)x; g_clip_y = (int)y; g_clip_w = (int)w; g_clip_h = (int)h;
     if (g_clip_x < 0) { g_clip_w += g_clip_x; g_clip_x = 0; }

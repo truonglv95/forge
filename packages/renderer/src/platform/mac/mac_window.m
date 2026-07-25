@@ -1649,6 +1649,18 @@ void forge_mac_get_window_size(float* w, float* h) {
     }
 }
 
+float forge_mac_get_dpi_scale(void) {
+    if (g_mainWindow) {
+        return (float)[g_mainWindow backingScaleFactor];
+    }
+    /* Fallback: check main screen backingScaleFactor */
+    NSScreen *screen = [NSScreen mainScreen];
+    if (screen) {
+        return (float)[screen backingScaleFactor];
+    }
+    return 1.0f;
+}
+
 void forge_mac_set_clipboard_text(const char* text, size_t len) {
     if (!text || len == 0) return;
     @autoreleasepool {

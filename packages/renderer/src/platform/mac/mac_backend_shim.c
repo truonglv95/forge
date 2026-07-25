@@ -27,6 +27,7 @@ void forge_mac_get_font_metrics(float fs, float* cw, float* lh, float* bl);
 float forge_mac_measure_text_width(const char* text, size_t len, float fs);
 float forge_mac_measure_text_width_style(const char* text, size_t len, float fs, int role, int weight);
 void forge_mac_get_window_size(float* w, float* h);
+float forge_mac_get_dpi_scale(void);
 void forge_mac_set_clip_rect(float x, float y, float w, float h);
 void forge_mac_clear_clip_rect(void);
 void forge_mac_flush_batch(void);
@@ -59,6 +60,7 @@ void forge_backend_get_font_metrics(float fs, float* cw, float* lh, float* bl) {
 float forge_backend_measure_text_width(const char* t, size_t l, float fs) { return forge_mac_measure_text_width(t, l, fs); }
 float forge_backend_measure_text_width_style(const char* t, size_t l, float fs, int role, int weight) { return forge_mac_measure_text_width_style(t, l, fs, role, weight); }
 void forge_backend_get_window_size(float* w, float* h) { forge_mac_get_window_size(w, h); }
+float forge_backend_get_dpi_scale(void) { return forge_mac_get_dpi_scale(); }
 void forge_backend_set_clip_rect(float x, float y, float w, float h) { forge_mac_set_clip_rect(x, y, w, h); }
 void forge_backend_clear_clip_rect(void) { forge_mac_clear_clip_rect(); }
 void forge_backend_flush_batch(void) { forge_mac_flush_batch(); }
