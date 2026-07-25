@@ -21,6 +21,12 @@
 #define NANOSVGRAST_IMPLEMENTATION
 #include "nanosvgrast.h"
 
+/* OpenGL ES for GPU rendering mode — only available when EGL/GLES
+ * dev libs are installed. Guard with FORGE_HAS_GLES flag. */
+#ifdef FORGE_HAS_GLES
+#include <GLES3/gl3.h>
+#endif
+
 #include "../shared/backend.h"
 
 static Display* g_display = NULL;
@@ -148,6 +154,22 @@ static int g_clip_x = 0, g_clip_y = 0, g_clip_w = 0, g_clip_h = 0;
 
 /* HiDPI scale factor (1.0 = normal, 2.0 = retina/4K). */
 static float g_dpi_scale = 1.0f;
+
+/* GPU rendering mode — when enabled, rect rendering uses OpenGL ES
+ * batched draw calls instead of CPU per-pixel fill. Text and SVG
+ * rendering remain on CPU until SDF atlas is wired. */
+#ifdef FORGE_HAS_GLES
+static int g_gpu_mode = 0; /* 0=CPU, 1=GPU (OpenGL ES) */
+
+/* Forward declaration for GPU init (defined in gpu_opengl.c) */
+extern int forge_gpu_opengl_init(void* x11_display, unsigned long x11_window);
+extern void forge_gpu_opengl_draw_rect(float x, float y, float w, float h, float r, float g, float b, float a);
+extern void forge_gpu_opengl_flush(float viewport_w, float viewport_h);
+extern void forge_gpu_opengl_present(void);
+extern int forge_gpu_opengl_available(void* x11_display);
+#else
+static int g_gpu_mode = 0; /* Always CPU when GLES not available */
+#endif
 
 static void detect_dpi_scale(void) {
     /* Detect DPI from X11 screen and compute scale factor.
@@ -441,6 +463,13 @@ static void put_pixel(int x, int y, uint32_t premul_bgra) {
 
 void forge_backend_draw_rect(float xf, float yf, float wf, float hf, float r, float g, float b, float a) {
     if (a <= 0.0f) return;
+    /* GPU mode: batch rect for OpenGL ES draw call (flush at end of frame) */
+#ifdef FORGE_HAS_GLES
+    if (g_gpu_mode) {
+        forge_gpu_opengl_draw_rect(xf, yf, wf, hf, r, g, b, a);
+        return;
+    }
+#endif
     /* Fast path: opaque fill — use memset for maximum speed */
     if (a >= 0.999f) {
         int x0 = (int)xf; if (x0 < 0) x0 = 0;
@@ -859,6 +888,17 @@ void forge_backend_create_window(const char* title, int width, int height) {
     allocate_framebuffer(width, height);
     XMapWindow(g_display, g_window);
     XFlush(g_display);
+
+    /* Try GPU init — if OpenGL ES is available, enable GPU rect rendering.
+     * Text + SVG still use CPU path. GPU mode can be toggled via --gpu flag. */
+#ifdef FORGE_HAS_GLES
+    if (forge_gpu_opengl_available(g_display)) {
+        if (forge_gpu_opengl_init(g_display, (unsigned long)g_window)) {
+            g_gpu_mode = 1;
+            fprintf(stderr, "[forge] GPU mode enabled (OpenGL ES 3.0)\n");
+        }
+    }
+#endif
 }
 
 void forge_backend_set_continuous_rendering(bool enabled) { g_continuous = enabled ? 1 : 0; }
@@ -881,25 +921,36 @@ void forge_backend_set_ime_cursor_rect(float x, float y, float w, float h) { (vo
 void forge_backend_run(void) {
     if (!g_display) return;
     int pending = 1;
-    /* VSync: use XSync instead of XFlush to sync with display refresh.
-     * This eliminates tearing by waiting for the server to process all
-     * pending requests before continuing. Combined with the 16ms sleep
-     * (60fps cap), this provides smooth tear-free rendering. */
     while (1) {
         while (XPending(g_display)) { XEvent ev; XNextEvent(g_display, &ev); handle_event(&ev); }
         if (pending || g_continuous) {
-            for (int i = 0; i < g_width * g_height; i++) g_pixels[i] = 0xFF1E1E1E;
-            g_clip_active = 0;
-            if (g_render_cb) g_render_cb();
-            if (g_shm_attached) { memcpy(g_image->data, g_pixels, (size_t)g_width*g_height*4); XShmPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height, False); }
-            else if (g_image) XPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height);
-            /* XSync = XFlush + wait for server completion = VSync-like */
-            XSync(g_display, False);
+#ifdef FORGE_HAS_GLES
+            if (g_gpu_mode) {
+                /* GPU mode: render callback batches rects via OpenGL ES,
+                 * then flush + present via eglSwapBuffers (VSync built-in). */
+                glClearColor(0.118f, 0.118f, 0.137f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
+                g_clip_active = 0;
+                if (g_render_cb) g_render_cb();
+                forge_gpu_opengl_flush((float)g_width, (float)g_height);
+                forge_gpu_opengl_present();
+            } else {
+#endif
+                /* CPU mode: fill framebuffer, render callback, present via X11 */
+                for (int i = 0; i < g_width * g_height; i++) g_pixels[i] = 0xFF1E1E1E;
+                g_clip_active = 0;
+                if (g_render_cb) g_render_cb();
+                if (g_shm_attached) { memcpy(g_image->data, g_pixels, (size_t)g_width*g_height*4); XShmPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height, False); }
+                else if (g_image) XPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height);
+                XSync(g_display, False);
+#ifdef FORGE_HAS_GLES
+            }
+#endif
             atomic_fetch_add(&g_frames_drawn, 1);
             pending = 0;
         }
         if (atomic_load(&g_redraw_requests) > 0) { pending = 1; atomic_exchange(&g_redraw_requests, 0); }
         if (!g_continuous) { XEvent ev; XNextEvent(g_display, &ev); handle_event(&ev); pending = 1; }
-        else usleep(16000); /* ~60fps cap */
+        else usleep(16000);
     }
 }

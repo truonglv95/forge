@@ -124,6 +124,15 @@ pub fn build(b: *std.Build) void {
             renderer.linkSystemLibrary("Xext", .{});
             renderer.linkSystemLibrary("freetype", .{});
             renderer.linkSystemLibrary("fontconfig", .{});
+            // GPU backend (OpenGL ES) — linked when EGL/GLES dev libs are installed.
+            // Install: apt-get install libegl1-mesa-dev libgles2-mesa-dev
+            // Then uncomment:
+            // renderer.addCSourceFile(.{
+            //     .file = b.path("packages/renderer/src/gpu/gpu_opengl.c"),
+            //     .flags = &.{},
+            // });
+            // renderer.linkSystemLibrary("EGL", .{});
+            // renderer.linkSystemLibrary("GLESv2", .{});
         },
         .windows => {
             renderer.addCSourceFile(.{

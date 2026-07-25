@@ -78,11 +78,18 @@ pub fn init(backend_type: Backend) bool {
             return true;
         },
         .direct3d_11 => {
-            // Phase 3: Direct3D 11 backend
-            // Will be implemented in gpu_d3d11.c
-            current_backend = .cpu;
-            gpu_enabled = false;
-            return false;
+            // Direct3D 11 backend (Windows)
+            // gpu_d3d11.c provides forge_gpu_d3d11_init() + batched rect
+            // rendering + HLSL shaders + DXGI swap chain with VSync.
+            current_backend = .direct3d_11;
+            gpu_enabled = true;
+            capabilities.backend = .direct3d_11;
+            capabilities.max_texture_size = 16384;
+            capabilities.supports_instancing = true;
+            capabilities.supports_sdf = true;
+            capabilities.supports_compute = true;
+            capabilities.vsync_enabled = true;
+            return true;
         },
     }
 }
@@ -110,11 +117,12 @@ pub const SDFAtlas = struct {
     texture_width: u32 = 1024,
     texture_height: u32 = 1024,
     glyph_count: u32 = 0,
+    glyphs: [128]?Glyph = .{null} ** 128, // ASCII lookup table
 
     /// Glyph entry in the atlas.
     pub const Glyph = struct {
         codepoint: u32,
-        x: f32, // UV coordinates in atlas
+        x: f32,
         y: f32,
         w: f32,
         h: f32,
@@ -123,12 +131,54 @@ pub const SDFAtlas = struct {
         bearing_y: f32,
     };
 
-    /// Look up a glyph by codepoint.
+    /// Look up a glyph by codepoint (ASCII only, O(1) array lookup).
     pub fn getGlyph(self: *const SDFAtlas, cp: u32) ?Glyph {
-        _ = self;
-        _ = cp;
-        // Phase 4: implement binary search in sorted glyph array
+        if (cp < 128) return self.glyphs[cp];
         return null;
+    }
+
+    /// Load glyph metadata from JSON. The PNG texture must be uploaded
+    /// separately via the GPU backend's texture upload function.
+    pub fn loadFromJson(self: *SDFAtlas, json_data: []const u8) !void {
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, json_data, .{});
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        const atlas_w = root.object.get("atlas_width") orelse return error.InvalidFormat;
+        const atlas_h = root.object.get("atlas_height") orelse return error.InvalidFormat;
+        self.texture_width = @intCast(atlas_w.integer);
+        self.texture_height = @intCast(atlas_h.integer);
+
+        const glyphs_arr = root.object.get("glyphs") orelse return error.InvalidFormat;
+        if (glyphs_arr != .array) return error.InvalidFormat;
+
+        var count: u32 = 0;
+        for (glyphs_arr.array.items) |g| {
+            const cp_val = g.object.get("codepoint") orelse continue;
+            const cp: u32 = @intCast(cp_val.integer);
+            if (cp >= 128) continue;
+
+            const x = g.object.get("x") orelse continue;
+            const y = g.object.get("y") orelse continue;
+            const w = g.object.get("width") orelse continue;
+            const h = g.object.get("height") orelse continue;
+            const advance = g.object.get("advance") orelse continue;
+            const bx = g.object.get("bearing_x") orelse continue;
+            const by = g.object.get("bearing_y") orelse continue;
+
+            self.glyphs[cp] = Glyph{
+                .codepoint = cp,
+                .x = @as(f32, @floatFromInt(x.integer)) / @as(f32, @floatFromInt(self.texture_width)),
+                .y = @as(f32, @floatFromInt(y.integer)) / @as(f32, @floatFromInt(self.texture_height)),
+                .w = @as(f32, @floatFromInt(w.integer)) / @as(f32, @floatFromInt(self.texture_width)),
+                .h = @as(f32, @floatFromInt(h.integer)) / @as(f32, @floatFromInt(self.texture_height)),
+                .advance = @floatFromInt(advance.integer),
+                .bearing_x = @floatFromInt(bx.integer),
+                .bearing_y = @floatFromInt(by.integer),
+            };
+            count += 1;
+        }
+        self.glyph_count = count;
     }
 };
 
@@ -153,4 +203,17 @@ test "SDFAtlas defaults" {
     try std.testing.expectEqual(@as(u32, 1024), atlas.texture_width);
     try std.testing.expectEqual(@as(u32, 0), atlas.glyph_count);
     try std.testing.expect(atlas.getGlyph('A') == null);
+}
+
+test "SDFAtlas loadFromJson parses metadata" {
+    var atlas = SDFAtlas{};
+    const json =
+        \\{"atlas_width":512,"atlas_height":512,"glyph_count":1,"glyphs":[{"codepoint":65,"x":0,"y":0,"width":32,"height":40,"advance":28,"bearing_x":2,"bearing_y":38}]}
+    ;
+    try atlas.loadFromJson(json);
+    try std.testing.expectEqual(@as(u32, 512), atlas.texture_width);
+    try std.testing.expectEqual(@as(u32, 1), atlas.glyph_count);
+    const g = atlas.getGlyph('A') orelse return error.GlyphNotFound;
+    try std.testing.expectEqual(@as(u32, 65), g.codepoint);
+    try std.testing.expectEqual(@as(f32, 28.0), g.advance);
 }
