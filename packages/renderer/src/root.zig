@@ -17,6 +17,7 @@ const backend = blk: {
 
 // Legacy alias for any code still referencing mac.*
 pub const mac = backend;
+pub const backend_c = backend;
 
 pub const layout = @import("layout.zig");
 pub const theme_mod = @import("theme.zig");

@@ -156,6 +156,15 @@ static int g_clip_x = 0, g_clip_y = 0, g_clip_w = 0, g_clip_h = 0;
 /* HiDPI scale factor (1.0 = normal, 2.0 = retina/4K). */
 static float g_dpi_scale = 1.0f;
 
+/* Dirty region: when 0, skip full framebuffer clear (panels manage their
+ * own regions via clip rect). Set to 1 by Zig when any panel is dirty
+ * or on first frame. */
+static int g_full_clear_needed = 1;
+
+void forge_backend_set_full_clear(int needed) {
+    g_full_clear_needed = needed;
+}
+
 /* GPU rendering mode — when enabled, rect rendering uses GLX/OpenGL
  * batched draw calls instead of CPU per-pixel fill. */
 #ifdef FORGE_HAS_GLX
@@ -935,8 +944,10 @@ void forge_backend_run(void) {
                 forge_gpu_glx_present(g_display, (unsigned long)g_window);
             } else {
 #endif
-                /* CPU mode: fill framebuffer, render callback, present via X11 */
-                for (int i = 0; i < g_width * g_height; i++) g_pixels[i] = 0xFF1E1E1E;
+                /* CPU mode: fill framebuffer (only if dirty_full), render, present */
+                if (g_full_clear_needed) {
+                    for (int i = 0; i < g_width * g_height; i++) g_pixels[i] = 0xFF1E1E1E;
+                }
                 g_clip_active = 0;
                 if (g_render_cb) g_render_cb();
                 if (g_shm_attached) { memcpy(g_image->data, g_pixels, (size_t)g_width*g_height*4); XShmPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0, g_width, g_height, False); }

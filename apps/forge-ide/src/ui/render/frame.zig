@@ -195,6 +195,13 @@ pub fn onRenderFrame() void {
     renderer.Renderer.renderStats(&state.perf_redraw_requests, &state.perf_frames);
     chat_markdown.heightCacheStats(&state.perf_markdown_height_hits, &state.perf_markdown_height_misses);
     state.perf_agent_queue_coalesced = wb.agent_ui.ui_queue.coalescedCount();
+
+    // Tell C backend whether full framebuffer clear is needed next frame.
+    // When dirty_full is true (or first frame), clear entire framebuffer.
+    // When only specific panels are dirty, skip full clear — panels
+    // manage their own regions via clip rect + opaque fills.
+    renderer.backend_c.forge_backend_set_full_clear(if (state.dirty_full or state.first_frame) 1 else 0);
+
     state.clearDirty();
 
     const continuous = needsContinuousRendering(wb);

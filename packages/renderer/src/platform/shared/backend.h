@@ -45,6 +45,7 @@ float forge_backend_measure_text_width_style(const char* text, size_t len, float
 
 void forge_backend_get_window_size(float* w, float* h);
 float forge_backend_get_dpi_scale(void);
+void forge_backend_set_full_clear(int needed);
 void forge_backend_set_clip_rect(float x, float y, float w, float h);
 void forge_backend_clear_clip_rect(void);
 void forge_backend_flush_batch(void);
