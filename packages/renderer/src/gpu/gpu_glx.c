@@ -11,8 +11,14 @@
 
 #ifdef __linux__
 
+#define GL_GLEXT_PROTOTYPES 1
 #include <GL/glx.h>
 #include <GL/gl.h>
+#ifdef __has_include
+  #if __has_include(<GL/glext.h>)
+    #include <GL/glext.h>
+  #endif
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
