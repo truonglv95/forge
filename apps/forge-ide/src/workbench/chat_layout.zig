@@ -87,9 +87,11 @@ fn liveContentHeight(wb: anytype, content_w: f32) f32 {
         // Use the actual streaming status label so the layout reserves
         // enough vertical space when the pill wraps onto multiple lines
         // (Issue 3). Falls back to a fixed height when no label is set.
+        // Bounds-aware so the height matches what drawThinkingLineInBounds
+        // will actually produce for the current agent panel width.
         const status_label = wb.agent_ui.session.thinking_text.items;
         const label_for_height = if (status_label.len > 0) status_label else "";
-        h += chat_bubble_mod.thinkingLineHeightFor(label_for_height) + thinking_bottom_padding;
+        h += chat_bubble_mod.thinkingLineHeightForInBounds(label_for_height, chat_bubble_mod.agentTextWidth(content_w)) + thinking_bottom_padding;
     }
     if (wb.agent_ui.session.stream_text.items.len > 0) {
         // When the stream is actively growing and the layout cache is

@@ -210,7 +210,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
 
             if (stream_src.len == 0) {
                 const thinking_label = if (thinking_src.len > 0) thinking_src else snap.status_line;
-                content_y += chat_bubble.drawThinkingLine(inner_x, content_y, thinking_label, state.time);
+                content_y += chat_bubble.drawThinkingLineInBounds(inner_x, content_y, thinking_label, state.time, content_w);
             } else {
                 // Stream cache freshness check (Issue 5: streaming jank).
                 // When the cache is older than the current stream_text we

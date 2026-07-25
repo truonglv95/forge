@@ -9,24 +9,84 @@ pub fn writeTomlKey(
     key: []const u8,
     value: []const u8,
 ) !void {
-    // Try workspace .forge/settings.toml first (same as writeThemeValue).
+    // Always prefer the workspace `.forge/settings.toml` for AI settings
+    // so users get per-project configuration (different provider/model
+    // per project). The previous logic only wrote to the workspace file
+    // when the key ALREADY existed — meaning the very first time the
+    // user changed a setting it would silently fall through to the home
+    // file (~/.forge/settings.toml) and never appear in the project.
+    //
+    // New behavior:
+    //   1. Read workspace .forge/settings.toml (may not exist yet).
+    //   2. upsertTomlValue handles both edit-existing and create-new
+    //      cases (it appends a new [section] block if the section is
+    //      missing entirely).
+    //   3. Atomically replace the workspace file. Creates the file if
+    //      it doesn't exist yet.
+    //   4. Home file (~/.forge/settings.toml) is only used as a fallback
+    //      when the workspace is read-only (e.g. opened from /tmp).
     const wp = workspace.WorkspacePath.parse(".forge/settings.toml") catch return;
+
+    var workspace_content: []const u8 = "";
+    var snap_owned: ?workspace.snapshot.FileSnapshot = null;
     if (workspace.snapshot.FileSnapshot.read(allocator, io, root, wp)) |snap_const| {
-        var snap = snap_const;
-        defer snap.deinit();
-        if (@import("settings.zig").settingsContentHasKey(snap.content, section_name, key)) {
-            const updated = try @import("settings.zig").upsertTomlValue(allocator, snap.content, section_name, key, value);
-            defer allocator.free(updated);
-            try workspace.atomic.replaceFile(io, root, wp, updated);
-            return;
-        }
+        snap_owned = snap_const;
+        workspace_content = snap_owned.?.content;
     } else |_| {}
 
-    // Fallback: write to home ~/.forge/settings.toml
+    defer if (snap_owned) |*s| s.deinit();
+
+    // upsertTomlValue: if key exists → edit; if section exists but key
+    // doesn't → append key to section; if section doesn't exist → append
+    // new [section] block with the key. This handles all 3 cases.
+    const updated = @import("settings.zig").upsertTomlValue(
+        allocator,
+        workspace_content,
+        section_name,
+        key,
+        value,
+    ) catch |err| {
+        // Workspace write failed (e.g. read-only mount). Fall back to home.
+        if (err == error.WorkspaceFailed or err == error.AccessDenied) {
+            try writeTomlKeyHomeFallback(allocator, io, section_name, key, value);
+            return;
+        }
+        return err;
+    };
+    defer allocator.free(updated);
+
+    // Ensure the .forge directory exists in the workspace before writing.
+    // The first time a user opens a project and changes an AI setting,
+    // the .forge directory won't exist yet — atomic.replaceFile calls
+    // createFile which fails if the parent directory is missing.
+    // createDirPath is idempotent (no-op if the directory exists).
+    root.dir.createDirPath(io, ".forge") catch {};
+
+    workspace.atomic.replaceFile(io, root, wp, updated) catch |err| {
+        // Workspace write failed — try home as fallback.
+        if (err == error.WorkspaceFailed or err == error.AccessDenied) {
+            try writeTomlKeyHomeFallback(allocator, io, section_name, key, value);
+            return;
+        }
+        return err;
+    };
+}
+
+/// Home fallback for writeTomlKey — used only when the workspace is
+/// read-only. Reads ~/.forge/settings.toml (creating it if missing),
+/// upserts the key, and writes it back.
+fn writeTomlKeyHomeFallback(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    section_name: []const u8,
+    key: []const u8,
+    value: []const u8,
+) !void {
     const settings_abs = try workspace.global_store.joinHome(allocator, "settings.toml");
     defer allocator.free(settings_abs);
 
     const content = workspace.global_store.readAbsoluteFile(allocator, io, settings_abs) catch {
+        // File doesn't exist — create with section + key.
         const default_content = try std.fmt.allocPrint(allocator, "[{s}]\n{s} = {s}\n", .{ section_name, key, value });
         defer allocator.free(default_content);
         try workspace.global_store.replaceAbsoluteFile(io, settings_abs, default_content);

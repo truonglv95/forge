@@ -58,12 +58,18 @@ pub fn compute(
             const editor_x = explorer_x + explorer_w;
             const agent_w = if (agent_panel_visible) agent_panel_width else 0;
             const agent_x = window_w - agent_w;
-            // Editor width ends at agent_x with enough room for the scrollbar
-            // AND a 4px gap between the scrollbar and the agent panel border.
-            // scrollbar is 6px wide, drawn at editor_w - 6 - 4, so we need
-            // at least 14px reserve: 6 (scrollbar) + 4 (gap) + 4 (margin).
-            const scrollbar_reserve: f32 = 14.0;
-            const editor_w = @max(120.0, agent_x - editor_x - scrollbar_reserve);
+            // Editor panel extends ALL the way to agent_x — no scrollbar
+            // reserve gap. The editor's vertical scrollbar (6px wide) is
+            // drawn at the right edge of editor_w inside the editor panel
+            // (see viewport.zig), so it visually sits flush against the
+            // agent panel border. This eliminates the previous ~14px gap
+            // between the editor text area and the agent panel that users
+            // perceived as dead space.
+            //
+            // The scrollbar is drawn OUTSIDE the editor's content clip
+            // rect (see scrollbar.content_gap), so text never overlaps
+            // the scrollbar even though the panel extends to agent_x.
+            const editor_w = @max(120.0, agent_x - editor_x);
             const panel_h = if (bottom_panel_visible)
                 std.math.clamp(bottom_panel_height, 80.0, @max(80.0, content_h - 80.0))
             else

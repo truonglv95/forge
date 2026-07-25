@@ -355,12 +355,23 @@ pub const thinking_text_style = chat_markdown.Style{
 };
 
 pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) f32 {
+    return drawThinkingLineInBounds(inner_x, y, text, anim_time, 480.0);
+}
+
+/// Draw the thinking pill constrained to a maximum width derived from
+/// the agent panel's content width. Falls back to drawThinkingLine
+/// (480px cap) when callers don't have content_w handy.
+pub fn drawThinkingLineInBounds(inner_x: f32, y: f32, text: []const u8, anim_time: f32, content_w: f32) f32 {
     // Animated pulsing dots — three dots with phase-shifted opacity.
     // Pill width adapts to text length so longer status messages (e.g.
     // "Reading context: 12 files…") fit inside without clipping.
     // For very long status text, the pill wraps onto multiple lines and
     // grows in height so the entire label is always visible (Issue 3:
     // previously long streaming labels were truncated, hiding "Thinking…").
+    //
+    // The pill is capped at `content_w` (the agent panel's inner width)
+    // so it never overflows the panel — the previous fixed 480px cap
+    // was wider than the panel when the user shrunk the agent panel.
     const prose_style = renderer.TextStyle.prose;
     const label_font_size: f32 = 11.0;
     // Measure the actual text width rather than using a per-char estimate
@@ -372,13 +383,12 @@ pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) 
         0;
 
     // Pill layout — single-line if it fits, otherwise wrap.
-    // Cap the pill width so very long status messages wrap onto multiple
-    // lines instead of running off the right edge of the agent panel.
-    // The cap is generous (~480px) so common status messages stay on
-    // one line; only truly long streaming text wraps.
-    const max_pill_w: f32 = 480.0;
+    // Cap the pill width at the panel's content width so it never
+    // overflows the agent panel. Reserve a small right pad (8px) so the
+    // pill's rounded corner doesn't touch the panel border.
+    const max_pill_w: f32 = @max(120.0, content_w - 8.0);
     const dot_area_w: f32 = 38 + 42; // sparkle icon + 3 dots + gap before text
-    const min_pill_w: f32 = 100.0;
+    const min_pill_w: f32 = @min(100.0, max_pill_w);
     const natural_pill_w: f32 = dot_area_w + label_w + 16;
 
     var pill_w: f32 = @max(min_pill_w, @min(natural_pill_w, max_pill_w));
@@ -389,15 +399,17 @@ pub fn drawThinkingLine(inner_x: f32, y: f32, text: []const u8, anim_time: f32) 
     var line_count: usize = 1;
     if (label_w > 0 and natural_pill_w > max_pill_w) {
         const available_text_w = max_pill_w - dot_area_w - 16;
-        // Rough wrap estimate: chars-per-line proportional to width.
-        // Using measureText on full text is accurate enough for height.
-        const chars_per_line = @max(1, @as(usize, @intFromFloat(@floor(
-            @as(f32, @floatFromInt(text.len)) * available_text_w / label_w,
-        ))));
-        line_count = (text.len + chars_per_line - 1) / chars_per_line;
-        line_count = @max(1, line_count);
-        pill_h = 14.0 + @as(f32, @floatFromInt(line_count)) * 14.0;
-        pill_w = max_pill_w;
+        if (available_text_w > 8.0) {
+            // Rough wrap estimate: chars-per-line proportional to width.
+            // Using measureText on full text is accurate enough for height.
+            const chars_per_line = @max(1, @as(usize, @intFromFloat(@floor(
+                @as(f32, @floatFromInt(text.len)) * available_text_w / label_w,
+            ))));
+            line_count = (text.len + chars_per_line - 1) / chars_per_line;
+            line_count = @max(1, line_count);
+            pill_h = 14.0 + @as(f32, @floatFromInt(line_count)) * 14.0;
+            pill_w = max_pill_w;
+        }
     }
 
     // Pill background — subtle accent
@@ -476,17 +488,23 @@ pub fn thinkingLineHeight() f32 {
 
 /// Compute the height that drawThinkingLine will produce for the given
 /// text WITHOUT drawing. Used by layout passes to reserve vertical
-/// space before rendering.
+/// space before rendering. Falls back to the legacy 480px width.
 pub fn thinkingLineHeightFor(text: []const u8) f32 {
+    return thinkingLineHeightForInBounds(text, 480.0);
+}
+
+/// Bounds-aware height prediction — matches drawThinkingLineInBounds.
+pub fn thinkingLineHeightForInBounds(text: []const u8, content_w: f32) f32 {
     if (text.len == 0) return 32.0 + bubble_gap;
     const prose_style = renderer.TextStyle.prose;
     const label_font_size: f32 = 11.0;
     const label_w = renderer.Renderer.measureTextWithStyle(text, label_font_size, prose_style);
-    const max_pill_w: f32 = 480.0;
+    const max_pill_w: f32 = @max(120.0, content_w - 8.0);
     const dot_area_w: f32 = 38 + 42;
     const natural_pill_w: f32 = dot_area_w + label_w + 16;
     if (natural_pill_w <= max_pill_w) return 32.0 + bubble_gap;
     const available_text_w = max_pill_w - dot_area_w - 16;
+    if (available_text_w <= 8.0) return 32.0 + bubble_gap;
     const chars_per_line = @max(1, @as(usize, @intFromFloat(@floor(
         @as(f32, @floatFromInt(text.len)) * available_text_w / label_w,
     ))));

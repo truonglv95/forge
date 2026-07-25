@@ -68,6 +68,13 @@ pub fn drawEditorViewport(
         renderer.Renderer.drawRect(editor_x, content_top, editor_w, 2, syntax.color(theme.colors.tab_active_bg));
     }
 
+    // Fill the scrollbar gutter (the rightmost sb_reserve pixels of
+    // editor_w) with the editor background color. Without this, the
+    // gutter is transparent and shows the previous frame's content
+    // (or the desktop background) — perceived as a dead "rectangle"
+    // between the editor text and the agent panel.
+    renderer.Renderer.drawRect(editor_x + content_clip_w, content_top, sb_reserve, editor_view_h, syntax.color(theme.colors.editor_bg));
+
     renderer.Renderer.drawRect(editor_x, content_top, gutter, editor_view_h, syntax.color(theme.colors.sidebar_bg));
 
     // Current line highlight — subtle background on the active line
