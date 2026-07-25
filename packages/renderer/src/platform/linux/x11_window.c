@@ -1486,7 +1486,7 @@ void forge_backend_run(void) {
                         XPutImage(g_display, g_dbe_back_buffer, g_gc, g_image, 0, 0, 0, 0, g_width, g_height);
                     }
                     g_dbe_swap_info.swap_window = g_window;
-                    g_dbe_swap_info.swap_action = XdbeCopied;
+                    g_dbe_swap_info.swap_action = XdbeUndefined;
                     XdbeSwapBuffers(g_display, &g_dbe_swap_info, 1);
                     XSync(g_display, False);
                 } else {

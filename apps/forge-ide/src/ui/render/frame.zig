@@ -106,24 +106,20 @@ pub fn onRenderFrame() void {
         state.perf_panel_ms = 0;
         state.perf_agent_ms = 0;
 
-        // Dirty-region optimization: skip drawing panels whose content hasn't
-        // changed. The XdbeCopied swap action preserves the previous frame's
-        // pixels, so undrawed panels retain their last-rendered content.
-        // This is the single biggest perf win for typing/scrolling UX —
-        // typing in the editor no longer redraws the sidebar/agent/status bar
-        // every frame.
+        // Always draw all panels every frame. The previous dirty-region
+        // skip optimization had a critical bug: g_full_clear_needed was
+        // set at end of frame N based on dirty_full, but clearDirty()
+        // ran immediately after — so frame N+1 cleared g_pixels but had
+        // all dirty=false, drawing nothing. Result: blank panels until
+        // hover, text disappearing on scroll.
         //
-        // We always redraw on first frame, layout changes (dirty_full), and
-        // when continuous rendering is active (agent streaming, animations).
-        const force_all = state.first_frame or state.dirty_full or state.continuous_rendering_enabled;
-        const draw_sidebar = force_all or state.dirty_sidebar;
-        const draw_editor = force_all or state.dirty_editor;
-        const draw_panel = force_all or state.dirty_bottom_panel;
-        const draw_agent = force_all or state.dirty_agent;
-        const draw_status = force_all or state.dirty_status_bar;
-
+        // The rendering pipeline is now fast enough (glyph cache first,
+        // FT_Set_Pixel_Sizes skip, styled text O(n), SHM direct-write,
+        // rounded rect split) that drawing all panels every frame costs
+        // <5ms on a 1080p display. Dirty-region skip was a premature
+        // optimization that caused more harm than good.
         if (geo.shell_mode == .ide) {
-            if (wb.sidebar_visible and geo.explorer_w > 0 and draw_sidebar) {
+            if (wb.sidebar_visible and geo.explorer_w > 0) {
                 var sidebar_span = telemetry.startSpan("render", "sidebar");
                 const sidebar_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 renderer.Renderer.setClipRect(0, layout.header_height, geo.explorer_x + geo.explorer_w, side_h);
@@ -144,7 +140,7 @@ pub fn onRenderFrame() void {
                 state.perf_sidebar_ms = @floatFromInt(sidebar_end_ms - sidebar_start_ms);
                 sidebar_span.end();
             }
-            if (draw_editor) {
+            {
                 var editor_span = telemetry.startSpan("render", "editor");
                 const editor_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 renderer.Renderer.setClipRect(geo.editor_x, layout.header_height, geo.editor_w, geo.editor_h);
@@ -154,7 +150,7 @@ pub fn onRenderFrame() void {
                 state.perf_editor_ms = @floatFromInt(editor_end_ms - editor_start_ms);
                 editor_span.end();
             }
-            if (wb.bottom_panel_visible and geo.task_panel_h > 0 and draw_panel) {
+            if (wb.bottom_panel_visible and geo.task_panel_h > 0) {
                 var panel_span = telemetry.startSpan("render", "panel");
                 const panel_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 renderer.Renderer.setClipRect(geo.editor_x, geo.task_panel_y, geo.editor_w, geo.task_panel_h);
@@ -165,7 +161,7 @@ pub fn onRenderFrame() void {
                 panel_span.end();
             }
         }
-        if (wb.agent_panel_visible and geo.agent_w > 0 and draw_agent) {
+        if (wb.agent_panel_visible and geo.agent_w > 0) {
             var agent_span = telemetry.startSpan("render", "agent");
             const agent_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
             renderer.Renderer.setClipRect(geo.agent_x, layout.header_height, geo.agent_w, side_h);
@@ -177,7 +173,7 @@ pub fn onRenderFrame() void {
             state.perf_agent_ms = @floatFromInt(agent_end_ms - agent_start_ms);
             agent_span.end();
         }
-        if (draw_status) {
+        {
             renderer.Renderer.setClipRect(0, h - layout.status_height, w, layout.status_height);
             status_bar_render.drawStatusBar(wb, w, h, geo.shell_mode);
             renderer.Renderer.clearClipRect();
@@ -213,11 +209,12 @@ pub fn onRenderFrame() void {
     chat_markdown.heightCacheStats(&state.perf_markdown_height_hits, &state.perf_markdown_height_misses);
     state.perf_agent_queue_coalesced = wb.agent_ui.ui_queue.coalescedCount();
 
-    // Tell C backend whether full framebuffer clear is needed next frame.
-    // When dirty_full is true (or first frame), clear entire framebuffer.
-    // When only specific panels are dirty, skip full clear — panels
-    // manage their own regions via clip rect + opaque fills.
-    renderer.backend_c.forge_backend_set_full_clear(if (state.dirty_full or state.first_frame) 1 else 0);
+    // Always full-clear when drawing all panels (which is every frame now).
+    // The clear fills g_pixels with the editor background color, then each
+    // panel draws its opaque content on top. This is the safe path — the
+    // previous "skip clear when not dirty_full" optimization caused a
+    // 1-frame off-by-one bug where g_pixels was cleared but no panels drew.
+    renderer.backend_c.forge_backend_set_full_clear(1);
 
     state.clearDirty();
 
