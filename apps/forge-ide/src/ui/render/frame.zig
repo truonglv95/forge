@@ -107,7 +107,7 @@ pub fn onRenderFrame() void {
         state.perf_agent_ms = 0;
 
         if (geo.shell_mode == .ide) {
-            if (wb.sidebar_visible and geo.explorer_w > 0 and (state.dirty_full or state.dirty_sidebar)) {
+            if (wb.sidebar_visible and geo.explorer_w > 0) {
                 var sidebar_span = telemetry.startSpan("render", "sidebar");
                 const sidebar_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 renderer.Renderer.setClipRect(0, layout.header_height, geo.explorer_x + geo.explorer_w, side_h);
@@ -128,7 +128,7 @@ pub fn onRenderFrame() void {
                 state.perf_sidebar_ms = @floatFromInt(sidebar_end_ms - sidebar_start_ms);
                 sidebar_span.end();
             }
-            if (state.dirty_full or state.dirty_editor) {
+            {
                 var editor_span = telemetry.startSpan("render", "editor");
                 const editor_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 renderer.Renderer.setClipRect(geo.editor_x, layout.header_height, geo.editor_w, geo.editor_h);
@@ -138,7 +138,7 @@ pub fn onRenderFrame() void {
                 state.perf_editor_ms = @floatFromInt(editor_end_ms - editor_start_ms);
                 editor_span.end();
             }
-            if (wb.bottom_panel_visible and geo.task_panel_h > 0 and (state.dirty_full or state.dirty_bottom_panel)) {
+            if (wb.bottom_panel_visible and geo.task_panel_h > 0) {
                 var panel_span = telemetry.startSpan("render", "panel");
                 const panel_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
                 renderer.Renderer.setClipRect(geo.editor_x, geo.task_panel_y, geo.editor_w, geo.task_panel_h);
@@ -149,7 +149,7 @@ pub fn onRenderFrame() void {
                 panel_span.end();
             }
         }
-        if (wb.agent_panel_visible and geo.agent_w > 0 and (state.dirty_full or state.dirty_agent)) {
+        if (wb.agent_panel_visible and geo.agent_w > 0) {
             var agent_span = telemetry.startSpan("render", "agent");
             const agent_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
             renderer.Renderer.setClipRect(geo.agent_x, layout.header_height, geo.agent_w, side_h);
@@ -161,7 +161,7 @@ pub fn onRenderFrame() void {
             state.perf_agent_ms = @floatFromInt(agent_end_ms - agent_start_ms);
             agent_span.end();
         }
-        if (state.dirty_full or state.dirty_status_bar) {
+        {
             renderer.Renderer.setClipRect(0, h - layout.status_height, w, layout.status_height);
             status_bar_render.drawStatusBar(wb, w, h, geo.shell_mode);
             renderer.Renderer.clearClipRect();
