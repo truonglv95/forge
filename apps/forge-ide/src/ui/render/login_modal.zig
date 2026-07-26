@@ -37,6 +37,7 @@ pub fn drawLoginModal(wb: *Workbench, w: f32, h: f32) void {
     renderer.Renderer.drawRoundedRect(box_x + 24, box_y + 108, box_w - 48, 34, 6, .{ .r = 0.08, .g = 0.09, .b = 0.12, .a = 1.0 });
     // Email input text.
     const email_text = wb.login_email_buffer.content() catch "";
+    const email_text_w = if (email_text.len > 0) renderer.Renderer.measureText(email_text, 14.0) else 0.0;
     if (email_text.len > 0) {
         var email_buf: [256:0]u8 = undefined;
         const n = @min(email_text.len, 255);
@@ -46,9 +47,9 @@ pub fn drawLoginModal(wb: *Workbench, w: f32, h: f32) void {
     } else {
         renderer.Renderer.drawText("you@example.com", box_x + 34, box_y + 116, 14.0, .{ .r = 0.4, .g = 0.42, .b = 0.48, .a = 1.0 });
     }
-    // Cursor on email field if focused.
+    // Cursor on email field if focused — use measureText for accurate position.
     if (wb.login_focused_field == 0) {
-        const cursor_x = box_x + 34 + @as(f32, @floatFromInt(email_text.len)) * 8.0;
+        const cursor_x = box_x + 34 + email_text_w;
         const blink = @mod(state.time, 1.0) < 0.5;
         if (blink) {
             renderer.Renderer.drawRect(cursor_x, box_y + 114, 2, 20, .{ .r = 0.4, .g = 0.7, .b = 1.0, .a = 0.8 });
@@ -60,17 +61,21 @@ pub fn drawLoginModal(wb: *Workbench, w: f32, h: f32) void {
     renderer.Renderer.drawRoundedRect(box_x + 24, box_y + 176, box_w - 48, 34, 6, .{ .r = 0.08, .g = 0.09, .b = 0.12, .a = 1.0 });
     // Password input (show dots).
     const pass_text = wb.login_password_buffer.content() catch "";
+    // Measure dots width: each '*' is same width, use measureText on the dots string.
+    var pass_display_w: f32 = 0;
     if (pass_text.len > 0) {
         var dots_buf: [128:0]u8 = undefined;
         const n = @min(pass_text.len, 127);
         @memset(dots_buf[0..n], '*');
         dots_buf[n] = 0;
+        const dots_slice: []const u8 = dots_buf[0..n];
+        pass_display_w = renderer.Renderer.measureText(dots_slice, 14.0);
         renderer.Renderer.drawText(@ptrCast(&dots_buf), box_x + 34, box_y + 184, 14.0, .{ .r = 0.9, .g = 0.9, .b = 0.95, .a = 1.0 });
     } else {
         renderer.Renderer.drawText("••••••••", box_x + 34, box_y + 184, 14.0, .{ .r = 0.4, .g = 0.42, .b = 0.48, .a = 1.0 });
     }
     if (wb.login_focused_field == 1) {
-        const cursor_x = box_x + 34 + @as(f32, @floatFromInt(pass_text.len)) * 8.0;
+        const cursor_x = box_x + 34 + pass_display_w;
         const blink = @mod(state.time, 1.0) < 0.5;
         if (blink) {
             renderer.Renderer.drawRect(cursor_x, box_y + 182, 2, 20, .{ .r = 0.4, .g = 0.7, .b = 1.0, .a = 0.8 });
