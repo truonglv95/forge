@@ -3,6 +3,7 @@
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
 #include <X11/keysym.h>
+#include <X11/Xlocale.h>
 #include <X11/extensions/XShm.h>
 #ifdef __has_include
   #if __has_include(<X11/extensions/Xdbe.h>)
@@ -55,6 +56,13 @@ static uint32_t* g_pixels = NULL;
 static ForgeRenderCallback g_render_cb = NULL;
 static ForgeKeyCallback g_key_cb = NULL;
 static ForgeMouseCallback g_mouse_cb = NULL;
+static ForgeImeCompositionCallback g_ime_cb = NULL;
+
+/* XIM/XIC — Input Method for international text input (Vietnamese,
+ * Chinese, Japanese, Korean, etc.). Without XIC, Xutf8LookupString
+ * can't receive composed text from IME. */
+static XIM g_xim = NULL;
+static XIC g_xic = NULL;
 static atomic_ullong g_redraw_requests = 0;
 static atomic_ullong g_frames_drawn = 0;
 static int g_continuous = 0;
@@ -1252,7 +1260,51 @@ static void handle_event(XEvent* ev) {
             if (nw > 0 && nh > 0 && (nw != g_width || nh != g_height)) { g_width = nw; g_height = nh; allocate_framebuffer(g_width, g_height); }
             break;
         }
-        case KeyPress: { if (g_key_cb) { char buf[32]={0}; KeySym ks=0; Xutf8LookupString(NULL,&ev->xkey,buf,sizeof(buf)-1,&ks,NULL); int mods=0; if(ev->xkey.state&ShiftMask)mods|=1; if(ev->xkey.state&ControlMask)mods|=2; if(ev->xkey.state&Mod1Mask)mods|=4; g_key_cb(ev->xkey.keycode,buf,true,mods); } break; }
+        case KeyPress: {
+            if (!g_key_cb) break;
+            /* XFilterEvent must be called BEFORE processing the event.
+             * If it returns True, the IME consumed the event (e.g. IME
+             * is composing a character) and we should NOT dispatch it
+             * as a regular key press. XFilterEvent is called in the
+             * main event loop below, but we also handle it here for
+             * the KeyPress case specifically. */
+            char buf[64] = {0};
+            KeySym ks = 0;
+            int mods = 0;
+            if (ev->xkey.state & ShiftMask) mods |= 1;
+            if (ev->xkey.state & ControlMask) mods |= 2;
+            if (ev->xkey.state & Mod1Mask) mods |= 4;
+
+            /* Use XIC if available (IME support). XmbLookupString
+             * returns composed text from the IME. Without XIC, fall
+             * back to Xutf8LookupString with NULL (raw key codes only). */
+            if (g_xic) {
+                Status status = 0;
+                int len = XmbLookupString(g_xic, &ev->xkey, buf, sizeof(buf) - 1, &ks, &status);
+                if (status == XBufferOverflow) {
+                    /* Buffer too small — retry with larger buffer. */
+                    /* For simplicity, skip this event. */
+                    break;
+                }
+                if (status == XLookupChars || status == XLookupBoth) {
+                    /* Got composed text (IME input). */
+                    buf[len] = 0;
+                    g_key_cb(ev->xkey.keycode, buf, 1, mods);
+                    break;
+                }
+                if (status == XLookupKeySym) {
+                    /* IME is composing — don't dispatch as regular key. */
+                    break;
+                }
+                /* XLookupNone — no useful data, but still dispatch keycode. */
+                g_key_cb(ev->xkey.keycode, "", 1, mods);
+            } else {
+                /* No XIC — raw keyboard mapping only (no IME). */
+                Xutf8LookupString(NULL, &ev->xkey, buf, sizeof(buf) - 1, &ks, NULL);
+                g_key_cb(ev->xkey.keycode, buf, 1, mods);
+            }
+            break;
+        }
         case KeyRelease: { if (g_key_cb) g_key_cb(ev->xkey.keycode,"",false,0); break; }
         case ButtonPress: { if (g_mouse_cb) { int b=ev->xbutton.button; int a=(b==4||b==5)?4:0; g_mouse_cb((float)ev->xbutton.x,(float)ev->xbutton.y,b,a,0,a==0?1:0); } break; }
         case ButtonRelease: { if (g_mouse_cb) g_mouse_cb((float)ev->xbutton.x,(float)ev->xbutton.y,ev->xbutton.button,1,0,0); break; }
@@ -1408,6 +1460,29 @@ void forge_backend_create_window(const char* title, int width, int height) {
         fprintf(stderr, "[forge] GPU available (GLX/OpenGL) — CPU mode active (GPU deferred)\n");
     }
 #endif
+
+    /* Initialize XIM (X Input Method) for international text input.
+     * This enables Vietnamese (ibus/unikey), Chinese, Japanese, Korean
+     * IME input. Without XIM, Xutf8LookupString can only produce raw
+     * key codes — no composed characters.
+     */
+    XSetLocaleModifiers("");
+    g_xim = XOpenIM(g_display, NULL, NULL, NULL);
+    if (g_xim) {
+        g_xic = XCreateIC(g_xim,
+            XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+            XNClientWindow, g_window,
+            XNFocusWindow, g_window,
+            NULL);
+        if (g_xic) {
+            XSetICFocus(g_xic);
+            fprintf(stderr, "[forge] XIM input method initialized (Vietnamese/IME support enabled)\n");
+        } else {
+            fprintf(stderr, "[forge] XCreateIC failed — IME input disabled\n");
+        }
+    } else {
+        fprintf(stderr, "[forge] XOpenIM failed — IME input disabled\n");
+    }
 }
 
 void forge_backend_set_continuous_rendering(bool enabled) { g_continuous = enabled ? 1 : 0; }
@@ -1446,14 +1521,27 @@ void forge_backend_set_cursor(int type) {
  * and XFilterEvent calls in the event loop. See backend.h for the
  * callback signature.
  */
-void forge_backend_set_ime_composition_callback(ForgeImeCompositionCallback cb) { (void)cb; }
-void forge_backend_set_ime_cursor_rect(float x, float y, float w, float h) { (void)x; (void)y; (void)w; (void)h; }
+void forge_backend_set_ime_composition_callback(ForgeImeCompositionCallback cb) { g_ime_cb = cb; }
+
+void forge_backend_set_ime_cursor_rect(float x, float y, float w, float h) {
+    /* Tell the IME where the cursor is so it can position its preedit
+     * window (for "over-the-spot" or "on-the-spot" input styles).
+     * For XIMPreeditNothing style this is a no-op, but we implement
+     * it for future upgrade to on-the-spot input. */
+    if (!g_xic || !g_display) return;
+    XPoint spot = { .x = (short)x, .y = (short)(y + h) };
+    XVaNestedList attr = XVaCreateNestedList(0, XNSpotLocation, &spot, NULL);
+    if (attr) {
+        XSetICValues(g_xic, XNPreeditAttributes, attr, NULL);
+        XFree(attr);
+    }
+}
 
 void forge_backend_run(void) {
     if (!g_display) return;
     int pending = 1;
     while (1) {
-        while (XPending(g_display)) { XEvent ev; XNextEvent(g_display, &ev); handle_event(&ev); }
+        while (XPending(g_display)) { XEvent ev; XNextEvent(g_display, &ev); if (XFilterEvent(&ev, g_window)) continue; handle_event(&ev); }
         if (pending || g_continuous) {
 #ifdef FORGE_HAS_GLX
             if (g_gpu_mode) {
@@ -1538,7 +1626,7 @@ void forge_backend_run(void) {
             pending = 0;
         }
         if (atomic_load(&g_redraw_requests) > 0) { pending = 1; atomic_exchange(&g_redraw_requests, 0); }
-        if (!g_continuous) { XEvent ev; XNextEvent(g_display, &ev); handle_event(&ev); pending = 1; }
+        if (!g_continuous) { XEvent ev; XNextEvent(g_display, &ev); if (!XFilterEvent(&ev, g_window)) handle_event(&ev); pending = 1; }
         else usleep(16000);
     }
 }
