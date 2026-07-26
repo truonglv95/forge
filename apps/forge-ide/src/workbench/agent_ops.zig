@@ -294,7 +294,7 @@ pub fn agentHost(wb: anytype) agent_workflow.Host {
             const token = wb.auth_manager.getValidAccessToken() catch break :blk null;
             break :blk token;
         } else null,
-        .ai_proxy_url = wb.forge_cloud_url,
+        .ai_proxy_url = wb.forge_cloud_proxy_url,
         .edit_mode = wb.agent_ui.edit_mode,
         .workspace_root = wb.workspace_root,
         .workspace_path = wb.workspace_path,

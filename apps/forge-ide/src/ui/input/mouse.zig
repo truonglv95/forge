@@ -127,6 +127,18 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
     }
 
     if (event.action == .move) {
+        // Login modal: hand cursor on button, I-beam on inputs.
+        if (wb.focused_panel == .login) {
+            const login_modal = @import("../render/login_modal.zig");
+            const action = login_modal.hitTest(w, h, event.x, event.y);
+            switch (action) {
+                .email_field, .password_field => renderer.Renderer.setCursor(1), // I-beam
+                .sign_in_button => renderer.Renderer.setCursor(4), // hand
+                else => renderer.Renderer.setCursor(0), // default
+            }
+            return;
+        }
+
         if (event.y < layout.header_height) {
             state.header_hover_action = header_toolbar.hoverAction(w, wb.headerToolbarState(), event.x, event.y);
         } else {

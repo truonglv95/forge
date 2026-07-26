@@ -1416,7 +1416,29 @@ void forge_backend_get_render_stats(unsigned long long* rq, unsigned long long* 
 void forge_backend_set_render_callback(ForgeRenderCallback cb) { g_render_cb = cb; }
 void forge_backend_set_key_callback(ForgeKeyCallback cb) { g_key_cb = cb; }
 void forge_backend_set_mouse_callback(ForgeMouseCallback cb) { g_mouse_cb = cb; }
-void forge_backend_set_cursor(int type) { (void)type; }
+void forge_backend_set_cursor(int type) {
+    if (!g_display) return;
+    /* Cursor types:
+     *   0 = default (left pointer)
+     *   1 = I-beam (text input)
+     *   2 = horizontal resize (splitter)
+     *   3 = vertical resize (splitter)
+     *   4 = hand / pointer (clickable elements like buttons, links)
+     */
+    int shape;
+    switch (type) {
+        case 1:  shape = 152; /* XC_xterm (I-beam) */ break;
+        case 2:  shape = 108; /* XC_sb_h_double_arrow */ break;
+        case 3:  shape = 116; /* XC_sb_v_double_arrow */ break;
+        case 4:  shape = 60;  /* XC_hand2 (pointing hand) */ break;
+        default: shape = 68;  /* XC_left_ptr */ break;
+    }
+    Cursor cur = XCreateFontCursor(g_display, shape);
+    if (cur) {
+        XDefineCursor(g_display, g_window, cur);
+        XFreeCursor(g_display, cur);
+    }
+}
 
 /* IME stubs — Linux X11 IME (XIM/XIC) integration is deferred.
  * These no-op implementations satisfy the linker so forge-ide builds on

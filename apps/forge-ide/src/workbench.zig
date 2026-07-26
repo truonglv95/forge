@@ -141,10 +141,14 @@ pub const Workbench = struct {
     login_error: ?[]const u8 = null,
     /// Login is in progress (show spinner / disable inputs).
     login_in_progress: bool = false,
-    /// Supabase project URL (configured in settings or hardcoded).
+    /// Supabase project URL for Auth (e.g. https://xxx.supabase.co).
+    /// Used for /auth/v1/token?grant_type=password etc.
     forge_cloud_url: []const u8 = "",
-    /// Supabase anon key (configured in settings or hardcoded).
+    /// Supabase anon key for Auth REST API.
     forge_cloud_anon_key: []const u8 = "",
+    /// Backend proxy base URL for LLM calls (e.g. https://xxx.supabase.co/functions/v1).
+    /// Used for /v1/chat/completions, /v1/models, /v1/embeddings.
+    forge_cloud_proxy_url: []const u8 = "",
     /// Which login field is focused (0 = email, 1 = password).
     login_focused_field: u8 = 0,
 
@@ -511,6 +515,8 @@ pub const Workbench = struct {
         const build_options = @import("build_options");
         self.forge_cloud_url = try allocator.dupe(u8, build_options.forge_cloud_url);
         self.forge_cloud_anon_key = try allocator.dupe(u8, build_options.forge_cloud_anon_key);
+        // Proxy URL = project URL + /functions/v1 (Supabase Edge Functions base)
+        self.forge_cloud_proxy_url = try std.fmt.allocPrint(allocator, "{s}/functions/v1", .{build_options.forge_cloud_url});
         self.auth_manager = ai.auth_session.SessionManager.init(allocator, io, .{
             .project_url = self.forge_cloud_url,
             .anon_key = self.forge_cloud_anon_key,
@@ -673,6 +679,7 @@ pub const Workbench = struct {
             self.login_password_buffer.deinit();
             self.allocator.free(self.forge_cloud_url);
             self.allocator.free(self.forge_cloud_anon_key);
+            self.allocator.free(self.forge_cloud_proxy_url);
         }
         self.wrap_cache.deinit();
         self.max_line_len_cache.deinit();
@@ -1346,7 +1353,7 @@ pub const Workbench = struct {
     /// On success, populates agent_ui.models with the backend's model list.
     pub fn fetchModelsFromBackend(self: *Workbench) !void {
         const token = self.auth_manager.getValidAccessToken() catch return;
-        const endpoint = try std.fmt.allocPrint(self.allocator, "{s}/v1/models", .{self.forge_cloud_url});
+        const endpoint = try std.fmt.allocPrint(self.allocator, "{s}/v1/models", .{self.forge_cloud_proxy_url});
         defer self.allocator.free(endpoint);
 
         const auth_header = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{token});
