@@ -1153,30 +1153,31 @@ pub const Workbench = struct {
         const cfg = loadAiConfig(self.allocator, self.io, self.workspace_root) catch |err| {
             std.debug.print("global_store.loadConfig error: {}\n", .{err});
 
-            const models_list = parseModelOptionsOrDefault(self.allocator, null, composer.default_models_str, "default") catch return;
-            const embed_models_list = parseModelOptionsOrDefault(self.allocator, null, composer.default_embedding_models_str, "embed default") catch {
-                freeModelOptions(self.allocator, models_list);
-                return;
-            };
-            freeModelOptions(self.allocator, self.agent_ui.models);
-            freeModelOptions(self.allocator, self.agent_ui.embedding_models);
-            self.agent_ui.models = models_list;
-            self.agent_ui.embedding_models = embed_models_list;
-            if (self.agent_ui.model == null and self.agent_ui.models.len > 0) {
-                self.agent_ui.model = try self.allocator.dupe(u8, self.agent_ui.models[0].id);
-                self.allocator.free(self.agent_ui.provider);
-                self.agent_ui.provider = try self.allocator.dupe(u8, self.agent_ui.models[0].provider);
+            // Config file not found — use defaults ONLY if not logged in.
+            // If logged in, models come from backend (fetchModelsFromBackend).
+            if (!self.auth_manager.isLoggedIn()) {
+                const models_list = parseModelOptionsOrDefault(self.allocator, null, composer.default_models_str, "default") catch return;
+                const embed_models_list = parseModelOptionsOrDefault(self.allocator, null, composer.default_embedding_models_str, "embed default") catch {
+                    freeModelOptions(self.allocator, models_list);
+                    return;
+                };
+                freeModelOptions(self.allocator, self.agent_ui.models);
+                freeModelOptions(self.allocator, self.agent_ui.embedding_models);
+                self.agent_ui.models = models_list;
+                self.agent_ui.embedding_models = embed_models_list;
+                if (self.agent_ui.model == null and self.agent_ui.models.len > 0) {
+                    self.agent_ui.model = try self.allocator.dupe(u8, self.agent_ui.models[0].id);
+                    self.allocator.free(self.agent_ui.provider);
+                    self.agent_ui.provider = try self.allocator.dupe(u8, self.agent_ui.models[0].provider);
+                }
             }
             return;
         };
         defer if (cfg.custom_models) |custom| self.allocator.free(custom);
         defer if (cfg.custom_embedding_models) |custom| self.allocator.free(custom);
 
-        const models_list = try parseModelOptionsOrDefault(self.allocator, cfg.custom_models, composer.default_models_str, "agent");
-        errdefer freeModelOptions(self.allocator, models_list);
-        const embed_models_list = try parseModelOptionsOrDefault(self.allocator, cfg.custom_embedding_models, composer.default_embedding_models_str, "embed");
-        errdefer freeModelOptions(self.allocator, embed_models_list);
-
+        // Load URL configs + feature flags (these are local settings,
+        // not model lists — always load regardless of login state).
         self.allocator.free(self.agent_ui.provider);
         self.agent_ui.provider = cfg.provider;
         if (self.agent_ui.model) |model| self.allocator.free(model);
@@ -1194,16 +1195,27 @@ pub const Workbench = struct {
         self.agent_ui.mcp_enabled = cfg.mcp_enabled;
         self.agent_ui.enable_hyde = cfg.enable_hyde;
 
-        freeModelOptions(self.allocator, self.agent_ui.models);
-        freeModelOptions(self.allocator, self.agent_ui.embedding_models);
-        self.agent_ui.models = models_list;
-        self.agent_ui.embedding_models = embed_models_list;
+        // Model lists: only load from local config if NOT logged in.
+        // When logged in, models come from the backend (fetchModelsFromBackend).
+        if (!self.auth_manager.isLoggedIn()) {
+            const models_list = try parseModelOptionsOrDefault(self.allocator, cfg.custom_models, composer.default_models_str, "agent");
+            errdefer freeModelOptions(self.allocator, models_list);
+            const embed_models_list = try parseModelOptionsOrDefault(self.allocator, cfg.custom_embedding_models, composer.default_embedding_models_str, "embed");
+            errdefer freeModelOptions(self.allocator, embed_models_list);
 
-        if (self.agent_ui.model == null and self.agent_ui.models.len > 0) {
-            self.agent_ui.model = try self.allocator.dupe(u8, self.agent_ui.models[0].id);
-            self.allocator.free(self.agent_ui.provider);
-            self.agent_ui.provider = try self.allocator.dupe(u8, self.agent_ui.models[0].provider);
+            freeModelOptions(self.allocator, self.agent_ui.models);
+            freeModelOptions(self.allocator, self.agent_ui.embedding_models);
+            self.agent_ui.models = models_list;
+            self.agent_ui.embedding_models = embed_models_list;
+
+            if (self.agent_ui.model == null and self.agent_ui.models.len > 0) {
+                self.agent_ui.model = try self.allocator.dupe(u8, self.agent_ui.models[0].id);
+                self.allocator.free(self.agent_ui.provider);
+                self.agent_ui.provider = try self.allocator.dupe(u8, self.agent_ui.models[0].provider);
+            }
         }
+        // When logged in, don't touch model lists — they're set by
+        // fetchModelsFromBackend(). Only URL configs + flags are loaded here.
     }
 
     pub fn reloadUserSettings(self: *Workbench) !void {

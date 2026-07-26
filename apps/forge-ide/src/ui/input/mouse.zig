@@ -374,6 +374,12 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     return;
                 },
                 .model_menu => {
+                    // If not logged in, clicking the model button opens
+                    // the login modal instead of the model menu.
+                    if (!wb.auth_manager.isLoggedIn()) {
+                        wb.focused_panel = .login;
+                        return;
+                    }
                     dispatchClick(wb, .agent_toggle_model_menu, "Toggle agent model menu");
                     return;
                 },
