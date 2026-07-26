@@ -108,6 +108,11 @@ pub fn onKeyEvent(event: renderer.KeyEvent) void {
     var win_w: f32 = 1024;
     renderer.Renderer.getWindowSize(&win_w, &win_h);
 
+    if (wb.focused_panel == .login) {
+        handleLoginKeys(wb, event);
+        return;
+    }
+
     if (wb.focused_panel == .recovery) {
         keys_dialogs.handleRecoveryKeys(wb, event);
         return;
@@ -556,7 +561,9 @@ pub fn onImeCompositionEvent(event: renderer.ImeCompositionEvent) void {
         else => state.markAllDirty(),
     }
 
-    var active_buffer = if (wb.focused_panel == .editor)
+    var active_buffer = if (wb.focused_panel == .login)
+        if (wb.login_focused_field == 0) &wb.login_email_buffer else &wb.login_password_buffer
+    else if (wb.focused_panel == .editor)
         wb.activeBuffer() orelse return
     else if (wb.focused_panel == .agent)
         &wb.agent_ui.prompt_buffer
@@ -672,4 +679,52 @@ fn handleQuickOpenKeys(wb: *Workbench, event: renderer.KeyEvent) void {
         wb.quick_open_query_len += 1;
         wb.quick_open_selected = 0;
     }
+}
+
+fn handleLoginKeys(wb: *Workbench, event: renderer.KeyEvent) void {
+    const editor_mod = @import("forge-editor");
+
+    // Escape → skip login (use direct API / BYO key mode).
+    if (event.keycode == 53) {
+        wb.skipLogin();
+        return;
+    }
+
+    // Enter → submit login.
+    if (event.keycode == 36 or event.keycode == 76) {
+        if (!wb.login_in_progress) {
+            wb.submitLogin() catch |err| {
+                wb.logBackgroundError("Submit login", err);
+            };
+        }
+        return;
+    }
+
+    // Tab → switch between email (0) and password (1) fields.
+    if (event.keycode == 48) {
+        wb.login_focused_field = if (wb.login_focused_field == 0) 1 else 0;
+        return;
+    }
+
+    // Type into the focused field.
+    const buf: *@import("forge-editor").Buffer = if (wb.login_focused_field == 0)
+        &wb.login_email_buffer
+    else
+        &wb.login_password_buffer;
+
+    // Backspace.
+    if (event.keycode == 51) {
+        if (buf.cursor.col > 0) {
+            buf.backspace() catch {};
+        }
+        return;
+    }
+
+    // Printable character(s).
+    if (event.chars.len > 0 and event.chars[0] >= 32) {
+        buf.insertString(event.chars) catch {};
+        return;
+    }
+
+    _ = editor_mod;
 }

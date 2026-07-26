@@ -1416,7 +1416,7 @@ pub const Workbench = struct {
     /// Skip login — use the IDE with direct LLM calls (BYO API key).
     pub fn skipLogin(self: *Workbench) void {
         self.focused_panel = .editor;
-        try self.setStatus("Using direct API (bring your own key)") catch {};
+        self.setStatus("Using direct API (bring your own key)") catch {};
     }
 
     /// Sign out — clears the stored session and shows the login modal.

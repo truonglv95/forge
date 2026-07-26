@@ -217,6 +217,27 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
             wb.lsp.hover.clear();
         }
     } else if (event.action == .down) {
+        // Login modal — intercept ALL clicks when login modal is open.
+        // Without this, clicks fall through to panel handlers which
+        // reset focused_panel to .editor, closing the modal.
+        if (wb.focused_panel == .login) {
+            const login_modal = @import("../render/login_modal.zig");
+            const action = login_modal.hitTest(w, h, event.x, event.y);
+            switch (action) {
+                .email_field => wb.login_focused_field = 0,
+                .password_field => wb.login_focused_field = 1,
+                .sign_in_button => {
+                    if (!wb.login_in_progress) {
+                        wb.submitLogin() catch |err| {
+                            wb.logBackgroundError("Submit login", err);
+                        };
+                    }
+                },
+                .skip => wb.skipLogin(),
+                .none => {},
+            }
+            return;
+        }
         // P1.5-2: Status bar click — dispatch item action.
         if (event.y >= h - 22) {
             const status_bar = @import("../render/status_bar.zig");
