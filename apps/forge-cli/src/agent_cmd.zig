@@ -203,6 +203,10 @@ fn runTimeline(
 ) !u8 {
     if (parsed.positional.len < 2) {
         try writer.writeAll("error: agent timeline requires a session id\n");
+        try writer.writeAll("usage: forge agent timeline <session_id> [--events] [--json]\n");
+        try writer.writeAll("\nOptions:\n");
+        try writer.writeAll("  --events    Show raw NDJSON events instead of formatted timeline\n");
+        try writer.writeAll("  --json      Output as JSON (one object per event)\n");
         return 2;
     }
 
@@ -216,7 +220,36 @@ fn runTimeline(
     };
     defer workspace.sessions.deinitSession(allocator, &doc);
 
-    try writer.print("Agent timeline for {s}\n", .{session_id});
+    // If --events flag is set, dump the raw NDJSON event log.
+    if (parsed.flags.events) |events_flag| {
+        _ = events_flag;
+        const events_raw = workspace.sessions.readEvents(allocator, io, session_id) catch {
+            try writer.writeAll("  (no event log found)\n");
+            return 0;
+        };
+        defer allocator.free(events_raw);
+        if (parsed.flags.json) {
+            // Output events as a JSON array.
+            try writer.writeAll("[");
+            var first = true;
+            var lines = std.mem.splitScalar(u8, events_raw, '\n');
+            while (lines.next()) |line| {
+                if (line.len == 0) continue;
+                if (!first) try writer.writeAll(",");
+                first = false;
+                try writer.writeAll(line);
+            }
+            try writer.writeAll("]\n");
+        } else {
+            // Output raw NDJSON as-is.
+            try writer.writeAll(events_raw);
+        }
+        return 0;
+    }
+
+    try writer.print("Agent timeline for {s}\n\n", .{session_id});
+
+    // Show formatted task ledger timeline if available.
     if (doc.task_ledger_json.len > 0) {
         const timeline = ai.task_ledger.formatTimelineFromJson(allocator, doc.task_ledger_json, 80) catch {
             try writer.writeAll("  (task ledger could not be rendered)\n");
@@ -230,14 +263,46 @@ fn runTimeline(
             count += 1;
             try writer.print("  {s}\n", .{line});
         }
-        if (count > 0) return 0;
+        if (count > 0) {
+            try writer.writeAll("\n");
+        }
     }
 
-    for (doc.steps) |step| {
-        const summary = if (step.summary.len > 180) step.summary[0..180] else step.summary;
-        try writer.print("  step {d}: {s} · {s}\n", .{ step.index, step.kind, summary });
+    // Show steps from the session doc.
+    if (doc.steps.len > 0) {
+        try writer.writeAll("Steps:\n");
+        for (doc.steps) |step| {
+            const summary = if (step.summary.len > 180) step.summary[0..180] else step.summary;
+            try writer.print("  step {d}: {s} · {s}\n", .{ step.index, step.kind, summary });
+        }
     }
-    if (doc.task_ledger_json.len == 0 and doc.steps.len == 0) try writer.writeAll("  (no timeline data)\n");
+
+    // Show event log summary if available (Phase 21 enhancement).
+    const events_raw = workspace.sessions.readEvents(allocator, io, session_id) catch null;
+    if (events_raw) |events| {
+        defer allocator.free(events);
+        var event_count: usize = 0;
+        var tool_calls: usize = 0;
+        var tool_results: usize = 0;
+        var lines = std.mem.splitScalar(u8, events, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            event_count += 1;
+            if (std.mem.indexOf(u8, line, "\"tool_call\"") != null) tool_calls += 1;
+            if (std.mem.indexOf(u8, line, "\"tool_result\"") != null) tool_results += 1;
+        }
+        if (event_count > 0) {
+            try writer.writeAll("\nEvent log:\n");
+            try writer.print("  Total events: {d}\n", .{event_count});
+            try writer.print("  Tool calls: {d}\n", .{tool_calls});
+            try writer.print("  Tool results: {d}\n", .{tool_results});
+            try writer.writeAll("\nUse --events to see the full NDJSON event log.\n");
+        }
+    }
+
+    if (doc.task_ledger_json.len == 0 and doc.steps.len == 0 and (events_raw == null or events_raw.?.len == 0)) {
+        try writer.writeAll("  (no timeline data)\n");
+    }
     return 0;
 }
 
@@ -945,8 +1010,10 @@ fn runCoordinated(
     const specs = ai.subagent.coordinatedSpecs();
     const phase_labels = [_][]const u8{ "planning", "reviewing", "implementing" };
     var phase_outputs: [3][]const u8 = .{ "", "", "" };
+    const max_retries: usize = 2;
+    var retry_count: usize = 0;
     var i: usize = 0;
-    while (i < 3) : (i += 1) {
+    while (i < 3) {
         const spec = specs[i];
         if (!parsed.flags.json and !parsed.flags.quiet) {
             try writer.print("[{d}/3] {s} ({s})...\n", .{ i + 1, spec.label, phase_labels[i] });
@@ -1000,20 +1067,31 @@ fn runCoordinated(
         }
 
         // Check if reviewer rejected the plan (no "LGTM" in output).
-        // If so, re-run the planner with the feedback (up to 2 retries).
+        // If so, re-run the planner with the feedback (up to max_retries times).
         if (i == 1 and std.mem.indexOf(u8, output, "LGTM") == null) {
-            if (!parsed.flags.json and !parsed.flags.quiet) {
-                try writer.writeAll("  Reviewer did not approve. Re-running planner with feedback...\n\n");
+            if (retry_count >= max_retries) {
+                if (!parsed.flags.json and !parsed.flags.quiet) {
+                    try writer.print("  Reviewer did not approve after {d} retries. Proceeding with current plan.\n\n", .{retry_count});
+                }
+                if (parsed.flags.json) {
+                    try writer.print("{{\"phase\":\"review\",\"status\":\"retry_exhausted\",\"retries\":{d}}}\n", .{retry_count});
+                }
+                i += 1;
+                continue;
             }
-            // Re-run planner (i=0) — but we need to loop back. Decrement i to 0
-            // and clear phase_outputs[1] so we don't re-feed the rejection.
-            // Limit retries to 2 to avoid infinite loops.
-            i = 0;
+            retry_count += 1;
+            if (!parsed.flags.json and !parsed.flags.quiet) {
+                try writer.print("  Reviewer did not approve. Re-running planner with feedback (retry {d}/{d})...\n\n", .{ retry_count, max_retries });
+            }
+            if (parsed.flags.json) {
+                try writer.print("{{\"phase\":\"review\",\"status\":\"rejected\",\"retry\":{d}}}\n", .{retry_count});
+            }
+            phase_outputs[0] = "";
             phase_outputs[1] = "";
-            // Note: this is a simple retry — a production implementation would
-            // track retry count to avoid infinite loops. For now, the outer
-            // while loop's increment handles termination after 3 phases.
+            i = 0;
+            continue;
         }
+        i += 1;
     }
 
     if (!parsed.flags.json and !parsed.flags.quiet) {

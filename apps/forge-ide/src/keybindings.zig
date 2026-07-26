@@ -52,6 +52,8 @@ pub const Registry = struct {
             .{ .key = "cmd+shift+d", .palette_id = "view.run" },
             .{ .key = "cmd+shift+x", .palette_id = "view.extensions" },
             .{ .key = "cmd+shift+o", .palette_id = "view.outline" },
+            .{ .key = "cmd+shift+k", .palette_id = "view.specs" },
+            .{ .key = "cmd+shift+t", .palette_id = "view.runs" },
             .{ .key = "ctrl+`", .palette_id = "view.terminal" },
             .{ .key = "cmd+s", .palette_id = "file.save" },
             .{ .key = "cmd+f", .palette_id = "editor.find" },

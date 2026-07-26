@@ -55,7 +55,7 @@ test "eval command requires a suite" {
     var environ = std.process.Environ.Map.init(allocator);
     defer environ.deinit();
 
-    var buffer: [512]u8 = undefined;
+    var buffer: [2048]u8 = undefined;
     var out = std.Io.Writer.fixed(&buffer);
     const args = args_mod.CliArgs{
         .flags = .{},

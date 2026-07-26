@@ -374,6 +374,34 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                 const click_row: usize = @intFromFloat(float_row);
                 wb.handleExplorerClick(click_row, event.x, geo.explorer_x) catch |err| shared.reportInputError(wb, "Handle explorer click", err);
             }
+        } else if (geo.shell_mode == .ide and wb.sidebar_view == .specs and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= @import("../sidebar/spec_panel.zig").list_top) {
+            // Spec panel click — open spec file in editor (Phase 17).
+            wb.focused_panel = .explorer;
+            const spec_panel_mod = @import("../sidebar/spec_panel.zig");
+            // Load specs to get the run_id at the clicked index.
+            const specs: []@import("forge-ai").spec_writer.SpecInfo = @import("forge-ai").spec_writer.listSpecs(wb.allocator, wb.io, wb.workspace_root) catch return;
+            defer @import("forge-ai").spec_writer.freeSpecList(wb.allocator, specs);
+            if (spec_panel_mod.hitTest(geo.explorer_x, geo.explorer_w, event.y, wb.spec_scroll_y, specs.len)) |idx| {
+                if (idx < specs.len) {
+                    spec_panel_mod.openSpecFile(wb, specs[idx].run_id) catch |err| shared.reportInputError(wb, "Open spec file", err);
+                }
+            }
+        } else if (geo.shell_mode == .ide and wb.sidebar_view == .runs and event.x >= geo.explorer_x and event.x < geo.explorer_splitter_x and event.y >= @import("../sidebar/runs_panel.zig").list_top) {
+            // Runs panel click — show run details in status (Phase 17).
+            wb.focused_panel = .explorer;
+            const runs_panel_mod = @import("../sidebar/runs_panel.zig");
+            var runs_list = @import("forge-workspace").runs.listEntries(wb.allocator, wb.io, wb.workspace_root) catch return;
+            defer runs_list.deinit();
+            if (runs_panel_mod.hitTest(geo.explorer_x, geo.explorer_w, event.y, wb.runs_scroll_y, runs_list.items.len)) |idx| {
+                if (idx < runs_list.items.len) {
+                    // Show run details — reverse order (newest first).
+                    const actual_idx = runs_list.items.len - 1 - idx;
+                    const entry = runs_list.items[actual_idx];
+                    var buf: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "Run {s} [{s}] (click to inspect via CLI)", .{ entry.run_id, entry.state }) catch "Run selected";
+                    wb.setStatus(msg) catch {};
+                }
+            }
         } else if (geo.shell_mode == .ide and event.x >= geo.agent_x) {
             wb.focused_panel = .agent;
             // Code block copy button — check before composer/menu hit tests

@@ -149,6 +149,8 @@ pub const Palette = struct {
             .{ .id = "view.run", .title = "View: Show Run and Debug", .category = "View", .command = .{ .set_sidebar_view = .run } },
             .{ .id = "view.extensions", .title = "View: Show Extensions", .category = "View", .command = .{ .set_sidebar_view = .extensions } },
             .{ .id = "view.outline", .title = "View: Show Outline", .category = "View", .command = .{ .set_sidebar_view = .outline } },
+            .{ .id = "view.specs", .title = "View: Show Specs (Kiro)", .category = "View", .command = .{ .set_sidebar_view = .specs } },
+            .{ .id = "view.runs", .title = "View: Show Runs (Antigravity)", .category = "View", .command = .{ .set_sidebar_view = .runs } },
             .{ .id = "view.settings", .title = "View: Settings", .category = "View", .command = .open_settings_modal },
             .{ .id = "view.toggle_sidebar", .title = "View: Toggle Primary Sidebar", .category = "View", .command = .toggle_sidebar },
             .{ .id = "view.toggle_panel", .title = "View: Toggle Bottom Panel", .category = "View", .command = .toggle_bottom_panel },

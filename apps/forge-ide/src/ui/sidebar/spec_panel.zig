@@ -56,6 +56,42 @@ pub fn hitTest(panel_x: f32, panel_w: f32, y: f32, scroll_y: f32, item_count: us
     return idx;
 }
 
+/// Open a spec file in the editor. Called when the user clicks a spec row.
+/// Opens requirements.md (or design.md / tasks.md if requirements is missing).
+pub fn openSpecFile(wb: *Workbench, spec_run_id: []const u8) !void {
+    // Build the spec directory path: .forge/sessions/specs/<run_id>/
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const session_dir = @import("forge-workspace").global_store.getSessionDir(wb.allocator, wb.io, wb.workspace_root) catch return error.WorkspaceFailed;
+    defer wb.allocator.free(session_dir);
+
+    // Try requirements.md first, then design.md, then tasks.md
+    const files = [_][]const u8{ "requirements.md", "design.md", "tasks.md" };
+    for (files) |filename| {
+        const abs_path = std.fmt.bufPrint(&path_buf, "{s}/specs/{s}/{s}", .{ session_dir, spec_run_id, filename }) catch continue;
+        // Check if file exists by trying to stat it.
+        var dir = std.Io.Dir.openDirAbsolute(wb.io, session_dir, .{}) catch continue;
+        defer dir.close(wb.io);
+        var spec_dir = dir.openDir(wb.io, "specs", .{}) catch continue;
+        defer spec_dir.close(wb.io);
+        var run_id_dir = spec_dir.openDir(wb.io, spec_run_id, .{}) catch continue;
+        defer run_id_dir.close(wb.io);
+        var file = run_id_dir.openFile(wb.io, filename, .{}) catch continue;
+        file.close(wb.io);
+
+        // File exists — open it in the editor via dispatch.
+        // Build a relative path for the dispatch command.
+        var rel_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const rel_path = std.fmt.bufPrint(&rel_buf, ".forge/sessions/specs/{s}/{s}", .{ spec_run_id, filename }) catch abs_path;
+        wb.dispatch(.{ .open_file = rel_path }) catch |err| {
+            // If relative path fails, try absolute
+            wb.logBackgroundError("Open spec file", err);
+        };
+        return;
+    }
+    // No spec files found — show status message
+    wb.setStatus("Spec has no viewable files (requirements/design/tasks missing)") catch {};
+}
+
 /// Draw the spec panel. Reads specs from the workspace via `ai.spec_writer`.
 pub fn drawSpecsPanel(wb: *Workbench, panel_x: f32, panel_w: f32, panel_h: f32) void {
     const theme = &wb.theme;

@@ -22,6 +22,19 @@ const Workbench = @import("../../workbench.zig").Workbench;
 pub const list_top: f32 = layout.header_height + 32;
 pub const row_h: f32 = 32;
 
+/// Hit-test a click in the runs panel. Returns the clicked row index
+/// (0 = newest, since runs are displayed newest-first).
+pub fn hitTest(panel_x: f32, panel_w: f32, y: f32, scroll_y: f32, item_count: usize) ?usize {
+    _ = panel_w;
+    _ = panel_x;
+    if (y < list_top) return null;
+    const rel_y = y - list_top + scroll_y;
+    if (rel_y < 0) return null;
+    const idx = @as(usize, @intFromFloat(rel_y / row_h));
+    if (idx >= item_count) return null;
+    return idx;
+}
+
 /// Draw the runs panel. Reads runs from the workspace via
 /// `workspace.runs.listEntries`.
 pub fn drawRunsPanel(wb: *Workbench, panel_x: f32, panel_w: f32, panel_h: f32) void {

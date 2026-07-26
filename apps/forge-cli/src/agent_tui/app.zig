@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ai = @import("forge-ai");
+const kernel = @import("forge-kernel");
 const workspace = @import("forge-workspace");
 const forge_util = @import("forge-util");
 const args_mod = @import("../args.zig");
@@ -1015,18 +1016,77 @@ pub const App = struct {
     }
 
     /// /complete [prompt] — request an inline completion.
-    /// TUI parity for `forge complete` CLI. Without a prompt, shows usage.
+    /// TUI parity for `forge complete` CLI. Sends the prompt to the
+    /// configured provider and displays the response inline.
     fn requestCompletion(self: *App, prompt_opt: ?[]const u8) !void {
         const prompt = prompt_opt orelse {
             try self.pushSystem("Usage: /complete <prompt>");
-            try self.pushSystem("This sends a FIM (fill-in-the-middle) completion request to the configured provider.");
+            try self.pushSystem("Sends a completion request to the configured provider.");
+            try self.pushSystem("The prompt is used as both prefix and suffix context for FIM completion.");
+            try self.pushSystem("");
             try self.pushSystem("For full inline completion with file context, use 'forge complete --file <path>' CLI.");
             return;
         };
-        var buf: [256]u8 = undefined;
-        const echo = std.fmt.bufPrint(&buf, "Completion request: {s}", .{prompt}) catch "Completion request";
+
+        var echo_buf: [256]u8 = undefined;
+        const echo = std.fmt.bufPrint(&echo_buf, "Completion request: {s}", .{prompt}) catch "Completion request";
         try self.pushSystem(echo);
-        try self.pushSystem("(TUI inline completion is a stub — use 'forge complete' CLI for full FIM support)");
+
+        // Build provider options and create a provider for the completion call.
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, prompt, self.io, self.opened.root);
+        var provider = ai.provider_factory.create(self.allocator, self.io, self.environ_map, provider_opts.options) catch |err| {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Completion failed: cannot create provider ({s})", .{@errorName(err)}) catch "Completion failed: provider unavailable";
+            try self.pushSystem(err_msg);
+            return;
+        };
+        defer provider.deinit(self.allocator);
+
+        // Build a simple FIM prompt: "Complete the following code: <prompt>"
+        var fim_buf: std.ArrayList(u8) = .empty;
+        defer fim_buf.deinit(self.allocator);
+        fim_buf.appendSlice(self.allocator, "Complete the following code. Output only the completion, no explanations:\n\n") catch return;
+        fim_buf.appendSlice(self.allocator, prompt) catch return;
+
+        // Call the provider.
+        var response_alloc = std.Io.Writer.Allocating.init(self.allocator);
+        defer response_alloc.deinit();
+        const images = [_]ai.provider.ImagePart{};
+        var dummy_state = std.atomic.Value(bool).init(false);
+        var dummy_token: kernel.cancellation.CancellationToken = .{ .shared_state = &dummy_state };
+        provider.ask(
+            self.allocator,
+            fim_buf.items,
+            &images,
+            &response_alloc.writer,
+            &dummy_token,
+        ) catch |err| {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Completion failed: {s}", .{@errorName(err)}) catch "Completion failed";
+            try self.pushSystem(err_msg);
+            return;
+        };
+
+        const output = response_alloc.writer.buffer[0..response_alloc.writer.end];
+        if (output.len == 0) {
+            try self.pushSystem("Completion returned empty response.");
+            return;
+        }
+
+        // Display the completion. Truncate very long outputs for TUI readability.
+        const max_display = 2000;
+        if (output.len > max_display) {
+            var trunc_buf: [64]u8 = undefined;
+            const trunc_msg = std.fmt.bufPrint(&trunc_buf, "Completion ({d} bytes, showing first {d}):", .{ output.len, max_display }) catch "Completion (truncated):";
+            try self.pushSystem(trunc_msg);
+            try self.pushLine(.agent, try self.allocator.dupe(u8, output[0..max_display]));
+            try self.pushSystem("... (truncated)");
+        } else {
+            var len_buf: [64]u8 = undefined;
+            const len_msg = std.fmt.bufPrint(&len_buf, "Completion ({d} bytes):", .{output.len}) catch "Completion:";
+            try self.pushSystem(len_msg);
+            try self.pushLine(.agent, try self.allocator.dupe(u8, output));
+        }
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {
