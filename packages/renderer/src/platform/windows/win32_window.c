@@ -17,6 +17,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <imm.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -74,6 +75,7 @@ static float g_dpi_scale = 1.0f;
 static ForgeRenderCallback g_render_cb = NULL;
 static ForgeKeyCallback g_key_cb = NULL;
 static ForgeMouseCallback g_mouse_cb = NULL;
+static ForgeImeCompositionCallback g_ime_cb = NULL;
 
 // Font state.
 static HFONT g_current_font = NULL;
@@ -179,13 +181,21 @@ void forge_backend_set_key_callback(ForgeKeyCallback cb) { g_key_cb = cb; }
 void forge_backend_set_mouse_callback(ForgeMouseCallback cb) { g_mouse_cb = cb; }
 
 void forge_backend_set_ime_composition_callback(ForgeImeCompositionCallback cb) {
-    // IME composition not fully implemented in Win32 backend yet
-    (void)cb;
+    g_ime_cb = cb;
 }
 
 void forge_backend_set_ime_cursor_rect(float x, float y, float w, float h) {
-    // IME cursor rect not fully implemented in Win32 backend yet
-    (void)x; (void)y; (void)w; (void)h;
+    if (!g_hwnd) return;
+    /* Position the IME composition window near the cursor. */
+    HIMC hIMC = ImmGetContext(g_hwnd);
+    if (hIMC) {
+        COMPOSITIONFORM cf = {0};
+        cf.dwStyle = CFS_POINT;
+        cf.ptCurrentPos.x = (LONG)x;
+        cf.ptCurrentPos.y = (LONG)(y + h);
+        ImmSetCompositionWindow(hIMC, &cf);
+        ImmReleaseContext(g_hwnd, hIMC);
+    }
 }
 
 void forge_backend_set_cursor(int type) {
@@ -738,6 +748,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
         }
         case WM_CHAR: {
             // WM_CHAR provides the translated character for text input.
+            // This includes IME-composed characters on Windows.
             if (g_key_cb && wparam >= 32 && wparam < 0x10000) {
                 char chars[8] = {0};
                 int len = WideCharToMultiByte(CP_UTF8, 0, (wchar_t*)&wparam, 1, chars, 8, NULL, NULL);
@@ -746,6 +757,45 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
                 }
             }
             return 0;
+        }
+        case WM_IME_CHAR: {
+            // IME-composed character (e.g. Vietnamese, Chinese, Japanese).
+            // wparam contains the character in the system codepage or
+            // Unicode. Convert to UTF-8 and dispatch.
+            if (g_key_cb && wparam > 0) {
+                wchar_t wc = (wchar_t)wparam;
+                char chars[8] = {0};
+                int len = WideCharToMultiByte(CP_UTF8, 0, &wc, 1, chars, 8, NULL, NULL);
+                if (len > 0) {
+                    g_key_cb(0, chars, true, get_modifiers());
+                }
+            }
+            return 0;
+        }
+        case WM_IME_COMPOSITION: {
+            // IME composition result. When GCS_RESULTSTR is set, the
+            // IME has finalized the composed text.
+            if (lparam & GCS_RESULTSTR) {
+                HIMC hIMC = ImmGetContext(hwnd);
+                if (hIMC) {
+                    LONG len = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
+                    if (len > 0) {
+                        wchar_t* wbuf = (wchar_t*)malloc(len + 2);
+                        if (wbuf) {
+                            ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, wbuf, len);
+                            wbuf[len / 2] = 0;
+                            char chars[32] = {0};
+                            int ulen = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, chars, 31, NULL, NULL);
+                            if (ulen > 0 && g_key_cb) {
+                                g_key_cb(0, chars, true, get_modifiers());
+                            }
+                            free(wbuf);
+                        }
+                    }
+                    ImmReleaseContext(hwnd, hIMC);
+                }
+            }
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         case WM_LBUTTONDOWN:
         case WM_LBUTTONUP:

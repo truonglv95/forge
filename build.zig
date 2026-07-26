@@ -145,6 +145,7 @@ pub fn build(b: *std.Build) void {
             renderer.linkSystemLibrary("gdi32", .{});
             renderer.linkSystemLibrary("user32", .{});
             renderer.linkSystemLibrary("shell32", .{});
+            renderer.linkSystemLibrary("imm32", .{});
         },
         else => {},
     }
@@ -266,6 +267,7 @@ pub fn build(b: *std.Build) void {
                 ide_exe.root_module.linkSystemLibrary("gdi32", .{});
                 ide_exe.root_module.linkSystemLibrary("user32", .{});
                 ide_exe.root_module.linkSystemLibrary("shell32", .{});
+                ide_exe.root_module.linkSystemLibrary("imm32", .{});
             }
         }
         const run_ide = b.addRunArtifact(ide_exe);

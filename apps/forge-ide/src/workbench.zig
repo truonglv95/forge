@@ -1312,18 +1312,27 @@ pub const Workbench = struct {
             return;
         }
 
+        // Set loading state BEFORE the blocking HTTP call so the UI
+        // shows "Signing in..." immediately. Request a redraw so the
+        // button renders in disabled/loading state.
         self.login_in_progress = true;
         self.login_error = null;
+        renderer.Renderer.requestRedraw();
 
-        // Call Supabase Auth.
+        // Call Supabase Auth (blocking — this is the network round-trip).
+        // The UI will appear frozen during this call. For a truly async
+        // solution, we'd spawn a background thread, but that requires
+        // significant refactoring of the tick-based UI loop.
         self.auth_manager.signInWithEmail(email, password) catch |err| {
             self.login_in_progress = false;
             self.login_error = switch (err) {
                 ai.auth.AuthError.InvalidCredentials => "Invalid email or password",
                 ai.auth.AuthError.TooManyRequests => "Too many attempts. Try again later.",
                 ai.auth.AuthError.NetworkError => "Network error. Check your connection.",
+                ai.auth.AuthError.MalformedResponse => "Server error. Check Supabase config.",
                 else => "Login failed. Please try again.",
             };
+            renderer.Renderer.requestRedraw();
             return;
         };
 
