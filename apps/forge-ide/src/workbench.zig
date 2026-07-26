@@ -518,8 +518,14 @@ pub const Workbench = struct {
         self.login_password_buffer = try editor.Buffer.init(allocator);
         // Try to load stored session (auto-login on startup).
         self.auth_manager.loadStored() catch {};
-        // If not logged in, show login modal on startup.
-        if (!self.auth_manager.isLoggedIn()) {
+        // If logged in, fetch models from backend. Otherwise show login modal.
+        if (self.auth_manager.isLoggedIn()) {
+            self.allocator.free(self.agent_ui.provider);
+            self.agent_ui.provider = try allocator.dupe(u8, "forge_cloud");
+            self.fetchModelsFromBackend() catch {
+                self.reloadAiConfigFromDisk() catch {};
+            };
+        } else {
             self.focused_panel = .login;
         }
         self.user_settings = settings_mod.load(allocator, io, root) catch |err| blk: {
@@ -1289,7 +1295,86 @@ pub const Workbench = struct {
         self.allocator.free(self.agent_ui.provider);
         self.agent_ui.provider = try self.allocator.dupe(u8, "forge_cloud");
 
+        // Fetch models from backend and populate the model dropdown.
+        self.fetchModelsFromBackend() catch |err| {
+            self.logBackgroundError("Fetch models from backend", err);
+            // Fall back to default models if backend is unreachable.
+            self.reloadAiConfigFromDisk() catch {};
+        };
+
         try self.setStatus("Signed in — using Forge Cloud");
+    }
+
+    /// Fetch available models from the Forge Cloud backend proxy.
+    /// Calls GET {proxy_url}/v1/models with the user's JWT.
+    /// On success, populates agent_ui.models with the backend's model list.
+    pub fn fetchModelsFromBackend(self: *Workbench) !void {
+        const token = self.auth_manager.getValidAccessToken() catch return;
+        const endpoint = try std.fmt.allocPrint(self.allocator, "{s}/v1/models", .{self.forge_cloud_url});
+        defer self.allocator.free(endpoint);
+
+        const auth_header = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{token});
+        defer self.allocator.free(auth_header);
+
+        const headers = [_]std.http.Header{
+            .{ .name = "Authorization", .value = auth_header },
+        };
+
+        var response_alloc = std.Io.Writer.Allocating.init(self.allocator);
+        defer response_alloc.deinit();
+
+        var client = std.http.Client{ .allocator = self.allocator, .io = self.io };
+        defer client.deinit();
+
+        const result = client.fetch(.{
+            .location = .{ .url = endpoint },
+            .method = .GET,
+            .extra_headers = &headers,
+            .response_writer = &response_alloc.writer,
+        }) catch return;
+
+        if (result.status != .ok) return;
+
+        const body = response_alloc.writer.buffer[0..response_alloc.writer.end];
+        if (body.len == 0) return;
+
+        // Parse OpenAI-compatible response: { "data": [{ "id": "...", "label": "...", ... }] }
+        const Parsed = struct {
+            data: []struct {
+                id: []const u8,
+                label: ?[]const u8 = null,
+                provider: ?[]const u8 = null,
+            },
+        };
+        var parsed = std.json.parseFromSlice(Parsed, self.allocator, body, .{
+            .ignore_unknown_fields = true,
+        }) catch return;
+        defer parsed.deinit();
+
+        if (parsed.value.data.len == 0) return;
+
+        // Free old model list.
+        const composer = @import("ui/agent/agent_composer.zig");
+        freeModelOptions(self.allocator, self.agent_ui.models);
+
+        // Build new model list from backend response.
+        const models = try self.allocator.alloc(composer.ModelOption, parsed.value.data.len);
+        for (parsed.value.data, 0..) |m, i| {
+            models[i] = .{
+                .id = try self.allocator.dupe(u8, m.id),
+                .label = try self.allocator.dupe(u8, m.label orelse m.id),
+                .provider = try self.allocator.dupe(u8, m.provider orelse "forge_cloud"),
+                .base_url = null,
+            };
+        }
+        self.agent_ui.models = models;
+
+        // Set default model if none selected.
+        if (self.agent_ui.model == null and models.len > 0) {
+            self.agent_ui.model = try self.allocator.dupe(u8, models[0].id);
+        }
+
+        std.debug.print("[fetchModelsFromBackend] loaded {d} models from backend\n", .{models.len});
     }
 
     /// Skip login — use the IDE with direct LLM calls (BYO API key).
