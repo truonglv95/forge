@@ -223,15 +223,25 @@ fn doAuthRequest(
     url: []const u8,
     payload: []const u8,
 ) AuthError!Session {
+    // anon_key must be non-empty — all Supabase Auth REST calls require it.
+    if (config.anon_key.len == 0) return AuthError.MalformedResponse;
+
     var response_alloc = std.Io.Writer.Allocating.init(allocator);
     defer response_alloc.deinit();
 
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
+    // Supabase Auth requires:
+    //   apikey: <anon_key>
+    //   Authorization: Bearer <anon_key>
+    const auth_value = std.fmt.allocPrint(allocator, "Bearer {s}", .{config.anon_key}) catch
+        return AuthError.OutOfMemory;
+    defer allocator.free(auth_value);
+
     const headers = [_]std.http.Header{
         .{ .name = "apikey", .value = config.anon_key },
-        .{ .name = "Authorization", .value = config.anon_key },
+        .{ .name = "Authorization", .value = auth_value },
     };
 
     const result = client.fetch(.{
