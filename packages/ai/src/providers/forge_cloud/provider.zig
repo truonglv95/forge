@@ -136,7 +136,8 @@ pub const ForgeCloudProvider = struct {
         const self: *ForgeCloudProvider = @ptrCast(@alignCast(ptr));
         if (cancel_token.isCancelled()) return provider.ProviderError.Cancelled;
 
-        // Build request body:
+        // Build OpenAI-compatible request body:
+        // POST {proxy_url}/v1/chat/completions
         // {
         //   "model": "<model_name>",
         //   "messages": [{ "role": "user", "content": "<prompt>" }],
@@ -155,6 +156,11 @@ pub const ForgeCloudProvider = struct {
         }) catch return provider.ProviderError.ProviderInternalError;
         defer allocator.free(payload);
 
+        // Build endpoint URL: {proxy_url}/v1/chat/completions
+        const endpoint = std.fmt.allocPrint(allocator, "{s}/v1/chat/completions", .{self.proxy_url}) catch
+            return provider.ProviderError.ProviderInternalError;
+        defer allocator.free(endpoint);
+
         // Build auth header.
         const auth_header = std.fmt.allocPrint(allocator, "Bearer {s}", .{self.access_token}) catch
             return provider.ProviderError.ProviderInternalError;
@@ -171,7 +177,7 @@ pub const ForgeCloudProvider = struct {
         defer client.deinit();
 
         const result = client.fetch(.{
-            .location = .{ .url = self.proxy_url },
+            .location = .{ .url = endpoint },
             .method = .POST,
             .payload = payload,
             .headers = .{ .content_type = .{ .override = "application/json" } },
@@ -183,20 +189,18 @@ pub const ForgeCloudProvider = struct {
 
         return switch (result.status) {
             .ok => {
-                // Parse response: { "text": "...", "model": "...", "usage": { ... } }
-                const text = parseResponseText(allocator, body) catch return provider.ProviderError.MalformedResponse;
+                // Parse OpenAI-compatible response:
+                // { "choices": [{ "message": { "content": "..." } }], "usage": { ... } }
+                const text = parseOpenAIResponseText(allocator, body) catch return provider.ProviderError.MalformedResponse;
                 defer allocator.free(text);
 
-                // Write to the output writer (the agent loop reads from this).
                 writer.writeAll(text) catch return provider.ProviderError.ProviderInternalError;
 
-                // Stream callback (for live UI updates).
                 if (self.stream_callback) |cb| {
                     if (self.stream_context) |ctx| cb(ctx, text);
                 }
 
-                // Parse usage.
-                if (parseResponseUsage(body)) |parsed_usage| {
+                if (parseOpenAIResponseUsage(body)) |parsed_usage| {
                     self.latest_usage = parsed_usage;
                 }
             },
@@ -314,20 +318,26 @@ pub const ForgeCloudProvider = struct {
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
-/// Parse the "text" field from the backend response JSON.
-fn parseResponseText(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+/// Parse the "choices[0].message.content" field from an OpenAI-compatible
+/// response JSON.
+fn parseOpenAIResponseText(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     const Parsed = struct {
-        text: []const u8,
+        choices: []struct {
+            message: struct {
+                content: []const u8,
+            },
+        },
     };
     var parsed = std.json.parseFromSlice(Parsed, allocator, body, .{
         .ignore_unknown_fields = true,
     }) catch return error.MalformedResponse;
     defer parsed.deinit();
-    return allocator.dupe(u8, parsed.value.text);
+    if (parsed.value.choices.len == 0) return error.MalformedResponse;
+    return allocator.dupe(u8, parsed.value.choices[0].message.content);
 }
 
-/// Parse the "usage" field from the backend response JSON.
-fn parseResponseUsage(body: []const u8) ?provider.TokenUsage {
+/// Parse the "usage" field from an OpenAI-compatible response JSON.
+fn parseOpenAIResponseUsage(body: []const u8) ?provider.TokenUsage {
     const Parsed = struct {
         usage: ?struct {
             prompt_tokens: usize = 0,
