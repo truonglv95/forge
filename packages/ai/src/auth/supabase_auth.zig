@@ -223,8 +223,15 @@ fn doAuthRequest(
     url: []const u8,
     payload: []const u8,
 ) AuthError!Session {
+    std.debug.print("[auth] doAuthRequest: url={s}\n", .{url});
+    std.debug.print("[auth] anon_key.len={}\n", .{config.anon_key.len});
+    std.debug.print("[auth] anon_key prefix={s}\n", .{if (config.anon_key.len > 20) config.anon_key[0..20] else config.anon_key});
+
     // anon_key must be non-empty — all Supabase Auth REST calls require it.
-    if (config.anon_key.len == 0) return AuthError.MalformedResponse;
+    if (config.anon_key.len == 0) {
+        std.debug.print("[auth] ERROR: anon_key is empty!\n", .{});
+        return AuthError.MalformedResponse;
+    }
 
     var response_alloc = std.Io.Writer.Allocating.init(allocator);
     defer response_alloc.deinit();
@@ -244,6 +251,9 @@ fn doAuthRequest(
         .{ .name = "Authorization", .value = auth_value },
     };
 
+    std.debug.print("[auth] sending POST to {s}\n", .{url});
+    std.debug.print("[auth] payload: {s}\n", .{payload});
+
     const result = client.fetch(.{
         .location = .{ .url = url },
         .method = .POST,
@@ -251,9 +261,18 @@ fn doAuthRequest(
         .headers = .{ .content_type = .{ .override = "application/json" } },
         .extra_headers = &headers,
         .response_writer = &response_alloc.writer,
-    }) catch return AuthError.NetworkError;
+    }) catch |err| {
+        std.debug.print("[auth] fetch error: {}\n", .{err});
+        return AuthError.NetworkError;
+    };
 
     const body = response_alloc.writer.buffer[0..response_alloc.writer.end];
+    std.debug.print("[auth] response status: {}\n", .{result.status});
+    std.debug.print("[auth] response body len: {}\n", .{body.len});
+    if (body.len > 0 and body.len < 500) {
+        std.debug.print("[auth] response body: {s}\n", .{body});
+    }
+
     if (body.len == 0) return AuthError.MalformedResponse;
 
     return switch (result.status) {

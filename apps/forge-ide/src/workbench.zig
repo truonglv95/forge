@@ -1307,34 +1307,36 @@ pub const Workbench = struct {
         const password = self.login_password_buffer.content() catch return;
         defer self.login_password_buffer.allocator.free(password);
 
+        std.debug.print("[login] submitLogin called, email={s}, pass_len={}\n", .{ email, password.len });
+        std.debug.print("[login] forge_cloud_url={s}\n", .{self.forge_cloud_url});
+        std.debug.print("[login] anon_key_len={}\n", .{self.forge_cloud_anon_key.len});
+
         if (email.len == 0 or password.len == 0) {
             self.login_error = "Email and password are required";
             return;
         }
 
-        // Set loading state BEFORE the blocking HTTP call so the UI
-        // shows "Signing in..." immediately. Request a redraw so the
-        // button renders in disabled/loading state.
+        // Set loading state BEFORE the blocking HTTP call
         self.login_in_progress = true;
         self.login_error = null;
         renderer.Renderer.requestRedraw();
 
-        // Call Supabase Auth (blocking — this is the network round-trip).
-        // The UI will appear frozen during this call. For a truly async
-        // solution, we'd spawn a background thread, but that requires
-        // significant refactoring of the tick-based UI loop.
+        std.debug.print("[login] calling signInWithEmail...\n", .{});
+        // Call Supabase Auth
         self.auth_manager.signInWithEmail(email, password) catch |err| {
+            std.debug.print("[login] signInWithEmail FAILED: {}\n", .{err});
             self.login_in_progress = false;
             self.login_error = switch (err) {
                 ai.auth.AuthError.InvalidCredentials => "Invalid email or password",
                 ai.auth.AuthError.TooManyRequests => "Too many attempts. Try again later.",
                 ai.auth.AuthError.NetworkError => "Network error. Check your connection.",
-                ai.auth.AuthError.MalformedResponse => "Server error. Check Supabase config.",
+                ai.auth.AuthError.MalformedResponse => "Server error. Check Supabase anon key config.",
                 else => "Login failed. Please try again.",
             };
             renderer.Renderer.requestRedraw();
             return;
         };
+        std.debug.print("[login] signInWithEmail SUCCESS!\n", .{});
 
         // Success — clear login state and switch to IDE.
         self.login_in_progress = false;
