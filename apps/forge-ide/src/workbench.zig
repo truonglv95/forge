@@ -510,13 +510,20 @@ pub const Workbench = struct {
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
         self.rate_limiter = ai.rate_limiter.RateLimiter.init(allocator);
         self.usage_tracker = ai.usage_tracker.UsageTracker.init(allocator);
-        // Initialize auth session manager. Config comes from build-time
-        // options: -Dforge-cloud-url=... -Dforge-cloud-anon-key=...
+        // Initialize auth session manager. Config comes from environment
+        // variables (FORGE_CLOUD_URL, FORGE_CLOUD_ANON_KEY) with fallback
+        // to build-time options, then to hardcoded defaults.
+        // Priority: env var > build option > default
         const build_options = @import("build_options");
-        self.forge_cloud_url = try allocator.dupe(u8, build_options.forge_cloud_url);
-        self.forge_cloud_anon_key = try allocator.dupe(u8, build_options.forge_cloud_anon_key);
+        const env_url = std.c.getenv("FORGE_CLOUD_URL");
+        const env_key = std.c.getenv("FORGE_CLOUD_ANON_KEY");
+        const url: []const u8 = if (env_url) |u| std.mem.span(u) else build_options.forge_cloud_url;
+        const key: []const u8 = if (env_key) |k| std.mem.span(k) else build_options.forge_cloud_anon_key;
+        self.forge_cloud_url = try allocator.dupe(u8, url);
+        self.forge_cloud_anon_key = try allocator.dupe(u8, key);
+        std.debug.print("[forge] cloud_url={s} anon_key_len={}\n", .{ self.forge_cloud_url, self.forge_cloud_anon_key.len });
         // Proxy URL = project URL + /functions/v1 (Supabase Edge Functions base)
-        self.forge_cloud_proxy_url = try std.fmt.allocPrint(allocator, "{s}/functions/v1", .{build_options.forge_cloud_url});
+        self.forge_cloud_proxy_url = try std.fmt.allocPrint(allocator, "{s}/functions/v1", .{url});
         self.auth_manager = ai.auth_session.SessionManager.init(allocator, io, .{
             .project_url = self.forge_cloud_url,
             .anon_key = self.forge_cloud_anon_key,
