@@ -16,6 +16,7 @@ pub var perf_sidebar_ms: f32 = 0;
 pub var perf_editor_ms: f32 = 0;
 pub var perf_panel_ms: f32 = 0;
 pub var perf_agent_ms: f32 = 0;
+pub var perf_status_ms: f32 = 0;
 pub var perf_measure_hits: u64 = 0;
 pub var perf_measure_misses: u64 = 0;
 pub var perf_markdown_height_hits: u64 = 0;
@@ -26,6 +27,25 @@ pub var perf_agent_queue_coalesced: u64 = 0;
 pub var perf_last_frame_ms: i64 = 0;
 pub var perf_frame_count: u64 = 0;
 pub var continuous_rendering_enabled: bool = false;
+
+// --- Caret blink / focus tracking ---------------------------------------
+//
+// When the editor (or any text input panel) has focus, the renderer is
+// set to continuous mode (60fps) so the caret blinks at the configured
+// 1.06s period. `caret_blink_editor_focused` tracks this state so other
+// subsystems (e.g. power management, future optimizations) can react.
+pub var caret_blink_editor_focused: bool = false;
+
+/// Notify the blink scheduler that a text input has gained or lost focus.
+/// No-op when the state hasn't changed.
+pub fn setEditorFocused(focused: bool) void {
+    if (caret_blink_editor_focused == focused) return;
+    caret_blink_editor_focused = focused;
+    if (focused) {
+        // Force an immediate redraw so the caret appears on focus.
+        renderer.Renderer.requestRedraw();
+    }
+}
 
 // Persistent frame arena — reused across frames to avoid init/deinit
 // overhead. Reset (not deinit) at frame start for O(1) cleanup.

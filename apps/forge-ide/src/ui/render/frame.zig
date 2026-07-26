@@ -34,6 +34,17 @@ fn needsContinuousRendering(wb: anytype) bool {
         wb.agent_ui.session.unlock();
         if (live) return true;
     }
+    // Caret blink — when the editor (or any text input) has focus, run
+    // continuously so the caret blinks at 1.06s period. Without this,
+    // the X11 event loop blocks on XNextEvent when idle and the caret
+    // freezes between keystrokes.
+    //
+    // Cost analysis: 60fps × 5-12ms/frame = ~30-60% CPU on a single core
+    // at 1080p. This is the same tradeoff VSCode/Sublime make — modern
+    // IDEs run their compositor continuously while focused.
+    if (wb.focused_panel == .editor or wb.focused_panel == .agent or wb.focused_panel == .palette) {
+        return true;
+    }
     return false;
 }
 
@@ -106,6 +117,7 @@ pub fn onRenderFrame() void {
         state.perf_editor_ms = 0;
         state.perf_panel_ms = 0;
         state.perf_agent_ms = 0;
+        state.perf_status_ms = 0;
 
         // Always draw all panels every frame. The previous dirty-region
         // skip optimization had a critical bug: g_full_clear_needed was
@@ -175,9 +187,14 @@ pub fn onRenderFrame() void {
             agent_span.end();
         }
         {
+            var status_span = telemetry.startSpan("render", "status");
+            const status_start_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
             renderer.Renderer.setClipRect(0, h - layout.status_height, w, layout.status_height);
             status_bar_render.drawStatusBar(wb, w, h, geo.shell_mode);
             renderer.Renderer.clearClipRect();
+            const status_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+            state.perf_status_ms = @floatFromInt(status_end_ms - status_start_ms);
+            status_span.end();
         }
         // P1-4: Toast notifications (bottom-right corner, on top of everything).
         notifications_render.drawNotifications(wb, w, h);
@@ -232,6 +249,10 @@ pub fn onRenderFrame() void {
         renderer.Renderer.setContinuousRendering(continuous);
     }
 
+    // Update caret blink scheduler — `setEditorFocused` is a no-op when
+    // the state hasn't changed, so calling it every frame is cheap.
+    state.setEditorFocused(continuous);
+
     // Frame timing — log slow frames (>16ms = dropped 60fps frame)
     const frame_duration = frame_end_ms - frame_start_ms;
     state.perf_last_frame_ms = frame_duration;
@@ -244,4 +265,83 @@ pub fn onRenderFrame() void {
         });
     }
     state.perf_frame_count += 1;
+
+    // Perf overlay — drawn last so it appears on top of everything.
+    // Enabled via `FORGE_PERF=1` env var. Shows per-panel timings and
+    // cache hit rates in the top-right corner so users can diagnose
+    // jank without a debugger.
+    if (state.perf_overlay_enabled) {
+        drawPerfOverlay(w, h);
+    }
+}
+
+fn drawPerfOverlay(w: f32, h: f32) void {
+    const overlay_w: f32 = 280;
+    const overlay_h: f32 = 168;
+    const x = w - overlay_w - 12;
+    const y = 38.0;
+
+    // Background panel — semi-transparent dark for readability.
+    renderer.Renderer.drawRect(x, y, overlay_w, overlay_h, .{ .r = 0.05, .g = 0.05, .b = 0.06, .a = 0.92 });
+    renderer.Renderer.drawRect(x, y, overlay_w, 1, .{ .r = 0.3, .g = 0.6, .b = 0.95, .a = 1.0 });
+
+    var buf: [256]u8 = undefined;
+    const text_color = renderer.Color{ .r = 0.85, .g = 0.9, .b = 0.95, .a = 1.0 };
+    const label_color = renderer.Color{ .r = 0.55, .g = 0.6, .b = 0.65, .a = 1.0 };
+    const value_color = renderer.Color{ .r = 0.95, .g = 0.85, .b = 0.55, .a = 1.0 };
+    const good_color = renderer.Color{ .r = 0.55, .g = 0.95, .b = 0.65, .a = 1.0 };
+    const bad_color = renderer.Color{ .r = 0.95, .g = 0.55, .b = 0.55, .a = 1.0 };
+
+    var line_y: f32 = y + 8;
+    const line_h: f32 = 14;
+    const label_x = x + 10;
+    const value_x = x + 110;
+
+    // Title
+    renderer.Renderer.drawText("Perf Monitor", label_x, line_y, 11, .{ .r = 0.8, .g = 0.85, .b = 0.95, .a = 1.0 });
+    line_y += line_h + 4;
+
+    // Frame time
+    {
+        const s = std.fmt.bufPrint(&buf, "frame", .{}) catch return;
+        renderer.Renderer.drawText(s, label_x, line_y, 11, label_color);
+        const v = std.fmt.bufPrint(&buf, "{d:>6.1} ms", .{state.perf_frame_ms}) catch return;
+        const vc = if (state.perf_frame_ms > 16.0) bad_color else if (state.perf_frame_ms > 12.0) value_color else good_color;
+        renderer.Renderer.drawText(v, value_x, line_y, 11, vc);
+        line_y += line_h;
+    }
+    // Per-panel
+    {
+        const items = [_]struct { label: []const u8, value: f32 }{
+            .{ .label = "tick", .value = state.perf_tick_ms },
+            .{ .label = "layout", .value = state.perf_layout_ms },
+            .{ .label = "sidebar", .value = state.perf_sidebar_ms },
+            .{ .label = "editor", .value = state.perf_editor_ms },
+            .{ .label = "agent", .value = state.perf_agent_ms },
+            .{ .label = "panel", .value = state.perf_panel_ms },
+            .{ .label = "status", .value = state.perf_status_ms },
+        };
+        for (items) |it| {
+            renderer.Renderer.drawText(it.label, label_x, line_y, 11, label_color);
+            const v = std.fmt.bufPrint(&buf, "{d:>6.1} ms", .{it.value}) catch return;
+            const vc = if (it.value > 5.0) bad_color else if (it.value > 2.0) value_color else good_color;
+            renderer.Renderer.drawText(v, value_x, line_y, 11, vc);
+            line_y += line_h;
+        }
+    }
+
+    // Cache hit rate
+    line_y += 2;
+    const total_lookups = state.perf_measure_hits + state.perf_measure_misses;
+    const hit_rate: f32 = if (total_lookups > 0)
+        @as(f32, @floatFromInt(state.perf_measure_hits)) / @as(f32, @floatFromInt(total_lookups)) * 100.0
+    else
+        0.0;
+    renderer.Renderer.drawText("text cache", label_x, line_y, 11, label_color);
+    const v = std.fmt.bufPrint(&buf, "{d:>5.1}%  ({d})", .{ hit_rate, state.perf_measure_hits }) catch return;
+    const vc = if (hit_rate > 95.0) good_color else if (hit_rate > 80.0) value_color else bad_color;
+    renderer.Renderer.drawText(v, value_x, line_y, 11, vc);
+
+    _ = h;
+    _ = text_color;
 }
