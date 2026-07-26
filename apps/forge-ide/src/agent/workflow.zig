@@ -22,6 +22,12 @@ pub const Host = struct {
     ai_embedding_url: ?[]const u8,
     ai_mcp_enabled: bool,
     ai_enable_hyde: bool,
+    /// User's JWT for Forge Cloud backend proxy. When non-null, the
+    /// provider factory will use forge_cloud (backend proxy) instead
+    /// of direct LLM calls.
+    ai_access_token: ?[]const u8 = null,
+    /// Forge Cloud backend proxy URL (e.g. https://project.supabase.co/functions/v1/llm-proxy).
+    ai_proxy_url: ?[]const u8 = null,
     edit_mode: agent_edit_mode.Mode,
     workspace_root: workspace.WorkspaceRoot,
     workspace_path: []const u8,
@@ -557,7 +563,11 @@ const ResumeContext = struct {
 
 fn providerOptions(host: *const Host, fake_response: []const u8, fake_plan: ?[]const u8, for_agent: bool) ai.provider_factory.Options {
     const name = if (host.ai_provider.len > 0) host.ai_provider else "auto";
-    const base_url = if (std.mem.eql(u8, name, "openrouter")) host.ai_openrouter_url else host.ai_ollama_url;
+    // When user is logged in (has access_token), use the proxy URL
+    // as base_url for forge_cloud. Otherwise use provider-specific URL.
+    const base_url = if (host.ai_access_token != null)
+        host.ai_proxy_url
+    else if (std.mem.eql(u8, name, "openrouter")) host.ai_openrouter_url else host.ai_ollama_url;
     return .{
         .provider_name = name,
         .model = host.ai_model,
@@ -569,6 +579,7 @@ fn providerOptions(host: *const Host, fake_response: []const u8, fake_plan: ?[]c
         .stream_context = @ptrCast(@constCast(host)),
         .thinking_callback = thinkingBridge,
         .thinking_context = @ptrCast(@constCast(host)),
+        .access_token = host.ai_access_token,
     };
 }
 

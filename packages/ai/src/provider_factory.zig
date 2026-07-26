@@ -7,6 +7,7 @@ const openrouter_provider = @import("providers/openrouter/provider.zig");
 const nvidia_provider = @import("providers/nvidia/provider.zig");
 const openai_provider = @import("providers/openai/provider.zig");
 const anthropic_provider = @import("providers/anthropic/provider.zig");
+const forge_cloud_provider = @import("providers/forge_cloud/provider.zig");
 const credentials = @import("credentials.zig");
 
 pub const FactoryError = error{
@@ -37,6 +38,12 @@ pub const Options = struct {
     stream_context: ?*anyopaque = null,
     thinking_callback: ?*const fn (?*anyopaque, []const u8) void = null,
     thinking_context: ?*anyopaque = null,
+
+    // Forge Cloud — user's JWT (from Supabase Auth login). When set,
+    // the forge_cloud provider uses this to authenticate with the
+    // backend proxy. When null, forge_cloud falls back to direct
+    // LLM calls (BYO API key).
+    access_token: ?[]const u8 = null,
 };
 
 const CreateFn = *const fn (
@@ -89,7 +96,15 @@ fn wrapCreateAnthropic(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*
     return anthropic_provider.AnthropicProvider.create(allocator, io, environ_map, options);
 }
 
+fn wrapCreateForgeCloud(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return forge_cloud_provider.ForgeCloudProvider.create(allocator, io, environ_map, options);
+}
+
 const registry = [_]ProviderDef{
+    // forge_cloud is always available — it's the backend proxy that
+    // handles auth + LLM calls. When the user is logged in, "auto"
+    // resolves to this provider.
+    .{ .name = "forge_cloud", .create = wrapCreateForgeCloud, .availability = .always },
     .{ .name = "ollama", .create = wrapCreateOllama, .availability = .ollama_probe },
     .{
         .name = "openai",
@@ -149,7 +164,15 @@ fn providerAvailable(
     def: ProviderDef,
 ) bool {
     return switch (def.availability) {
-        .always => true,
+        .always => blk: {
+            // forge_cloud is "always" available, but only if the user
+            // has an access_token (is logged in). Without a token, the
+            // provider would fail at create() with MissingCredentials.
+            if (std.mem.eql(u8, def.name, "forge_cloud")) {
+                break :blk options.access_token != null;
+            }
+            break :blk true;
+        },
         .ollama_probe => blk: {
             const host = ollama_provider.resolveHost(allocator, environ_map, options.base_url) catch break :blk false;
             defer allocator.free(host);

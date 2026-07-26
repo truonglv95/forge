@@ -3,6 +3,7 @@ pub const gemini = @import("gemini/provider.zig");
 pub const ollama = @import("ollama/provider.zig");
 pub const openrouter = @import("openrouter/provider.zig");
 pub const anthropic = @import("anthropic/provider.zig");
+pub const forge_cloud = @import("forge_cloud/provider.zig");
 
 // Tool Transports
 pub const fake_tool_transport = @import("fake/tool_transport.zig");

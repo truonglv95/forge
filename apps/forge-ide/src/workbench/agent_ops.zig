@@ -290,6 +290,11 @@ pub fn agentHost(wb: anytype) agent_workflow.Host {
         .ai_embedding_url = wb.agent_ui.embedding_url,
         .ai_mcp_enabled = wb.agent_ui.mcp_enabled,
         .ai_enable_hyde = wb.agent_ui.enable_hyde,
+        .ai_access_token = if (wb.auth_manager.isLoggedIn()) blk: {
+            const token = wb.auth_manager.getValidAccessToken() catch break :blk null;
+            break :blk token;
+        } else null,
+        .ai_proxy_url = wb.forge_cloud_url,
         .edit_mode = wb.agent_ui.edit_mode,
         .workspace_root = wb.workspace_root,
         .workspace_path = wb.workspace_path,

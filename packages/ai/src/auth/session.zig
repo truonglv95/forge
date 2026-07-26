@@ -170,7 +170,11 @@ pub const SessionManager = struct {
             self.config,
             old_session.refresh_token,
         );
-        old_session.deinit();
+        // deinit needs a mutable pointer; copy out of the optional, clear
+        // the optional, then deinit on the local mutable copy.
+        var old = self.session.?;
+        self.session = null;
+        old.deinit();
         self.session = new_session;
         try self.persist();
     }
