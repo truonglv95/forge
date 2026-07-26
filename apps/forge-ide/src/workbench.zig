@@ -554,7 +554,30 @@ pub const Workbench = struct {
         });
         self.editor.ghost.setEnvironMap(self.environ_map);
 
-        try self.reloadAiConfigFromDisk();
+        // Model loading strategy:
+        // - If logged in: fetch models from backend (already done above)
+        // - If NOT logged in: do NOT load local model defaults — the user
+        //   must login first. The login modal will be shown and models
+        //   will be fetched after successful login.
+        // - Only load local config for non-model settings (ollama_url, etc.)
+        if (self.auth_manager.isLoggedIn()) {
+            // Already fetched models from backend above.
+            // Also load local config for URLs + embedding config.
+            self.reloadAiConfigFromDisk() catch {};
+        } else {
+            // Not logged in — skip model loading. Login modal will show.
+            // Only load basic AI config (URLs, embedding) without models.
+            self.reloadAiConfigFromDisk() catch {};
+            // Clear models — user must login to get model list from backend.
+            if (self.agent_ui.models.len > 0) {
+                freeModelOptions(self.allocator, self.agent_ui.models);
+                self.agent_ui.models = &.{};
+            }
+            if (self.agent_ui.model) |m| {
+                self.allocator.free(m);
+                self.agent_ui.model = null;
+            }
+        }
         // Re-apply font size AFTER AI config is loaded — the AI config
         // load may overwrite agent_ui.model/provider, but font size is
         // a user_settings value that was already loaded. Re-apply to
