@@ -120,6 +120,9 @@ pub const Palette = struct {
             .{ .id = "inline_edit.accept", .title = "Inline Edit: Accept", .category = "AI", .command = .inline_edit_accept },
             .{ .id = "inline_edit.reject", .title = "Inline Edit: Reject", .category = "AI", .command = .inline_edit_reject },
             .{ .id = "inline_edit.cancel", .title = "Inline Edit: Cancel", .category = "AI", .command = .inline_edit_cancel },
+            // Multi-file Composer (Cursor parity)
+            .{ .id = "composer.add_active_file", .title = "Composer: Add Active File to Batch", .category = "AI", .command = .composer_add_active_file },
+            .{ .id = "composer.clear_files", .title = "Composer: Clear File Batch", .category = "AI", .command = .composer_clear_files },
             // P0-3: Mentions
             .{ .id = "chat.mention_file", .title = "Chat: Mention @file", .category = "AI", .command = .chat_mention_file },
             .{ .id = "chat.mention_symbol", .title = "Chat: Mention @symbol", .category = "AI", .command = .chat_mention_symbol },

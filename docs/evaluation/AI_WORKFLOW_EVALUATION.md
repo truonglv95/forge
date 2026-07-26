@@ -22,16 +22,26 @@ pre-alpha.
 Tuy nhiên, để ngang tầm Cursor / Kiro / Antigravity, Forge cần vượt **5 gap
 chính**:
 
-1. **Inline tab completion** chưa được wire vào IDE (code đã có ở
-   `packages/ai/src/inline_completion.zig` nhưng Capability Matrix ghi "No").
+> **Cập nhật 2026-07-26:** Gap #1 (inline tab completion) ĐÃ được wire —
+> `apps/forge-ide/src/workbench/ghost_completion.zig:309` gọi
+> `ai.inline_completion.complete(...)`. Gap #1 trong danh sách dưới đây
+> đã được giải quyết. Gap #2 (Kiro spec UX), Gap #3 (Antigravity timeline),
+> Gap #5 (Cursor multi-file Composer) vẫn còn. Đánh giá chi tiết nhất
+> mới: `AI_FEATURE_AUDIT_2026.md`.
+
+1. ~~**Inline tab completion** chưa được wire vào IDE~~ → **ĐÃ WIRE**
+   (xem `ghost_completion.zig:309` + `inline_completion.zig`). Còn lại:
+   thiếu latency benchmark p50/p95 và integration test.
 2. **Spec-driven development** kiểu Kiro (specs → implementation → trace) mới
    dừng ở `forge spec` CLI, chưa có IDE UX và hooks vào agent.
 3. **Agent timeline & background runs** kiểu Antigravity chưa có — agent chỉ
-   chạy foreground, không có timeline visualization hay resume dài hạn.
+   chạy foreground (trong IDE), không có timeline visualization hay resume
+   dài hạn. CLI đã có `forge agent run --background` + `runs`/`wait`/`cancel`.
 4. **Multi-agent orchestration** (planner + reviewer + implementer) đã có
    subagent nhưng chưa có UI trực quan và contract rõ.
 5. **Composer / multi-file inline edit** kiểu Cursor chưa có UX "edit files in
-   place từ chat" — hiện mọi edit phải qua proposal review panel.
+   place từ chat" — hiện mọi edit phải qua proposal review panel. CLI đã có
+   `forge edit --file a --file b` nhưng IDE inline_edit chỉ single-file.
 
 Phần còn lại của tài liệu này phân tích chi tiết từng gap, đối chiếu code hiện
 tại, và đề xuất RFCs cùng implementation slices.
@@ -192,20 +202,27 @@ tại, và đề xuất RFCs cùng implementation slices.
   `ContextLengthExceeded`, `NetworkError`, `MalformedResponse`
 
 **Điểm mạnh:**
-- 6 providers + fake cho test — đa dạng hơn Cursor (chỉ OpenAI/Anthropic).
+- 7 providers + fake cho test — đa dạng hơn Cursor (chỉ OpenAI/Anthropic).
 - Failover chain: nếu Gemini rate limit, tự switch sang OpenRouter.
 - Error taxonomy chuẩn hóa, có `retryable` flag.
 - Credentials qua keychain (macOS) — không bao giờ log.
 
+> **Cập nhật 2026-07-26:** Điểm yếu #1 và #2 dưới đây ĐÃ được giải quyết.
+> `packages/ai/src/providers/anthropic/provider.zig:14` ships
+> `claude-sonnet-4-5` làm default model. `provider_capability.zig` (509 LOC)
+> đã implement 8+ `builtin_models` với price/Mtok + `strengths` metadata.
+> `retry.zig` đã có jitter. Điểm yếu #3 (model router thông minh) đã được
+> giải quyết qua `routing.zig` (667 LOC, multilingual EN+VN).
+
 **Điểm yếu:**
-1. **Không có Anthropic Claude provider** — Cursor có, Kiro có. Đây là gap
-   lớn vì Claude 3.5/4 Sonnet là model mạnh cho coding.
-2. **Không có provider capability metadata** — doc AI-FLOW-014 đề cập nhưng
-   chưa implement. Agent không biết provider nào support native tool calls,
-   streaming, structured output.
-3. **Không có model router thông minh** — hiện `route_resolver.zig` chỉ route
-   theo task intent, không route theo model capability.
-4. **Retry/backoff chưa có jitter** — chỉ exponential, dễ thundering herd.
+1. ~~**Không có Anthropic Claude provider**~~ → **ĐÃ IMPLEMENT**
+   (`providers/anthropic/provider.zig:14`, default `claude-sonnet-4-5`).
+2. ~~**Không có provider capability metadata**~~ → **ĐÃ IMPLEMENT**
+   (`provider_capability.zig`, 509 LOC, 8+ builtin_models).
+3. ~~**Không có model router thông minh**~~ → **ĐÃ IMPLEMENT**
+   (`routing.zig`, 667 LOC, multilingual EN+VN classification).
+4. ~~**Retry/backoff chưa có jitter**~~ → **ĐÃ IMPLEMENT**
+   (`retry.zig` đã có jitter).
 
 **Khuyến nghị:**
 - Thêm Anthropic Claude provider (RFC-0016).
@@ -265,6 +282,12 @@ tại, và đề xuất RFCs cùng implementation slices.
 - `apps/forge-ide/src/workbench/` — 60+ controllers cho mọi feature
 - Inline edit, ghost completion (file exists nhưng chưa wire)
 
+> **Cập nhật 2026-07-26:** "ghost completion chưa wire" là STALE.
+> `apps/forge-ide/src/workbench/ghost_completion.zig:309` gọi
+> `ai.inline_completion.complete(...)` — Tab accept + Esc dismiss
+> wired qua `keybindings.zig:158-164`. Điểm yếu #1 dưới đây đã được
+> giải quyết.
+
 **Điểm mạnh:**
 - Native Zig, không Electron — perf tốt hơn theo design.
 - Layout chuẩn IDE (activity bar + sidebar + editor + panel + status bar).
@@ -273,8 +296,11 @@ tại, và đề xuất RFCs cùng implementation slices.
 - Diff review panel đã có.
 
 **Điểm yếu:**
-1. **Inline tab completion chưa wire** — `ghost_completion.zig` workbench
-   exists nhưng không thấy gọi `inline_completion.complete()`.
+1. ~~**Inline tab completion chưa wire**~~ → **ĐÃ WIRE**
+   (`ghost_completion.zig:309` gọi `ai.inline_completion.complete()`,
+   `keybindings.zig:158` dispatch Tab accept, `dispatch.zig:796`
+   handles `ghost_completion_accept`). Còn lại: thiếu latency
+   benchmark p50/p95 và integration test.
 2. **Agent timeline UI chưa có** — Antigravity có timeline view của agent
    steps, Forge chỉ có tool_step_card list.
 3. **Composer / multi-file edit từ chat chưa có** — Cursor có "Cmd+K" inline

@@ -50,6 +50,8 @@ pub fn drawActivityBar(wb: *Workbench, w: f32, alloc: std.mem.Allocator) void {
             .extensions => renderer.forge_icons.extensions,
             .ai => renderer.forge_icons.sparkle,
             .outline => renderer.forge_icons.kebab,
+            .specs => renderer.forge_icons.file,
+            .runs => renderer.forge_icons.sync,
         };
 
         var child_node = alloc.create(renderer.layout.Node) catch return;

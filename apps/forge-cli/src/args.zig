@@ -53,6 +53,11 @@ pub const GlobalFlags = struct {
     prefer_local: bool = false,
     max_price_per_mtok: ?u32 = null,
     strengths: ?[]const u8 = null,
+    // Code review flags (forge review)
+    staged: bool = false,
+    base: ?[]const u8 = null,
+    head: ?[]const u8 = null,
+    heuristic_only: bool = false,
 };
 
 pub const Command = enum {
@@ -85,6 +90,8 @@ pub const Command = enum {
     models,
     chat,
     edit,
+    review,
+    test_gen,
 };
 
 pub const CliArgs = struct {
@@ -270,9 +277,21 @@ pub const CliArgs = struct {
                     flags.require_tools = true;
                 } else if (std.mem.eql(u8, arg, "--require-streaming")) {
                     flags.require_streaming = true;
+                } else if (std.mem.eql(u8, arg, "--staged")) {
+                    flags.staged = true;
+                } else if (std.mem.eql(u8, arg, "--heuristic-only")) {
+                    flags.heuristic_only = true;
+                } else if (std.mem.startsWith(u8, arg, "--base=")) {
+                    flags.base = arg["--base=".len..];
+                } else if (std.mem.eql(u8, arg, "--base")) {
+                    if (i + 1 < args.len) { i += 1; flags.base = args[i]; }
+                } else if (std.mem.startsWith(u8, arg, "--head=")) {
+                    flags.head = arg["--head=".len..];
+                } else if (std.mem.eql(u8, arg, "--head")) {
+                    if (i + 1 < args.len) { i += 1; flags.head = args[i]; }
                 }
             } else if (!cmd_found) {
-                if (std.mem.eql(u8, arg, "doctor")) command = .doctor else if (std.mem.eql(u8, arg, "inspect")) command = .inspect else if (std.mem.eql(u8, arg, "search")) command = .search else if (std.mem.eql(u8, arg, "watch")) command = .watch else if (std.mem.eql(u8, arg, "diff")) command = .diff else if (std.mem.eql(u8, arg, "apply")) command = .apply else if (std.mem.eql(u8, arg, "undo")) command = .undo else if (std.mem.eql(u8, arg, "history")) command = .history else if (std.mem.eql(u8, arg, "task")) command = .task else if (std.mem.eql(u8, arg, "check")) command = .check else if (std.mem.eql(u8, arg, "index")) command = .index else if (std.mem.eql(u8, arg, "context")) command = .context else if (std.mem.eql(u8, arg, "ask")) command = .ask else if (std.mem.eql(u8, arg, "run")) command = .run else if (std.mem.eql(u8, arg, "agent")) command = .agent else if (std.mem.eql(u8, arg, "plan")) command = .plan else if (std.mem.eql(u8, arg, "parsers")) command = .parsers else if (std.mem.eql(u8, arg, "eval")) command = .eval else if (std.mem.eql(u8, arg, "ecosystem")) command = .ecosystem else if (std.mem.eql(u8, arg, "ext")) command = .ext else if (std.mem.eql(u8, arg, "spec")) command = .spec else if (std.mem.eql(u8, arg, "complete")) command = .complete else if (std.mem.eql(u8, arg, "providers")) command = .providers else if (std.mem.eql(u8, arg, "models")) command = .models else if (std.mem.eql(u8, arg, "chat")) command = .chat else if (std.mem.eql(u8, arg, "edit")) command = .edit else if (std.mem.eql(u8, arg, "help")) command = .help else if (std.mem.eql(u8, arg, "version")) command = .version else command = .unknown;
+                if (std.mem.eql(u8, arg, "doctor")) command = .doctor else if (std.mem.eql(u8, arg, "inspect")) command = .inspect else if (std.mem.eql(u8, arg, "search")) command = .search else if (std.mem.eql(u8, arg, "watch")) command = .watch else if (std.mem.eql(u8, arg, "diff")) command = .diff else if (std.mem.eql(u8, arg, "apply")) command = .apply else if (std.mem.eql(u8, arg, "undo")) command = .undo else if (std.mem.eql(u8, arg, "history")) command = .history else if (std.mem.eql(u8, arg, "task")) command = .task else if (std.mem.eql(u8, arg, "check")) command = .check else if (std.mem.eql(u8, arg, "index")) command = .index else if (std.mem.eql(u8, arg, "context")) command = .context else if (std.mem.eql(u8, arg, "ask")) command = .ask else if (std.mem.eql(u8, arg, "run")) command = .run else if (std.mem.eql(u8, arg, "agent")) command = .agent else if (std.mem.eql(u8, arg, "plan")) command = .plan else if (std.mem.eql(u8, arg, "parsers")) command = .parsers else if (std.mem.eql(u8, arg, "eval")) command = .eval else if (std.mem.eql(u8, arg, "ecosystem")) command = .ecosystem else if (std.mem.eql(u8, arg, "ext")) command = .ext else if (std.mem.eql(u8, arg, "spec")) command = .spec else if (std.mem.eql(u8, arg, "complete")) command = .complete else if (std.mem.eql(u8, arg, "providers")) command = .providers else if (std.mem.eql(u8, arg, "models")) command = .models else if (std.mem.eql(u8, arg, "chat")) command = .chat else if (std.mem.eql(u8, arg, "edit")) command = .edit else if (std.mem.eql(u8, arg, "review")) command = .review else if (std.mem.eql(u8, arg, "test-gen")) command = .test_gen else if (std.mem.eql(u8, arg, "help")) command = .help else if (std.mem.eql(u8, arg, "version")) command = .version else command = .unknown;
                 cmd_found = true;
             } else {
                 try positional.append(allocator, arg);

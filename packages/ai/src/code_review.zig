@@ -150,6 +150,149 @@ fn countSeverity(comments: []const ReviewComment, severity: ReviewSeverity) usiz
     return count;
 }
 
+/// LLM-powered code review. Uses the heuristic analyzer as a pre-filter
+/// to identify suspicious hunks (secret leaks, TODOs, debug prints, long
+/// lines), then sends those hunks to the LLM for deeper analysis.
+///
+/// The LLM is asked to act as a senior code reviewer and identify:
+/// - Bugs and logic errors
+/// - Security vulnerabilities
+/// - Performance issues
+/// - Style/maintainability improvements
+///
+/// Returns a combined ReviewResult with both heuristic and LLM comments.
+/// If the LLM call fails, returns only the heuristic comments (graceful
+/// degradation).
+pub fn reviewWithLlm(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    diff_content: []const u8,
+    provider: anytype,
+    cancel_token: ?*const @import("forge-kernel").cancellation.CancellationToken,
+) !ReviewResult {
+    _ = io; // Reserved for future file I/O (e.g. reading full file context).
+    // Step 1: Run heuristic analysis first (fast, no LLM call).
+    var heuristic_result = try analyzeDiff(allocator, diff_content);
+    errdefer heuristic_result.deinit(allocator);
+
+    // Step 2: Build the LLM prompt with the diff and heuristic findings.
+    var prompt_buf: std.ArrayList(u8) = .empty;
+    defer prompt_buf.deinit(allocator);
+    try prompt_buf.appendSlice(allocator, "You are a senior code reviewer. Analyze the following git diff and provide review comments.\n\n");
+    try prompt_buf.appendSlice(allocator, "For each issue found, output a line in this format:\n");
+    try prompt_buf.appendSlice(allocator, "[severity] file:line - category: message\n\n");
+    try prompt_buf.appendSlice(allocator, "Severities: critical, warning, suggestion, nitpick\n");
+    try prompt_buf.appendSlice(allocator, "Categories: bug, security, performance, style, maintainability\n\n");
+    try prompt_buf.appendSlice(allocator, "Heuristic pre-filter findings (verify and expand these):\n");
+    var findings_buf: [512]u8 = undefined;
+    const findings_text = std.fmt.bufPrint(&findings_buf, "  {d} heuristic findings (secrets, TODOs, debug prints, long lines)\n\n", .{heuristic_result.comments.len}) catch "  (heuristic findings below)\n\n";
+    try prompt_buf.appendSlice(allocator, findings_text);
+    try prompt_buf.appendSlice(allocator, "Diff to review:\n```\n");
+    // Truncate very long diffs to avoid token limits.
+    const max_diff_bytes = 16 * 1024;
+    if (diff_content.len > max_diff_bytes) {
+        try prompt_buf.appendSlice(allocator, diff_content[0..max_diff_bytes]);
+        try prompt_buf.appendSlice(allocator, "\n... (diff truncated, ");
+        var trunc_buf: [32]u8 = undefined;
+        const trunc_text = std.fmt.bufPrint(&trunc_buf, "{d}", .{diff_content.len}) catch "?";
+        try prompt_buf.appendSlice(allocator, trunc_text);
+        try prompt_buf.appendSlice(allocator, " bytes total)\n");
+    } else {
+        try prompt_buf.appendSlice(allocator, diff_content);
+    }
+    try prompt_buf.appendSlice(allocator, "\n```\n\nProvide your review comments now.");
+
+    // Step 3: Call the LLM via the provider's streaming ask interface.
+    // If cancel_token is null, we still need a non-null pointer for the
+    // provider API. Create a dummy token that is never cancelled.
+    var dummy_state = std.atomic.Value(bool).init(false);
+    var dummy_token: @import("forge-kernel").cancellation.CancellationToken = .{ .shared_state = &dummy_state };
+    const token_ptr = cancel_token orelse &dummy_token;
+
+    var response_alloc = std.Io.Writer.Allocating.init(allocator);
+    defer response_alloc.deinit();
+    const images = [_]@import("provider.zig").ImagePart{};
+    provider.ask(
+        allocator,
+        prompt_buf.items,
+        &images,
+        &response_alloc.writer,
+        token_ptr,
+    ) catch {
+        // LLM call failed — return heuristic-only result (graceful degradation).
+        return heuristic_result;
+    };
+    const llm_output = response_alloc.writer.buffer[0..response_alloc.writer.end];
+
+    // Step 4: Parse LLM output and append comments to the result.
+    // We look for lines matching "[severity] file:line - category: message".
+    var llm_comments: std.ArrayList(ReviewComment) = .empty;
+    errdefer {
+        for (llm_comments.items) |*c| c.deinit(allocator);
+        llm_comments.deinit(allocator);
+    }
+    var lines = std.mem.splitScalar(u8, llm_output, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] != '[') continue;
+        const close_bracket = std.mem.indexOfScalar(u8, trimmed, ']') orelse continue;
+        const severity_str = trimmed[1..close_bracket];
+        const rest = std.mem.trim(u8, trimmed[close_bracket + 1 ..], " \t");
+        if (rest.len == 0) continue;
+
+        const severity: ReviewSeverity = if (std.mem.eql(u8, severity_str, "critical"))
+            .critical
+        else if (std.mem.eql(u8, severity_str, "warning"))
+            .warning
+        else if (std.mem.eql(u8, severity_str, "suggestion"))
+            .suggestion
+        else if (std.mem.eql(u8, severity_str, "nitpick"))
+            .nitpick
+        else
+            .suggestion;
+
+        // Parse "file:line - category: message"
+        const dash_pos = std.mem.indexOf(u8, rest, " - ") orelse continue;
+        const file_line = rest[0..dash_pos];
+        const msg_part = rest[dash_pos + 3 ..];
+        const colon_pos = std.mem.indexOfScalar(u8, file_line, ':') orelse continue;
+        const file = file_line[0..colon_pos];
+        const line_num = std.fmt.parseInt(u32, file_line[colon_pos + 1 ..], 10) catch 0;
+
+        const cat_colon = std.mem.indexOfScalar(u8, msg_part, ':') orelse continue;
+        const category = msg_part[0..cat_colon];
+        const message = std.mem.trim(u8, msg_part[cat_colon + 1 ..], " \t");
+
+        try llm_comments.append(allocator, .{
+            .file_path = try allocator.dupe(u8, file),
+            .line = line_num,
+            .severity = severity,
+            .category = try allocator.dupe(u8, category),
+            .message = try allocator.dupe(u8, message),
+        });
+    }
+
+    // Merge LLM comments into the heuristic result.
+    var merged: std.ArrayList(ReviewComment) = .empty;
+    errdefer {
+        for (merged.items) |*c| c.deinit(allocator);
+        merged.deinit(allocator);
+    }
+    try merged.appendSlice(allocator, heuristic_result.comments);
+    heuristic_result.comments = &.{};
+    try merged.appendSlice(allocator, llm_comments.items);
+    llm_comments.items = &.{};
+    llm_comments.deinit(allocator);
+
+    allocator.free(heuristic_result.comments);
+    allocator.free(heuristic_result.summary);
+    return .{
+        .comments = try merged.toOwnedSlice(allocator),
+        .summary = try allocator.dupe(u8, "Heuristic + LLM review completed"),
+        .overall_score = heuristic_result.overall_score,
+    };
+}
+
 fn checkSecretLeak(line: []const u8) bool {
     const patterns = [_][]const u8{
         "api_key",  "apikey",   "API_KEY",

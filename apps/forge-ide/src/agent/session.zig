@@ -75,6 +75,9 @@ pub const AgentStep = struct {
     is_thought: bool = false,
     content: ?[]const u8 = null,
     running: bool = false,
+    /// True if this step failed (e.g. tool call errored, validation failed).
+    /// Used by the timeline to render failed steps in red.
+    failed: bool = false,
 };
 
 pub fn shouldAutoExpandStep(kind: []const u8, content: ?[]const u8) bool {
@@ -118,6 +121,9 @@ pub const Session = struct {
     selected_run_index: usize = 0,
     show_review: bool = false,
     review_scroll_y: f32 = 0,
+    /// Scroll offset for the interactive step timeline in the AI sidebar.
+    /// Allows the user to scroll through long agent runs (Antigravity-style).
+    timeline_scroll_y: usize = 0,
     worker_running: bool = false,
     stream_text: std.ArrayList(u8) = .empty,
     thinking_text: std.ArrayList(u8) = .empty,

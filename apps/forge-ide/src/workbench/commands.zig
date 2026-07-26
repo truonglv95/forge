@@ -204,6 +204,11 @@ pub const Command = union(enum) {
     inline_edit_accept: void,
     inline_edit_reject: void,
     inline_edit_cancel: void,
+    // Multi-file Composer (Cursor parity) — add/remove files from the
+    // current inline edit batch so the agent edits across multiple files.
+    composer_add_active_file: void,
+    composer_remove_file: usize,
+    composer_clear_files: void,
     // @mentions (P0-3)
     chat_mention_file: void,
     chat_mention_symbol: void,

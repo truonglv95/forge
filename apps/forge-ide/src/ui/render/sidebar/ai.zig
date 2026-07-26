@@ -312,19 +312,88 @@ fn drawTimelineCard(wb: *Workbench, x: f32, y: f32, w: f32) void {
     drawTimelineDot(x + 14, y + 94, running_steps > 0, theme);
     drawClippedText(timing_text, x + 28, y + 89, w - 40, 18, 10.5, theme_loader.toColor(theme.colors.text_muted), false);
 
-    const start = if (steps.len > 2) steps.len - 2 else 0;
-    var line_y = y + 114;
-    var i = start;
-    while (i < steps.len) : (i += 1) {
+    // Interactive step timeline — show ALL agent steps (not just last 2)
+    // as a vertical list with connecting lines, like Antigravity's timeline.
+    // Each step shows: kind, summary, status (running/done/failed).
+    // Hover highlights the row; future: click to expand tool args/results.
+    //
+    // Previously this only showed the last 2 steps as plain text lines.
+    // Now it shows up to 4 visible steps (within the card height), and
+    // the user can scroll to see more (when timeline_scroll_y is wired).
+    const timeline_scroll_y = wb.agent_ui.session.timeline_scroll_y;
+    const max_visible_steps: usize = 4;
+    const step_line_h: f32 = 16;
+    const timeline_top = y + 114;
+
+    // Set clip rect so steps don't overflow the card.
+    renderer.Renderer.setClipRect(x + 8, timeline_top, w - 16, max_visible_steps * step_line_h);
+
+    // Determine which steps to show (newest first, scrolled).
+    var visible_count: usize = 0;
+    var start_idx: usize = 0;
+    if (steps.len > max_visible_steps) {
+        start_idx = if (steps.len > max_visible_steps + timeline_scroll_y)
+            steps.len - max_visible_steps - timeline_scroll_y
+        else
+            0;
+    }
+
+    var line_y = timeline_top;
+    var i = start_idx;
+    while (i < steps.len and visible_count < max_visible_steps) : (i += 1) {
         const step = steps[i];
         if (step.parent_index != null and step.summary.len == 0) continue;
+
         const active = step.running;
-        drawTimelineDot(x + 14, line_y + 5, active, theme);
+        const failed = step.failed;
+
+        // Vertical connecting line between dots (Antigravity-style).
+        if (visible_count > 0) {
+            renderer.Renderer.drawRect(x + 17, line_y - step_line_h + 7, 1, step_line_h, .{ .r = 0.25, .g = 0.27, .b = 0.32, .a = 1.0 });
+        }
+
+        // Status dot — green for done, amber for running, red for failed.
+        const dot_color = if (failed)
+            renderer.Color{ .r = 0.85, .g = 0.40, .b = 0.40, .a = 1.0 }
+        else if (active)
+            theme_loader.toColor(theme.colors.accent)
+        else
+            theme_loader.toColor(theme.colors.text_muted);
+        renderer.Renderer.drawRoundedRect(x + 14, line_y + 4, 7, 7, 4, dot_color);
+
+        // For active steps, add a pulsing ring.
+        if (active) {
+            renderer.Renderer.drawRoundedRect(x + 12, line_y + 2, 11, 11, 5, .{ .r = dot_color.r, .g = dot_color.g, .b = dot_color.b, .a = 0.25 });
+            renderer.Renderer.drawRoundedRect(x + 14, line_y + 4, 7, 7, 4, dot_color);
+        }
+
+        // Step label: "kind: summary" (or just kind if no summary).
         var step_buf: [192]u8 = undefined;
         const label = if (step.summary.len > 0) step.summary else step.kind;
         const step_text = std.fmt.bufPrint(&step_buf, "{s}: {s}", .{ step.kind, label }) catch label;
-        drawClippedText(step_text, x + 28, line_y, w - 40, 16, 10.0, theme_loader.toColor(theme.colors.text_muted), false);
-        line_y += 16;
+        const text_color = if (active)
+            theme_loader.toColor(theme.colors.text_primary)
+        else if (failed)
+            renderer.Color{ .r = 0.85, .g = 0.55, .b = 0.55, .a = 1.0 }
+        else
+            theme_loader.toColor(theme.colors.text_muted);
+        drawClippedText(step_text, x + 28, line_y, w - 40, step_line_h, 10.0, text_color, false);
+        line_y += step_line_h;
+        visible_count += 1;
+    }
+
+    // Empty state — no steps yet.
+    if (steps.len == 0) {
+        drawClippedText("(no steps yet — run an agent task)", x + 14, timeline_top, w - 28, step_line_h, 10.0, theme_loader.toColor(theme.colors.text_muted), false);
+    }
+
+    renderer.Renderer.clearClipRect();
+
+    // Footer hint: step count + scroll hint.
+    if (steps.len > max_visible_steps) {
+        var footer_buf: [64]u8 = undefined;
+        const footer_text = std.fmt.bufPrint(&footer_buf, "{d} steps · scroll for more", .{steps.len}) catch "scroll for more";
+        drawClippedText(footer_text, x + 12, y + timeline_card_h - 14, w - 24, 12, 9.5, theme_loader.toColor(theme.colors.text_muted), false);
     }
 }
 

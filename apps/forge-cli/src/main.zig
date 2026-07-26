@@ -30,6 +30,8 @@ const complete_cmd = @import("complete.zig");
 const providers_cmd = @import("providers_cmd.zig");
 const chat_cmd = @import("chat_cmd.zig");
 const edit_cmd = @import("edit_cmd.zig");
+const review_cmd = @import("review_cmd.zig");
+const test_gen_cmd = @import("test_gen_cmd.zig");
 
 const Io = std.Io;
 
@@ -156,6 +158,12 @@ fn run(
         },
         .edit => {
             return edit_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
+        .review => {
+            return review_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
+        .test_gen => {
+            return test_gen_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
         .help => {
             try printHelp(writer);
@@ -320,6 +328,8 @@ fn isKnownCommandName(name: []const u8) bool {
         "models",
         "chat",
         "edit",
+        "review",
+        "test-gen",
         "help",
     };
     for (commands) |command| {

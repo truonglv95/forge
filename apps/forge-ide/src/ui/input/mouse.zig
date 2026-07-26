@@ -973,6 +973,14 @@ pub fn onMouseEvent(event: renderer.MouseEvent) void {
                     wb.lsp.outline_scroll_y += scroll_delta_y;
                     if (wb.lsp.outline_scroll_y < 0) wb.lsp.outline_scroll_y = 0;
                 },
+                .specs => {
+                    wb.spec_scroll_y += scroll_delta_y;
+                    if (wb.spec_scroll_y < 0) wb.spec_scroll_y = 0;
+                },
+                .runs => {
+                    wb.runs_scroll_y += scroll_delta_y;
+                    if (wb.runs_scroll_y < 0) wb.runs_scroll_y = 0;
+                },
             }
         } else if (mx >= geo.agent_x) {
             if (wb.agent_ui.session.show_review and !wb.proposal_review_open) {

@@ -14,6 +14,8 @@ const sidebar_render = @import("sidebar.zig");
 const status_bar_render = @import("status_bar.zig");
 const task_panel_render = @import("task_panel.zig");
 const outline_panel = @import("../sidebar/outline_panel.zig");
+const spec_panel = @import("../sidebar/spec_panel.zig");
+const runs_panel = @import("../sidebar/runs_panel.zig");
 const notifications_render = @import("notifications.zig");
 const ai_render = @import("sidebar/ai.zig");
 
@@ -147,6 +149,8 @@ pub fn onRenderFrame() void {
                     .extensions => sidebar_render.drawExtensionsPanel(wb, geo.explorer_x, geo.explorer_w, h),
                     .outline => outline_panel.drawOutline(wb, geo.explorer_x, geo.explorer_w, h),
                     .ai => ai_render.drawAiPanel(wb, geo.explorer_x, geo.explorer_w, h),
+                    .specs => spec_panel.drawSpecsPanel(wb, geo.explorer_x, geo.explorer_w, h),
+                    .runs => runs_panel.drawRunsPanel(wb, geo.explorer_x, geo.explorer_w, h),
                 }
                 renderer.Renderer.clearClipRect();
                 const sidebar_end_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();

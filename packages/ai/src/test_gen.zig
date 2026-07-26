@@ -121,3 +121,77 @@ test "detectFramework by extension" {
     try std.testing.expectEqual(TestFramework.jest, detectFramework("app.ts"));
     try std.testing.expectEqual(TestFramework.go_test, detectFramework("main.go"));
 }
+
+/// LLM-powered test generation. Takes a function name + body, asks the
+/// LLM to generate comprehensive unit tests in the detected framework.
+///
+/// The LLM is prompted with:
+/// - The function signature and body
+/// - The target test framework
+/// - Instructions to cover normal/edge/error/concurrency cases
+///
+/// Returns the LLM-generated test code. If the LLM call fails, falls
+/// back to the heuristic stub generator (graceful degradation).
+pub fn generateTestsWithLlm(
+    allocator: std.mem.Allocator,
+    function_name: []const u8,
+    function_body: []const u8,
+    framework: TestFramework,
+    provider: anytype,
+    cancel_token: ?*const @import("forge-kernel").cancellation.CancellationToken,
+) !GeneratedTest {
+    // Build the LLM prompt.
+    var prompt_buf: std.ArrayList(u8) = .empty;
+    defer prompt_buf.deinit(allocator);
+    try prompt_buf.appendSlice(allocator, "You are an expert test engineer. Generate comprehensive unit tests for the following function.\n\n");
+    try prompt_buf.appendSlice(allocator, "Requirements:\n");
+    try prompt_buf.appendSlice(allocator, "- Cover normal cases, edge cases, error cases, and boundary conditions\n");
+    try prompt_buf.appendSlice(allocator, "- Use descriptive test names that explain what is being tested\n");
+    try prompt_buf.appendSlice(allocator, "- Include assertions that verify the function's behavior\n");
+    try prompt_buf.appendSlice(allocator, "- Do NOT include placeholder TODOs — write real, runnable test code\n\n");
+    try prompt_buf.appendSlice(allocator, "Test framework: ");
+    try prompt_buf.appendSlice(allocator, @tagName(framework));
+    try prompt_buf.appendSlice(allocator, "\n\nFunction to test:\n```\n");
+    try prompt_buf.appendSlice(allocator, function_body);
+    try prompt_buf.appendSlice(allocator, "\n```\n\nGenerate the tests now. Output only the test code, no markdown fences.");
+
+    // Call the LLM.
+    var dummy_state = std.atomic.Value(bool).init(false);
+    var dummy_token: @import("forge-kernel").cancellation.CancellationToken = .{ .shared_state = &dummy_state };
+    const token_ptr = cancel_token orelse &dummy_token;
+
+    var response_alloc = std.Io.Writer.Allocating.init(allocator);
+    defer response_alloc.deinit();
+    const images = [_]@import("provider.zig").ImagePart{};
+    provider.ask(
+        allocator,
+        prompt_buf.items,
+        &images,
+        &response_alloc.writer,
+        token_ptr,
+    ) catch {
+        // LLM call failed — fall back to heuristic stubs.
+        return generateTestStubs(allocator, function_name, function_body, framework);
+    };
+    const llm_output = response_alloc.writer.buffer[0..response_alloc.writer.end];
+
+    // Count test functions in the LLM output (rough heuristic).
+    var test_count: usize = 0;
+    var lines = std.mem.splitScalar(u8, llm_output, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (std.mem.startsWith(u8, trimmed, "test ") or
+            std.mem.startsWith(u8, trimmed, "def test_") or
+            std.mem.startsWith(u8, trimmed, "it(") or
+            std.mem.startsWith(u8, trimmed, "func Test"))
+        {
+            test_count += 1;
+        }
+    }
+
+    return .{
+        .test_code = try allocator.dupe(u8, llm_output),
+        .framework = framework,
+        .test_count = test_count,
+    };
+}

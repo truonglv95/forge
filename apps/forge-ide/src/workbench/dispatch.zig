@@ -119,6 +119,8 @@ pub fn dispatch(wb: anytype, command: Command) !void {
                 .extensions => .extensions,
                 .ai => .agent,
                 .outline => .editor,
+                .specs => .explorer,
+                .runs => .explorer,
             };
             if (view == .git) try @import("../workbench/git_ops.zig").refreshGitStatus(wb);
         },
@@ -897,6 +899,36 @@ pub fn dispatch(wb: anytype, command: Command) !void {
         .inline_edit_cancel => {
             wb.editor.inline_edit.close();
             try wb.setStatus("Inline edit cancelled");
+        },
+        // Multi-file Composer (Cursor parity) — add/remove files from
+        // the current inline edit batch so the agent edits across
+        // multiple files atomically.
+        .composer_add_active_file => {
+            const doc = wb.editor.tabs.activeDoc() orelse {
+                try wb.setStatus("No active file to add to Composer");
+                return;
+            };
+            if (doc.path.len == 0) {
+                try wb.setStatus("Cannot add untitled file to Composer");
+                return;
+            }
+            wb.editor.inline_edit.addComposerFile(doc.path) catch |err| {
+                wb.logBackgroundError("Add Composer file", err);
+                try wb.setStatus("Failed to add file to Composer");
+                return;
+            };
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Added to Composer ({d} files)", .{wb.editor.inline_edit.composer_files.items.len}) catch "Added to Composer";
+            try wb.setStatus(msg);
+        },
+        .composer_remove_file => |index| {
+            wb.editor.inline_edit.removeComposerFile(index);
+            try wb.setStatus("Removed file from Composer");
+        },
+        .composer_clear_files => {
+            wb.editor.inline_edit.freeComposerFiles();
+            wb.editor.inline_edit.composer_mode = false;
+            try wb.setStatus("Composer cleared");
         },
         // P0-3: @mentions (basic dispatch — most logic in input handler)
         .chat_mention_file => {

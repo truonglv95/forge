@@ -37,7 +37,17 @@ pub fn submit(wb: anytype) !void {
 
     const intent = try wb.editor.inline_edit.buildAgentPrompt();
     defer wb.allocator.free(intent);
-    const scope_files: []const []const u8 = &.{};
+
+    // Multi-file Composer (Cursor parity) — when composer_mode is active,
+    // pass all selected files as scope_files so the agent edits across
+    // all of them atomically. When not in composer mode, scope_files is
+    // empty (single-file edit via active_file).
+    const scope_files: []const []const u8 = if (wb.editor.inline_edit.composer_mode)
+        wb.editor.inline_edit.allComposerFiles() catch &.{}
+    else
+        &.{};
+    defer if (wb.editor.inline_edit.composer_mode) wb.allocator.free(scope_files);
+
     const active_file = wb.editor.inline_edit.file_path;
     agent_workflow.spawnGenerate(&@import("../workbench/agent_ops.zig").agentHost(wb), intent, scope_files, active_file) catch |err| {
         wb.logBackgroundError("Start inline edit agent", err);

@@ -1010,6 +1010,14 @@ fn loadLspBlock(allocator: std.mem.Allocator, options: LoadOptions, builder: *co
         const detail = if (options.supplement.hover_text) |hover| hover else "LSP cursor context";
         try builder.addBlockWithDetail(.lsp, "lsp:cursor-context", text, detail);
     }
+
+    // Kiro-style spec injection — when an approved spec exists, inject its
+    // requirements + design + tasks into the context so the agent
+    // implements against the spec. This closes the "specs → implementation
+    // → hooks" loop: the agent sees the spec and follows it.
+    if (options.supplement.spec_block) |spec_text| {
+        try builder.addBlockWithDetail(.rules, "spec:active", spec_text, "Approved spec for this task");
+    }
 }
 
 fn loadExpansionBlock(

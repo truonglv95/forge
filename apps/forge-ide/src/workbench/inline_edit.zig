@@ -42,6 +42,13 @@ pub const State = struct {
     /// True while the AI request is in flight.
     pending: bool = false,
 
+    /// Multi-file Composer mode (Cursor parity) — when true, the user
+    /// has selected multiple files for the edit. The agent will propose
+    /// edits across all listed files. `composer_files` are additional
+    /// file paths beyond the active file (owned).
+    composer_mode: bool = false,
+    composer_files: std.ArrayList([]const u8) = .empty,
+
     pub fn init(allocator: std.mem.Allocator, io: std.Io) State {
         return .{
             .allocator = allocator,
@@ -55,7 +62,46 @@ pub const State = struct {
         if (self.file_path) |p| self.allocator.free(p);
         if (self.original_text) |t| self.allocator.free(t);
         if (self.proposed_text) |t| self.allocator.free(t);
+        self.freeComposerFiles();
+        self.composer_files.deinit(self.allocator);
         self.* = undefined;
+    }
+
+    /// Free all stored Composer file paths.
+    pub fn freeComposerFiles(self: *State) void {
+        for (self.composer_files.items) |path| self.allocator.free(path);
+        self.composer_files.clearRetainingCapacity();
+    }
+
+    /// Add a file to the Composer batch. The path is duped (caller may free).
+    /// No-op if the file is already in the batch.
+    pub fn addComposerFile(self: *State, file_path: []const u8) !void {
+        // Avoid duplicates.
+        for (self.composer_files.items) |existing| {
+            if (std.mem.eql(u8, existing, file_path)) return;
+        }
+        const owned = try self.allocator.dupe(u8, file_path);
+        errdefer self.allocator.free(owned);
+        try self.composer_files.append(self.allocator, owned);
+        self.composer_mode = self.composer_files.items.len > 0;
+    }
+
+    /// Remove a file from the Composer batch by index.
+    pub fn removeComposerFile(self: *State, index: usize) void {
+        if (index >= self.composer_files.items.len) return;
+        self.allocator.free(self.composer_files.items[index]);
+        _ = self.composer_files.orderedRemove(index);
+        self.composer_mode = self.composer_files.items.len > 0;
+    }
+
+    /// Get all files in the Composer batch (active file + additional files).
+    /// Caller must free the returned slice (but not the individual paths).
+    pub fn allComposerFiles(self: *const State) ![]const []const u8 {
+        var list: std.ArrayList([]const u8) = .empty;
+        errdefer list.deinit(self.allocator);
+        if (self.file_path) |fp| try list.append(self.allocator, fp);
+        for (self.composer_files.items) |fp| try list.append(self.allocator, fp);
+        return try list.toOwnedSlice(self.allocator);
     }
 
     /// Open the inline-edit prompt box for the given selection.
@@ -76,6 +122,8 @@ pub const State = struct {
         if (self.proposed_text) |t| self.allocator.free(t);
         self.proposed_text = null;
         self.prompt.clearRetainingCapacity();
+        self.freeComposerFiles();
+        self.composer_mode = false;
 
         self.file_path = try self.allocator.dupe(u8, file_path);
         self.original_text = try self.allocator.dupe(u8, original_text);
@@ -91,6 +139,8 @@ pub const State = struct {
         self.active = false;
         self.pending = false;
         self.prompt.clearRetainingCapacity();
+        self.freeComposerFiles();
+        self.composer_mode = false;
         if (self.proposed_text) |t| {
             self.allocator.free(t);
             self.proposed_text = null;

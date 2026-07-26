@@ -271,6 +271,12 @@ pub const Workbench = struct {
     ai_mcp_registry: ?ai.mcp_registry.Registry = null,
     ai_mcp_scroll_y: f32 = 0,
     sidebar_view: @import("ui/sidebar/sidebar_view.zig").SidebarView = .explorer,
+    // Spec panel state (Kiro-style spec-driven development sidebar)
+    spec_scroll_y: f32 = 0,
+    spec_hover_index: ?usize = null,
+    // Runs panel state (Antigravity-style background run monitor)
+    runs_scroll_y: f32 = 0,
+    runs_hover_index: ?usize = null,
     selected_extension_index: ?usize = null,
     chat_scroll_y: f32 = 0,
     chat_follow_stream: bool = false,
