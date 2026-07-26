@@ -20,6 +20,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <math.h>
+#include <time.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <fontconfig/fontconfig.h>
@@ -391,8 +392,22 @@ static int load_font(void) {
      * library handle it references is invalid. By ensuring g_ft is valid
      * first, FT_Done_Face can safely free the face. */
     if (!g_ft) { if (FT_Init_FreeType(&g_ft) != 0) { pthread_mutex_unlock(&g_ft_lock); return 0; } }
+
+    /* Free ALL faces before reloading — primary, bold, AND fallbacks.
+     * Previously fallback faces were leaked on each load_font() call
+     * (g_fallback_count was reset to 0 without freeing the FT_Face
+     * objects). Over multiple theme/font changes this accumulated
+     * leaked FT_Face objects that could trigger fontconfig heap
+     * corruption. */
     if (g_face) { FT_Done_Face(g_face); g_face = NULL; }
     if (g_face_bold) { FT_Done_Face(g_face_bold); g_face_bold = NULL; }
+    for (int i = 0; i < g_fallback_count; i++) {
+        if (g_fallback_faces[i]) {
+            FT_Done_Face(g_fallback_faces[i]);
+            g_fallback_faces[i] = NULL;
+        }
+    }
+    g_fallback_count = 0;
 
     /* Try system fonts first via fontconfig — prefers JetBrains Mono
      * (a programmer font with clear 0/O, 1/l/I distinction) when
@@ -1540,9 +1555,44 @@ void forge_backend_set_ime_cursor_rect(float x, float y, float w, float h) {
 void forge_backend_run(void) {
     if (!g_display) return;
     int pending = 1;
+    /* Frame timing — track the last render time to cap the frame rate
+     * at ~60fps (16.67ms per frame). Without this, the continuous
+     * rendering loop would render as fast as possible (1000+ fps with
+     * a 1ms sleep), wasting CPU and GPU cycles.
+     *
+     * The previous code used usleep(16000) which added up to 16ms of
+     * input latency — keystrokes that arrived during the sleep had to
+     * wait until the next iteration to be processed. With frame timing,
+     * we sleep only the remaining time until the next frame is due,
+     * and process events every iteration (1ms sleep between checks). */
+    struct timespec last_render_ts;
+    clock_gettime(CLOCK_MONOTONIC, &last_render_ts);
+    const long frame_budget_ns = 16000000; /* 16ms = ~60fps */
+
     while (1) {
+        /* Drain ALL pending events before rendering. This ensures that
+         * multiple keystrokes that arrived during the previous frame's
+         * render are all processed before the next render, so the user
+         * sees the cumulative effect of their typing in one frame
+         * instead of spread across multiple frames. */
         while (XPending(g_display)) { XEvent ev; XNextEvent(g_display, &ev); if (XFilterEvent(&ev, g_window)) continue; handle_event(&ev); }
         if (pending || g_continuous) {
+            /* Check if enough time has passed since the last render.
+             * In continuous mode, we skip the render if we're ahead of
+             * the frame budget, but still process events. This prevents
+             * the render loop from consuming 100% CPU. */
+            struct timespec now_ts;
+            clock_gettime(CLOCK_MONOTONIC, &now_ts);
+            long elapsed_ns = (now_ts.tv_sec - last_render_ts.tv_sec) * 1000000000L
+                            + (now_ts.tv_nsec - last_render_ts.tv_nsec);
+            if (g_continuous && elapsed_ns < frame_budget_ns && !pending) {
+                /* Not enough time has passed — sleep briefly and check
+                 * for new events. 1ms sleep gives sub-millisecond event
+                 * latency while keeping CPU usage low. */
+                usleep(1000);
+                continue;
+            }
+            last_render_ts = now_ts;
 #ifdef FORGE_HAS_GLX
             if (g_gpu_mode) {
                 /* GPU mode: GLX clear + render callback (batches rects) +
@@ -1627,6 +1677,10 @@ void forge_backend_run(void) {
         }
         if (atomic_load(&g_redraw_requests) > 0) { pending = 1; atomic_exchange(&g_redraw_requests, 0); }
         if (!g_continuous) { XEvent ev; XNextEvent(g_display, &ev); if (!XFilterEvent(&ev, g_window)) handle_event(&ev); pending = 1; }
-        else usleep(16000);
+        /* In continuous mode, the frame timing check at the top of the
+         * loop handles the sleep. We only need a tiny yield here to
+         * prevent busy-waiting when there are no events and the frame
+         * budget hasn't elapsed. The 1ms sleep is at the top of the
+         * loop (in the frame timing check), so we just continue here. */
     }
 }
