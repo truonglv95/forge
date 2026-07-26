@@ -513,12 +513,26 @@ pub const Workbench = struct {
         // Initialize auth session manager. Config comes from environment
         // variables (FORGE_CLOUD_URL, FORGE_CLOUD_ANON_KEY) with fallback
         // to build-time options, then to hardcoded defaults.
-        // Priority: env var > build option > default
+        // Priority: environ_map > std.c.getenv > build option > default
         const build_options = @import("build_options");
-        const env_url = std.c.getenv("FORGE_CLOUD_URL");
-        const env_key = std.c.getenv("FORGE_CLOUD_ANON_KEY");
-        const url: []const u8 = if (env_url) |u| std.mem.span(u) else build_options.forge_cloud_url;
-        const key: []const u8 = if (env_key) |k| std.mem.span(k) else build_options.forge_cloud_anon_key;
+
+        // Try environ_map first (more reliable on all platforms).
+        var env_url: ?[]const u8 = null;
+        var env_key: ?[]const u8 = null;
+        if (environ_map) |map| {
+            if (map.get("FORGE_CLOUD_URL")) |v| env_url = v;
+            if (map.get("FORGE_CLOUD_ANON_KEY")) |v| env_key = v;
+        }
+        // Fallback to std.c.getenv (works on Linux/macOS).
+        if (env_url == null) {
+            if (std.c.getenv("FORGE_CLOUD_URL")) |u| env_url = std.mem.span(u);
+        }
+        if (env_key == null) {
+            if (std.c.getenv("FORGE_CLOUD_ANON_KEY")) |k| env_key = std.mem.span(k);
+        }
+
+        const url: []const u8 = env_url orelse build_options.forge_cloud_url;
+        const key: []const u8 = env_key orelse build_options.forge_cloud_anon_key;
         self.forge_cloud_url = try allocator.dupe(u8, url);
         self.forge_cloud_anon_key = try allocator.dupe(u8, key);
         std.debug.print("[forge] cloud_url={s} anon_key_len={}\n", .{ self.forge_cloud_url, self.forge_cloud_anon_key.len });
