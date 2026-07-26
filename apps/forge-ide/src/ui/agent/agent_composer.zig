@@ -248,7 +248,7 @@ fn modelLabel(models: []const ModelOption, model_id: ?[]const u8) []const u8 {
         return id;
     }
     if (models.len > 0) return models[0].label;
-    return "Unknown";
+    return "Sign in to select model";
 }
 
 fn promptIsEmpty(prompt: *const editor.Buffer) bool {
@@ -408,7 +408,7 @@ pub fn draw(
     show_review: bool,
     focused: bool,
 ) void {
-    const controls_disabled = worker_running;
+    const controls_disabled = worker_running or models.len == 0;
     _ = show_review;
     const bg = renderer.Color{ .r = 0.22, .g = 0.22, .b = 0.22, .a = 1.0 };
     // Outline colour brightens when the composer is focused — gives users
