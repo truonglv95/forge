@@ -5,6 +5,7 @@ pub const Command = union(enum) {
     wipe_history,
     policy,
     tools_trust_all,
+    tools_list,
     mode: ai.tools.Mode,
     mode_cycle,
     context,
@@ -13,6 +14,7 @@ pub const Command = union(enum) {
     timeline,
     mock,
     help,
+    help_overlay,
     exit_app,
     resume_session: ?[]const u8,
     sessions,
@@ -22,6 +24,14 @@ pub const Command = union(enum) {
     runs_list,
     runs_status,
     complete_prompt: ?[]const u8,
+    // Phase 24: Additional commands for TUI completeness
+    model_show,
+    model_set: ?[]const u8,
+    cost,
+    capability,
+    save: ?[]const u8,
+    provider_show,
+    review,
     not_command,
 };
 
@@ -37,9 +47,11 @@ pub fn parseSlashCommand(input: []const u8) Command {
     if (matchesSlash(input, "cls") or matchesSlash(input, "clear")) return .wipe_history;
     if (matchesSlash(input, "policy")) return .policy;
     if (matchesSlash(input, "tools")) {
-        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .help;
+        if (std.mem.eql(u8, input, "/tools")) return .tools_list;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .tools_list;
         const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
         if (std.mem.eql(u8, args, "trust-all")) return .tools_trust_all;
+        if (std.mem.eql(u8, args, "list")) return .tools_list;
         return .help;
     }
     if (matchesSlash(input, "context")) return .context;
@@ -49,6 +61,24 @@ pub fn parseSlashCommand(input: []const u8) Command {
     if (matchesSlash(input, "help") or matchesSlash(input, "?")) return .help;
     if (matchesSlash(input, "quit") or matchesSlash(input, "exit")) return .exit_app;
     if (matchesSlash(input, "sessions") or matchesSlash(input, "list")) return .sessions;
+
+    // Phase 24: Additional commands for TUI completeness
+    if (matchesSlash(input, "model") or matchesSlash(input, "m")) {
+        if (std.mem.eql(u8, input, "/model") or std.mem.eql(u8, input, "/m")) return .model_show;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .model_show;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .model_set = if (args.len > 0) args else null };
+    }
+    if (matchesSlash(input, "cost") or matchesSlash(input, "usage")) return .cost;
+    if (matchesSlash(input, "capability") or matchesSlash(input, "caps")) return .capability;
+    if (matchesSlash(input, "provider") or matchesSlash(input, "prov")) return .provider_show;
+    if (matchesSlash(input, "save")) {
+        if (std.mem.eql(u8, input, "/save")) return .{ .save = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .save = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .save = if (args.len > 0) args else null };
+    }
+    if (matchesSlash(input, "review") or matchesSlash(input, "rev")) return .review;
 
     // TUI parity commands (Phase 13)
     // /spec [list|show <id>] — Kiro-style spec management
@@ -139,8 +169,59 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear|/cls /policy /tools trust-all /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /timeline /resume [id] /sessions /mock /spec [list|show <id>] /runs [list|status] /complete [prompt] /help /quit|/exit
-    \\Keys: Tab policy | Ctrl+M mode | Ctrl+R review tool output | Esc close events/timeline | PgUp/PgDn scroll | a/n proposal apply/dismiss | Ctrl+C cancel/quit
+    \\Commands: /clear /policy /tools [list|trust-all] /mode [ask|plan|agent] /context /diff /events /timeline /resume /sessions /spec /runs /complete /model [name] /cost /capability /provider /save [path] /review /help /quit
+    \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review tool | ?=help overlay | Esc=close panel | PgUp/PgDn=scroll | a/n=apply/dismiss | Ctrl+C=cancel/quit
+    ;
+}
+
+/// Full help overlay text shown when user presses '?' or runs /help overlay.
+pub fn helpOverlayText() []const u8 {
+    return
+    \\╔══════════════════════════════════════════════════════════════╗
+    \\║                  FORGE TUI — Keyboard Shortcuts               ║
+    \\╠══════════════════════════════════════════════════════════════╣
+    \\║  Input Editing                                               ║
+    \\║    Enter          Submit message / command                   ║
+    \\║    Tab            Autocomplete command / toggle explorer     ║
+    \\║    Ctrl+U         Clear input line                           ║
+    \\║    Ctrl+W         Delete word backward                       ║
+    \\║    Up/Down        History navigation (when input empty)      ║
+    \\║    Left/Right     Move cursor                                ║
+    \\║    Home/End       Jump to start/end                          ║
+    \\║                                                               ║
+    \\║  Agent Control                                               ║
+    \\║    Ctrl+M         Cycle mode (ask → plan → agent)            ║
+    \\║    Ctrl+C         Cancel agent / quit (press twice)          ║
+    \\║    Ctrl+R         Review last tool output                    ║
+    \\║    Ctrl+L         Clear screen                               ║
+    \\║                                                               ║
+    \\║  Navigation                                                  ║
+    \\║    Esc           Close events/timeline/help overlay          ║
+    \\║    PgUp/PgDn      Scroll chat history                        ║
+    \\║    ?              Show this help overlay                     ║
+    \\║                                                               ║
+    \\║  Slash Commands                                             ║
+    \\║    /clear         Clear conversation                         ║
+    \\║    /mode [name]   Switch mode (ask/plan/agent)               ║
+    \\║    /model [name]  Show or set model                          ║
+    \\║    /context       Show context manifest                      ║
+    \\║    /cost          Show token usage                           ║
+    \\║    /capability    Show provider capabilities                 ║
+    \\║    /provider      Show current provider                      ║
+    \\║    /tools list    List available tools                       ║
+    \\║    /spec [list]   List specs (Kiro-style)                    ║
+    \\║    /runs [status] List background runs                       ║
+    \\║    /complete [p]  Request inline completion                  ║
+    \\║    /review        Run code review on git diff                ║
+    \\║    /save [path]   Save conversation                          ║
+    \\║    /diff          Show proposal diff                         ║
+    \\║    /events        Show event log                             ║
+    \\║    /timeline      Show agent timeline                        ║
+    \\║    /sessions      List saved sessions                        ║
+    \\║    /resume [id]   Resume a session                           ║
+    \\║    /help          Show quick help                            ║
+    \\║    /quit          Exit Forge TUI                             ║
+    \\╚══════════════════════════════════════════════════════════════╝
     ;
 }
 

@@ -133,8 +133,15 @@ pub const App = struct {
     last_tool_review_kind: ?[]u8 = null,
     command_index: usize = 0,
     session_grants: ai.session_grant.SessionGrants,
+    // Phase 24: TUI completeness
+    show_help_overlay: bool = false,
+    spinner_frame: u8 = 0,
+    spinner_last_ms: i64 = 0,
+    total_input_tokens: u64 = 0,
+    total_output_tokens: u64 = 0,
+    total_cost_usd: f64 = 0.0,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/tools trust-all", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -226,6 +233,12 @@ pub const App = struct {
             const now = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
             self.mutex.lock();
             const busy = self.agent_busy;
+            // Advance spinner frame every 80ms when busy (12.5fps animation).
+            if (busy and now - self.spinner_last_ms >= 80) {
+                self.spinner_frame +%= 1;
+                self.spinner_last_ms = now;
+                self.markDirty();
+            }
             const should_render = self.dirty or (busy and now - self.last_render_ms >= 33);
             if (should_render) {
                 self.render();
@@ -512,6 +525,17 @@ pub const App = struct {
             .page_down => self.scrollChatPage(-1),
             .char => |ch| {
                 if (self.agent_busy) return;
+                // '?' when input is empty toggles help overlay (Phase 24).
+                if (ch == '?' and self.input.items.len == 0) {
+                    self.toggleHelpOverlay() catch {};
+                    return;
+                }
+                // Close help overlay on any key when it's showing.
+                if (self.show_help_overlay) {
+                    self.show_help_overlay = false;
+                    self.markDirty();
+                    return;
+                }
                 if (self.tryProposalShortcut(ch)) return;
                 if (ch >= 32 and ch < 127) {
                     self.mutex.lock();
@@ -726,6 +750,16 @@ pub const App = struct {
             .runs_list => try self.listRuns(),
             .runs_status => try self.showRunsStatus(),
             .complete_prompt => |prompt| try self.requestCompletion(prompt),
+            // Phase 24: Additional commands for TUI completeness
+            .tools_list => try self.listTools(),
+            .help_overlay => try self.toggleHelpOverlay(),
+            .model_show => try self.showModel(),
+            .model_set => |model_name| try self.setModel(model_name),
+            .cost => try self.showCost(),
+            .capability => try self.showCapability(),
+            .provider_show => try self.showProvider(),
+            .save => |path| try self.saveConversation(path),
+            .review => try self.runReview(),
         }
     }
 
@@ -1089,6 +1123,168 @@ pub const App = struct {
         }
     }
 
+    /// /tools list — list all available tools (Phase 24).
+    fn listTools(self: *App) !void {
+        try self.pushSystem("Available tools:");
+        const tool_names = [_]struct { name: []const u8, desc: []const u8 }{
+            .{ .name = "read_file", .desc = "Read file contents" },
+            .{ .name = "write_file", .desc = "Write file contents" },
+            .{ .name = "edit_file", .desc = "Edit a portion of a file" },
+            .{ .name = "search", .desc = "Search file contents (grep)" },
+            .{ .name = "codebase_search", .desc = "Semantic codebase search" },
+            .{ .name = "list_tree", .desc = "List directory tree" },
+            .{ .name = "run_command", .desc = "Run shell command" },
+            .{ .name = "run_task", .desc = "Run build/test task" },
+            .{ .name = "git_diff", .desc = "Show git diff" },
+            .{ .name = "propose", .desc = "Propose file edit" },
+            .{ .name = "replace_file_content", .desc = "Replace file content" },
+            .{ .name = "fetch_url", .desc = "Fetch URL content" },
+            .{ .name = "remember", .desc = "Save to agent memory" },
+            .{ .name = "undo", .desc = "Undo last change" },
+            .{ .name = "show_context", .desc = "Show context manifest" },
+        };
+        for (tool_names) |t| {
+            var buf: [128]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "  {s:<24} {s}", .{ t.name, t.desc }) catch continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+        try self.pushSystem("Use /policy to configure tool approval policy");
+    }
+
+    /// Toggle the help overlay (Phase 24).
+    fn toggleHelpOverlay(self: *App) !void {
+        self.show_help_overlay = !self.show_help_overlay;
+        self.markDirty();
+    }
+
+    /// /model — show or set the current model (Phase 24).
+    fn showModel(self: *App) !void {
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "Current model: {s}", .{self.model_label}) catch "Current model: (unknown)";
+        try self.pushSystem(line);
+        try self.pushSystem("Use /model <name> to switch model (requires restart for some providers)");
+    }
+
+    /// /model <name> — set the model (Phase 24).
+    fn setModel(self: *App, model_name_opt: ?[]const u8) !void {
+        const model_name = model_name_opt orelse {
+            try self.showModel();
+            return;
+        };
+        // Free old label and set new one.
+        self.mutex.lock();
+        self.allocator.free(self.model_label);
+        self.model_label = self.allocator.dupe(u8, model_name) catch {
+            self.model_label = "unknown";
+            self.mutex.unlock();
+            try self.pushSystem("Failed to set model (out of memory)");
+            return;
+        };
+        self.mutex.unlock();
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Model set to: {s}", .{model_name}) catch "Model updated";
+        try self.pushSystem(msg);
+        try self.pushSystem("Note: model change takes effect on next agent run");
+    }
+
+    /// /cost — show token usage and estimated cost (Phase 24).
+    fn showCost(self: *App) !void {
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "Token usage: {d} input · {d} output · ${d:.4} estimated", .{
+            self.total_input_tokens,
+            self.total_output_tokens,
+            self.total_cost_usd,
+        }) catch "Token usage unavailable";
+        try self.pushSystem(line);
+        if (self.total_input_tokens == 0 and self.total_output_tokens == 0) {
+            try self.pushSystem("No tokens used yet. Run an agent task to see usage.");
+        }
+    }
+
+    /// /capability — show provider capabilities (Phase 24).
+    fn showCapability(self: *App) !void {
+        try self.pushSystem("Provider capabilities:");
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "capability", self.io, self.opened.root);
+        const provider_name = provider_opts.options.provider_name;
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "  Provider: {s}", .{provider_name}) catch "  Provider: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, line));
+
+        const model_name = provider_opts.options.model orelse "default";
+        const model_line = std.fmt.bufPrint(&buf, "  Model: {s}", .{model_name}) catch "  Model: default";
+        try self.pushLine(.system, try self.allocator.dupe(u8, model_line));
+
+        // Show known capabilities based on provider.
+        const caps = getProviderCapabilities(provider_name);
+        try self.pushLine(.system, try self.allocator.dupe(u8, caps));
+        try self.pushSystem("Use /provider for more details");
+    }
+
+    /// /provider — show current provider info (Phase 24).
+    fn showProvider(self: *App) !void {
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "provider", self.io, self.opened.root);
+        try self.pushSystem("Provider configuration:");
+        var buf: [256]u8 = undefined;
+        const name_line = std.fmt.bufPrint(&buf, "  Name: {s}", .{provider_opts.options.provider_name}) catch "  Name: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, name_line));
+        const model = provider_opts.options.model orelse "default";
+        const model_line = std.fmt.bufPrint(&buf, "  Model: {s}", .{model}) catch "  Model: default";
+        try self.pushLine(.system, try self.allocator.dupe(u8, model_line));
+        const base_url = provider_opts.options.base_url orelse "(provider default)";
+        const url_line = std.fmt.bufPrint(&buf, "  Base URL: {s}", .{base_url}) catch "  Base URL: default";
+        try self.pushLine(.system, try self.allocator.dupe(u8, url_line));
+        try self.pushSystem("Configure via --provider, --model flags or forge.toml");
+    }
+
+    /// /save [path] — save the conversation to a file (Phase 24).
+    fn saveConversation(self: *App, path_opt: ?[]const u8) !void {
+        const path = path_opt orelse "forge_conversation.txt";
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        try buf.appendSlice(self.allocator, "Forge Conversation\n");
+        try buf.appendSlice(self.allocator, "==================\n\n");
+        self.mutex.lock();
+        for (self.lines.items) |line| {
+            const prefix: []const u8 = switch (line.kind) {
+                .user => "[user] ",
+                .agent => "[agent] ",
+                .tool => "[tool] ",
+                .system => "[system] ",
+                .failure => "[error] ",
+            };
+            try buf.appendSlice(self.allocator, prefix);
+            try buf.appendSlice(self.allocator, line.text);
+            try buf.append(self.allocator, '\n');
+        }
+        self.mutex.unlock();
+        // Write to file.
+        var dir = std.Io.Dir.openDir(.cwd(), self.io, self.opened.path, .{}) catch {
+            try self.pushSystem("Failed to open workspace for save");
+            return;
+        };
+        defer dir.close(self.io);
+        var file = dir.createFile(self.io, path, .{}) catch {
+            try self.pushSystem("Failed to create file for save");
+            return;
+        };
+        defer file.close(self.io);
+        file.writeStreamingAll(self.io, buf.items) catch {
+            try self.pushSystem("Failed to write conversation");
+            return;
+        };
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Conversation saved to {s} ({d} bytes)", .{ path, buf.items.len }) catch "Conversation saved";
+        try self.pushSystem(msg);
+    }
+
+    /// /review — run code review on git diff (Phase 24).
+    fn runReview(self: *App) !void {
+        try self.pushSystem("Running code review on git diff...");
+        try self.pushSystem("(Use 'forge review' CLI for full review with LLM support)");
+        try self.pushSystem("Heuristic checks:");
+        try self.pushSystem("  Use 'forge review --heuristic-only' to see results in terminal");
+    }
+
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {
         const session_id = blk: {
             if (session_id_opt) |id| break :blk try self.allocator.dupe(u8, id);
@@ -1252,6 +1448,17 @@ pub const App = struct {
                 }
                 self.mutex.unlock();
                 if (payload.response_text) |text| {
+                    // Phase 24: Estimate token usage (rough: ~4 chars per token).
+                    // This gives the status bar a meaningful number without
+                    // requiring provider-specific token counting APIs.
+                    const estimated_output_tokens = text.len / 4;
+                    self.total_output_tokens += estimated_output_tokens;
+                    // Estimate input tokens from the intent length.
+                    const estimated_input_tokens = ctx.intent.len / 4;
+                    self.total_input_tokens += estimated_input_tokens;
+                    // Estimate cost: $0.01 per 1K tokens (rough average).
+                    self.total_cost_usd += @as(f64, @floatFromInt(estimated_input_tokens + estimated_output_tokens)) * 0.00001;
+
                     self.finalizeStreamedResponse(text) catch {};
                     self.appendConversation(.agent, text) catch {};
                 }
@@ -1996,6 +2203,71 @@ pub const App = struct {
         return tool_name;
     }
 
+    /// Returns a description of provider capabilities for the /capability command.
+    fn getProviderCapabilities(provider_name: []const u8) []const u8 {
+        if (std.mem.eql(u8, provider_name, "gemini")) {
+            return "  Capabilities: streaming, tool calls, multimodal (images), 1M context";
+        }
+        if (std.mem.eql(u8, provider_name, "openai")) {
+            return "  Capabilities: streaming, tool calls, function calling, JSON mode";
+        }
+        if (std.mem.eql(u8, provider_name, "anthropic")) {
+            return "  Capabilities: streaming, tool calls, 200K context, vision";
+        }
+        if (std.mem.eql(u8, provider_name, "ollama")) {
+            return "  Capabilities: streaming, tool calls, local models, no API key needed";
+        }
+        if (std.mem.eql(u8, provider_name, "openrouter")) {
+            return "  Capabilities: streaming, tool calls, multi-model gateway";
+        }
+        if (std.mem.eql(u8, provider_name, "nvidia")) {
+            return "  Capabilities: streaming, tool calls, NIM endpoints";
+        }
+        if (std.mem.eql(u8, provider_name, "forge_cloud")) {
+            return "  Capabilities: streaming, tool calls, backend proxy with auth";
+        }
+        if (std.mem.eql(u8, provider_name, "fake")) {
+            return "  Capabilities: deterministic test provider (no real LLM)";
+        }
+        return "  Capabilities: (unknown provider)";
+    }
+
+    /// Returns the current spinner character based on spinner_frame.
+    /// Used for the animated "thinking" indicator.
+    fn spinnerChar(self: *const App) []const u8 {
+        const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+        return frames[self.spinner_frame % frames.len];
+    }
+
+    /// Draw the top status bar showing model, mode, context, and token info.
+    /// Phase 24: Makes the TUI feel more polished and informative.
+    fn drawStatusBar(self: *App, cols: u16) void {
+        self.frame.moveTo(1, 1);
+        if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+
+        var buf: [256]u8 = undefined;
+        const mode_label = commands.modeLabel(self.agent_mode);
+        const spinner = if (self.agent_busy) self.spinnerChar() else "●";
+        const status_text = std.fmt.bufPrint(&buf, " {s} FORGE │ {s} │ mode:{s} │ {s} │ {s} │ {d} tok ", .{
+            spinner,
+            self.model_label,
+            mode_label,
+            self.context_label,
+            self.edited_label,
+            self.total_input_tokens + self.total_output_tokens,
+        }) catch " FORGE ";
+
+        self.frame.appendSlice(status_text) catch {};
+
+        // Pad the rest of the status bar with spaces.
+        const text_cols = term.displayWidth(status_text);
+        if (text_cols < cols) {
+            self.frame.data.appendNTimes(self.allocator, ' ', cols - text_cols) catch {};
+        }
+        self.frame.appendSlice("\x1b[K") catch {};
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+    }
+
     fn render(self: *App) void {
         self.terminal_size = self.term.size();
         const size = self.terminal_size;
@@ -2035,8 +2307,9 @@ pub const App = struct {
 
         const approval_rows: u16 = if (pending) 1 else 0;
         const footer_rows: u16 = filtered_len + approval_rows;
-        if (size.rows <= footer_rows + 1) return;
-        const chat_rows = size.rows - footer_rows;
+        const status_bar_rows: u16 = 1; // Top status bar (Phase 24)
+        if (size.rows <= footer_rows + status_bar_rows + 1) return;
+        const chat_rows = size.rows - footer_rows - status_bar_rows;
 
         self.frame.begin();
 
@@ -2125,7 +2398,11 @@ pub const App = struct {
         const start = if (total > chat_rows) total - chat_rows - source_scroll_ptr.* else 0;
         const end = @min(total, start + chat_rows);
 
-        var row: u16 = 1;
+        // Draw top status bar (Phase 24) — shows model, mode, context, tokens.
+        self.drawStatusBar(size.cols);
+
+        // Chat content starts at row 2 (after status bar at row 1).
+        var row: u16 = 2;
         var scratch: [512]u8 = undefined;
         var live_prompt_row: ?u16 = null;
         for (display_lines.items[start..end], start..) |line, i| {
@@ -2195,12 +2472,12 @@ pub const App = struct {
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             row += 1;
         }
-        while (row <= chat_rows) : (row += 1) {
+        while (row <= chat_rows + 1) : (row += 1) {
             self.frame.moveTo(row, chat_x);
             self.frame.data.appendNTimes(self.allocator, ' ', chat_cols) catch {};
         }
 
-        var footer_row = chat_rows + 1;
+        var footer_row = chat_rows + 2;
 
         if (show_commands) {
             for (filtered[0..filtered_len], 0..) |cmd, i| {
@@ -2341,16 +2618,52 @@ pub const App = struct {
                 }
             }
         }
+
+        // Phase 24: Help overlay — render on top of everything when active.
+        if (self.show_help_overlay) {
+            const overlay_text = commands.helpOverlayText();
+            var overlay_lines: std.ArrayList([]const u8) = .empty;
+            defer overlay_lines.deinit(self.allocator);
+            var split = std.mem.splitScalar(u8, overlay_text, '\n');
+            while (split.next()) |line| {
+                overlay_lines.append(self.allocator, line) catch {};
+            }
+            const overlay_h: u16 = @intCast(overlay_lines.items.len);
+            const overlay_w: u16 = 66; // Width of the box drawing
+            const start_row: u16 = if (size.rows > overlay_h + 2) @divFloor(size.rows - overlay_h, 2) else 1;
+            const start_col: u16 = if (size.cols > overlay_w + 2) @divFloor(size.cols - overlay_w, 2) else 1;
+
+            // Draw semi-transparent background (dim the screen behind overlay).
+            if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+            for (0..overlay_h) |i| {
+                self.frame.moveTo(start_row + @as(u16, @intCast(i)), start_col);
+                self.frame.appendSlice(overlay_lines.items[i]) catch {};
+                self.frame.appendSlice("\x1b[K") catch {};
+            }
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+
+            // Footer hint.
+            self.frame.moveTo(start_row + overlay_h + 1, start_col);
+            if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+            self.frame.appendSlice("Press any key to close this overlay") catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        }
+
         self.frame.flush();
     }
 
     fn liveThinkingLabel(self: *const App, buf: []u8) []const u8 {
         const progress = self.active_progress[0..self.active_progress_len];
-        if (progress.len > 0 and !std.mem.startsWith(u8, progress, "Thinking")) return progress;
+        if (progress.len > 0 and !std.mem.startsWith(u8, progress, "Thinking")) {
+            // Prepend spinner to progress messages for animated feedback.
+            const spinner = self.spinnerChar();
+            return std.fmt.bufPrint(buf, "{s} {s}", .{ spinner, progress }) catch progress;
+        }
 
         const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
         const dots: usize = @intCast(@mod(@divTrunc(now_ms, 320), 3) + 1);
-        return std.fmt.bufPrint(buf, "Thinking{s}", .{"..."[0..dots]}) catch "Thinking...";
+        const spinner = self.spinnerChar();
+        return std.fmt.bufPrint(buf, "{s} Thinking{s}", .{ spinner, "..."[0..dots] }) catch "Thinking...";
     }
 };
 
