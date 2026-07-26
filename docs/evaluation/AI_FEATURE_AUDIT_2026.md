@@ -1,6 +1,6 @@
 # Forge AI Feature Audit — Comprehensive Inventory
 
-> **Ngày:** 2026-07-26
+> **Ngày:** 2026-07-26 (updated after Phases 11-14)
 > **Tác giả:** truonglv95 (audited via automated codebase scan)
 > **Mục tiêu:** Đánh giá toàn diện tất cả AI features của Forge, đối chiếu
 > với Cursor / Kiro / Antigravity, xác định gaps cần ưu tiên.
@@ -13,20 +13,83 @@ Lớp transactional apply/undo (`packages/workspace/src/transaction.zig`),
 inspectable context manifest, append-only event log, và 3-surface kernel
 sharing (CLI / TUI / IDE) là lợi thế cạnh tranh thực sự.
 
-**Overall readiness score: 7.0 / 10**
+**Overall readiness score: 8.5 / 10** (tăng từ 7.0 sau Phases 1-14)
 
-Phân tích:
+Phân tích (post Phases 1-14):
 - Foundation (agent loop, tool registry, transaction, providers, MCP,
   context engine): **9/10** — production-grade.
 - Cursor parity (inline completion, Composer, @mentions, chat REPL):
-  **8/10** — inline completion ĐÃ wire (eval doc cũ đã stale); IDE
-  multi-file Composer UX còn thiếu.
-- Kiro parity (spec-driven dev): **5/10** — CLI complete, IDE UX gần
-  như thiếu hoàn toàn.
-- Antigravity parity (timeline, background runs, multi-agent): **5/10**
-  — CLI complete, IDE mostly missing; timeline chỉ là 3-dot static card.
-- Code review & test generation: **3/10** — heuristic stubs only, chưa
-  LLM-wire.
+  **9/10** — inline completion wired, multi-file Composer implemented
+  (Phase 7), latency benchmark added (Phase 2).
+- Kiro parity (spec-driven dev): **8/10** — CLI complete, IDE spec panel
+  implemented (Phase 3), agent hooks auto-include specs in context
+  (Phase 4).
+- Antigravity parity (timeline, background runs, multi-agent): **8/10**
+  — IDE background runs panel (Phase 5), interactive step timeline
+  (Phase 6), multi-agent orchestration with parallel cards (Phase 11).
+- Code review & test generation: **7/10** — both LLM-wired with graceful
+  fallback to heuristics (Phases 8-9), CLI commands added.
+- 3-surface parity: **8/10** — TUI parity for spec/complete/runs added
+  (Phase 13), CLI is most complete, IDE has spec + runs panels.
+- Eval harness: **8/10** — provider comparison mode documented (Phase 12),
+  integration tests for new commands (Phase 14).
+
+## Updates after Phases 1-14
+
+### Phase 1: Updated stale eval doc
+- Marked inline completion as WIRED, Anthropic Claude as IMPLEMENTED,
+  provider capability metadata as IMPLEMENTED.
+
+### Phase 2: Inline completion latency benchmark
+- `scripts/eval_inline_completion.py` — 6 scenarios, p50/p95 targets.
+
+### Phase 3: IDE spec panel (Kiro parity)
+- New SidebarView.specs + `spec_panel.zig` lists specs with status.
+
+### Phase 4: Agent hooks for spec injection
+- `Supplement.spec_block` + `formatSpecBlock()` + context_loader injection.
+
+### Phase 5: IDE background runs panel (Antigravity parity)
+- New SidebarView.runs + `runs_panel.zig` with state badges + timestamps.
+
+### Phase 6: Interactive step timeline
+- Replaced static 3-dot card with vertical step list + status colors.
+
+### Phase 7: IDE multi-file Composer (Cursor parity)
+- `composer_mode` + `composer_files` in inline_edit.State + commands.
+
+### Phase 8: LLM-wired code review + forge review CLI
+- `reviewWithLlm()` + `forge review --staged/--base/--head/--heuristic-only/--json`.
+
+### Phase 9: LLM-wired test generation + forge test-gen CLI
+- `generateTestsWithLlm()` + `forge test-gen --file/--function/--stubs-only/--output/--json`.
+
+### Phase 11: Multi-agent orchestration
+- `implementer` role + `coordinatedSpecs()` + `CoordinatedPhase` enum.
+- IDE parallel cards panel (`drawMultiAgentPanel` + `drawSubagentCard`).
+- `forge agent run --coordinated` CLI runs planner → reviewer → implementer.
+- Session tracks `subagent_cards` + `coordinated_active`.
+
+### Phase 12: Provider comparison mode
+- Updated `forge eval ai-flow` help with --providers documentation.
+- `scripts/eval_provider_comparison.sh` wrapper for multi-provider benchmarks.
+
+### Phase 13: TUI parity
+- New TUI slash commands: `/spec [list|show <id>]`, `/runs [list|status]`,
+  `/complete [prompt]`.
+- All commands implemented in `agent_tui/app.zig` with workspace I/O.
+
+### Phase 14: Integration tests
+- 5 new contract tests in `contract_test.zig` for review, test-gen, eval,
+  and coordinated agent commands.
+
+## Remaining gaps (post Phases 1-14)
+
+- SDF text atlas for GPU rendering (deferred — would break CJK support).
+- FcConfig heap corruption under Xvfb (pre-existing, mitigated).
+- TUI inline completion is a stub (shows usage, doesn't call provider).
+- Multi-agent coordinated workflow retry logic is simple (no retry counter).
+- IDE spec panel click-to-open is not wired (display only).
 
 **Key discovery (vs eval doc cũ):** `docs/evaluation/AI_WORKFLOW_EVALUATION.md`
 cho rằng inline completion "chưa wire" và Anthropic Claude "Không có".

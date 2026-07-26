@@ -133,7 +133,7 @@ pub const App = struct {
     command_index: usize = 0,
     session_grants: ai.session_grant.SessionGrants,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/tools trust-all", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/tools trust-all", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -719,6 +719,12 @@ pub const App = struct {
             .resume_session => |session_id| try self.resumeSession(session_id),
             .events => |session_id| try self.showEvents(session_id),
             .timeline => try self.showTimeline(),
+            // TUI parity commands (Phase 13)
+            .spec_list => try self.listSpecs(),
+            .spec_show => |spec_id| try self.showSpec(spec_id),
+            .runs_list => try self.listRuns(),
+            .runs_status => try self.showRunsStatus(),
+            .complete_prompt => |prompt| try self.requestCompletion(prompt),
         }
     }
 
@@ -894,6 +900,133 @@ pub const App = struct {
             try self.pushLine(.system, try self.allocator.dupe(u8, line));
         }
         try self.pushSystem("Use /resume <session_id> to load");
+    }
+
+    /// /spec [list] — list all specs in the workspace.
+    /// TUI parity for `forge spec list` CLI.
+    fn listSpecs(self: *App) !void {
+        const specs: []ai.spec_writer.SpecInfo = ai.spec_writer.listSpecs(self.allocator, self.io, self.opened.root) catch {
+            try self.pushSystem("Failed to load specs");
+            return;
+        };
+        defer ai.spec_writer.freeSpecList(self.allocator, specs);
+        if (specs.len == 0) {
+            try self.pushSystem("No specs yet. Run an agent task to generate a spec, or use 'forge spec init'.");
+            return;
+        }
+        try self.pushSystem("Specs:");
+        for (specs) |spec| {
+            var buf: [256]u8 = undefined;
+            const r_marker: []const u8 = if (spec.has_requirements) "R" else "-";
+            const d_marker: []const u8 = if (spec.has_design) "D" else "-";
+            const t_marker: []const u8 = if (spec.has_tasks) "T" else "-";
+            const line = std.fmt.bufPrint(
+                &buf,
+                "  [{s}] {s}  {s} {s} {s}",
+                .{ spec.status.label(), spec.run_id, r_marker, d_marker, t_marker },
+            ) catch continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+        try self.pushSystem("Use /spec show <run_id> to view details");
+    }
+
+    /// /spec show <run_id> — show details of a specific spec.
+    /// TUI parity for `forge spec show` CLI.
+    fn showSpec(self: *App, spec_id_opt: ?[]const u8) !void {
+        const spec_id = spec_id_opt orelse {
+            try self.pushSystem("Usage: /spec show <run_id>");
+            return;
+        };
+        const specs: []ai.spec_writer.SpecInfo = ai.spec_writer.listSpecs(self.allocator, self.io, self.opened.root) catch {
+            try self.pushSystem("Failed to load specs");
+            return;
+        };
+        defer ai.spec_writer.freeSpecList(self.allocator, specs);
+        for (specs) |spec| {
+            if (std.mem.eql(u8, spec.run_id, spec_id)) {
+                var buf: [512]u8 = undefined;
+                const header = std.fmt.bufPrint(
+                    &buf,
+                    "Spec: {s}  Status: {s}",
+                    .{ spec.run_id, spec.status.label() },
+                ) catch spec.run_id;
+                try self.pushSystem(header);
+                if (spec.has_requirements) try self.pushSystem("  requirements.md: present");
+                if (spec.has_design) try self.pushSystem("  design.md: present");
+                if (spec.has_tasks) try self.pushSystem("  tasks.md: present");
+                if (spec.intent.len > 0) {
+                    var intent_buf: [256]u8 = undefined;
+                    const intent_line = std.fmt.bufPrint(&intent_buf, "  Intent: {s}", .{spec.intent}) catch "  Intent: (too long)";
+                    try self.pushSystem(intent_line);
+                }
+                return;
+            }
+        }
+        var not_found_buf: [256]u8 = undefined;
+        const not_found = std.fmt.bufPrint(&not_found_buf, "Spec not found: {s}", .{spec_id}) catch "Spec not found";
+        try self.pushSystem(not_found);
+    }
+
+    /// /runs [list] — list all background runs.
+    /// TUI parity for `forge agent runs` CLI.
+    fn listRuns(self: *App) !void {
+        var runs_list = workspace.runs.listEntries(self.allocator, self.io, self.opened.root) catch {
+            try self.pushSystem("Failed to load runs");
+            return;
+        };
+        defer runs_list.deinit();
+        if (runs_list.items.len == 0) {
+            try self.pushSystem("No runs yet. Use 'forge agent run --background' to start one.");
+            return;
+        }
+        try self.pushSystem("Runs (newest last):");
+        for (runs_list.items) |entry| {
+            var buf: [256]u8 = undefined;
+            const line = std.fmt.bufPrint(
+                &buf,
+                "  {s}  [{s}]  ({d})",
+                .{ entry.run_id, entry.state, entry.timestamp_ms },
+            ) catch continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+        try self.pushSystem("Use /runs status for active run count");
+    }
+
+    /// /runs status — show count of active vs completed runs.
+    fn showRunsStatus(self: *App) !void {
+        var runs_list = workspace.runs.listEntries(self.allocator, self.io, self.opened.root) catch {
+            try self.pushSystem("Failed to load runs");
+            return;
+        };
+        defer runs_list.deinit();
+        var active: usize = 0;
+        var done: usize = 0;
+        var failed: usize = 0;
+        for (runs_list.items) |entry| {
+            if (std.mem.eql(u8, entry.state, "done")) done += 1 else if (std.mem.eql(u8, entry.state, "failed")) failed += 1 else active += 1;
+        }
+        var buf: [128]u8 = undefined;
+        const status = std.fmt.bufPrint(
+            &buf,
+            "Runs: {d} total ({d} active, {d} done, {d} failed)",
+            .{ runs_list.items.len, active, done, failed },
+        ) catch "Runs status unavailable";
+        try self.pushSystem(status);
+    }
+
+    /// /complete [prompt] — request an inline completion.
+    /// TUI parity for `forge complete` CLI. Without a prompt, shows usage.
+    fn requestCompletion(self: *App, prompt_opt: ?[]const u8) !void {
+        const prompt = prompt_opt orelse {
+            try self.pushSystem("Usage: /complete <prompt>");
+            try self.pushSystem("This sends a FIM (fill-in-the-middle) completion request to the configured provider.");
+            try self.pushSystem("For full inline completion with file context, use 'forge complete --file <path>' CLI.");
+            return;
+        };
+        var buf: [256]u8 = undefined;
+        const echo = std.fmt.bufPrint(&buf, "Completion request: {s}", .{prompt}) catch "Completion request";
+        try self.pushSystem(echo);
+        try self.pushSystem("(TUI inline completion is a stub — use 'forge complete' CLI for full FIM support)");
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {

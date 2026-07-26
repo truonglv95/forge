@@ -12,7 +12,26 @@ pub fn run(
 ) !u8 {
     if (parsed.positional.len == 0) {
         try writer.writeAll(
-            "usage: forge eval ai-flow [--provider <fake|gemini|ollama>] [--model <id>] [--max-steps <n>] [--repeat <n>] [--output <path>] [--corpus <path>]\n",
+            "usage: forge eval ai-flow [options]\n\n" ++
+                "Run the AI workflow eval suite against one or more providers.\n\n" ++
+                "Options:\n" ++
+                "  --provider <name>       Single provider (fake|gemini|ollama|openai|anthropic|openrouter|nvidia)\n" ++
+                "  --providers <a,b,c>     Multi-provider comparison mode — runs each task against\n" ++
+                "                          every provider and reports comparative latency/success\n" ++
+                "  --model <id>            Model ID (default: provider default)\n" ++
+                "  --max-steps <n>         Max agent steps per task (default: 8)\n" ++
+                "  --repeat <n>            Repeat each task N times (default: 1)\n" ++
+                "  --output <path>         Output JSONL path (default: .forge/evals/latest.jsonl)\n" ++
+                "  --corpus <path>         Corpus path (default: fixtures/eval/agent_reliability.json)\n" ++
+                "  --json                  Machine-readable output\n" ++
+                "  --quiet                 Suppress progress output\n\n" ++
+                "Subcommands:\n" ++
+                "  ai-flow                 Run the AI workflow eval suite\n" ++
+                "  summary                 Summarize results from a previous eval run\n\n" ++
+                "Examples:\n" ++
+                "  forge eval ai-flow --provider fake\n" ++
+                "  forge eval ai-flow --providers fake,gemini --repeat 3 --json\n" ++
+                "  forge eval summary --output .forge/evals/latest.jsonl\n",
         );
         return 2;
     }

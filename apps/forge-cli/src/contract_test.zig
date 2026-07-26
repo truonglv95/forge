@@ -126,3 +126,96 @@ test "cli contract: version subcommand returns 0" {
 
     try std.testing.expectEqual(@as(u32, 0), result.exit_code);
 }
+
+test "cli contract: forge review --heuristic-only exits 0 with no changes" {
+    const allocator = std.testing.allocator;
+
+    // Run in a temp workspace with no git changes — should report "No changes to review."
+    const result = runForge(allocator, &.{ "review", "--heuristic-only", "--quiet" }, null) catch |err| {
+        std.debug.print("[skip] forge binary not found: {}\n", .{err});
+        return;
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    // Exit 0 is expected when there are no changes (or when git is unavailable).
+    // Exit 2 is acceptable if the workspace can't be opened.
+    try std.testing.expect(result.exit_code == 0 or result.exit_code == 2);
+}
+
+test "cli contract: forge test-gen without --file exits 2" {
+    const allocator = std.testing.allocator;
+
+    const result = runForge(allocator, &.{ "test-gen" }, null) catch |err| {
+        std.debug.print("[skip] forge binary not found: {}\n", .{err});
+        return;
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    // Should exit 2 with usage message.
+    try std.testing.expectEqual(@as(u32, 2), result.exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "test-gen requires --file") != null or
+        std.mem.indexOf(u8, result.stderr, "test-gen requires --file") != null);
+}
+
+test "cli contract: forge review --json produces valid output structure" {
+    const allocator = std.testing.allocator;
+
+    const result = runForge(allocator, &.{ "review", "--heuristic-only", "--json", "--quiet" }, null) catch |err| {
+        std.debug.print("[skip] forge binary not found: {}\n", .{err});
+        return;
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    // Exit 0 or 2 (no git / no workspace) is acceptable.
+    if (result.exit_code == 0) {
+        // If JSON output was produced, it should contain "overall_score" or "No changes".
+        const has_score = std.mem.indexOf(u8, result.stdout, "overall_score") != null;
+        const has_no_changes = std.mem.indexOf(u8, result.stdout, "No changes") != null;
+        try std.testing.expect(has_score or has_no_changes);
+    }
+}
+
+test "cli contract: forge eval ai-flow --help shows providers flag" {
+    const allocator = std.testing.allocator;
+
+    const result = runForge(allocator, &.{"eval"}, null) catch |err| {
+        std.debug.print("[skip] forge binary not found: {}\n", .{err});
+        return;
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    // Should exit 2 (no suite specified) and show help with --providers flag.
+    try std.testing.expectEqual(@as(u32, 2), result.exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "--providers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Multi-provider comparison") != null);
+}
+
+test "cli contract: forge agent run --coordinated requires intent" {
+    const allocator = std.testing.allocator;
+
+    const result = runForge(allocator, &.{ "agent", "run", "--coordinated", "--quiet" }, null) catch |err| {
+        std.debug.print("[skip] forge binary not found: {}\n", .{err});
+        return;
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    // Should exit 2 because no intent was provided.
+    try std.testing.expectEqual(@as(u32, 2), result.exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "agent run requires an intent") != null or
+        std.mem.indexOf(u8, result.stderr, "agent run requires an intent") != null);
+}

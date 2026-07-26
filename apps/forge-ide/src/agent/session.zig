@@ -80,6 +80,36 @@ pub const AgentStep = struct {
     failed: bool = false,
 };
 
+/// Multi-agent orchestration card — tracks the state of a named subagent
+/// (planner / reviewer / implementer) in the coordinated workflow.
+/// Rendered as parallel cards in the AI sidebar (Antigravity-style).
+pub const SubagentCard = struct {
+    /// Role label: "planner", "reviewer", "implementer", or custom.
+    role: []const u8,
+    /// Display label shown in the card header (e.g. "Planner", "Reviewer").
+    label: []const u8,
+    /// Short status line (e.g. "Producing plan...", "Reviewing...", "Done").
+    status: []const u8 = "",
+    /// Phase: 0=idle, 1=running, 2=done, 3=failed.
+    state: u8 = 0,
+    /// Timestamp (ms) when the subagent started.
+    started_ms: i64 = 0,
+    /// Timestamp (ms) when the subagent finished.
+    finished_ms: i64 = 0,
+    /// Output summary (owned, may be empty while running).
+    output: ?[]const u8 = null,
+
+    pub fn isRunning(self: SubagentCard) bool {
+        return self.state == 1;
+    }
+    pub fn isDone(self: SubagentCard) bool {
+        return self.state == 2;
+    }
+    pub fn isFailed(self: SubagentCard) bool {
+        return self.state == 3;
+    }
+};
+
 pub fn shouldAutoExpandStep(kind: []const u8, content: ?[]const u8) bool {
     if (content == null) return false;
     return std.mem.eql(u8, kind, "propose") or
@@ -124,6 +154,11 @@ pub const Session = struct {
     /// Scroll offset for the interactive step timeline in the AI sidebar.
     /// Allows the user to scroll through long agent runs (Antigravity-style).
     timeline_scroll_y: usize = 0,
+    /// Multi-agent orchestration cards — tracks planner/reviewer/implementer
+    /// state for the coordinated workflow. Rendered as parallel cards.
+    subagent_cards: std.ArrayList(SubagentCard) = .empty,
+    /// True when the coordinated multi-agent workflow is active.
+    coordinated_active: bool = false,
     worker_running: bool = false,
     stream_text: std.ArrayList(u8) = .empty,
     thinking_text: std.ArrayList(u8) = .empty,
@@ -222,6 +257,8 @@ pub const Session = struct {
         if (self.resume_proposal_path) |text| self.allocator.free(text);
         self.clearAgentStepsUnlocked();
         self.agent_steps.deinit(self.allocator);
+        self.clearSubagentCardsUnlocked();
+        self.subagent_cards.deinit(self.allocator);
         if (self.status_line.len > 0) self.allocator.free(self.status_line);
         if (self.provider_label.len > 0) self.allocator.free(self.provider_label);
         self.clearRoutingPreviewUnlocked();
@@ -327,6 +364,75 @@ pub const Session = struct {
         self.lock();
         defer self.unlock();
         self.clearAgentStepsUnlocked();
+    }
+
+    /// Free all subagent card data (called from deinit and clearSubagentCards).
+    fn clearSubagentCardsUnlocked(self: *Session) void {
+        for (self.subagent_cards.items) |card| {
+            self.allocator.free(card.role);
+            self.allocator.free(card.label);
+            if (card.status.len > 0) self.allocator.free(card.status);
+            if (card.output) |o| self.allocator.free(o);
+        }
+        self.subagent_cards.clearRetainingCapacity();
+        self.coordinated_active = false;
+    }
+
+    /// Clear all subagent cards (public, takes lock).
+    pub fn clearSubagentCards(self: *Session) void {
+        self.lock();
+        defer self.unlock();
+        self.clearSubagentCardsUnlocked();
+    }
+
+    /// Initialize the coordinated multi-agent workflow cards (planner,
+    /// reviewer, implementer). Call when the coordinated workflow starts.
+    /// Marks all cards as idle (state=0); the workflow updates each card's
+    /// state to running/done/failed as it progresses.
+    pub fn initCoordinatedCards(self: *Session) !void {
+        self.lock();
+        defer self.unlock();
+        self.clearSubagentCardsUnlocked();
+        const roles = [_]struct { role: []const u8, label: []const u8 }{
+            .{ .role = "planner", .label = "Planner" },
+            .{ .role = "reviewer", .label = "Reviewer" },
+            .{ .role = "implementer", .label = "Implementer" },
+        };
+        for (roles) |r| {
+            try self.subagent_cards.append(self.allocator, .{
+                .role = try self.allocator.dupe(u8, r.role),
+                .label = try self.allocator.dupe(u8, r.label),
+                .status = "",
+                .state = 0,
+            });
+        }
+        self.coordinated_active = true;
+    }
+
+    /// Update a subagent card by role name. Sets state, status, and
+    /// optionally output. The status string is duped (caller may free).
+    pub fn updateSubagentCard(
+        self: *Session,
+        role: []const u8,
+        state: u8,
+        status: []const u8,
+        output: ?[]const u8,
+    ) !void {
+        self.lock();
+        defer self.unlock();
+        for (self.subagent_cards.items) |*card| {
+            if (std.mem.eql(u8, card.role, role)) {
+                if (card.status.len > 0) self.allocator.free(card.status);
+                card.status = try self.allocator.dupe(u8, status);
+                if (card.output) |o| self.allocator.free(o);
+                card.output = if (output) |o| try self.allocator.dupe(u8, o) else null;
+                card.state = state;
+                const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+                if (state == 1 and card.started_ms == 0) card.started_ms = now_ms;
+                if (state == 2 or state == 3) card.finished_ms = now_ms;
+                return;
+            }
+        }
     }
 
     pub fn beginAgentStep(self: *Session, index: u32, kind: []const u8, label: []const u8, content: ?[]const u8) !void {

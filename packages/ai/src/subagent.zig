@@ -27,6 +27,7 @@ pub const Role = enum {
     repair_test_writer,
     planner,
     reviewer,
+    implementer,
 
     pub fn label(self: Role) []const u8 {
         return switch (self) {
@@ -34,6 +35,35 @@ pub const Role = enum {
             .repair_test_writer => "repair_test_writer",
             .planner => "planner",
             .reviewer => "reviewer",
+            .implementer => "implementer",
+        };
+    }
+
+    /// Returns true if this role is part of the coordinated multi-agent
+    /// workflow (planner → reviewer → implementer).
+    pub fn isCoordinated(self: Role) bool {
+        return self == .planner or self == .reviewer or self == .implementer;
+    }
+
+    /// Returns a short user-facing description of the role's responsibility.
+    pub fn description(self: Role) []const u8 {
+        return switch (self) {
+            .repair_log_reader => "Reads validation logs and proposes root causes",
+            .repair_test_writer => "Writes minimal test cases to catch the bug",
+            .planner => "Produces a short implementation plan (goal, files, steps, risks)",
+            .reviewer => "Reviews proposed changes for correctness and safety",
+            .implementer => "Implements the approved plan as concrete file edits",
+        };
+    }
+
+    /// Returns the icon/emoji label for IDE display.
+    pub fn icon(self: Role) []const u8 {
+        return switch (self) {
+            .repair_log_reader => "[log]",
+            .repair_test_writer => "[test]",
+            .planner => "[plan]",
+            .reviewer => "[review]",
+            .implementer => "[impl]",
         };
     }
 };
@@ -106,6 +136,67 @@ pub fn reviewerSpec() Spec {
         .max_bytes = 256 * 1024,
     };
 }
+
+pub fn implementerSpec() Spec {
+    return .{
+        .role = .implementer,
+        .label = "subagent:impl",
+        .prompt =
+        \\You are a focused implementation agent. Based on the approved plan and review feedback,
+        \\produce concrete file edits that satisfy the plan's requirements.
+        \\Use the propose tool to create or modify files. Keep edits minimal and focused.
+        ,
+        .max_steps = 4,
+        .max_bytes = 256 * 1024,
+    };
+}
+
+/// Returns the coordinated multi-agent workflow specs: planner → reviewer
+/// → implementer. This is the "parallel cards" model from Antigravity /
+/// Kiro: each role runs as a named subagent with visible status in the
+/// IDE, and the user can see which agent is currently active.
+///
+/// Workflow:
+/// 1. Planner produces an implementation plan (Markdown)
+/// 2. Reviewer reviews the plan for correctness/safety
+/// 3. Implementer turns the approved plan into concrete file edits
+///
+/// Each step's output feeds into the next. If reviewer rejects, the
+/// planner is re-invoked with the feedback (up to 2 retries).
+pub fn coordinatedSpecs() [3]Spec {
+    return .{
+        plannerSpec(),
+        reviewerSpec(),
+        implementerSpec(),
+    };
+}
+
+/// Phase labels for the coordinated workflow, shown in the IDE panel.
+/// Maps to the order in `coordinatedSpecs()`.
+pub const CoordinatedPhase = enum {
+    planning,
+    reviewing,
+    implementing,
+    done,
+
+    pub fn label(self: CoordinatedPhase) []const u8 {
+        return switch (self) {
+            .planning => "Planning",
+            .reviewing => "Reviewing",
+            .implementing => "Implementing",
+            .done => "Done",
+        };
+    }
+
+    pub fn icon(self: CoordinatedPhase) []const u8 {
+        return switch (self) {
+            .planning => "PLN",
+            .reviewing => "REV",
+            .implementing => "IMP",
+            .done => "OK",
+        };
+    }
+};
 
 pub fn toolActionLabel(tool_name: []const u8) []const u8 {
     if (std.mem.eql(u8, tool_name, "search") or std.mem.eql(u8, tool_name, "codebase_search"))

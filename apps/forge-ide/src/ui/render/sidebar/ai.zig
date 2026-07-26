@@ -548,6 +548,10 @@ pub fn drawAiPanel(wb: *Workbench, start_x: f32, w: f32, h: f32) void {
     drawTimelineCard(wb, content_x, cy, content_w);
     cy += timeline_card_h + card_gap + 4;
 
+    // Multi-agent orchestration panel (Antigravity-style parallel cards).
+    // Shows planner/reviewer/implementer status when coordinated_active.
+    cy = drawMultiAgentPanel(wb, content_x, cy, content_w);
+
     if (wb.ai_mcp_registry != null) {
         renderer.Renderer.drawSvg(renderer.icons.chevron_down, start_x + 8, cy + 4, 16, 16, icon_c);
         drawStrongText("MCP AUDIT LOG", start_x + 28, cy + 6, 11.0, theme_loader.toColor(theme.colors.text_muted));
@@ -581,4 +585,108 @@ fn stateMouseX() f32 {
 
 fn stateMouseY() f32 {
     return @import("../../core/state.zig").last_mouse_y;
+}
+
+/// Multi-agent orchestration panel — renders parallel cards for the
+/// coordinated planner → reviewer → implementer workflow.
+///
+/// Each card shows:
+/// - Role label (Planner / Reviewer / Implementer)
+/// - Status dot: gray (idle), amber pulsing (running), green (done), red (failed)
+/// - Status text (e.g. "Producing plan...", "Reviewing...", "Done")
+/// - Elapsed time for running/done cards
+///
+/// The panel only renders when `coordinated_active` is true (set by
+/// initCoordinatedCards). When idle, the panel shows a hint to start a
+/// coordinated workflow.
+fn drawMultiAgentPanel(wb: *Workbench, x: f32, y: f32, w: f32) f32 {
+    const theme = &wb.theme;
+    wb.agent_ui.session.lock();
+    const active = wb.agent_ui.session.coordinated_active;
+    const card_count = wb.agent_ui.session.subagent_cards.items.len;
+    wb.agent_ui.session.unlock();
+
+    if (!active or card_count == 0) {
+        // Show a hint about multi-agent orchestration availability.
+        const hint_h: f32 = 56;
+        renderer.Renderer.drawRoundedRect(x, y, w, hint_h, 6, .{ .r = 0.12, .g = 0.13, .b = 0.15, .a = 1.0 });
+        renderer.Renderer.drawRoundedRect(x, y, w, 1.0, 0, theme_loader.toColor(theme.colors.border));
+        drawStrongText("MULTI-AGENT", x + 12, y + 10, 11.0, theme_loader.toColor(theme.colors.text_muted));
+        drawUiText("Coordinated workflow: planner → reviewer → implementer", x + 12, y + 26, 10.0, theme_loader.toColor(theme.colors.text_muted));
+        drawUiText("Activate via 'forge agent run --coordinated'", x + 12, y + 40, 9.5, theme_loader.toColor(theme.colors.text_muted));
+        return y + hint_h + 12;
+    }
+
+    const card_h: f32 = 64;
+    const ma_card_gap: f32 = 6;
+    const total_h = @as(f32, @floatFromInt(card_count)) * (card_h + ma_card_gap) + 28;
+    renderer.Renderer.drawRoundedRect(x, y, w, total_h, 6, .{ .r = 0.12, .g = 0.13, .b = 0.15, .a = 1.0 });
+    renderer.Renderer.drawRoundedRect(x, y, w, 1.0, 0, theme_loader.toColor(theme.colors.border));
+    drawStrongText("MULTI-AGENT ORCHESTRATION", x + 12, y + 10, 11.0, theme_loader.toColor(theme.colors.text_muted));
+
+    var cy = y + 26;
+    wb.agent_ui.session.lock();
+    const cards = wb.agent_ui.session.subagent_cards.items;
+    for (cards) |card| {
+        drawSubagentCard(card, x + 8, cy, w - 16, card_h, theme);
+        cy += card_h + ma_card_gap;
+    }
+    wb.agent_ui.session.unlock();
+
+    return y + total_h + 12;
+}
+
+fn drawSubagentCard(card: anytype, x: f32, y: f32, w: f32, h: f32, theme: anytype) void {
+    // Card background — slightly lighter than panel.
+    renderer.Renderer.drawRoundedRect(x, y, w, h, 4, .{ .r = 0.15, .g = 0.16, .b = 0.19, .a = 1.0 });
+
+    // Status dot — colored by state.
+    const dot_color = blk: {
+        if (card.isFailed()) break :blk renderer.Color{ .r = 0.85, .g = 0.40, .b = 0.40, .a = 1.0 };
+        if (card.isRunning()) break :blk theme_loader.toColor(theme.colors.accent);
+        if (card.isDone()) break :blk renderer.Color{ .r = 0.40, .g = 0.80, .b = 0.45, .a = 1.0 };
+        break :blk renderer.Color{ .r = 0.50, .g = 0.50, .b = 0.55, .a = 1.0 }; // idle gray
+    };
+    renderer.Renderer.drawRoundedRect(x + 8, y + 10, 8, 8, 4, dot_color);
+
+    // Pulsing ring for running cards.
+    if (card.isRunning()) {
+        renderer.Renderer.drawRoundedRect(x + 6, y + 8, 12, 12, 5, .{ .r = dot_color.r, .g = dot_color.g, .b = dot_color.b, .a = 0.25 });
+        renderer.Renderer.drawRoundedRect(x + 8, y + 10, 8, 8, 4, dot_color);
+    }
+
+    // Role label.
+    drawStrongText(card.label, x + 24, y + 8, 12.0, theme_loader.toColor(theme.colors.text_primary));
+
+    // Status text.
+    const status_text = if (card.status.len > 0) card.status else switch (card.state) {
+        0 => "idle",
+        1 => "running...",
+        2 => "done",
+        3 => "failed",
+        else => "?",
+    };
+    drawUiText(status_text, x + 24, y + 24, 10.0, theme_loader.toColor(theme.colors.text_muted));
+
+    // Elapsed time for running/done cards.
+    if (card.started_ms > 0 and card.finished_ms >= card.started_ms) {
+        const elapsed_ms = card.finished_ms - card.started_ms;
+        var buf: [32]u8 = undefined;
+        const elapsed_text = std.fmt.bufPrint(&buf, "{d}ms", .{elapsed_ms}) catch "";
+        drawUiText(elapsed_text, x + w - 60, y + 8, 10.0, theme_loader.toColor(theme.colors.text_muted));
+    } else if (card.isRunning()) {
+        drawUiText("live", x + w - 40, y + 8, 10.0, .{ .r = 0.5, .g = 0.9, .b = 0.6, .a = 1.0 });
+    }
+
+    // Output preview (first 80 chars) for done cards.
+    if (card.isDone() and card.output != null) {
+        const output = card.output.?;
+        const preview_len = @min(output.len, 80);
+        var preview_buf: [84]u8 = undefined;
+        const preview = if (output.len > 80)
+            std.fmt.bufPrint(&preview_buf, "{s}...", .{output[0..preview_len]}) catch output[0..preview_len]
+        else
+            output[0..preview_len];
+        drawClippedText(preview, x + 24, y + 40, w - 32, 16, 9.5, theme_loader.toColor(theme.colors.text_muted), false);
+    }
 }

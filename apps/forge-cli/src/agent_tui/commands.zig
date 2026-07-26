@@ -16,6 +16,12 @@ pub const Command = union(enum) {
     exit_app,
     resume_session: ?[]const u8,
     sessions,
+    // TUI parity commands (Phase 13) — bring CLI workflows to TUI
+    spec_list,
+    spec_show: ?[]const u8,
+    runs_list,
+    runs_status,
+    complete_prompt: ?[]const u8,
     not_command,
 };
 
@@ -43,6 +49,38 @@ pub fn parseSlashCommand(input: []const u8) Command {
     if (matchesSlash(input, "help") or matchesSlash(input, "?")) return .help;
     if (matchesSlash(input, "quit") or matchesSlash(input, "exit")) return .exit_app;
     if (matchesSlash(input, "sessions") or matchesSlash(input, "list")) return .sessions;
+
+    // TUI parity commands (Phase 13)
+    // /spec [list|show <id>] — Kiro-style spec management
+    if (matchesSlash(input, "spec") or matchesSlash(input, "specs")) {
+        if (std.mem.eql(u8, input, "/spec") or std.mem.eql(u8, input, "/specs")) return .spec_list;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .spec_list;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        if (args.len == 0 or std.mem.eql(u8, args, "list")) return .spec_list;
+        if (std.mem.startsWith(u8, args, "show ")) {
+            return .{ .spec_show = std.mem.trim(u8, args[5..], &std.ascii.whitespace) };
+        }
+        if (std.mem.startsWith(u8, args, "show")) {
+            const id = std.mem.trim(u8, args[4..], &std.ascii.whitespace);
+            return .{ .spec_show = if (id.len > 0) id else null };
+        }
+        return .spec_list;
+    }
+    // /runs [list|status] — Antigravity-style background run monitoring
+    if (matchesSlash(input, "runs") or matchesSlash(input, "run")) {
+        if (std.mem.eql(u8, input, "/runs") or std.mem.eql(u8, input, "/run")) return .runs_list;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .runs_list;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        if (std.mem.eql(u8, args, "status")) return .runs_status;
+        return .runs_list;
+    }
+    // /complete <prompt> — inline completion request
+    if (matchesSlash(input, "complete") or matchesSlash(input, "comp")) {
+        if (std.mem.eql(u8, input, "/complete") or std.mem.eql(u8, input, "/comp")) return .{ .complete_prompt = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .complete_prompt = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .complete_prompt = if (args.len > 0) args else null };
+    }
     if (matchesSlash(input, "events") or matchesSlash(input, "ev")) {
         if (std.mem.eql(u8, input, "/events") or std.mem.eql(u8, input, "/ev")) return .{ .events = null };
         const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .events = null };
@@ -101,7 +139,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear|/cls /policy /tools trust-all /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /timeline /resume [id] /sessions /mock /help /quit|/exit
+    \\Commands: /clear|/cls /policy /tools trust-all /mode [ask|plan|agent] /context /diff /events [id] [--tail N] [--type T] /timeline /resume [id] /sessions /mock /spec [list|show <id>] /runs [list|status] /complete [prompt] /help /quit|/exit
     \\Keys: Tab policy | Ctrl+M mode | Ctrl+R review tool output | Esc close events/timeline | PgUp/PgDn scroll | a/n proposal apply/dismiss | Ctrl+C cancel/quit
     ;
 }
