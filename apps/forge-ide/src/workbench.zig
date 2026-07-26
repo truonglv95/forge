@@ -506,10 +506,11 @@ pub const Workbench = struct {
         self.theme = try @import("theme_loader.zig").loadTheme(allocator, io, root, &self.extension_host);
         self.rate_limiter = ai.rate_limiter.RateLimiter.init(allocator);
         self.usage_tracker = ai.usage_tracker.UsageTracker.init(allocator);
-        // Initialize auth session manager. Default config — users can
-        // override forge_cloud_url/anon_key in settings later.
-        self.forge_cloud_url = try allocator.dupe(u8, "https://forge-cloud.supabase.co");
-        self.forge_cloud_anon_key = try allocator.dupe(u8, "");
+        // Initialize auth session manager. Config comes from build-time
+        // options: -Dforge-cloud-url=... -Dforge-cloud-anon-key=...
+        const build_options = @import("build_options");
+        self.forge_cloud_url = try allocator.dupe(u8, build_options.forge_cloud_url);
+        self.forge_cloud_anon_key = try allocator.dupe(u8, build_options.forge_cloud_anon_key);
         self.auth_manager = ai.auth_session.SessionManager.init(allocator, io, .{
             .project_url = self.forge_cloud_url,
             .anon_key = self.forge_cloud_anon_key,

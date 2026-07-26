@@ -4,6 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Build-time options for Forge Cloud backend configuration.
+    // Pass with: zig build -Dforge-cloud-url="https://xxx.supabase.co" -Dforge-cloud-anon-key="eyJ..."
+    const forge_cloud_url = b.option([]const u8, "forge-cloud-url", "Forge Cloud Supabase project URL") orelse "https://forge-cloud.supabase.co";
+    const forge_cloud_anon_key = b.option([]const u8, "forge-cloud-anon-key", "Forge Cloud Supabase anon key") orelse "";
+
     const with_plugin = b.option(bool, "with-plugin", "Build the WASM plugin runtime (requires LLVM backend)") orelse (optimize != .Debug);
     const zware_dep = b.dependency("zware", .{
         .target = target,
@@ -212,6 +217,16 @@ pub fn build(b: *std.Build) void {
 
     // Forge IDE builds on macOS, Linux, and Windows.
     // When with_plugin=false, a stub plugin module is used so the IDE can
+    // Create build_options module for compile-time configuration.
+    const build_options = b.addModule("build_options", .{
+        .root_source_file = b.addWriteFiles().add("build_options.zig", b.fmt(
+            \\pub const forge_cloud_url: []const u8 = "{s}";
+            \\pub const forge_cloud_anon_key: []const u8 = "{s}";
+            \\
+        , .{ forge_cloud_url, forge_cloud_anon_key })),
+        .target = target,
+    });
+
     // compile without zware (which requires the LLVM backend).
     var ide: ?*std.Build.Step.Compile = null;
     var run_ide_cmd: ?*std.Build.Step.Run = null;
@@ -223,6 +238,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{
+                    .{ .name = "build_options", .module = build_options },
                     .{ .name = "forge-core", .module = core },
                     .{ .name = "forge-kernel", .module = kernel },
                     .{ .name = "forge-workspace", .module = workspace },

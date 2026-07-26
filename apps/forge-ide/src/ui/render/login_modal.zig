@@ -77,13 +77,16 @@ pub fn drawLoginModal(wb: *Workbench, w: f32, h: f32) void {
         }
     }
 
-    // Error message (if any).
+    // Error message (if any) — shown inline between password and button.
     if (wb.login_error) |err| {
         var err_buf: [256:0]u8 = undefined;
         const n = @min(err.len, 255);
         @memcpy(err_buf[0..n], err[0..n]);
         err_buf[n] = 0;
-        renderer.Renderer.drawText(@ptrCast(&err_buf), box_x + 24, box_y + 224, 12.0, .{ .r = 1.0, .g = 0.4, .b = 0.4, .a = 1.0 });
+        // Red background pill for the error.
+        const err_w = @as(f32, @floatFromInt(n)) * 7.0 + 16;
+        renderer.Renderer.drawRoundedRect(box_x + 24, box_y + 218, @min(err_w, box_w - 48), 22, 4, .{ .r = 0.3, .g = 0.1, .b = 0.1, .a = 1.0 });
+        renderer.Renderer.drawText(@ptrCast(&err_buf), box_x + 32, box_y + 223, 12.0, .{ .r = 1.0, .g = 0.5, .b = 0.5, .a = 1.0 });
     }
 
     // Sign in button.
@@ -91,17 +94,21 @@ pub fn drawLoginModal(wb: *Workbench, w: f32, h: f32) void {
     const btn_h: f32 = 38;
     const btn_x = box_x + 24;
     const btn_y = box_y + 260;
-    const btn_hover = state.last_mouse_x >= btn_x and state.last_mouse_x < btn_x + btn_w and
+    const btn_hover = !wb.login_in_progress and state.last_mouse_x >= btn_x and state.last_mouse_x < btn_x + btn_w and
         state.last_mouse_y >= btn_y and state.last_mouse_y < btn_y + btn_h;
     const btn_color: renderer.Color = if (wb.login_in_progress)
-        .{ .r = 0.15, .g = 0.25, .b = 0.45, .a = 1.0 }
+        .{ .r = 0.12, .g = 0.2, .b = 0.35, .a = 1.0 }
     else if (btn_hover)
         .{ .r = 0.2, .g = 0.4, .b = 0.85, .a = 1.0 }
     else
         .{ .r = 0.15, .g = 0.35, .b = 0.8, .a = 1.0 };
     renderer.Renderer.drawRoundedRect(btn_x, btn_y, btn_w, btn_h, 6, btn_color);
     const btn_text = if (wb.login_in_progress) "Signing in..." else "Sign in";
-    renderer.Renderer.drawText(btn_text, btn_x + (btn_w - @as(f32, @floatFromInt(btn_text.len)) * 7.0) / 2, btn_y + 11, 14.0, .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+    const btn_text_color = if (wb.login_in_progress)
+        renderer.Color{ .r = 0.6, .g = 0.65, .b = 0.75, .a = 1.0 }
+    else
+        renderer.Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
+    renderer.Renderer.drawText(btn_text, btn_x + (btn_w - @as(f32, @floatFromInt(btn_text.len)) * 7.0) / 2, btn_y + 11, 14.0, btn_text_color);
 
     // Hint text.
     renderer.Renderer.drawText("Tab: switch field    Enter: sign in    Esc: skip", box_x + 24, box_y + 320, 11.0, .{ .r = 0.5, .g = 0.55, .b = 0.6, .a = 1.0 });
