@@ -495,51 +495,48 @@ pub fn helpText() []const u8 {
 /// Full help overlay text shown when user presses '?' or runs /help overlay.
 pub fn helpOverlayText() []const u8 {
     return
-    \\╔══════════════════════════════════════════════════════════════╗
-    \\║                  FORGE TUI — Keyboard Shortcuts               ║
-    \\╠══════════════════════════════════════════════════════════════╣
-    \\║  Input Editing                                               ║
-    \\║    Enter          Submit message / command                   ║
-    \\║    Tab            Autocomplete command / toggle explorer     ║
-    \\║    Ctrl+U         Clear input line                           ║
-    \\║    Ctrl+W         Delete word backward                       ║
-    \\║    Up/Down        History navigation (when input empty)      ║
-    \\║    Left/Right     Move cursor                                ║
-    \\║    Home/End       Jump to start/end                          ║
-    \\║                                                               ║
-    \\║  Agent Control                                               ║
-    \\║    Ctrl+M         Cycle mode (ask → plan → agent)            ║
-    \\║    Ctrl+C         Cancel agent / quit (press twice)          ║
-    \\║    Ctrl+R         Review last tool output                    ║
-    \\║    Ctrl+L         Clear screen                               ║
-    \\║                                                               ║
-    \\║  Navigation                                                  ║
-    \\║    Esc           Close events/timeline/help overlay          ║
-    \\║    PgUp/PgDn      Scroll chat history                        ║
-    \\║    ?              Show this help overlay                     ║
-    \\║                                                               ║
-    \\║  Slash Commands                                             ║
-    \\║    /clear         Clear conversation                         ║
-    \\║    /mode [name]   Switch mode (ask/plan/agent)               ║
-    \\║    /model [name]  Show or set model                          ║
-    \\║    /context       Show context manifest                      ║
-    \\║    /cost          Show token usage                           ║
-    \\║    /capability    Show provider capabilities                 ║
-    \\║    /provider      Show current provider                      ║
-    \\║    /tools list    List available tools                       ║
-    \\║    /spec [list]   List specs (Kiro-style)                    ║
-    \\║    /runs [status] List background runs                       ║
-    \\║    /complete [p]  Request inline completion                  ║
-    \\║    /review        Run code review on git diff                ║
-    \\║    /save [path]   Save conversation                          ║
-    \\║    /diff          Show proposal diff                         ║
-    \\║    /events        Show event log                             ║
-    \\║    /timeline      Show agent timeline                        ║
-    \\║    /sessions      List saved sessions                        ║
-    \\║    /resume [id]   Resume a session                           ║
-    \\║    /help          Show quick help                            ║
-    \\║    /quit          Exit Forge TUI                             ║
-    \\╚══════════════════════════════════════════════════════════════╝
+    \\╔══════════════════════════════════════════════════════════════════════╗
+    \\║                    FORGE TUI — Complete Reference                    ║
+    \\╠══════════════════════════════════════════════════════════════════════╣
+    \\║  Keyboard Shortcuts                                                 ║
+    \\║    Enter          Submit message / command                         ║
+    \\║    Tab            Autocomplete / file path / toggle explorer       ║
+    \\║    Ctrl+M         Cycle mode (ask -> plan -> agent)                ║
+    \\║    Ctrl+C         Cancel agent / quit (press twice)                ║
+    \\║    Ctrl+R         Review last tool output                          ║
+    \\║    Ctrl+J         Insert newline (multi-line input)                ║
+    \\║    Ctrl+Y         Copy last code block to clipboard                ║
+    \\║    Ctrl+Tab       Cycle through conversation tabs                  ║
+    \\║    Ctrl+L         Clear screen                                      ║
+    \\║    Ctrl+U         Clear input line                                  ║
+    \\║    Ctrl+W         Delete word backward                             ║
+    \\║    Up/Down        History navigation / command selection           ║
+    \\║    Left/Right     Move cursor                                       ║
+    \\║    Home/End       Jump to start/end of input                       ║
+    \\║    PgUp/PgDn      Scroll chat history                              ║
+    \\║    Esc            Close events/timeline/help overlay               ║
+    \\║    ?              Show this help overlay                            ║
+    \\║                                                                     ║
+    \\║  Slash Commands (69 total)                                          ║
+    \\║  ─────────────────────────────────                                   ║
+    \\║  Agent:   /mode /undo /redo /policy /tools /complete /retry         ║
+    \\║           /summary                                                  ║
+    \\║  Context: /context /inspect /cost /capability /provider             ║
+    \\║           /priority                                                 ║
+    \\║  Chat:    /clear /search /edit /save /export /copyall               ║
+    \\║           /bookmark /copy /filter /compact /pin /goto               ║
+    \\║           /tag /findreplace /annotate /share                        ║
+    \\║  Session: /sessions /resume /timeline /events /time /version        ║
+    \\║  Specs:   /spec /runs                                               ║
+    \\║  Git:     /diff [file] /branch /review                              ║
+    \\║  Config:  /model /theme /config /stats /help /wordwrap              ║
+    \\║           /resize /log                                              ║
+    \\║  Auto:    /alias /macro /notify /snippet                            ║
+    \\║  Tabs:    /newtab /tabs /close /rename /switch /merge               ║
+    \\║           /cleartabs /tab /copytab /swap /exporttab                 ║
+    \\║                                                                     ║
+    \\║  Use /help <command> for detailed help on a specific command.       ║
+    \\╚══════════════════════════════════════════════════════════════════════╝
     ;
 }
 

@@ -5392,35 +5392,100 @@ pub const App = struct {
         return frames[self.spinner_frame % frames.len];
     }
 
-    /// Draw the top status bar showing model, mode, context, and token info.
-    /// Phase 24: Makes the TUI feel more polished and informative.
+    /// Draw the top status bar with color-coded segments (Phase 100).
     fn drawStatusBar(self: *App, cols: u16) void {
         self.frame.moveTo(1, 1);
-        if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
 
-        var buf: [256]u8 = undefined;
+        var buf: [512]u8 = undefined;
         const mode_label = commands.modeLabel(self.agent_mode);
-        const spinner = if (self.agent_busy) self.spinnerChar() else "●";
-        // Phase 82: Show current tab name in status bar.
+        const spinner = if (self.agent_busy) self.spinnerChar() else "*";
         const tab_name = if (self.current_tab_name) |n| n else "main";
-        const status_text = std.fmt.bufPrint(&buf, " {s} FORGE │ [{s}] │ {s} │ mode:{s} │ {s} │ {d} tok ", .{
-            spinner,
-            tab_name,
-            self.model_label,
-            mode_label,
-            self.context_label,
-            self.total_input_tokens + self.total_output_tokens,
-        }) catch " FORGE ";
+        const total_tokens = self.total_input_tokens + self.total_output_tokens;
 
-        self.frame.appendSlice(status_text) catch {};
+        // Build segment by segment with per-segment colors.
+        // Each segment: [bg_color][fg_color] text [reset]
+        var col: u16 = 0;
 
-        // Pad the rest of the status bar with spaces.
-        const text_cols = term.displayWidth(status_text);
-        if (text_cols < cols) {
-            self.frame.data.appendNTimes(self.allocator, ' ', cols - text_cols) catch {};
+        // Segment 1: Spinner + FORGE (bold white on dark bg)
+        if (self.term.use_color) {
+            self.frame.appendSlice(term.Style.invert) catch {};
+            self.frame.appendSlice(term.Style.bold) catch {};
+        }
+        const seg1 = std.fmt.bufPrint(&buf, " {s} FORGE ", .{spinner}) catch " FORGE ";
+        self.frame.appendSlice(seg1) catch {};
+        col += @intCast(term.displayWidth(seg1));
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+
+        // Segment 2: Tab name (cyan)
+        if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+        const seg2 = std.fmt.bufPrint(&buf, " [{s}] ", .{tab_name}) catch " [] ";
+        self.frame.appendSlice(seg2) catch {};
+        col += @intCast(term.displayWidth(seg2));
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+
+        // Segment 3: Model (green)
+        if (self.term.use_color) self.frame.appendSlice(term.Style.green) catch {};
+        const seg3 = std.fmt.bufPrint(&buf, "{s} ", .{self.model_label}) catch "";
+        self.frame.appendSlice(seg3) catch {};
+        col += @intCast(term.displayWidth(seg3));
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+
+        // Segment 4: Mode (yellow)
+        if (self.term.use_color) self.frame.appendSlice(term.Style.yellow) catch {};
+        const seg4 = std.fmt.bufPrint(&buf, "| {s} ", .{mode_label}) catch "";
+        self.frame.appendSlice(seg4) catch {};
+        col += @intCast(term.displayWidth(seg4));
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+
+        // Segment 5: Context (gray)
+        if (self.term.use_color) self.frame.appendSlice(term.Style.gray) catch {};
+        const seg5 = std.fmt.bufPrint(&buf, "| {s} ", .{self.context_label}) catch "";
+        self.frame.appendSlice(seg5) catch {};
+        col += @intCast(term.displayWidth(seg5));
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+
+        // Segment 6: Branch (magenta) — if not "no branch"
+        if (!std.mem.eql(u8, self.branch_label, "no branch")) {
+            if (self.term.use_color) self.frame.appendSlice(term.Style.magenta) catch {};
+            const seg6 = std.fmt.bufPrint(&buf, "| git:{s} ", .{self.branch_label}) catch "";
+            self.frame.appendSlice(seg6) catch {};
+            col += @intCast(term.displayWidth(seg6));
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        }
+
+        // Segment 7: Edited count (bright_yellow) — if > 0
+        if (!std.mem.eql(u8, self.edited_label, "0 edited")) {
+            if (self.term.use_color) self.frame.appendSlice(term.Style.bright_yellow) catch {};
+            const seg7 = std.fmt.bufPrint(&buf, "| {s} ", .{self.edited_label}) catch "";
+            self.frame.appendSlice(seg7) catch {};
+            col += @intCast(term.displayWidth(seg7));
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        }
+
+        // Segment 8: Tokens (bright_green) — right-aligned
+        const seg8 = std.fmt.bufPrint(&buf, "{d} tok", .{total_tokens}) catch "0 tok";
+        const seg8_cols: u16 = @intCast(term.displayWidth(seg8));
+        if (col + seg8_cols + 2 < cols) {
+            // Pad to right-align
+            if (cols > col + seg8_cols + 1) {
+                self.frame.data.appendNTimes(self.allocator, ' ', cols - col - seg8_cols - 1) catch {};
+            }
+            if (self.term.use_color) self.frame.appendSlice(term.Style.bright_green) catch {};
+            self.frame.appendSlice(seg8) catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            col = cols;
+        } else {
+            if (self.term.use_color) self.frame.appendSlice(term.Style.bright_green) catch {};
+            self.frame.appendSlice(seg8) catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            col += seg8_cols;
+        }
+
+        // Pad remaining space
+        if (col < cols) {
+            self.frame.data.appendNTimes(self.allocator, ' ', cols - col) catch {};
         }
         self.frame.appendSlice("\x1b[K") catch {};
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
     }
 
     fn render(self: *App) void {
@@ -5632,6 +5697,22 @@ pub const App = struct {
             self.frame.data.appendNTimes(self.allocator, ' ', chat_cols) catch {};
         }
 
+        // Scroll indicator — show "↑ N lines above" when scrolled up (Phase 100).
+        if (source_scroll_ptr.* > 0) {
+            self.frame.moveTo(2, chat_x);
+            if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+            var scroll_buf: [64]u8 = undefined;
+            const scroll_hint = std.fmt.bufPrint(&scroll_buf, "  ^ {d} lines above  ", .{source_scroll_ptr.*}) catch "  ^ scrolled  ";
+            self.frame.appendSlice(scroll_hint) catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        } else if (total > chat_rows) {
+            // Show "— follow —" badge when pinned to bottom.
+            self.frame.moveTo(2, chat_x + chat_cols - 14);
+            if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+            self.frame.appendSlice("  -- follow --  ") catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        }
+
         var footer_row = chat_rows + 2;
 
         if (show_commands) {
@@ -5774,7 +5855,7 @@ pub const App = struct {
             }
         }
 
-        // Phase 24: Help overlay — render on top of everything when active.
+        // Help overlay — real modal with background fill (Phase 100).
         if (self.show_help_overlay) {
             const overlay_text = commands.helpOverlayText();
             var overlay_lines: std.ArrayList([]const u8) = .empty;
@@ -5784,23 +5865,39 @@ pub const App = struct {
                 overlay_lines.append(self.allocator, line) catch {};
             }
             const overlay_h: u16 = @intCast(overlay_lines.items.len);
-            const overlay_w: u16 = 66; // Width of the box drawing
-            const start_row: u16 = if (size.rows > overlay_h + 2) @divFloor(size.rows - overlay_h, 2) else 1;
+            const overlay_w: u16 = 72; // Width of the box drawing
+            const start_row: u16 = if (size.rows > overlay_h + 4) @divFloor(size.rows - overlay_h, 2) else 1;
             const start_col: u16 = if (size.cols > overlay_w + 2) @divFloor(size.cols - overlay_w, 2) else 1;
 
-            // Draw semi-transparent background (dim the screen behind overlay).
-            if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-            for (0..overlay_h) |i| {
-                self.frame.moveTo(start_row + @as(u16, @intCast(i)), start_col);
-                self.frame.appendSlice(overlay_lines.items[i]) catch {};
+            // Clear the full screen rows the overlay occupies, then fill with bg_block.
+            for (0..overlay_h + 2) |i| {
+                const overlay_row = start_row + @as(u16, @intCast(i));
+                self.frame.moveTo(overlay_row, 1);
+                if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
+                self.frame.data.appendNTimes(self.allocator, ' ', @intCast(size.cols)) catch {};
                 self.frame.appendSlice("\x1b[K") catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             }
-            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
 
-            // Footer hint.
+            // Draw overlay text on top of the filled background.
+            for (0..overlay_h) |i| {
+                const overlay_row = start_row + @as(u16, @intCast(i));
+                self.frame.moveTo(overlay_row, start_col);
+                if (self.term.use_color) {
+                    self.frame.appendSlice(term.Style.bg_block) catch {};
+                    self.frame.appendSlice(term.Style.bold) catch {};
+                }
+                self.frame.appendSlice(overlay_lines.items[i]) catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            }
+
+            // Footer hint with cyan highlight.
             self.frame.moveTo(start_row + overlay_h + 1, start_col);
-            if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
-            self.frame.appendSlice("Press any key to close this overlay") catch {};
+            if (self.term.use_color) {
+                self.frame.appendSlice(term.Style.bg_block) catch {};
+                self.frame.appendSlice(term.Style.cyan) catch {};
+            }
+            self.frame.appendSlice("  Press any key to close this overlay") catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         }
 
