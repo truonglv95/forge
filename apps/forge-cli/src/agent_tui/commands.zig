@@ -103,6 +103,12 @@ pub const Command = union(enum) {
     translate: ?[]const u8,
     annotate: ?[]const u8,
     share: ?[]const u8,
+    // AI Workflow commands (Cursor competitor)
+    refactor: ?[]const u8,
+    explain: ?[]const u8,
+    fix: ?[]const u8,
+    testgen: ?[]const u8,
+    doc: ?[]const u8,
     not_command,
 };
 
@@ -388,6 +394,37 @@ pub fn parseSlashCommand(input: []const u8) Command {
         const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
         return .{ .share = if (args.len > 0) args else null };
     }
+    // AI Workflow commands (Cursor competitor)
+    if (matchesSlash(input, "refactor")) {
+        if (std.mem.eql(u8, input, "/refactor")) return .{ .refactor = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .refactor = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .refactor = if (args.len > 0) args else null };
+    }
+    if (matchesSlash(input, "explain")) {
+        if (std.mem.eql(u8, input, "/explain")) return .{ .explain = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .explain = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .explain = if (args.len > 0) args else null };
+    }
+    if (matchesSlash(input, "fix")) {
+        if (std.mem.eql(u8, input, "/fix")) return .{ .fix = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .fix = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .fix = if (args.len > 0) args else null };
+    }
+    if (matchesSlash(input, "testgen") or matchesSlash(input, "gentest")) {
+        if (std.mem.eql(u8, input, "/testgen") or std.mem.eql(u8, input, "/gentest")) return .{ .testgen = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .testgen = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .testgen = if (args.len > 0) args else null };
+    }
+    if (matchesSlash(input, "doc") or matchesSlash(input, "docs")) {
+        if (std.mem.eql(u8, input, "/doc") or std.mem.eql(u8, input, "/docs")) return .{ .doc = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .doc = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .doc = if (args.len > 0) args else null };
+    }
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -487,7 +524,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /copyall /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /copytab /swap /exporttab /log /version /findreplace /translate /annotate /share /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /copyall /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /copytab /swap /exporttab /log /version /findreplace /translate /annotate /share /refactor /explain /fix /testgen /doc /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | Ctrl+Tab=cycle tabs | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }

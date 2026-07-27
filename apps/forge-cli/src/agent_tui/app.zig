@@ -191,7 +191,7 @@ pub const App = struct {
     active_tab: usize = 0,
     current_tab_name: ?[]u8 = null,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/copyall", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/findreplace", "/translate", "/annotate", "/share", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/copyall", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/findreplace", "/translate", "/annotate", "/share", "/refactor", "/explain", "/fix", "/testgen", "/doc", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -987,6 +987,11 @@ pub const App = struct {
             .translate => |lang| try self.translateConversation(lang),
             .annotate => |args| try self.annotateMessage(args),
             .share => |args| try self.shareConversation(args),
+            .refactor => |args| try self.aiRefactor(args),
+            .explain => |args| try self.aiExplain(args),
+            .fix => |args| try self.aiFix(args),
+            .testgen => |args| try self.aiTestGen(args),
+            .doc => |args| try self.aiDoc(args),
         }
     }
 
@@ -4208,6 +4213,196 @@ pub const App = struct {
         const msg = std.fmt.bufPrint(&msg_buf, "Shared conversation to {s} ({d} bytes, Markdown format)", .{ path, total_bytes }) catch "Share complete";
         try self.pushSystem(msg);
         try self.pushSystem("The file includes metadata header, all messages, and a Forge footer.");
+    }
+
+    // ── AI Workflow Commands (Cursor competitor) ──────────────────────────
+
+    /// Helper: call LLM with a prompt and display the result as agent message.
+    fn callLlm(self: *App, header_text: []const u8, prompt: []const u8) !void {
+        try self.pushSystem(header_text);
+
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "ai-workflow", self.io, self.opened.root);
+        var provider = ai.provider_factory.create(self.allocator, self.io, self.environ_map, provider_opts.options) catch |err| {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Failed: cannot create provider ({s})", .{@errorName(err)}) catch "Failed: provider unavailable";
+            try self.pushSystem(err_msg);
+            return;
+        };
+        defer provider.deinit(self.allocator);
+
+        var response_alloc = std.Io.Writer.Allocating.init(self.allocator);
+        defer response_alloc.deinit();
+        const images = [_]ai.provider.ImagePart{};
+        var dummy_state = std.atomic.Value(bool).init(false);
+        var dummy_token: kernel.cancellation.CancellationToken = .{ .shared_state = &dummy_state };
+        provider.ask(
+            self.allocator,
+            prompt,
+            &images,
+            &response_alloc.writer,
+            &dummy_token,
+        ) catch |err| {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Failed: {s}", .{@errorName(err)}) catch "Failed";
+            try self.pushSystem(err_msg);
+            return;
+        };
+
+        const output = response_alloc.writer.buffer[0..response_alloc.writer.end];
+        try self.pushLine(.agent, try self.allocator.dupe(u8, output));
+    }
+
+    /// /refactor [description] — AI-powered code refactoring (Cursor competitor).
+    /// Asks the LLM to suggest refactoring improvements for the current conversation
+    /// context or a specific description.
+    fn aiRefactor(self: *App, desc_opt: ?[]const u8) !void {
+        const desc = desc_opt orelse "the code in the current conversation";
+        try self.pushSystem("=== AI Refactoring ===");
+
+        var prompt_buf: std.ArrayList(u8) = .empty;
+        defer prompt_buf.deinit(self.allocator);
+        try prompt_buf.appendSlice(self.allocator, "You are a senior software engineer. Analyze the following code and suggest refactoring improvements for: ");
+        try prompt_buf.appendSlice(self.allocator, desc);
+        try prompt_buf.appendSlice(self.allocator, "\n\nFocus on:\n- Code duplication\n- Naming conventions\n- Error handling\n- Performance\n- Readability\n\nProvide specific, actionable suggestions with code examples.\n\n");
+
+        // Include last 10 user/agent messages for context.
+        self.mutex.lock();
+        var msg_count: usize = 0;
+        for (self.lines.items) |line| {
+            if (line.kind == .user or line.kind == .agent) {
+                if (msg_count >= 10) break;
+                const role: []const u8 = if (line.kind == .user) "User" else "Assistant";
+                try prompt_buf.appendSlice(self.allocator, role);
+                try prompt_buf.appendSlice(self.allocator, ": ");
+                const preview_len = @min(line.text.len, 300);
+                try prompt_buf.appendSlice(self.allocator, line.text[0..preview_len]);
+                try prompt_buf.append(self.allocator, '\n');
+                msg_count += 1;
+            }
+        }
+        self.mutex.unlock();
+
+        if (msg_count == 0) {
+            try self.pushSystem("No conversation context to refactor. Describe what you want to refactor.");
+            return;
+        }
+
+        try self.callLlm("Analyzing code for refactoring opportunities...", prompt_buf.items);
+    }
+
+    /// /explain [topic] — explain code or concept via LLM (Cursor competitor).
+    fn aiExplain(self: *App, topic_opt: ?[]const u8) !void {
+        const topic = topic_opt orelse {
+            try self.pushSystem("Usage: /explain <code_or_concept>");
+            try self.pushSystem("Asks the AI to explain the specified code or concept.");
+            try self.pushSystem("Example: /explain how does the agent loop work?");
+            return;
+        };
+
+        try self.pushSystem("=== AI Explanation ===");
+
+        var prompt_buf: std.ArrayList(u8) = .empty;
+        defer prompt_buf.deinit(self.allocator);
+        try prompt_buf.appendSlice(self.allocator, "You are a helpful code mentor. Explain the following in clear, concise terms with examples:\n\n");
+        try prompt_buf.appendSlice(self.allocator, topic);
+        try prompt_buf.appendSlice(self.allocator, "\n\nUse analogies where helpful. Keep it under 500 words.");
+
+        try self.callLlm("Explaining...", prompt_buf.items);
+    }
+
+    /// /fix [error] — fix errors in code via LLM (Cursor competitor).
+    fn aiFix(self: *App, error_opt: ?[]const u8) !void {
+        const error_desc = error_opt orelse {
+            try self.pushSystem("Usage: /fix <error_description>");
+            try self.pushSystem("Asks the AI to help fix the described error or bug.");
+            try self.pushSystem("Example: /fix segmentation fault in load_font");
+            return;
+        };
+
+        try self.pushSystem("=== AI Fix ===");
+
+        var prompt_buf: std.ArrayList(u8) = .empty;
+        defer prompt_buf.deinit(self.allocator);
+        try prompt_buf.appendSlice(self.allocator, "You are a debugging expert. Help fix the following error:\n\n");
+        try prompt_buf.appendSlice(self.allocator, error_desc);
+        try prompt_buf.appendSlice(self.allocator, "\n\nProvide:\n1. Likely root cause\n2. Step-by-step fix\n3. Prevention tips\n");
+
+        // Include last 5 agent messages for code context.
+        self.mutex.lock();
+        var msg_count: usize = 0;
+        for (self.lines.items) |line| {
+            if (line.kind == .agent) {
+                if (msg_count >= 5) break;
+                try prompt_buf.appendSlice(self.allocator, "\nContext:\n");
+                const preview_len = @min(line.text.len, 400);
+                try prompt_buf.appendSlice(self.allocator, line.text[0..preview_len]);
+                try prompt_buf.append(self.allocator, '\n');
+                msg_count += 1;
+            }
+        }
+        self.mutex.unlock();
+
+        try self.callLlm("Diagnosing error...", prompt_buf.items);
+    }
+
+    /// /testgen [function] — generate tests via LLM (Cursor competitor).
+    fn aiTestGen(self: *App, func_opt: ?[]const u8) !void {
+        const func = func_opt orelse "the current code";
+
+        try self.pushSystem("=== AI Test Generation ===");
+
+        var prompt_buf: std.ArrayList(u8) = .empty;
+        defer prompt_buf.deinit(self.allocator);
+        try prompt_buf.appendSlice(self.allocator, "You are a test engineer. Generate comprehensive unit tests for: ");
+        try prompt_buf.appendSlice(self.allocator, func);
+        try prompt_buf.appendSlice(self.allocator, "\n\nRequirements:\n- Cover normal, edge, and error cases\n- Use descriptive test names\n- Include assertions\n- Add comments explaining what each test verifies\n\n");
+
+        // Include last 3 agent messages for code context.
+        self.mutex.lock();
+        var msg_count: usize = 0;
+        for (self.lines.items) |line| {
+            if (line.kind == .agent) {
+                if (msg_count >= 3) break;
+                try prompt_buf.appendSlice(self.allocator, "Code to test:\n");
+                const preview_len = @min(line.text.len, 500);
+                try prompt_buf.appendSlice(self.allocator, line.text[0..preview_len]);
+                try prompt_buf.append(self.allocator, '\n');
+                msg_count += 1;
+            }
+        }
+        self.mutex.unlock();
+
+        try self.callLlm("Generating tests...", prompt_buf.items);
+    }
+
+    /// /doc [target] — generate documentation via LLM (Cursor competitor).
+    fn aiDoc(self: *App, target_opt: ?[]const u8) !void {
+        const target = target_opt orelse "the current code";
+
+        try self.pushSystem("=== AI Documentation ===");
+
+        var prompt_buf: std.ArrayList(u8) = .empty;
+        defer prompt_buf.deinit(self.allocator);
+        try prompt_buf.appendSlice(self.allocator, "You are a technical writer. Generate documentation for: ");
+        try prompt_buf.appendSlice(self.allocator, target);
+        try prompt_buf.appendSlice(self.allocator, "\n\nInclude:\n- Brief description\n- Parameters/arguments\n- Return value\n- Usage examples\n- Notes and caveats\n\nFormat as Markdown.\n\n");
+
+        // Include last 3 agent messages for code context.
+        self.mutex.lock();
+        var msg_count: usize = 0;
+        for (self.lines.items) |line| {
+            if (line.kind == .agent) {
+                if (msg_count >= 3) break;
+                try prompt_buf.appendSlice(self.allocator, "Code to document:\n");
+                const preview_len = @min(line.text.len, 500);
+                try prompt_buf.appendSlice(self.allocator, line.text[0..preview_len]);
+                try prompt_buf.append(self.allocator, '\n');
+                msg_count += 1;
+            }
+        }
+        self.mutex.unlock();
+
+        try self.callLlm("Generating documentation...", prompt_buf.items);
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {
