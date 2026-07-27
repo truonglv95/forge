@@ -187,7 +187,7 @@ pub const App = struct {
     active_tab: usize = 0,
     current_tab_name: ?[]u8 = null,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/copyall", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/findreplace", "/translate", "/annotate", "/share", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -963,6 +963,11 @@ pub const App = struct {
             .exporttab => |args| try self.exportTab(args),
             .log_toggle => try self.toggleLogging(),
             .version => try self.showVersion(),
+            .copyall => try self.copyAllToClipboard(),
+            .findreplace => |args| try self.findReplace(args),
+            .translate => |lang| try self.translateConversation(lang),
+            .annotate => |args| try self.annotateMessage(args),
+            .share => |args| try self.shareConversation(args),
         }
     }
 
@@ -3852,6 +3857,338 @@ pub const App = struct {
         try self.pushSystem("");
         try self.pushSystem("  GitHub: https://github.com/truonglv95/forge");
         try self.pushSystem("  Use /help for command list, ? for help overlay");
+    }
+
+    /// /copyall — copy entire current conversation to clipboard (Phase 94).
+    fn copyAllToClipboard(self: *App) !void {
+        self.mutex.lock();
+        if (self.lines.items.len == 0) {
+            self.mutex.unlock();
+            try self.pushSystem("Conversation is empty");
+            return;
+        }
+
+        var text_buf: std.ArrayList(u8) = .empty;
+        defer text_buf.deinit(self.allocator);
+        for (self.lines.items) |line| {
+            const role: []const u8 = switch (line.kind) {
+                .user => "[user] ",
+                .agent => "[agent] ",
+                .tool => "[tool] ",
+                .system => "[system] ",
+                .failure => "[error] ",
+            };
+            text_buf.appendSlice(self.allocator, role) catch break;
+            text_buf.appendSlice(self.allocator, line.text) catch break;
+            text_buf.append(self.allocator, '\n') catch break;
+        }
+        const total_bytes = text_buf.items.len;
+        self.mutex.unlock();
+
+        if (total_bytes == 0) {
+            try self.pushSystem("Nothing to copy");
+            return;
+        }
+
+        if (total_bytes > 4096) {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Conversation too large for clipboard ({d} bytes). Use /save or /export instead.", .{total_bytes}) catch "Too large for clipboard";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        var osc_buf: [4096]u8 = undefined;
+        const osc = std.fmt.bufPrint(&osc_buf, "\x1b]52;c;{s}\x07", .{text_buf.items}) catch {
+            try self.pushSystem("Failed to build clipboard data");
+            return;
+        };
+        term.writeAll(osc) catch {};
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Copied entire conversation to clipboard ({d} bytes)", .{total_bytes}) catch "Copied to clipboard";
+        try self.pushSystem(msg);
+    }
+
+    /// /findreplace <old> <new> — find and replace text in conversation (Phase 95).
+    fn findReplace(self: *App, args_opt: ?[]const u8) !void {
+        const args = args_opt orelse {
+            try self.pushSystem("Usage: /findreplace <old_text> <new_text>");
+            try self.pushSystem("Replaces all occurrences of old_text with new_text in the conversation.");
+            try self.pushSystem("Alias: /fr");
+            return;
+        };
+
+        // Parse: <old> <new> — split on first space
+        const space_idx = std.mem.indexOfScalar(u8, args, ' ') orelse {
+            try self.pushSystem("Usage: /findreplace <old_text> <new_text>");
+            try self.pushSystem("Both old and new text must be provided.");
+            return;
+        };
+
+        const old_text = args[0..space_idx];
+        const new_text = std.mem.trim(u8, args[space_idx + 1 ..], &std.ascii.whitespace);
+        if (old_text.len == 0 or new_text.len == 0) {
+            try self.pushSystem("Both old and new text must be non-empty");
+            return;
+        }
+
+        self.mutex.lock();
+        var replace_count: usize = 0;
+        for (self.lines.items) |*line| {
+            if (std.mem.indexOf(u8, line.text, old_text)) |_| {
+                // Count occurrences
+                var count: usize = 0;
+                var search_start: usize = 0;
+                while (std.mem.indexOfPos(u8, line.text, search_start, old_text)) |pos| {
+                    count += 1;
+                    search_start = pos + old_text.len;
+                }
+
+                // Build new text with replacements
+                var new_buf: std.ArrayList(u8) = .empty;
+                defer new_buf.deinit(self.allocator);
+                var src_start: usize = 0;
+                while (std.mem.indexOfPos(u8, line.text, src_start, old_text)) |pos| {
+                    new_buf.appendSlice(self.allocator, line.text[src_start..pos]) catch break;
+                    new_buf.appendSlice(self.allocator, new_text) catch break;
+                    src_start = pos + old_text.len;
+                }
+                new_buf.appendSlice(self.allocator, line.text[src_start..]) catch {};
+
+                // Replace the text
+                self.allocator.free(line.text);
+                line.text = self.allocator.dupe(u8, new_buf.items) catch line.text;
+                replace_count += count;
+            }
+        }
+        self.markDirty();
+        self.mutex.unlock();
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Replaced {d} occurrence(s) of '{s}' with '{s}'", .{ replace_count, old_text, new_text }) catch "Find and replace complete";
+        try self.pushSystem(msg);
+    }
+
+    /// /translate <lang> — translate conversation via LLM (Phase 96).
+    fn translateConversation(self: *App, lang_opt: ?[]const u8) !void {
+        const lang = lang_opt orelse {
+            try self.pushSystem("Usage: /translate <language>");
+            try self.pushSystem("Translates the conversation summary into the specified language.");
+            try self.pushSystem("Examples: /translate vi, /translate ja, /translate fr");
+            try self.pushSystem("Alias: /tr");
+            return;
+        };
+
+        try self.pushSystem("Translating conversation summary...");
+
+        // Build a translation prompt from the conversation.
+        var prompt_buf: std.ArrayList(u8) = .empty;
+        defer prompt_buf.deinit(self.allocator);
+        try prompt_buf.appendSlice(self.allocator, "Translate the following conversation summary into ");
+        try prompt_buf.appendSlice(self.allocator, lang);
+        try prompt_buf.appendSlice(self.allocator, ". Keep it concise (3-5 bullet points):\n\n");
+
+        self.mutex.lock();
+        var msg_count: usize = 0;
+        for (self.lines.items) |line| {
+            if (line.kind == .user or line.kind == .agent) {
+                if (msg_count >= 20) break;
+                const role: []const u8 = if (line.kind == .user) "User" else "Assistant";
+                try prompt_buf.appendSlice(self.allocator, role);
+                try prompt_buf.appendSlice(self.allocator, ": ");
+                const preview_len = @min(line.text.len, 150);
+                try prompt_buf.appendSlice(self.allocator, line.text[0..preview_len]);
+                try prompt_buf.append(self.allocator, '\n');
+                msg_count += 1;
+            }
+        }
+        self.mutex.unlock();
+
+        if (msg_count == 0) {
+            try self.pushSystem("No conversation to translate.");
+            return;
+        }
+
+        // Call the provider.
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "translate", self.io, self.opened.root);
+        var provider = ai.provider_factory.create(self.allocator, self.io, self.environ_map, provider_opts.options) catch |err| {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Translation failed: cannot create provider ({s})", .{@errorName(err)}) catch "Translation failed: provider unavailable";
+            try self.pushSystem(err_msg);
+            return;
+        };
+        defer provider.deinit(self.allocator);
+
+        var response_alloc = std.Io.Writer.Allocating.init(self.allocator);
+        defer response_alloc.deinit();
+        const images = [_]ai.provider.ImagePart{};
+        var dummy_state = std.atomic.Value(bool).init(false);
+        var dummy_token: kernel.cancellation.CancellationToken = .{ .shared_state = &dummy_state };
+        provider.ask(
+            self.allocator,
+            prompt_buf.items,
+            &images,
+            &response_alloc.writer,
+            &dummy_token,
+        ) catch |err| {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Translation failed: {s}", .{@errorName(err)}) catch "Translation failed";
+            try self.pushSystem(err_msg);
+            return;
+        };
+
+        const output = response_alloc.writer.buffer[0..response_alloc.writer.end];
+        var header_buf: [64]u8 = undefined;
+        const header = std.fmt.bufPrint(&header_buf, "═══ Translation ({s}) ═══", .{lang}) catch "═══ Translation ═══";
+        try self.pushSystem(header);
+        try self.pushLine(.agent, try self.allocator.dupe(u8, output));
+    }
+
+    /// /annotate <line#> <note> — add private notes to messages (Phase 97).
+    fn annotateMessage(self: *App, args_opt: ?[]const u8) !void {
+        self.ensureTagsInit();
+        const args = args_opt orelse {
+            // Show all annotations if no args
+            if (self.tags.count() == 0) {
+                try self.pushSystem("No annotations. Use /annotate <line#> <note> to add one.");
+                try self.pushSystem("Alias: /note");
+                return;
+            }
+            try self.pushSystem("Annotations:");
+            self.mutex.lock();
+            var iter = self.tags.iterator();
+            while (iter.next()) |entry| {
+                const line_num = entry.key_ptr.*;
+                const note = entry.value_ptr.*;
+                if (std.mem.startsWith(u8, note, "annotation:") and line_num < self.lines.items.len) {
+                    const line = self.lines.items[line_num];
+                    var buf: [256]u8 = undefined;
+                    const preview_len = @min(line.text.len, 40);
+                    const ann_line = std.fmt.bufPrint(&buf, "  [{d}] \"{s}\" — note: {s}", .{ line_num, line.text[0..preview_len], note[11..] }) catch continue;
+                    try self.pushLine(.system, try self.allocator.dupe(u8, ann_line));
+                }
+            }
+            self.mutex.unlock();
+            return;
+        };
+
+        // Parse: <line#> <note>
+        const space_idx = std.mem.indexOfScalar(u8, args, ' ') orelse {
+            try self.pushSystem("Usage: /annotate <line#> <note>");
+            return;
+        };
+
+        const line_str = args[0..space_idx];
+        const note = std.mem.trim(u8, args[space_idx + 1 ..], &std.ascii.whitespace);
+        if (note.len == 0) {
+            try self.pushSystem("Note cannot be empty");
+            return;
+        }
+
+        const line_num = std.fmt.parseInt(usize, line_str, 10) catch {
+            try self.pushSystem("Invalid line number");
+            return;
+        };
+
+        self.mutex.lock();
+        if (line_num >= self.lines.items.len) {
+            const total = self.lines.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Line {d} does not exist ({d} lines)", .{ line_num, total }) catch "Line not found";
+            try self.pushSystem(msg);
+            return;
+        }
+        self.mutex.unlock();
+
+        // Store annotation as a tag with "annotation:" prefix.
+        var tag_buf: [512]u8 = undefined;
+        const tag_value = std.fmt.bufPrint(&tag_buf, "annotation:{s}", .{note}) catch "annotation";
+        if (self.tags.fetchRemove(line_num)) |old_entry| {
+            self.allocator.free(old_entry.value);
+        }
+        try self.tags.put(line_num, try self.allocator.dupe(u8, tag_value));
+
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Annotated line {d}: \"{s}\"", .{ line_num, note }) catch "Annotation added";
+        try self.pushSystem(msg);
+        try self.pushSystem("Use /annotate (no args) to see all annotations");
+    }
+
+    /// /share [path] — generate shareable file of conversation (Phase 98).
+    fn shareConversation(self: *App, args_opt: ?[]const u8) !void {
+        const path = args_opt orelse "forge_share.md";
+
+        self.mutex.lock();
+        if (self.lines.items.len == 0) {
+            self.mutex.unlock();
+            try self.pushSystem("Conversation is empty — nothing to share");
+            return;
+        }
+
+        // Build a shareable Markdown file with metadata header.
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+
+        try buf.appendSlice(self.allocator, "# Forge Conversation\n\n");
+        try buf.appendSlice(self.allocator, "> Shared from Forge TUI\n\n");
+
+        // Metadata
+        const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        var meta_buf: [256]u8 = undefined;
+        const meta = std.fmt.bufPrint(&meta_buf, "**Date:** {d}  \n**Workspace:** {s}  \n**Model:** {s}  \n**Messages:** {d}  \n**Tokens:** {d} in / {d} out\n\n---\n\n", .{
+            now_ms,
+            self.folder_label,
+            self.model_label,
+            self.lines.items.len,
+            self.total_input_tokens,
+            self.total_output_tokens,
+        }) catch "**Conversation metadata**\n\n---\n\n";
+        try buf.appendSlice(self.allocator, meta);
+
+        // Messages
+        for (self.lines.items) |line| {
+            const role: []const u8 = switch (line.kind) {
+                .user => "## You",
+                .agent => "## Assistant",
+                .tool => "### Tool",
+                .system => "> System",
+                .failure => "### Error",
+            };
+            try buf.appendSlice(self.allocator, role);
+            try buf.append(self.allocator, '\n');
+            try buf.append(self.allocator, '\n');
+            try buf.appendSlice(self.allocator, line.text);
+            try buf.appendSlice(self.allocator, "\n\n");
+        }
+
+        // Footer
+        try buf.appendSlice(self.allocator, "---\n\n");
+        try buf.appendSlice(self.allocator, "*Generated by Forge TUI — https://github.com/truonglv95/forge*\n");
+
+        const total_bytes = buf.items.len;
+        self.mutex.unlock();
+
+        // Write to file.
+        var dir = std.Io.Dir.openDir(.cwd(), self.io, self.opened.path, .{}) catch {
+            try self.pushSystem("Failed to open workspace for share");
+            return;
+        };
+        defer dir.close(self.io);
+        var file = dir.createFile(self.io, path, .{}) catch {
+            try self.pushSystem("Failed to create share file");
+            return;
+        };
+        defer file.close(self.io);
+        file.writeStreamingAll(self.io, buf.items) catch {
+            try self.pushSystem("Failed to write share file");
+            return;
+        };
+
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Shared conversation to {s} ({d} bytes, Markdown format)", .{ path, total_bytes }) catch "Share complete";
+        try self.pushSystem(msg);
+        try self.pushSystem("The file includes metadata header, all messages, and a Forge footer.");
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {

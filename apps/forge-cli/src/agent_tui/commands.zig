@@ -97,6 +97,12 @@ pub const Command = union(enum) {
     exporttab: ?[]const u8,
     log_toggle,
     version,
+    // Phase 94-98: Copy all, findreplace, translate, annotate, share
+    copyall,
+    findreplace: ?[]const u8,
+    translate: ?[]const u8,
+    annotate: ?[]const u8,
+    share: ?[]const u8,
     not_command,
 };
 
@@ -352,6 +358,36 @@ pub fn parseSlashCommand(input: []const u8) Command {
     if (matchesSlash(input, "log")) return .log_toggle;
     // Phase 92: Show version info
     if (matchesSlash(input, "version") or matchesSlash(input, "ver")) return .version;
+    // Phase 94: Copy entire conversation to clipboard
+    if (matchesSlash(input, "copyall") or matchesSlash(input, "copyall")) return .copyall;
+    // Phase 95: Find and replace text in conversation
+    if (matchesSlash(input, "findreplace") or matchesSlash(input, "fr")) {
+        if (std.mem.eql(u8, input, "/findreplace") or std.mem.eql(u8, input, "/fr")) return .{ .findreplace = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .findreplace = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .findreplace = if (args.len > 0) args else null };
+    }
+    // Phase 96: Translate conversation via LLM
+    if (matchesSlash(input, "translate") or matchesSlash(input, "tr")) {
+        if (std.mem.eql(u8, input, "/translate") or std.mem.eql(u8, input, "/tr")) return .{ .translate = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .translate = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .translate = if (args.len > 0) args else null };
+    }
+    // Phase 97: Annotate messages with private notes
+    if (matchesSlash(input, "annotate") or matchesSlash(input, "note")) {
+        if (std.mem.eql(u8, input, "/annotate") or std.mem.eql(u8, input, "/note")) return .{ .annotate = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .annotate = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .annotate = if (args.len > 0) args else null };
+    }
+    // Phase 98: Share conversation
+    if (matchesSlash(input, "share")) {
+        if (std.mem.eql(u8, input, "/share")) return .{ .share = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .share = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .share = if (args.len > 0) args else null };
+    }
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -451,7 +487,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /copytab /swap /exporttab /log /version /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /copyall /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /copytab /swap /exporttab /log /version /findreplace /translate /annotate /share /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | Ctrl+Tab=cycle tabs | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
