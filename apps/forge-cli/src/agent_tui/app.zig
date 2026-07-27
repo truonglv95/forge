@@ -164,8 +164,13 @@ pub const App = struct {
     snippets_init: bool = false,
     // Phase 69: Session start time
     session_start_ms: i64 = 0,
+    // Phase 72: Tags — custom labels for conversation lines
+    tags: std.AutoHashMap(usize, []u8) = undefined,
+    tags_init: bool = false,
+    // Phase 74: Last user intent for /retry
+    last_user_intent: ?[]u8 = null,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -820,6 +825,11 @@ pub const App = struct {
 
         try self.pushLine(.user, raw);
         const intent = try self.allocator.dupe(u8, raw);
+        // Phase 74: Save last user intent for /retry command.
+        self.mutex.lock();
+        if (self.last_user_intent) |old| self.allocator.free(old);
+        self.last_user_intent = self.allocator.dupe(u8, intent) catch null;
+        self.mutex.unlock();
         try self.startAgent(intent, null);
     }
 
@@ -909,6 +919,11 @@ pub const App = struct {
             .snippet_list => try self.listSnippets(),
             .time => try self.showSessionTime(),
             .resize => try self.refreshTerminalSize(),
+            .tag => |args| try self.handleTag(args),
+            .tag_list => try self.listTags(),
+            .summary => try self.generateSummary(),
+            .retry => try self.retryLastRequest(),
+            .diff_file => |file| try self.showFileDiff(file),
         }
     }
 
@@ -2838,6 +2853,268 @@ pub const App = struct {
             try self.pushSystem(msg);
         }
         self.markDirty();
+    }
+
+    /// Ensure tags hashmap is initialized (Phase 72).
+    fn ensureTagsInit(self: *App) void {
+        if (!self.tags_init) {
+            self.tags = std.AutoHashMap(usize, []u8).init(self.allocator);
+            self.tags_init = true;
+        }
+    }
+
+    /// /tag <line#> <label> — tag a message with a custom label (Phase 72).
+    /// /tag list — show all tags.
+    fn handleTag(self: *App, args_opt: ?[]const u8) !void {
+        self.ensureTagsInit();
+        const args = args_opt orelse {
+            try self.listTags();
+            return;
+        };
+
+        // Parse: <line#> <label>
+        const space_idx = std.mem.indexOfScalar(u8, args, ' ') orelse {
+            try self.pushSystem("Usage: /tag <line#> <label>");
+            try self.pushSystem("Tags a conversation line with a custom label for quick reference.");
+            try self.pushSystem("Use /tag list to see all tags.");
+            return;
+        };
+
+        const line_str = args[0..space_idx];
+        const label = std.mem.trim(u8, args[space_idx + 1 ..], &std.ascii.whitespace);
+        if (label.len == 0) {
+            try self.pushSystem("Label cannot be empty. Usage: /tag <line#> <label>");
+            return;
+        }
+
+        const line_num = std.fmt.parseInt(usize, line_str, 10) catch {
+            try self.pushSystem("Invalid line number. Usage: /tag <line#> <label>");
+            return;
+        };
+
+        self.mutex.lock();
+        if (line_num >= self.lines.items.len) {
+            const total = self.lines.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Line {d} does not exist (conversation has {d} lines)", .{ line_num, total }) catch "Line not found";
+            try self.pushSystem(msg);
+            return;
+        }
+        self.mutex.unlock();
+
+        // Remove old tag if exists.
+        if (self.tags.fetchRemove(line_num)) |old_entry| {
+            self.allocator.free(old_entry.value);
+        }
+
+        try self.tags.put(line_num, try self.allocator.dupe(u8, label));
+
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Tagged line {d} as '{s}'", .{ line_num, label }) catch "Tagged";
+        try self.pushSystem(msg);
+    }
+
+    /// /tag list — show all tags (Phase 72).
+    fn listTags(self: *App) !void {
+        self.ensureTagsInit();
+        if (self.tags.count() == 0) {
+            try self.pushSystem("No tags. Use /tag <line#> <label> to create one.");
+            return;
+        }
+        try self.pushSystem("Tags:");
+        self.mutex.lock();
+        var iter = self.tags.iterator();
+        while (iter.next()) |entry| {
+            const line_num = entry.key_ptr.*;
+            const label = entry.value_ptr.*;
+            if (line_num < self.lines.items.len) {
+                const line = self.lines.items[line_num];
+                const role: []const u8 = switch (line.kind) {
+                    .user => "user",
+                    .agent => "agent",
+                    .tool => "tool",
+                    .system => "sys",
+                    .failure => "err",
+                };
+                var buf: [256]u8 = undefined;
+                const preview_len = @min(line.text.len, 40);
+                const tag_line = std.fmt.bufPrint(&buf, "  [{d}] {s}: {s} — \"{s}\"", .{ line_num, role, line.text[0..preview_len], label }) catch continue;
+                try self.pushLine(.system, try self.allocator.dupe(u8, tag_line));
+            }
+        }
+        self.mutex.unlock();
+    }
+
+    /// /summary — auto-generate conversation summary (Phase 73).
+    /// Sends a summary request to the LLM provider.
+    fn generateSummary(self: *App) !void {
+        try self.pushSystem("Generating conversation summary...");
+
+        // Build a summary prompt from the conversation.
+        var prompt_buf: std.ArrayList(u8) = .empty;
+        defer prompt_buf.deinit(self.allocator);
+        try prompt_buf.appendSlice(self.allocator, "Summarize the following conversation in 3-5 bullet points. Focus on key decisions, code changes, and action items:\n\n");
+
+        self.mutex.lock();
+        var msg_count: usize = 0;
+        for (self.lines.items) |line| {
+            if (line.kind == .user or line.kind == .agent) {
+                if (msg_count >= 30) break; // Limit to first 30 messages
+                const role: []const u8 = if (line.kind == .user) "User" else "Assistant";
+                try prompt_buf.appendSlice(self.allocator, role);
+                try prompt_buf.appendSlice(self.allocator, ": ");
+                const preview_len = @min(line.text.len, 200);
+                try prompt_buf.appendSlice(self.allocator, line.text[0..preview_len]);
+                try prompt_buf.append(self.allocator, '\n');
+                msg_count += 1;
+            }
+        }
+        self.mutex.unlock();
+
+        if (msg_count == 0) {
+            try self.pushSystem("No conversation to summarize.");
+            return;
+        }
+
+        // Call the provider.
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "summary", self.io, self.opened.root);
+        var provider = ai.provider_factory.create(self.allocator, self.io, self.environ_map, provider_opts.options) catch |err| {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Summary failed: cannot create provider ({s})", .{@errorName(err)}) catch "Summary failed: provider unavailable";
+            try self.pushSystem(err_msg);
+            return;
+        };
+        defer provider.deinit(self.allocator);
+
+        var response_alloc = std.Io.Writer.Allocating.init(self.allocator);
+        defer response_alloc.deinit();
+        const images = [_]ai.provider.ImagePart{};
+        var dummy_state = std.atomic.Value(bool).init(false);
+        var dummy_token: kernel.cancellation.CancellationToken = .{ .shared_state = &dummy_state };
+        provider.ask(
+            self.allocator,
+            prompt_buf.items,
+            &images,
+            &response_alloc.writer,
+            &dummy_token,
+        ) catch |err| {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Summary failed: {s}", .{@errorName(err)}) catch "Summary failed";
+            try self.pushSystem(err_msg);
+            return;
+        };
+
+        const output = response_alloc.writer.buffer[0..response_alloc.writer.end];
+        try self.pushSystem("═══ Conversation Summary ═══");
+        try self.pushLine(.agent, try self.allocator.dupe(u8, output));
+    }
+
+    /// /retry — retry the last agent request (Phase 74).
+    fn retryLastRequest(self: *App) !void {
+        self.mutex.lock();
+        const last_intent = self.last_user_intent;
+        if (last_intent == null or last_intent.?.len == 0) {
+            self.mutex.unlock();
+            try self.pushSystem("No previous request to retry.");
+            return;
+        }
+
+        // Duplicate the intent before unlocking.
+        const intent_copy = self.allocator.dupe(u8, last_intent.?) catch {
+            self.mutex.unlock();
+            try self.pushSystem("Failed to copy previous intent (out of memory)");
+            return;
+        };
+        self.mutex.unlock();
+
+        try self.pushSystem("Retrying last request...");
+
+        // Push user message and start agent directly (avoid calling submitInput
+        // to break the dependency loop: submitInput → dispatchCommand →
+        // retryLastRequest → submitInput).
+        try self.pushLine(.user, intent_copy);
+        try self.extractFileMentions(intent_copy);
+        try self.startAgent(intent_copy, null);
+    }
+
+    /// /diff [file] — show git diff for all changes or a specific file (Phase 75).
+    fn showFileDiff(self: *App, file_opt: ?[]const u8) !void {
+        const file = file_opt orelse {
+            // No file specified — show full workspace diff (same as /diff command).
+            const prop_rel = blk: {
+                self.mutex.lock();
+                defer self.mutex.unlock();
+                break :blk if (self.pending_proposal) |prop| prop else null;
+            };
+            if (prop_rel) |p| {
+                try self.showProposalDiffFor(p);
+            } else {
+                try self.pushSystem("No pending proposal. Use /diff <file> to diff a specific file.");
+                try self.pushSystem("Or run an agent task first to generate a proposal.");
+            }
+            return;
+        };
+
+        // Run git diff for the specific file.
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
+        try args.append(self.allocator, "git");
+        try args.append(self.allocator, "diff");
+        try args.append(self.allocator, "--");
+        try args.append(self.allocator, file);
+
+        const result = forge_util.process_spawn.runCapture(self.allocator, args.items, .{
+            .cwd = self.opened.path,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        }) catch {
+            try self.pushSystem("Failed to run git diff. Is git installed?");
+            return;
+        };
+
+        if (result.exit_code != 0) {
+            var err_buf: [256]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "git diff -- {s} failed (exit {d})", .{ file, result.exit_code }) catch "Git diff failed";
+            try self.pushSystem(err_msg);
+            self.allocator.free(result.output);
+            return;
+        }
+
+        if (result.output.len == 0) {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "No changes in '{s}'", .{file}) catch "No changes";
+            try self.pushSystem(msg);
+            self.allocator.free(result.output);
+            return;
+        }
+
+        // Display the diff with colored header.
+        var header_buf: [128]u8 = undefined;
+        const header = std.fmt.bufPrint(&header_buf, "═══ Diff: {s} ═══", .{file}) catch "═══ Diff ═══";
+        try self.pushSystem(header);
+
+        var added: usize = 0;
+        var removed: usize = 0;
+        var lines = std.mem.splitScalar(u8, result.output, '\n');
+        var shown: usize = 0;
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            if (line.len > 0 and line[0] == '+') added += 1;
+            if (line.len > 0 and line[0] == '-') removed += 1;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+            shown += 1;
+            if (shown >= 100) {
+                try self.pushSystem("... diff truncated (use terminal for full output)");
+                break;
+            }
+        }
+
+        var summary_buf: [128]u8 = undefined;
+        const summary = std.fmt.bufPrint(&summary_buf, "═══ {d} additions · {d} deletions ═══", .{ added, removed }) catch "═══ diff complete ═══";
+        try self.pushSystem(summary);
+
+        self.allocator.free(result.output);
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {

@@ -74,6 +74,12 @@ pub const Command = union(enum) {
     snippet_list,
     time,
     resize,
+    // Phase 72-75: Tag, summary, retry, file diff
+    tag: ?[]const u8,
+    tag_list,
+    summary,
+    retry,
+    diff_file: ?[]const u8,
     not_command,
 };
 
@@ -241,6 +247,25 @@ pub fn parseSlashCommand(input: []const u8) Command {
     if (matchesSlash(input, "time")) return .time;
     // Phase 70: Refresh terminal size
     if (matchesSlash(input, "resize") or matchesSlash(input, "refresh")) return .resize;
+    // Phase 72: Tag messages with custom labels
+    if (matchesSlash(input, "tag")) {
+        if (std.mem.eql(u8, input, "/tag")) return .tag_list;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .tag_list;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        if (std.mem.eql(u8, args, "list")) return .tag_list;
+        return .{ .tag = if (args.len > 0) args else null };
+    }
+    // Phase 73: Auto-generate conversation summary
+    if (matchesSlash(input, "summary")) return .summary;
+    // Phase 74: Retry last agent request
+    if (matchesSlash(input, "retry")) return .retry;
+    // Phase 75: Show git diff for specific file
+    if (matchesSlash(input, "diff")) {
+        if (std.mem.eql(u8, input, "/diff")) return .{ .diff_file = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .diff_file = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .diff_file = if (args.len > 0) args else null };
+    }
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -340,7 +365,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
