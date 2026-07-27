@@ -20,6 +20,7 @@ pub const Key = union(enum) {
     ctrl_c,
     ctrl_d,
     ctrl_e,
+    ctrl_j, // Ctrl+J = newline (multi-line input, Phase 26)
     ctrl_l,
     ctrl_m,
     ctrl_r,
@@ -109,6 +110,7 @@ pub const Terminal = struct {
         if (buf[0] == 3) return .ctrl_c;
         if (buf[0] == 4) return .ctrl_d;
         if (buf[0] == 5) return .ctrl_e;
+        if (buf[0] == 10) return .ctrl_j; // Ctrl+J = LF = newline for multi-line input
         if (buf[0] == 12) return .ctrl_l;
         if (buf[0] == 13) return .ctrl_m;
         if (buf[0] == 18) return .ctrl_r;

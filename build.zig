@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) void {
     const forge_cloud_anon_key = b.option([]const u8, "forge-cloud-anon-key", "Forge Cloud Supabase anon key") orelse "";
 
     const with_plugin = b.option(bool, "with-plugin", "Build the WASM plugin runtime (requires LLVM backend)") orelse (optimize != .Debug);
+    const with_glx = b.option(bool, "with-glx", "Link libGL for GPU rendering (requires libGL-dev)") orelse true;
     const zware_dep = b.dependency("zware", .{
         .target = target,
         .optimize = optimize,
@@ -121,20 +122,25 @@ pub fn build(b: *std.Build) void {
         },
         .linux => {
             renderer.addIncludePath(b.path("packages/renderer/src/platform/linux"));
+            const glx_flags: []const []const u8 = if (with_glx) &.{"-DFORGE_HAS_GLX"} else &.{};
             renderer.addCSourceFile(.{
                 .file = b.path("packages/renderer/src/platform/linux/x11_window.c"),
-                .flags = &.{"-DFORGE_HAS_GLX"},
+                .flags = glx_flags,
             });
             renderer.linkSystemLibrary("X11", .{});
             renderer.linkSystemLibrary("Xext", .{});
             renderer.linkSystemLibrary("freetype", .{});
             renderer.linkSystemLibrary("fontconfig", .{});
-            // GPU backend via GLX — only on Linux. Guard with #ifdef __linux__.
-            renderer.addCSourceFile(.{
-                .file = b.path("packages/renderer/src/gpu/gpu_glx.c"),
-                .flags = &.{"-DFORGE_HAS_GLX"},
-            });
-            renderer.linkSystemLibrary("GL", .{});
+            // GPU backend via GLX — optional. Only link GL when -Dwith-glx=true
+            // (default) and libGL-dev is installed. Pass -Dwith-glx=false to
+            // build on systems without OpenGL dev headers.
+            if (with_glx) {
+                renderer.addCSourceFile(.{
+                    .file = b.path("packages/renderer/src/gpu/gpu_glx.c"),
+                    .flags = &.{"-DFORGE_HAS_GLX"},
+                });
+                renderer.linkSystemLibrary("GL", .{});
+            }
         },
         .windows => {
             renderer.addCSourceFile(.{

@@ -32,6 +32,8 @@ pub const Command = union(enum) {
     save: ?[]const u8,
     provider_show,
     review,
+    // Phase 27: Context inspector
+    inspect,
     not_command,
 };
 
@@ -79,6 +81,7 @@ pub fn parseSlashCommand(input: []const u8) Command {
         return .{ .save = if (args.len > 0) args else null };
     }
     if (matchesSlash(input, "review") or matchesSlash(input, "rev")) return .review;
+    if (matchesSlash(input, "inspect") or matchesSlash(input, "insp")) return .inspect;
 
     // TUI parity commands (Phase 13)
     // /spec [list|show <id>] — Kiro-style spec management

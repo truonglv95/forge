@@ -141,7 +141,7 @@ pub const App = struct {
     total_output_tokens: u64 = 0,
     total_cost_usd: f64 = 0.0,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -463,6 +463,15 @@ pub const App = struct {
                 self.mutex.unlock();
             },
             .ctrl_r => try self.showLastToolReview(),
+            .ctrl_j => {
+                // Ctrl+J = insert newline for multi-line input (Phase 26).
+                // Allows typing multi-line prompts without submitting.
+                self.mutex.lock();
+                self.input.insert(self.allocator, self.cursor, '\n') catch {};
+                self.cursor += 1;
+                self.markDirty();
+                self.mutex.unlock();
+            },
             .ctrl_w => {
                 self.mutex.lock();
                 self.deleteWordBackward();
@@ -760,6 +769,7 @@ pub const App = struct {
             .provider_show => try self.showProvider(),
             .save => |path| try self.saveConversation(path),
             .review => try self.runReview(),
+            .inspect => try self.inspectContext(),
         }
     }
 
@@ -1283,6 +1293,67 @@ pub const App = struct {
         try self.pushSystem("(Use 'forge review' CLI for full review with LLM support)");
         try self.pushSystem("Heuristic checks:");
         try self.pushSystem("  Use 'forge review --heuristic-only' to see results in terminal");
+    }
+
+    /// /inspect — show detailed context inspector (Phase 27).
+    /// Displays the context blocks that would be sent to the LLM,
+    /// including block types, sizes, and reasons for inclusion.
+    fn inspectContext(self: *App) !void {
+        try self.pushSystem("Context Inspector");
+        try self.pushSystem("═══════════════════════════════════════════════════════════");
+
+        // Show current context label
+        var buf: [256]u8 = undefined;
+        const label_line = std.fmt.bufPrint(&buf, "Current context: {s}", .{self.context_label}) catch "Current context: (unknown)";
+        try self.pushLine(.system, try self.allocator.dupe(u8, label_line));
+
+        // Show workspace info
+        const ws_line = std.fmt.bufPrint(&buf, "Workspace: {s}", .{self.folder_label}) catch "Workspace: (unknown)";
+        try self.pushLine(.system, try self.allocator.dupe(u8, ws_line));
+
+        // Show model and mode
+        const mode_label = commands.modeLabel(self.agent_mode);
+        const model_line = std.fmt.bufPrint(&buf, "Model: {s} | Mode: {s}", .{ self.model_label, mode_label }) catch "Model: (unknown)";
+        try self.pushLine(.system, try self.allocator.dupe(u8, model_line));
+
+        // Show token usage
+        const token_line = std.fmt.bufPrint(&buf, "Tokens used: {d} input · {d} output · ${d:.4} estimated", .{
+            self.total_input_tokens,
+            self.total_output_tokens,
+            self.total_cost_usd,
+        }) catch "Tokens: (unknown)";
+        try self.pushLine(.system, try self.allocator.dupe(u8, token_line));
+
+        try self.pushSystem("");
+
+        // Show context block types (educational)
+        try self.pushSystem("Context block types:");
+        const block_types = [_]struct { name: []const u8, desc: []const u8 }{
+            .{ .name = "file", .desc = "Active file content" },
+            .{ .name = "intent", .desc = "User's intent/prompt" },
+            .{ .name = "diagnostic", .desc = "LSP diagnostics" },
+            .{ .name = "rules", .desc = "Project rules (FORGE.md)" },
+            .{ .name = "attachment", .desc = "User-attached files" },
+            .{ .name = "retrieval", .desc = "RAG retrieval results" },
+            .{ .name = "git_diff", .desc = "Git diff context" },
+            .{ .name = "recent", .desc = "Recently opened files" },
+            .{ .name = "semantic", .desc = "Semantic search results" },
+            .{ .name = "imports", .desc = "Import graph neighbors" },
+            .{ .name = "lsp", .desc = "LSP cursor context" },
+            .{ .name = "docs", .desc = "Documentation" },
+            .{ .name = "fused", .desc = "Fused ranking results" },
+            .{ .name = "expansion", .desc = "Context expansion" },
+            .{ .name = "memory", .desc = "Agent memory" },
+            .{ .name = "web", .desc = "Web fetch results" },
+        };
+        for (block_types) |bt| {
+            const line = std.fmt.bufPrint(&buf, "  {s:<14} {s}", .{ bt.name, bt.desc }) catch continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+
+        try self.pushSystem("");
+        try self.pushSystem("Use /context to build and show the actual context manifest");
+        try self.pushSystem("Use /cost to see detailed token usage");
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {
@@ -2178,8 +2249,139 @@ pub const App = struct {
         return switch (kind) {
             .user => self.formatPromptLine(text),
             .failure => std.fmt.allocPrint(self.allocator, "× {s}", .{text}),
-            else => self.allocator.dupe(u8, text),
+            .agent => blk: {
+                // Phase 29: Add role label for agent messages on first line of response.
+                const decorated = try self.decorateMarkdown(text);
+                defer self.allocator.free(decorated);
+                // Only add label if this looks like the start of a response
+                // (not a continuation line starting with whitespace or >).
+                if (text.len > 0 and text[0] != ' ' and text[0] != '>' and text[0] != '!') {
+                    break :blk std.fmt.allocPrint(self.allocator, "{s}┌ agent{s}  {s}", .{
+                        term.Style.dim, term.Style.reset, decorated,
+                    });
+                }
+                break :blk self.allocator.dupe(u8, decorated);
+            },
+            .tool => std.fmt.allocPrint(self.allocator, "{s}› tool{s}  {s}", .{
+                term.Style.dim, term.Style.reset, text,
+            }),
+            .system => std.fmt.allocPrint(self.allocator, "{s}· system{s}  {s}", .{
+                term.Style.gray, term.Style.reset, text,
+            }),
         };
+    }
+
+    /// Render markdown formatting in agent output using ANSI escape codes.
+    /// Handles: code blocks (```), inline code (`code`), bold (**text**),
+    /// headers (#, ##, ###), bullet lists (-, *), and numbered lists (1.).
+    /// Phase 25: Makes agent responses more readable in the TUI.
+    fn decorateMarkdown(self: *const App, text: []const u8) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(self.allocator);
+
+        var i: usize = 0;
+        while (i < text.len) {
+            // Code block fence: ```lang ... ```
+            if (i + 3 <= text.len and std.mem.eql(u8, text[i..][0..3], "```")) {
+                // Find the closing ```
+                const close = blk: {
+                    var j: usize = i + 3;
+                    while (j + 3 <= text.len) : (j += 1) {
+                        if (std.mem.eql(u8, text[j..][0..3], "```")) break :blk j;
+                    }
+                    break :blk text.len;
+                };
+                // Render code block with dim background
+                try out.appendSlice(self.allocator, term.Style.bg_block);
+                try out.appendSlice(self.allocator, term.Style.cyan);
+                if (close < text.len) {
+                    try out.appendSlice(self.allocator, text[i..close + 3]);
+                } else {
+                    try out.appendSlice(self.allocator, text[i..]);
+                }
+                try out.appendSlice(self.allocator, term.Style.reset);
+                i = if (close < text.len) close + 3 else text.len;
+                continue;
+            }
+
+            // Inline code: `code`
+            if (text[i] == '`' and i + 1 < text.len) {
+                const close = std.mem.indexOfScalarPos(u8, text, i + 1, '`') orelse {
+                    try out.append(self.allocator, text[i]);
+                    i += 1;
+                    continue;
+                };
+                try out.appendSlice(self.allocator, term.Style.cyan);
+                try out.appendSlice(self.allocator, text[i + 1 .. close]);
+                try out.appendSlice(self.allocator, term.Style.reset);
+                i = close + 1;
+                continue;
+            }
+
+            // Bold: **text**
+            if (i + 2 <= text.len and text[i] == '*' and text[i + 1] == '*') {
+                const close = blk: {
+                    var j: usize = i + 2;
+                    while (j + 2 <= text.len) : (j += 1) {
+                        if (text[j] == '*' and text[j + 1] == '*') break :blk j;
+                    }
+                    break :blk null;
+                };
+                if (close) |c| {
+                    try out.appendSlice(self.allocator, term.Style.bold);
+                    try out.appendSlice(self.allocator, term.Style.white);
+                    try out.appendSlice(self.allocator, text[i + 2 .. c]);
+                    try out.appendSlice(self.allocator, term.Style.reset);
+                    i = c + 2;
+                    continue;
+                }
+            }
+
+            // Headers at start of line: #, ##, ###
+            if (i == 0 or text[i - 1] == '\n') {
+                if (text[i] == '#') {
+                    var level: usize = 0;
+                    var j: usize = i;
+                    while (j < text.len and text[j] == '#' and level < 3) : (j += 1) level += 1;
+                    if (j < text.len and text[j] == ' ') {
+                        try out.appendSlice(self.allocator, term.Style.bold);
+                        try out.appendSlice(self.allocator, if (level == 1) term.Style.bright_yellow else term.Style.magenta);
+                        // Find end of line
+                        const eol = std.mem.indexOfScalarPos(u8, text, j, '\n') orelse text.len;
+                        try out.appendSlice(self.allocator, text[j + 1 .. eol]);
+                        try out.appendSlice(self.allocator, term.Style.reset);
+                        i = eol;
+                        continue;
+                    }
+                }
+                // Bullet list: - or * at start of line
+                if ((text[i] == '-' or text[i] == '*') and i + 1 < text.len and text[i + 1] == ' ') {
+                    try out.appendSlice(self.allocator, term.Style.cyan);
+                    try out.appendSlice(self.allocator, "• ");
+                    try out.appendSlice(self.allocator, term.Style.reset);
+                    i += 2;
+                    continue;
+                }
+                // Numbered list: 1. 2. etc.
+                if (i < text.len and text[i] >= '0' and text[i] <= '9') {
+                    var j = i;
+                    while (j < text.len and text[j] >= '0' and text[j] <= '9') j += 1;
+                    if (j < text.len and text[j] == '.' and j + 1 < text.len and text[j + 1] == ' ') {
+                        try out.appendSlice(self.allocator, term.Style.cyan);
+                        try out.appendSlice(self.allocator, text[i .. j + 1]);
+                        try out.append(self.allocator, ' ');
+                        try out.appendSlice(self.allocator, term.Style.reset);
+                        i = j + 2;
+                        continue;
+                    }
+                }
+            }
+
+            try out.append(self.allocator, text[i]);
+            i += 1;
+        }
+
+        return out.toOwnedSlice(self.allocator);
     }
 
     fn formatPromptLine(self: *const App, text: []const u8) ![]u8 {
@@ -2657,6 +2859,13 @@ pub const App = struct {
         if (progress.len > 0 and !std.mem.startsWith(u8, progress, "Thinking")) {
             // Prepend spinner to progress messages for animated feedback.
             const spinner = self.spinnerChar();
+            // If a tool is running, show a progress bar based on spinner frame.
+            if (self.active_tool_running and self.active_tool_len > 0) {
+                const tool_name = self.active_tool[0..self.active_tool_len];
+                const action = getToolAction(tool_name);
+                const bar = self.progressBar(20);
+                return std.fmt.bufPrint(buf, "{s} {s} [{s}]", .{ spinner, bar, action }) catch progress;
+            }
             return std.fmt.bufPrint(buf, "{s} {s}", .{ spinner, progress }) catch progress;
         }
 
@@ -2664,6 +2873,19 @@ pub const App = struct {
         const dots: usize = @intCast(@mod(@divTrunc(now_ms, 320), 3) + 1);
         const spinner = self.spinnerChar();
         return std.fmt.bufPrint(buf, "{s} Thinking{s}", .{ spinner, "..."[0..dots] }) catch "Thinking...";
+    }
+
+    /// Returns a progress bar string of the given width, animated based
+    /// on spinner_frame. Used for tool execution feedback (Phase 28).
+    fn progressBar(self: *const App, width: usize) []const u8 {
+        // 10 spinner frames map to 0-100% progress
+        const fill: usize = @as(usize, self.spinner_frame) % (width + 1);
+        var buf: [64]u8 = undefined;
+        var i: usize = 0;
+        while (i < width and i < buf.len) : (i += 1) {
+            buf[i] = if (i < fill) '#' else '-';
+        }
+        return buf[0..@min(width, buf.len)];
     }
 };
 
