@@ -5775,20 +5775,43 @@ pub const App = struct {
         }
 
         // Place the real terminal cursor at the input caret, then reveal it.
+        // Fixed: properly handle multi-line input (Ctrl+J) and wrapped input.
         if (!self.agent_busy and !pending and live_prompt_row != null) {
             var prompt_buf: [512]u8 = undefined;
-            const prompt_prefix = self.promptPrefix(&prompt_buf) catch "➜ project ";
+            const prompt_prefix = self.promptPrefix(&prompt_buf) catch "> project ";
             const prefix_cols = term.displayWidth(prompt_prefix);
-            const avail = if (@as(usize, size.cols) > prefix_cols + 1) @as(usize, size.cols) - prefix_cols - 1 else 0;
-            const cursor_cols = @min(
-                avail,
-                term.displayWidth(self.input.items[0..@min(self.cursor, self.input.items.len)]),
-            );
-            const caret_col: u16 = @intCast(@min(
-                @as(usize, size.cols),
-                prefix_cols + cursor_cols + 1,
-            ));
-            self.frame.moveTo(live_prompt_row.?, caret_col);
+
+            // For multi-line input (Ctrl+J), the cursor may be on a different
+            // line than the prompt. We need to count how many newlines are
+            // before the cursor position to determine the correct row offset.
+            const input_before_cursor = self.input.items[0..@min(self.cursor, self.input.items.len)];
+            var newline_count: usize = 0;
+            for (input_before_cursor) |ch| {
+                if (ch == '\n') newline_count += 1;
+            }
+
+            // Calculate the column position on the current line.
+            // Find the last newline before cursor — text after it is on the current line.
+            var current_line_start: usize = 0;
+            if (std.mem.lastIndexOfScalar(u8, input_before_cursor, '\n')) |last_nl| {
+                current_line_start = last_nl + 1;
+            }
+            const text_after_last_nl = input_before_cursor[current_line_start..];
+            const cursor_text_cols = term.displayWidth(text_after_last_nl);
+
+            // If on the first line (no newline before cursor), add prefix_cols.
+            // On subsequent lines, cursor is at chat_x + indentation.
+            const caret_row: u16 = if (newline_count == 0)
+                live_prompt_row.?
+            else
+                live_prompt_row.? + @as(u16, @intCast(newline_count));
+
+            const caret_col: u16 = if (newline_count == 0)
+                @intCast(@min(@as(usize, size.cols), prefix_cols + cursor_text_cols + 1))
+            else
+                @intCast(@min(@as(usize, size.cols), @as(usize, chat_x) + cursor_text_cols + 1));
+
+            self.frame.moveTo(caret_row, caret_col);
             self.frame.appendSlice("\x1b[?25h") catch {};
         } else {
             self.frame.appendSlice("\x1b[?25l") catch {};
