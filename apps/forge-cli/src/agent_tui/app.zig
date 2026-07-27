@@ -142,7 +142,7 @@ pub const App = struct {
     total_output_tokens: u64 = 0,
     total_cost_usd: f64 = 0.0,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -858,6 +858,10 @@ pub const App = struct {
             .redo => try self.redoLastAction(),
             .clear_history => try self.clearHistoryOnly(),
             .clear_context => try self.clearContextOnly(),
+            .theme => |name| try self.setTheme(name),
+            .config => try self.showConfig(),
+            .help_detailed => |help_cmd| try self.showDetailedHelp(help_cmd),
+            .export_markdown => |path| try self.exportMarkdown(path),
         }
     }
 
@@ -1833,6 +1837,186 @@ pub const App = struct {
         self.markDirty();
         self.mutex.unlock();
         try self.pushSystem("Context reset (token counters cleared, history preserved)");
+    }
+
+    /// /theme [name] — show or set color theme (Phase 46).
+    /// Themes: dark (default), light, solarized, mono.
+    fn setTheme(self: *App, name_opt: ?[]const u8) !void {
+        const name = name_opt orelse {
+            try self.pushSystem("Available themes:");
+            try self.pushSystem("  dark        — default dark theme (green agent, gray system)");
+            try self.pushSystem("  light       — light theme for bright terminals");
+            try self.pushSystem("  solarized   — solarized dark palette");
+            try self.pushSystem("  mono        — monochrome (no colors, for accessibility)");
+            try self.pushSystem("Use /theme <name> to switch");
+            return;
+        };
+
+        if (std.mem.eql(u8, name, "mono")) {
+            self.term.use_color = false;
+            try self.pushSystem("Theme: monochrome (colors disabled)");
+        } else if (std.mem.eql(u8, name, "dark") or std.mem.eql(u8, name, "light") or std.mem.eql(u8, name, "solarized")) {
+            self.term.use_color = true;
+            var buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Theme: {s} (colors enabled)", .{name}) catch "Theme set";
+            try self.pushSystem(msg);
+            // Note: actual color palette switching would require modifying
+            // term.Style constants. For now we toggle color on/off and
+            // acknowledge the theme choice. Full palette switching is a
+            // future enhancement.
+        } else {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Unknown theme '{s}'. Available: dark, light, solarized, mono", .{name}) catch "Unknown theme";
+            try self.pushSystem(msg);
+        }
+        self.markDirty();
+    }
+
+    /// /config — show current configuration (Phase 47).
+    fn showConfig(self: *App) !void {
+        try self.pushSystem("Configuration");
+        try self.pushSystem("═══════════════════════════════════════════════════");
+
+        var buf: [256]u8 = undefined;
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "config", self.io, self.opened.root);
+
+        const provider_line = std.fmt.bufPrint(&buf, "  Provider:     {s}", .{provider_opts.options.provider_name}) catch "  Provider: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, provider_line));
+
+        const model = provider_opts.options.model orelse "(default)";
+        const model_line = std.fmt.bufPrint(&buf, "  Model:        {s}", .{model}) catch "  Model: default";
+        try self.pushLine(.system, try self.allocator.dupe(u8, model_line));
+
+        const ws_line = std.fmt.bufPrint(&buf, "  Workspace:    {s}", .{self.folder_label}) catch "  Workspace: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, ws_line));
+
+        const mode_label = commands.modeLabel(self.agent_mode);
+        const mode_line = std.fmt.bufPrint(&buf, "  Mode:         {s}", .{mode_label}) catch "  Mode: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, mode_line));
+
+        const policy_line = std.fmt.bufPrint(&buf, "  Tool policy:  {s}", .{switch (self.tool_policy) {
+            .run_everything => "run_everything",
+            .ask_each_time => "ask_each_time",
+            .agent_default => "agent_default",
+        }}) catch "  Tool policy: default";
+        try self.pushLine(.system, try self.allocator.dupe(u8, policy_line));
+
+        const color_line = std.fmt.bufPrint(&buf, "  Color:        {s}", .{if (self.term.use_color) "enabled" else "disabled (mono)"}) catch "  Color: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, color_line));
+
+        const explorer_line = std.fmt.bufPrint(&buf, "  Explorer:     {s}", .{if (self.show_explorer) "visible" else "hidden"}) catch "  Explorer: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, explorer_line));
+
+        const editor_line = std.fmt.bufPrint(&buf, "  Editor:       {s}", .{if (self.show_editor) "visible" else "hidden"}) catch "  Editor: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, editor_line));
+
+        try self.pushSystem("");
+        try self.pushSystem("Configure via:");
+        try self.pushSystem("  CLI flags: --provider, --model, --mode, --auto-approve");
+        try self.pushSystem("  forge.toml: [tui] section in workspace config");
+        try self.pushSystem("  Runtime:    /model, /theme, /policy commands");
+    }
+
+    /// /help <command> — show detailed help for a specific command (Phase 48).
+    fn showDetailedHelp(self: *App, cmd_opt: ?[]const u8) !void {
+        const cmd = cmd_opt orelse {
+            try self.pushSystem(commands.helpText());
+            return;
+        };
+
+        // Detailed help for each command.
+        const help_entries = [_]struct { name: []const u8, desc: []const u8 }{
+            .{ .name = "/clear", .desc = "Clear conversation history. Use '/clear history' to clear only messages, '/clear context' to reset token counters." },
+            .{ .name = "/policy", .desc = "Show or cycle tool approval policy: run_everything → ask_each_time → agent_default" },
+            .{ .name = "/tools", .desc = "List all available tools with descriptions. Use '/tools trust-all' to auto-approve all tools." },
+            .{ .name = "/mode", .desc = "Switch agent mode: ask (Q&A only), plan (plan without editing), agent (full edit access)" },
+            .{ .name = "/context", .desc = "Build and display the context manifest — shows what files/blocks will be sent to the LLM" },
+            .{ .name = "/diff", .desc = "Show the diff for the current pending proposal with colored additions/deletions" },
+            .{ .name = "/events", .desc = "Show the NDJSON event log for the current or specified session. Use --tail N or --type T to filter." },
+            .{ .name = "/timeline", .desc = "Show the agent timeline — formatted task ledger with step-by-step progress" },
+            .{ .name = "/resume", .desc = "Resume a previous session by ID. Use '/resume' without args to resume the latest." },
+            .{ .name = "/sessions", .desc = "List all saved sessions with timestamps and intents" },
+            .{ .name = "/spec", .desc = "Kiro-style spec management. '/spec list' shows all specs, '/spec show <id>' shows details." },
+            .{ .name = "/runs", .desc = "Antigravity-style background run monitor. '/runs list' shows all runs, '/runs status' shows counts." },
+            .{ .name = "/complete", .desc = "Request an inline completion from the provider. Usage: /complete <prompt>" },
+            .{ .name = "/model", .desc = "Show current model or set a new one. Usage: /model [name]" },
+            .{ .name = "/cost", .desc = "Show token usage and estimated cost for the current session" },
+            .{ .name = "/capability", .desc = "Show provider capabilities (streaming, tool calls, context window, etc.)" },
+            .{ .name = "/provider", .desc = "Show current provider configuration (name, model, base URL)" },
+            .{ .name = "/save", .desc = "Save conversation to file. Use .json extension for JSON format. Usage: /save [path]" },
+            .{ .name = "/review", .desc = "Run code review on git diff. Uses heuristic checks; LLM review via 'forge review' CLI." },
+            .{ .name = "/inspect", .desc = "Show context inspector — displays block types, workspace, model, and token info" },
+            .{ .name = "/search", .desc = "Search within conversation history (case-insensitive). Usage: /search <query>" },
+            .{ .name = "/edit", .desc = "Edit the last user message. Loads it into the input buffer and removes subsequent lines." },
+            .{ .name = "/undo", .desc = "Undo the last applied transaction. Reverts file changes made by the agent." },
+            .{ .name = "/redo", .desc = "Redo the last undone transaction. Re-applies the reverted changes." },
+            .{ .name = "/theme", .desc = "Switch color theme: dark, light, solarized, mono. Usage: /theme [name]" },
+            .{ .name = "/config", .desc = "Show current configuration: provider, model, mode, policy, color, explorer, editor" },
+            .{ .name = "/export", .desc = "Export conversation as Markdown with formatting. Usage: /export [path]" },
+            .{ .name = "/help", .desc = "Show quick help. Use '/help <command>' for detailed help on a specific command." },
+            .{ .name = "/quit", .desc = "Exit Forge TUI" },
+        };
+
+        for (help_entries) |entry| {
+            if (std.mem.eql(u8, entry.name, cmd) or
+                (cmd.len > 0 and cmd[0] != '/' and std.mem.startsWith(u8, entry.name, cmd)))
+            {
+                try self.pushSystem(entry.desc);
+                return;
+            }
+        }
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Unknown command '{s}'. Use /help to see all commands.", .{cmd}) catch "Unknown command";
+        try self.pushSystem(msg);
+    }
+
+    /// /export [path] — export conversation as Markdown (Phase 50).
+    fn exportMarkdown(self: *App, path_opt: ?[]const u8) !void {
+        const path = path_opt orelse "forge_conversation.md";
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+
+        try buf.appendSlice(self.allocator, "# Forge Conversation\n\n");
+        try buf.appendSlice(self.allocator, "Exported from Forge TUI\n\n");
+        try buf.appendSlice(self.allocator, "---\n\n");
+
+        self.mutex.lock();
+        for (self.lines.items) |line| {
+            const role: []const u8 = switch (line.kind) {
+                .user => "## You",
+                .agent => "## Assistant",
+                .tool => "### Tool",
+                .system => "> System",
+                .failure => "### Error",
+            };
+            try buf.appendSlice(self.allocator, role);
+            try buf.append(self.allocator, '\n');
+            try buf.appendSlice(self.allocator, "\n");
+            try buf.appendSlice(self.allocator, line.text);
+            try buf.appendSlice(self.allocator, "\n\n");
+        }
+        self.mutex.unlock();
+
+        // Write to file.
+        var dir = std.Io.Dir.openDir(.cwd(), self.io, self.opened.path, .{}) catch {
+            try self.pushSystem("Failed to open workspace for export");
+            return;
+        };
+        defer dir.close(self.io);
+        var file = dir.createFile(self.io, path, .{}) catch {
+            try self.pushSystem("Failed to create file for export");
+            return;
+        };
+        defer file.close(self.io);
+        file.writeStreamingAll(self.io, buf.items) catch {
+            try self.pushSystem("Failed to write Markdown export");
+            return;
+        };
+
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Exported {d} bytes to {s} (Markdown)", .{ buf.items.len, path }) catch "Export complete";
+        try self.pushSystem(msg);
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {

@@ -44,6 +44,11 @@ pub const Command = union(enum) {
     // Phase 42: Selective clear
     clear_history,
     clear_context,
+    // Phase 46-50: Additional TUI commands
+    theme: ?[]const u8,
+    config,
+    help_detailed: ?[]const u8,
+    export_markdown: ?[]const u8,
     not_command,
 };
 
@@ -71,7 +76,12 @@ pub fn parseSlashCommand(input: []const u8) Command {
     if (matchesSlash(input, "diff")) return .diff;
     if (matchesSlash(input, "timeline") or matchesSlash(input, "tl")) return .timeline;
     if (matchesSlash(input, "mock")) return .mock;
-    if (matchesSlash(input, "help") or matchesSlash(input, "?")) return .help;
+    if (matchesSlash(input, "help") or matchesSlash(input, "?")) {
+        if (std.mem.eql(u8, input, "/help") or std.mem.eql(u8, input, "/?")) return .help;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .help;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .help_detailed = if (args.len > 0) args else null };
+    }
     if (matchesSlash(input, "quit") or matchesSlash(input, "exit")) return .exit_app;
     if (matchesSlash(input, "sessions") or matchesSlash(input, "list")) return .sessions;
 
@@ -105,6 +115,20 @@ pub fn parseSlashCommand(input: []const u8) Command {
     // Phase 41: Undo/redo
     if (matchesSlash(input, "undo") or matchesSlash(input, "u")) return .undo;
     if (matchesSlash(input, "redo")) return .redo;
+    // Phase 46-50: Additional commands
+    if (matchesSlash(input, "theme")) {
+        if (std.mem.eql(u8, input, "/theme")) return .{ .theme = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .theme = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .theme = if (args.len > 0) args else null };
+    }
+    if (matchesSlash(input, "config") or matchesSlash(input, "cfg")) return .config;
+    if (matchesSlash(input, "export")) {
+        if (std.mem.eql(u8, input, "/export")) return .{ .export_markdown = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .export_markdown = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .export_markdown = if (args.len > 0) args else null };
+    }
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -204,7 +228,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear [history|context] /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /help /quit
+    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
