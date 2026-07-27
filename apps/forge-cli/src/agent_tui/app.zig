@@ -53,6 +53,7 @@ fn contextBudgetBytes(flags: args_mod.GlobalFlags) usize {
 const ChatLine = struct {
     kind: LineKind,
     text: []u8,
+    timestamp_ms: i64 = 0, // Phase 32: message timestamp for display
 };
 
 const ApprovalGate = struct {
@@ -1249,24 +1250,81 @@ pub const App = struct {
     /// /save [path] — save the conversation to a file (Phase 24).
     fn saveConversation(self: *App, path_opt: ?[]const u8) !void {
         const path = path_opt orelse "forge_conversation.txt";
+        const is_json = std.mem.endsWith(u8, path, ".json");
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
-        try buf.appendSlice(self.allocator, "Forge Conversation\n");
-        try buf.appendSlice(self.allocator, "==================\n\n");
-        self.mutex.lock();
-        for (self.lines.items) |line| {
-            const prefix: []const u8 = switch (line.kind) {
-                .user => "[user] ",
-                .agent => "[agent] ",
-                .tool => "[tool] ",
-                .system => "[system] ",
-                .failure => "[error] ",
-            };
-            try buf.appendSlice(self.allocator, prefix);
-            try buf.appendSlice(self.allocator, line.text);
-            try buf.append(self.allocator, '\n');
+
+        if (is_json) {
+            // Phase 34: JSON export format
+            try buf.appendSlice(self.allocator, "{\"conversation\":[");
+            self.mutex.lock();
+            var first = true;
+            for (self.lines.items) |line| {
+                if (!first) try buf.append(self.allocator, ',');
+                first = false;
+                const role = switch (line.kind) {
+                    .user => "user",
+                    .agent => "agent",
+                    .tool => "tool",
+                    .system => "system",
+                    .failure => "error",
+                };
+                try buf.appendSlice(self.allocator, "{\"role\":\"");
+                try buf.appendSlice(self.allocator, role);
+                try buf.appendSlice(self.allocator, "\",\"timestamp_ms\":");
+                var ts_buf: [32]u8 = undefined;
+                const ts = std.fmt.bufPrint(&ts_buf, "{d}", .{line.timestamp_ms}) catch "0";
+                try buf.appendSlice(self.allocator, ts);
+                try buf.appendSlice(self.allocator, ",\"text\":\"");
+                // Escape JSON string
+                for (line.text) |c| {
+                    switch (c) {
+                        '"' => try buf.appendSlice(self.allocator, "\\\""),
+                        '\\' => try buf.appendSlice(self.allocator, "\\\\"),
+                        '\n' => try buf.appendSlice(self.allocator, "\\n"),
+                        '\r' => try buf.appendSlice(self.allocator, "\\r"),
+                        '\t' => try buf.appendSlice(self.allocator, "\\t"),
+                        else => {
+                            if (c < 0x20) {
+                                var esc: [6]u8 = undefined;
+                                const s = std.fmt.bufPrint(&esc, "\\u{x:0>4}", .{c}) catch "\\u0000";
+                                try buf.appendSlice(self.allocator, s);
+                            } else {
+                                try buf.append(self.allocator, c);
+                            }
+                        },
+                    }
+                }
+                try buf.appendSlice(self.allocator, "\"}");
+            }
+            self.mutex.unlock();
+            try buf.appendSlice(self.allocator, "]}");
+        } else {
+            // Plain text format (with timestamps — Phase 32)
+            try buf.appendSlice(self.allocator, "Forge Conversation\n");
+            try buf.appendSlice(self.allocator, "==================\n\n");
+            self.mutex.lock();
+            for (self.lines.items) |line| {
+                const prefix: []const u8 = switch (line.kind) {
+                    .user => "[user] ",
+                    .agent => "[agent] ",
+                    .tool => "[tool] ",
+                    .system => "[system] ",
+                    .failure => "[error] ",
+                };
+                try buf.appendSlice(self.allocator, prefix);
+                // Add timestamp if available (Phase 32)
+                if (line.timestamp_ms > 0) {
+                    var ts_buf: [16]u8 = undefined;
+                    const ts = std.fmt.bufPrint(&ts_buf, "[{d}] ", .{line.timestamp_ms}) catch "";
+                    try buf.appendSlice(self.allocator, ts);
+                }
+                try buf.appendSlice(self.allocator, line.text);
+                try buf.append(self.allocator, '\n');
+            }
+            self.mutex.unlock();
         }
-        self.mutex.unlock();
+
         // Write to file.
         var dir = std.Io.Dir.openDir(.cwd(), self.io, self.opened.path, .{}) catch {
             try self.pushSystem("Failed to open workspace for save");
@@ -1283,7 +1341,8 @@ pub const App = struct {
             return;
         };
         var msg_buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, "Conversation saved to {s} ({d} bytes)", .{ path, buf.items.len }) catch "Conversation saved";
+        const fmt_label: []const u8 = if (is_json) "JSON" else "text";
+        const msg = std.fmt.bufPrint(&msg_buf, "Conversation saved to {s} ({d} bytes, {s})", .{ path, buf.items.len, fmt_label }) catch "Conversation saved";
         try self.pushSystem(msg);
     }
 
@@ -1557,8 +1616,9 @@ pub const App = struct {
     fn pushLine(self: *App, kind: LineKind, text: []u8) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        try self.lines.append(self.allocator, .{ .kind = kind, .text = text });
-        self.scroll = 0;
+        const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        try self.lines.append(self.allocator, .{ .kind = kind, .text = text, .timestamp_ms = now_ms });
+        self.scroll = 0; // Phase 33: auto-scroll to bottom on new message
         self.markDirty();
     }
 
