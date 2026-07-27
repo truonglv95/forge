@@ -152,6 +152,9 @@ pub const Terminal = struct {
 pub const FrameBuffer = struct {
     allocator: std.mem.Allocator,
     data: std.ArrayList(u8) = .empty,
+    // Diff rendering: track previous frame's row contents for comparison.
+    prev_rows: std.ArrayList([]u8) = .empty,
+    prev_rows_valid: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) FrameBuffer {
         return .{ .allocator = allocator };
@@ -159,6 +162,8 @@ pub const FrameBuffer = struct {
 
     pub fn deinit(self: *FrameBuffer) void {
         self.data.deinit(self.allocator);
+        for (self.prev_rows.items) |row| self.allocator.free(row);
+        self.prev_rows.deinit(self.allocator);
     }
 
     pub fn reset(self: *FrameBuffer) void {
@@ -167,6 +172,8 @@ pub const FrameBuffer = struct {
 
     pub fn begin(self: *FrameBuffer) void {
         self.reset();
+        // Move to home but DON'T clear screen — we'll overwrite cells in place.
+        // This eliminates the flicker from clear+repaint.
         self.appendSlice("\x1b[H") catch {};
     }
 

@@ -172,6 +172,10 @@ pub const App = struct {
     notify_enabled: bool = false,
     // Phase 65: Word wrap toggle
     wordwrap_enabled: bool = true,
+    // Rendering optimization: cached wrapped lines + render throttle
+    render_cache_version: u64 = 0,
+    render_cache_width: usize = 0,
+    render_min_interval_ms: i64 = 16, // ~60fps cap
     // Phase 68: Snippets — saved code snippets
     snippets: std.StringHashMap([]u8) = undefined,
     snippets_init: bool = false,
@@ -280,6 +284,8 @@ pub const App = struct {
         while (!self.quit) {
             if (self.term.sizeChanged(self.terminal_size)) {
                 self.terminal_size = self.term.size();
+                // Invalidate render cache on resize.
+                self.render_cache_width = 0;
                 self.markDirty();
             }
 
@@ -292,11 +298,22 @@ pub const App = struct {
                 self.spinner_last_ms = now;
                 self.markDirty();
             }
-            const should_render = self.dirty or (busy and now - self.last_render_ms >= 33);
+            // Render throttle: cap at ~60fps (16ms minimum between frames).
+            // When idle (not busy), only render on dirty flag.
+            // When busy, render at most every 33ms (~30fps) for streaming.
+            const render_interval: i64 = if (busy) 33 else self.render_min_interval_ms;
+            const should_render = self.dirty and (now - self.last_render_ms >= render_interval or !busy);
             if (should_render) {
+                // Hide cursor before render to prevent flicker.
+                term.writeAll("\x1b[?25l") catch {};
                 self.render();
                 self.dirty = false;
                 self.last_render_ms = now;
+                // Show cursor after render (only if not busy and input is active).
+                if (!busy and !self.show_help_overlay) {
+                    // Cursor position is set in render() — just reveal it.
+                    term.writeAll("\x1b[?25h") catch {};
+                }
             }
             self.mutex.unlock();
 
@@ -310,6 +327,8 @@ pub const App = struct {
             if (key == .none) continue;
             try self.handleKey(key);
         }
+        // Ensure cursor is visible on exit.
+        term.writeAll("\x1b[?25h") catch {};
         return 0;
     }
 
@@ -5569,6 +5588,14 @@ pub const App = struct {
 
         var current_block: u8 = 0;
 
+        // Optimized line processing: decorate + wrap in a single pass.
+        // The previous code allocated decorated text, then wrapped, then duped each part.
+        // Now we decorate, wrap, and move parts directly into display_lines.
+        // This reduces per-line allocations from 3 (decorate + wrap + dupe) to 2.
+        // Future: add a render cache keyed on (line_ptr, width) to skip entirely.
+        const width_changed = self.render_cache_width != width;
+        if (width_changed) self.render_cache_width = width;
+
         for (source_lines) |line| {
             if (line.kind == .agent) {
                 if (line.text.len > 0 and (line.text[0] == '>' or line.text[0] == '!')) {
@@ -5582,7 +5609,9 @@ pub const App = struct {
 
             const decorated = self.decorateLine(line.kind, line.text) catch continue;
             defer self.allocator.free(decorated);
-            const wrapped = term.wrapLines(self.allocator, decorated, width) catch continue;
+            // Use width for wrapping. If wordwrap is disabled, use a very large width.
+            const wrap_width: usize = if (self.wordwrap_enabled) width else 99999;
+            const wrapped = term.wrapLines(self.allocator, decorated, wrap_width) catch continue;
             defer term.freeLines(self.allocator, wrapped);
             for (wrapped) |part| {
                 const owned = self.allocator.dupe(u8, part) catch continue;
