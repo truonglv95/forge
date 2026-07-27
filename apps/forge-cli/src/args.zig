@@ -286,11 +286,17 @@ pub const CliArgs = struct {
                 } else if (std.mem.startsWith(u8, arg, "--base=")) {
                     flags.base = arg["--base=".len..];
                 } else if (std.mem.eql(u8, arg, "--base")) {
-                    if (i + 1 < args.len) { i += 1; flags.base = args[i]; }
+                    if (i + 1 < args.len) {
+                        i += 1;
+                        flags.base = args[i];
+                    }
                 } else if (std.mem.startsWith(u8, arg, "--head=")) {
                     flags.head = arg["--head=".len..];
                 } else if (std.mem.eql(u8, arg, "--head")) {
-                    if (i + 1 < args.len) { i += 1; flags.head = args[i]; }
+                    if (i + 1 < args.len) {
+                        i += 1;
+                        flags.head = args[i];
+                    }
                 } else if (std.mem.eql(u8, arg, "--coordinated")) {
                     flags.coordinated = true;
                 }

@@ -2295,7 +2295,7 @@ pub const App = struct {
                 try out.appendSlice(self.allocator, term.Style.bg_block);
                 try out.appendSlice(self.allocator, term.Style.cyan);
                 if (close < text.len) {
-                    try out.appendSlice(self.allocator, text[i..close + 3]);
+                    try out.appendSlice(self.allocator, text[i .. close + 3]);
                 } else {
                     try out.appendSlice(self.allocator, text[i..]);
                 }

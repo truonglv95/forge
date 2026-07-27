@@ -148,7 +148,7 @@ test "cli contract: forge review --heuristic-only exits 0 with no changes" {
 test "cli contract: forge test-gen without --file exits 2" {
     const allocator = std.testing.allocator;
 
-    const result = runForge(allocator, &.{ "test-gen" }, null) catch |err| {
+    const result = runForge(allocator, &.{"test-gen"}, null) catch |err| {
         std.debug.print("[skip] forge binary not found: {}\n", .{err});
         return;
     };
