@@ -45,13 +45,17 @@ pub const Terminal = struct {
         raw.cc[@intFromEnum(std.c.V.MIN)] = 0;
         raw.cc[@intFromEnum(std.c.V.TIME)] = 1;
         try std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, raw);
-        try writeAll("\x1b[?1049h\x1b[?25l");
+        // Enable: alt screen buffer, hide cursor, bracketed paste mode.
+        // Bracketed paste (\x1b[?2004h) allows detecting paste events so
+        // multi-line paste doesn't trigger Ctrl-char side effects.
+        try writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h");
         return .{ .saved = saved, .active = true, .use_color = use_color };
     }
 
     pub fn restore(self: *Terminal) void {
         if (!self.active) return;
-        writeAll("\x1b[?1049l\x1b[?25h") catch {};
+        // Disable: bracketed paste, show cursor, exit alt screen.
+        writeAll("\x1b[?2004l\x1b[?1049l\x1b[?25h") catch {};
         std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, self.saved) catch {};
         self.active = false;
     }
