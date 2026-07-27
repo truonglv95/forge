@@ -5792,7 +5792,7 @@ pub const App = struct {
             wrapped_cache.deinit(self.allocator);
         }
 
-        var display_lines: std.ArrayList(struct { kind: LineKind, text: []const u8 }) = .empty;
+        var display_lines: std.ArrayList(struct { kind: LineKind, text: []const u8, source_idx: ?usize }) = .empty;
         defer display_lines.deinit(self.allocator);
 
         var block_states: std.ArrayList(u8) = .empty;
@@ -5830,7 +5830,41 @@ pub const App = struct {
         const width_changed = self.render_cache_width != width;
         if (width_changed) self.render_cache_width = width;
 
-        for (source_lines) |line| {
+        // P1.9: Pinned lines render first (prepended to top of chat area).
+        // Only applies to the main chat view (not timeline/events views).
+        if (!self.show_timeline and !self.show_events and self.pinned.items.len > 0) {
+            for (self.pinned.items) |pin_idx| {
+                if (pin_idx >= source_lines.len) continue;
+                const line = source_lines[pin_idx];
+                const decorated = self.decorateLine(line.kind, line.text) catch continue;
+                defer self.allocator.free(decorated);
+                // Prefix pinned lines with a marker so users can distinguish them.
+                var pinned_buf: std.ArrayList(u8) = .empty;
+                defer pinned_buf.deinit(self.allocator);
+                pinned_buf.appendSlice(self.allocator, "[PIN] ") catch continue;
+                pinned_buf.appendSlice(self.allocator, decorated) catch continue;
+                const wrap_width: usize = if (self.wordwrap_enabled) width else 99999;
+                const wrapped = term.wrapLines(self.allocator, pinned_buf.items, wrap_width) catch continue;
+                defer term.freeLines(self.allocator, wrapped);
+                for (wrapped) |part| {
+                    const owned = self.allocator.dupe(u8, part) catch continue;
+                    wrapped_cache.append(self.allocator, owned) catch {
+                        self.allocator.free(owned);
+                        continue;
+                    };
+                    display_lines.append(self.allocator, .{ .kind = line.kind, .text = owned, .source_idx = pin_idx }) catch {};
+                    block_states.append(self.allocator, 0) catch {};
+                }
+            }
+        }
+
+        for (source_lines, 0..) |line, source_idx| {
+            // P1.9: filter_role — skip lines that don't match the active filter.
+            // Only applies when filter_role is set (null = no filter).
+            if (self.filter_role) |role| {
+                if (line.kind != role) continue;
+            }
+
             if (line.kind == .agent) {
                 if (line.text.len > 0 and (line.text[0] == '>' or line.text[0] == '!')) {
                     current_block = 1;
@@ -5853,7 +5887,7 @@ pub const App = struct {
                     self.allocator.free(owned);
                     continue;
                 };
-                display_lines.append(self.allocator, .{ .kind = line.kind, .text = owned }) catch {};
+                display_lines.append(self.allocator, .{ .kind = line.kind, .text = owned, .source_idx = source_idx }) catch {};
                 const block_state: u8 = if (line.kind == .tool) 1 else current_block;
                 block_states.append(self.allocator, block_state) catch {};
             }
@@ -5864,13 +5898,13 @@ pub const App = struct {
             const status_line = self.liveThinkingLabel(&thinking_buf);
             if (self.allocator.dupe(u8, status_line)) |owned_status| {
                 wrapped_cache.append(self.allocator, owned_status) catch self.allocator.free(owned_status);
-                display_lines.append(self.allocator, .{ .kind = .agent, .text = owned_status }) catch {};
+                display_lines.append(self.allocator, .{ .kind = .agent, .text = owned_status, .source_idx = null }) catch {};
                 block_states.append(self.allocator, 0) catch {};
             } else |_| {}
         } else if (!self.show_events and !self.show_timeline) {
             if (self.formatPromptLine(self.input.items)) |owned_prompt| {
                 wrapped_cache.append(self.allocator, owned_prompt) catch self.allocator.free(owned_prompt);
-                display_lines.append(self.allocator, .{ .kind = .user, .text = owned_prompt }) catch {};
+                display_lines.append(self.allocator, .{ .kind = .user, .text = owned_prompt, .source_idx = null }) catch {};
                 block_states.append(self.allocator, 0) catch {};
             } else |_| {}
         }
@@ -5892,6 +5926,21 @@ pub const App = struct {
             const block = block_states.items[i];
             const color = colorForLine(line.kind, line.text);
 
+            // P1.9: Bookmark indicator — prepend a star marker to lines whose
+            // source_idx is in self.bookmarks. Only show on the first wrapped
+            // row of each source line (i.e. when source_idx is set and matches
+            // a bookmark). Skip pinned lines (which already have [PIN] prefix).
+            const is_bookmarked = blk: {
+                if (line.source_idx) |sidx| {
+                    if (!std.mem.startsWith(u8, line.text, "[PIN] ")) {
+                        for (self.bookmarks.items) |bidx| {
+                            if (bidx == sidx) break :blk true;
+                        }
+                    }
+                }
+                break :blk false;
+            };
+
             // Turn separation: draw a subtle left border for agent/tool messages
             // to visually group turns. User messages get green border, agent gets
             // a dim vertical bar on the left edge.
@@ -5904,6 +5953,14 @@ pub const App = struct {
                 // Add blank line before user messages (except first) for separation.
                 // We skip this if we're at the top of the viewport.
                 // (Visual separation handled by the blank row below.)
+            }
+
+            // P1.9: Render bookmark marker before content (on first row of line).
+            // Use a yellow star to make it visually distinct.
+            if (is_bookmarked) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.bright_yellow) catch {};
+                self.frame.appendSlice("[\xe2\x98\x85] ") catch {}; // [★] in UTF-8
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             }
 
             const padding: usize = if (block > 0) 2 else 0;
