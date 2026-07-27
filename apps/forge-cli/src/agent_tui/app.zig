@@ -143,8 +143,12 @@ pub const App = struct {
     total_cost_usd: f64 = 0.0,
     // Phase 52: Bookmarks — store line indices of important messages
     bookmarks: std.ArrayList(usize) = .empty,
+    // Phase 57: Filter — show only messages of a specific role
+    filter_role: ?LineKind = null,
+    // Phase 60: Pins — store line indices pinned to top
+    pinned: std.ArrayList(usize) = .empty,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -208,6 +212,7 @@ pub const App = struct {
         for (self.session_files.items) |item| self.allocator.free(item);
         self.session_files.deinit(self.allocator);
         self.bookmarks.deinit(self.allocator);
+        self.pinned.deinit(self.allocator);
         self.allocator.free(self.model_label);
         self.allocator.free(self.context_label);
         self.allocator.free(self.edited_label);
@@ -869,6 +874,10 @@ pub const App = struct {
             .bookmark_list => try self.listBookmarks(),
             .copy_line => |line_num| try self.copyLine(line_num),
             .branch => |name| try self.createBranch(name),
+            .filter => |role| try self.filterByRole(role),
+            .stats => try self.showStats(),
+            .compact => try self.compactConversation(),
+            .pin => |line_num| try self.pinMessage(line_num),
         }
     }
 
@@ -2211,6 +2220,202 @@ pub const App = struct {
 
         var msg_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "Created and switched to branch '{s}'", .{name}) catch "Branch created";
+        try self.pushSystem(msg);
+    }
+
+    /// /filter <role> — filter conversation by role (Phase 57).
+    /// Shows only messages of the specified role: user, agent, tool, system.
+    /// Use /filter off to clear the filter.
+    fn filterByRole(self: *App, role_opt: ?[]const u8) !void {
+        const role_str = role_opt orelse {
+            try self.pushSystem("Usage: /filter <role>");
+            try self.pushSystem("Filters conversation to show only messages of the specified role.");
+            try self.pushSystem("Roles: user, agent, tool, system, error");
+            try self.pushSystem("Use /filter off to clear the filter.");
+            return;
+        };
+
+        if (std.mem.eql(u8, role_str, "off") or std.mem.eql(u8, role_str, "clear")) {
+            self.filter_role = null;
+            try self.pushSystem("Filter cleared — showing all messages");
+            self.markDirty();
+            return;
+        }
+
+        const role: LineKind = blk: {
+            if (std.mem.eql(u8, role_str, "user")) break :blk .user;
+            if (std.mem.eql(u8, role_str, "agent")) break :blk .agent;
+            if (std.mem.eql(u8, role_str, "tool")) break :blk .tool;
+            if (std.mem.eql(u8, role_str, "system")) break :blk .system;
+            if (std.mem.eql(u8, role_str, "error") or std.mem.eql(u8, role_str, "failure")) break :blk .failure;
+            try self.pushSystem("Unknown role. Available: user, agent, tool, system, error");
+            return;
+        };
+
+        self.filter_role = role;
+        self.markDirty();
+        var buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Filtering by role: {s}", .{role_str}) catch "Filter set";
+        try self.pushSystem(msg);
+        try self.pushSystem("Use /filter off to clear");
+    }
+
+    /// /stats — show conversation statistics (Phase 58).
+    fn showStats(self: *App) !void {
+        self.mutex.lock();
+        const lines = self.lines.items;
+        var user_count: usize = 0;
+        var agent_count: usize = 0;
+        var tool_count: usize = 0;
+        var system_count: usize = 0;
+        var error_count: usize = 0;
+        var total_bytes: usize = 0;
+        var first_ts: i64 = 0;
+        var last_ts: i64 = 0;
+
+        for (lines) |line| {
+            total_bytes += line.text.len;
+            if (first_ts == 0 and line.timestamp_ms > 0) first_ts = line.timestamp_ms;
+            if (line.timestamp_ms > 0) last_ts = line.timestamp_ms;
+            switch (line.kind) {
+                .user => user_count += 1,
+                .agent => agent_count += 1,
+                .tool => tool_count += 1,
+                .system => system_count += 1,
+                .failure => error_count += 1,
+            }
+        }
+        self.mutex.unlock();
+
+        try self.pushSystem("Conversation Statistics");
+        try self.pushSystem("═══════════════════════════════════════════════════");
+
+        var buf: [256]u8 = undefined;
+        const total_line = std.fmt.bufPrint(&buf, "  Total messages:   {d}", .{lines.len}) catch "  Total: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, total_line));
+
+        const user_line = std.fmt.bufPrint(&buf, "  User messages:    {d}", .{user_count}) catch "  User: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, user_line));
+
+        const agent_line = std.fmt.bufPrint(&buf, "  Agent responses:  {d}", .{agent_count}) catch "  Agent: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, agent_line));
+
+        const tool_line = std.fmt.bufPrint(&buf, "  Tool outputs:     {d}", .{tool_count}) catch "  Tool: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, tool_line));
+
+        const system_line = std.fmt.bufPrint(&buf, "  System messages:  {d}", .{system_count}) catch "  System: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, system_line));
+
+        const error_line = std.fmt.bufPrint(&buf, "  Errors:           {d}", .{error_count}) catch "  Errors: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, error_line));
+
+        const bytes_line = std.fmt.bufPrint(&buf, "  Total size:       {d} bytes ({d:.1} KB)", .{ total_bytes, @as(f64, @floatFromInt(total_bytes)) / 1024.0 }) catch "  Size: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, bytes_line));
+
+        if (first_ts > 0 and last_ts > 0) {
+            const duration_s = @divFloor(last_ts - first_ts, 1000);
+            const dur_line = std.fmt.bufPrint(&buf, "  Duration:         {d}s", .{duration_s}) catch "  Duration: unknown";
+            try self.pushLine(.system, try self.allocator.dupe(u8, dur_line));
+        }
+
+        const token_line = std.fmt.bufPrint(&buf, "  Tokens:           {d} in · {d} out · ${d:.4}", .{ self.total_input_tokens, self.total_output_tokens, self.total_cost_usd }) catch "  Tokens: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, token_line));
+
+        const bm_line = std.fmt.bufPrint(&buf, "  Bookmarks:        {d}", .{self.bookmarks.items.len}) catch "  Bookmarks: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, bm_line));
+
+        const pin_line = std.fmt.bufPrint(&buf, "  Pinned:           {d}", .{self.pinned.items.len}) catch "  Pinned: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, pin_line));
+    }
+
+    /// /compact — compact conversation to reduce context window usage (Phase 59).
+    /// Removes system messages and tool outputs, keeping only user and agent messages.
+    fn compactConversation(self: *App) !void {
+        self.mutex.lock();
+        const before_count = self.lines.items.len;
+        var compacted: std.ArrayList(ChatLine) = .empty;
+        var removed: usize = 0;
+        for (self.lines.items) |line| {
+            if (line.kind == .system or line.kind == .tool) {
+                self.allocator.free(line.text);
+                removed += 1;
+            } else {
+                compacted.append(self.allocator, line) catch {
+                    // On error, keep the line.
+                    compacted.append(self.allocator, line) catch {};
+                };
+            }
+        }
+        self.lines.deinit(self.allocator);
+        self.lines = compacted;
+        self.scroll = 0;
+        self.markDirty();
+        self.mutex.unlock();
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Compacted: removed {d} messages ({d} → {d})", .{ removed, before_count, before_count - removed }) catch "Compacted";
+        try self.pushSystem(msg);
+    }
+
+    /// /pin <line#> — pin a message to top of view (Phase 60).
+    fn pinMessage(self: *App, line_num_opt: ?[]const u8) !void {
+        const line_num_str = line_num_opt orelse {
+            // Show pinned list if no argument
+            self.mutex.lock();
+            const pinned_count = self.pinned.items.len;
+            self.mutex.unlock();
+            if (pinned_count == 0) {
+                try self.pushSystem("No pinned messages. Use /pin <line#> to pin one.");
+            } else {
+                var buf: [64]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Pinned messages ({d}):", .{pinned_count}) catch "Pinned:";
+                try self.pushSystem(msg);
+                self.mutex.lock();
+                for (self.pinned.items) |idx| {
+                    if (idx < self.lines.items.len) {
+                        const line = self.lines.items[idx];
+                        const preview_len = @min(line.text.len, 60);
+                        var lbuf: [256]u8 = undefined;
+                        const pline = std.fmt.bufPrint(&lbuf, "  [{d}] {s}", .{ idx, line.text[0..preview_len] }) catch continue;
+                        try self.pushLine(.system, try self.allocator.dupe(u8, pline));
+                    }
+                }
+                self.mutex.unlock();
+            }
+            return;
+        };
+
+        const line_num = std.fmt.parseInt(usize, line_num_str, 10) catch {
+            try self.pushSystem("Invalid line number. Usage: /pin <number>");
+            return;
+        };
+
+        self.mutex.lock();
+        if (line_num >= self.lines.items.len) {
+            const total = self.lines.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Line {d} does not exist (conversation has {d} lines)", .{ line_num, total }) catch "Line not found";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        // Check if already pinned
+        for (self.pinned.items) |p| {
+            if (p == line_num) {
+                self.mutex.unlock();
+                var buf: [64]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Line {d} is already pinned", .{line_num}) catch "Already pinned";
+                try self.pushSystem(msg);
+                return;
+            }
+        }
+
+        try self.pinned.append(self.allocator, line_num);
+        self.mutex.unlock();
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Pinned line {d}", .{line_num}) catch "Pinned";
         try self.pushSystem(msg);
     }
 

@@ -54,6 +54,11 @@ pub const Command = union(enum) {
     bookmark_list,
     copy_line: ?[]const u8,
     branch: ?[]const u8,
+    // Phase 57-60: Advanced TUI features
+    filter: ?[]const u8,
+    stats,
+    compact,
+    pin: ?[]const u8,
     not_command,
 };
 
@@ -156,6 +161,24 @@ pub fn parseSlashCommand(input: []const u8) Command {
         const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
         return .{ .branch = if (args.len > 0) args else null };
     }
+    // Phase 57: Filter conversation by role
+    if (matchesSlash(input, "filter") or matchesSlash(input, "ft")) {
+        if (std.mem.eql(u8, input, "/filter") or std.mem.eql(u8, input, "/ft")) return .{ .filter = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .filter = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .filter = if (args.len > 0) args else null };
+    }
+    // Phase 58: Show conversation statistics
+    if (matchesSlash(input, "stats") or matchesSlash(input, "statistics")) return .stats;
+    // Phase 59: Compact conversation
+    if (matchesSlash(input, "compact")) return .compact;
+    // Phase 60: Pin messages
+    if (matchesSlash(input, "pin")) {
+        if (std.mem.eql(u8, input, "/pin")) return .{ .pin = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .pin = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .pin = if (args.len > 0) args else null };
+    }
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -255,7 +278,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
