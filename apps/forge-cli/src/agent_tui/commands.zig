@@ -49,6 +49,11 @@ pub const Command = union(enum) {
     config,
     help_detailed: ?[]const u8,
     export_markdown: ?[]const u8,
+    // Phase 52-55: More TUI features
+    bookmark: ?[]const u8,
+    bookmark_list,
+    copy_line: ?[]const u8,
+    branch: ?[]const u8,
     not_command,
 };
 
@@ -128,6 +133,28 @@ pub fn parseSlashCommand(input: []const u8) Command {
         const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .export_markdown = null };
         const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
         return .{ .export_markdown = if (args.len > 0) args else null };
+    }
+    // Phase 52: Bookmark messages
+    if (matchesSlash(input, "bookmark") or matchesSlash(input, "bm")) {
+        if (std.mem.eql(u8, input, "/bookmark") or std.mem.eql(u8, input, "/bm")) return .bookmark_list;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .bookmark_list;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        if (std.mem.eql(u8, args, "list")) return .bookmark_list;
+        return .{ .bookmark = if (args.len > 0) args else null };
+    }
+    // Phase 53: Copy specific line to clipboard
+    if (matchesSlash(input, "copy") or matchesSlash(input, "cp")) {
+        if (std.mem.eql(u8, input, "/copy") or std.mem.eql(u8, input, "/cp")) return .{ .copy_line = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .copy_line = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .copy_line = if (args.len > 0) args else null };
+    }
+    // Phase 55: Create git branch from conversation state
+    if (matchesSlash(input, "branch")) {
+        if (std.mem.eql(u8, input, "/branch")) return .{ .branch = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .branch = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .branch = if (args.len > 0) args else null };
     }
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
@@ -228,7 +255,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }

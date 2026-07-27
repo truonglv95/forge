@@ -141,8 +141,10 @@ pub const App = struct {
     total_input_tokens: u64 = 0,
     total_output_tokens: u64 = 0,
     total_cost_usd: f64 = 0.0,
+    // Phase 52: Bookmarks — store line indices of important messages
+    bookmarks: std.ArrayList(usize) = .empty,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -205,6 +207,7 @@ pub const App = struct {
         self.history.deinit(self.allocator);
         for (self.session_files.items) |item| self.allocator.free(item);
         self.session_files.deinit(self.allocator);
+        self.bookmarks.deinit(self.allocator);
         self.allocator.free(self.model_label);
         self.allocator.free(self.context_label);
         self.allocator.free(self.edited_label);
@@ -862,6 +865,10 @@ pub const App = struct {
             .config => try self.showConfig(),
             .help_detailed => |help_cmd| try self.showDetailedHelp(help_cmd),
             .export_markdown => |path| try self.exportMarkdown(path),
+            .bookmark => |line_num| try self.bookmarkMessage(line_num),
+            .bookmark_list => try self.listBookmarks(),
+            .copy_line => |line_num| try self.copyLine(line_num),
+            .branch => |name| try self.createBranch(name),
         }
     }
 
@@ -2016,6 +2023,194 @@ pub const App = struct {
 
         var msg_buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "Exported {d} bytes to {s} (Markdown)", .{ buf.items.len, path }) catch "Export complete";
+        try self.pushSystem(msg);
+    }
+
+    /// /bookmark <line#> — bookmark a message for quick reference (Phase 52).
+    /// Stores the line index so the user can quickly jump back to important
+    /// messages later. Use /bookmark list to see all bookmarks.
+    fn bookmarkMessage(self: *App, line_num_opt: ?[]const u8) !void {
+        const line_num_str = line_num_opt orelse {
+            try self.pushSystem("Usage: /bookmark <line_number>");
+            try self.pushSystem("Bookmarks the message at the given line number for quick reference.");
+            try self.pushSystem("Use /bookmark list to see all bookmarks.");
+            return;
+        };
+
+        const line_num = std.fmt.parseInt(usize, line_num_str, 10) catch {
+            try self.pushSystem("Invalid line number. Usage: /bookmark <number>");
+            return;
+        };
+
+        self.mutex.lock();
+        if (line_num >= self.lines.items.len) {
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Line {d} does not exist (conversation has {d} lines)", .{ line_num, self.lines.items.len }) catch "Line not found";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        // Check if already bookmarked.
+        for (self.bookmarks.items) |bm| {
+            if (bm == line_num) {
+                self.mutex.unlock();
+                var buf: [64]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Line {d} is already bookmarked", .{line_num}) catch "Already bookmarked";
+                try self.pushSystem(msg);
+                return;
+            }
+        }
+
+        try self.bookmarks.append(self.allocator, line_num);
+        const line = self.lines.items[line_num];
+        const role: []const u8 = switch (line.kind) {
+            .user => "user",
+            .agent => "agent",
+            .tool => "tool",
+            .system => "system",
+            .failure => "error",
+        };
+        const preview_len = @min(line.text.len, 60);
+        self.mutex.unlock();
+
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Bookmarked line {d} [{s}]: {s}...", .{ line_num, role, line.text[0..preview_len] }) catch "Bookmarked";
+        try self.pushSystem(msg);
+    }
+
+    /// /bookmark list — show all bookmarks (Phase 52).
+    fn listBookmarks(self: *App) !void {
+        self.mutex.lock();
+        const bms = self.bookmarks.items;
+        if (bms.len == 0) {
+            self.mutex.unlock();
+            try self.pushSystem("No bookmarks yet. Use /bookmark <line#> to add one.");
+            return;
+        }
+
+        var count_buf: [64]u8 = undefined;
+        const count_msg = std.fmt.bufPrint(&count_buf, "Bookmarks ({d}):", .{bms.len}) catch "Bookmarks:";
+        // We can't call pushSystem while holding the lock, so unlock first.
+        const bms_copy = try self.allocator.dupe(usize, bms);
+        self.mutex.unlock();
+        defer self.allocator.free(bms_copy);
+
+        try self.pushSystem(count_msg);
+
+        self.mutex.lock();
+        for (bms_copy) |line_num| {
+            if (line_num < self.lines.items.len) {
+                const line = self.lines.items[line_num];
+                const role: []const u8 = switch (line.kind) {
+                    .user => "user",
+                    .agent => "agent",
+                    .tool => "tool",
+                    .system => "sys",
+                    .failure => "err",
+                };
+                var buf: [256]u8 = undefined;
+                const preview_len = @min(line.text.len, 50);
+                const bm_line = std.fmt.bufPrint(&buf, "  [{d}] {s}: {s}...", .{ line_num, role, line.text[0..preview_len] }) catch continue;
+                try self.pushLine(.system, try self.allocator.dupe(u8, bm_line));
+            }
+        }
+        self.mutex.unlock();
+    }
+
+    /// /copy <line#> — copy a specific line to clipboard (Phase 53).
+    fn copyLine(self: *App, line_num_opt: ?[]const u8) !void {
+        const line_num_str = line_num_opt orelse {
+            try self.pushSystem("Usage: /copy <line_number>");
+            try self.pushSystem("Copies the text at the given line number to the clipboard.");
+            try self.pushSystem("Use /search to find line numbers.");
+            return;
+        };
+
+        const line_num = std.fmt.parseInt(usize, line_num_str, 10) catch {
+            try self.pushSystem("Invalid line number. Usage: /copy <number>");
+            return;
+        };
+
+        self.mutex.lock();
+        if (line_num >= self.lines.items.len) {
+            const total = self.lines.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Line {d} does not exist (conversation has {d} lines)", .{ line_num, total }) catch "Line not found";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        const text = self.lines.items[line_num].text;
+        const text_copy = try self.allocator.dupe(u8, text);
+        self.mutex.unlock();
+        defer self.allocator.free(text_copy);
+
+        // Copy via OSC 52 escape sequence.
+        var osc_buf: [4096]u8 = undefined;
+        const osc = std.fmt.bufPrint(&osc_buf, "\x1b]52;c;{s}\x07", .{text_copy}) catch {
+            try self.pushSystem("Line too large for clipboard (max 4096 bytes)");
+            return;
+        };
+        term.writeAll(osc) catch {};
+
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Copied line {d} to clipboard ({d} bytes)", .{ line_num, text_copy.len }) catch "Copied to clipboard";
+        try self.pushSystem(msg);
+    }
+
+    /// /branch [name] — create a git branch from current conversation state (Phase 55).
+    fn createBranch(self: *App, name_opt: ?[]const u8) !void {
+        const name = name_opt orelse {
+            try self.pushSystem("Usage: /branch <name>");
+            try self.pushSystem("Creates a new git branch from the current state.");
+            try self.pushSystem("This is useful for isolating changes made during this conversation.");
+            return;
+        };
+
+        if (name.len == 0) {
+            try self.pushSystem("Branch name cannot be empty. Usage: /branch <name>");
+            return;
+        }
+
+        // Build git command: git checkout -b <name>
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
+        try args.append(self.allocator, "git");
+        try args.append(self.allocator, "checkout");
+        try args.append(self.allocator, "-b");
+        try args.append(self.allocator, name);
+
+        const result = forge_util.process_spawn.runCapture(self.allocator, args.items, .{
+            .cwd = self.opened.path,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        }) catch {
+            try self.pushSystem("Failed to run git command. Is git installed?");
+            return;
+        };
+
+        if (result.exit_code != 0) {
+            var err_buf: [256]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "git checkout -b {s} failed (exit {d})", .{ name, result.exit_code }) catch "Git branch creation failed";
+            try self.pushSystem(err_msg);
+            // Show stderr output if available.
+            if (result.output.len > 0) {
+                const preview_len = @min(result.output.len, 200);
+                try self.pushLine(.system, try self.allocator.dupe(u8, result.output[0..preview_len]));
+            }
+            self.allocator.free(result.output);
+            return;
+        }
+
+        self.allocator.free(result.output);
+
+        // Refresh branch label.
+        try self.refreshStatus();
+
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Created and switched to branch '{s}'", .{name}) catch "Branch created";
         try self.pushSystem(msg);
     }
 
