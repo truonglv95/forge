@@ -5742,6 +5742,19 @@ pub const App = struct {
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         }
 
+        // Draw a subtle separator line between chat area and input/footer.
+        // This gives a clear visual boundary for "where do I type?".
+        const separator_row = chat_rows + 1;
+        self.frame.moveTo(separator_row, 1);
+        if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+        // Draw a thin horizontal line across the full width.
+        var sep_buf: [256]u8 = undefined;
+        const sep_w: usize = @min(@as(usize, size.cols), sep_buf.len);
+        @memset(sep_buf[0..sep_w], '-');
+        self.frame.appendSlice(sep_buf[0..sep_w]) catch {};
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        self.frame.appendSlice("\x1b[K") catch {};
+
         var footer_row = chat_rows + 2;
 
         if (show_commands) {
