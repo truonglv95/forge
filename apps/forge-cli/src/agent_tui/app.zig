@@ -56,6 +56,19 @@ const ChatLine = struct {
     timestamp_ms: i64 = 0, // Phase 32: message timestamp for display
 };
 
+/// Phase 77: Tab snapshot — stores a saved conversation state for multi-tab support.
+const TabSnapshot = struct {
+    name: []u8,
+    lines: std.ArrayList(ChatLine),
+    created_ms: i64,
+
+    fn deinit(self: *TabSnapshot, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        for (self.lines.items) |line| allocator.free(line.text);
+        self.lines.deinit(allocator);
+    }
+};
+
 const ApprovalGate = struct {
     mutex: forge_util.sync.Mutex = .{},
     cond: forge_util.sync.Condition = .{},
@@ -169,8 +182,12 @@ pub const App = struct {
     tags_init: bool = false,
     // Phase 74: Last user intent for /retry
     last_user_intent: ?[]u8 = null,
+    // Phase 77: Multi-tab support
+    tabs: std.ArrayList(TabSnapshot) = .empty,
+    active_tab: usize = 0,
+    current_tab_name: ?[]u8 = null,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -236,6 +253,10 @@ pub const App = struct {
         self.session_files.deinit(self.allocator);
         self.bookmarks.deinit(self.allocator);
         self.pinned.deinit(self.allocator);
+        for (self.tabs.items) |*tab| tab.deinit(self.allocator);
+        self.tabs.deinit(self.allocator);
+        if (self.current_tab_name) |n| self.allocator.free(n);
+        if (self.last_user_intent) |i| self.allocator.free(i);
         self.allocator.free(self.model_label);
         self.allocator.free(self.context_label);
         self.allocator.free(self.edited_label);
@@ -924,6 +945,11 @@ pub const App = struct {
             .summary => try self.generateSummary(),
             .retry => try self.retryLastRequest(),
             .diff_file => |file| try self.showFileDiff(file),
+            .newtab => |name| try self.createNewTab(name),
+            .tabs => try self.listTabs(),
+            .close_tab => try self.closeCurrentTab(),
+            .rename_tab => |name| try self.renameCurrentTab(name),
+            .switch_tab => |num| try self.switchToTab(num),
         }
     }
 
@@ -3115,6 +3141,230 @@ pub const App = struct {
         try self.pushSystem(summary);
 
         self.allocator.free(result.output);
+    }
+
+    /// /newtab [name] — save current conversation to a tab and start fresh (Phase 77).
+    fn createNewTab(self: *App, name_opt: ?[]const u8) !void {
+        // Save current conversation as a tab snapshot.
+        const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        const name = name_opt orelse blk: {
+            var name_buf: [32]u8 = undefined;
+            const n = std.fmt.bufPrint(&name_buf, "Tab {d}", .{self.tabs.items.len + 1}) catch "Tab";
+            break :blk n;
+        };
+
+        // Snapshot current lines.
+        self.mutex.lock();
+        var snapshot_lines: std.ArrayList(ChatLine) = .empty;
+        for (self.lines.items) |line| {
+            const text_copy = self.allocator.dupe(u8, line.text) catch continue;
+            snapshot_lines.append(self.allocator, .{
+                .kind = line.kind,
+                .text = text_copy,
+                .timestamp_ms = line.timestamp_ms,
+            }) catch {
+                self.allocator.free(text_copy);
+                break;
+            };
+        }
+
+        const tab = TabSnapshot{
+            .name = self.allocator.dupe(u8, name) catch try self.allocator.dupe(u8, "Tab"),
+            .lines = snapshot_lines,
+            .created_ms = now_ms,
+        };
+        try self.tabs.append(self.allocator, tab);
+
+        // Clear current conversation for the new tab.
+        self.freeLines();
+        self.scroll = 0;
+        for (self.conversation.items) |turn| self.allocator.free(turn.content);
+        self.conversation.clearRetainingCapacity();
+
+        // Free and set tab name.
+        if (self.current_tab_name) |old| self.allocator.free(old);
+        self.current_tab_name = self.allocator.dupe(u8, name) catch null;
+        self.active_tab = self.tabs.items.len; // New tab is "active" (index after saved tabs)
+        self.mutex.unlock();
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "New tab '{s}' created (previous saved as tab {d})", .{ name, self.tabs.items.len }) catch "New tab created";
+        try self.pushSystem(msg);
+        try self.pushStartupIntro();
+    }
+
+    /// /tabs — list all saved tabs (Phase 78).
+    fn listTabs(self: *App) !void {
+        self.mutex.lock();
+        const tab_count = self.tabs.items.len;
+        const current_name = if (self.current_tab_name) |n| n else "Current";
+        self.mutex.unlock();
+
+        if (tab_count == 0) {
+            try self.pushSystem("No saved tabs. Current conversation is the only tab.");
+            try self.pushSystem("Use /newtab [name] to save current and start a new one.");
+            return;
+        }
+
+        var buf: [128]u8 = undefined;
+        const header = std.fmt.bufPrint(&buf, "Tabs ({d} saved + 1 current):", .{tab_count}) catch "Tabs:";
+        try self.pushSystem(header);
+
+        for (self.tabs.items, 0..) |tab, i| {
+            var lbuf: [256]u8 = undefined;
+            const msg_count = tab.lines.items.len;
+            const line = std.fmt.bufPrint(&lbuf, "  [{d}] {s} ({d} messages)", .{ i + 1, tab.name, msg_count }) catch continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+
+        var cbuf: [128]u8 = undefined;
+        const current_line = std.fmt.bufPrint(&cbuf, "  [*] {s} (current)", .{current_name}) catch "  [*] Current";
+        try self.pushLine(.system, try self.allocator.dupe(u8, current_line));
+        try self.pushSystem("Use /switch <tab#> to switch, /close to close current");
+    }
+
+    /// /close — close current tab and restore the last saved tab (Phase 79).
+    fn closeCurrentTab(self: *App) !void {
+        self.mutex.lock();
+        if (self.tabs.items.len == 0) {
+            self.mutex.unlock();
+            try self.pushSystem("Cannot close the only tab. Use /clear to clear the conversation instead.");
+            return;
+        }
+
+        // Restore the last saved tab.
+        const last_tab = self.tabs.items[self.tabs.items.len - 1];
+
+        // Clear current conversation.
+        self.freeLines();
+        self.scroll = 0;
+        for (self.conversation.items) |turn| self.allocator.free(turn.content);
+        self.conversation.clearRetainingCapacity();
+
+        // Restore lines from the saved tab.
+        for (last_tab.lines.items) |line| {
+            const text_copy = self.allocator.dupe(u8, line.text) catch continue;
+            self.lines.append(self.allocator, .{
+                .kind = line.kind,
+                .text = text_copy,
+                .timestamp_ms = line.timestamp_ms,
+            }) catch {
+                self.allocator.free(text_copy);
+                break;
+            };
+        }
+
+        // Free the tab snapshot.
+        if (self.current_tab_name) |old| self.allocator.free(old);
+        self.current_tab_name = self.allocator.dupe(u8, last_tab.name) catch null;
+        var name_buf: [64]u8 = undefined;
+        const name_copy = std.fmt.bufPrint(&name_buf, "{s}", .{last_tab.name}) catch "Restored";
+        _ = self.tabs.pop();
+        self.active_tab = if (self.tabs.items.len > 0) self.tabs.items.len else 0;
+        self.markDirty();
+        self.mutex.unlock();
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Closed current tab. Restored '{s}'", .{name_copy}) catch "Tab restored";
+        try self.pushSystem(msg);
+    }
+
+    /// /rename <name> — rename the current tab (Phase 80).
+    fn renameCurrentTab(self: *App, name_opt: ?[]const u8) !void {
+        const name = name_opt orelse {
+            try self.pushSystem("Usage: /rename <name>");
+            return;
+        };
+
+        if (name.len == 0) {
+            try self.pushSystem("Name cannot be empty");
+            return;
+        }
+
+        self.mutex.lock();
+        if (self.current_tab_name) |old| self.allocator.free(old);
+        self.current_tab_name = self.allocator.dupe(u8, name) catch null;
+        self.markDirty();
+        self.mutex.unlock();
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Tab renamed to '{s}'", .{name}) catch "Tab renamed";
+        try self.pushSystem(msg);
+    }
+
+    /// /switch <tab#> — switch to a saved tab (Phase 77).
+    fn switchToTab(self: *App, num_opt: ?[]const u8) !void {
+        const num_str = num_opt orelse {
+            try self.pushSystem("Usage: /switch <tab_number>");
+            try self.pushSystem("Use /tabs to see available tabs.");
+            return;
+        };
+
+        const tab_num = std.fmt.parseInt(usize, num_str, 10) catch {
+            try self.pushSystem("Invalid tab number. Usage: /switch <number>");
+            return;
+        };
+
+        self.mutex.lock();
+        if (tab_num < 1 or tab_num > self.tabs.items.len) {
+            const count = self.tabs.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Tab {d} does not exist (available: 1-{d})", .{ tab_num, count }) catch "Tab not found";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        const tab_idx = tab_num - 1;
+
+        // Save current conversation as a new tab at the end.
+        var snapshot_lines: std.ArrayList(ChatLine) = .empty;
+        for (self.lines.items) |line| {
+            const text_copy = self.allocator.dupe(u8, line.text) catch continue;
+            snapshot_lines.append(self.allocator, .{
+                .kind = line.kind,
+                .text = text_copy,
+                .timestamp_ms = line.timestamp_ms,
+            }) catch {
+                self.allocator.free(text_copy);
+                break;
+            };
+        }
+        const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        const current_name = if (self.current_tab_name) |n| self.allocator.dupe(u8, n) catch try self.allocator.dupe(u8, "Current") else try self.allocator.dupe(u8, "Current");
+        try self.tabs.append(self.allocator, .{
+            .name = current_name,
+            .lines = snapshot_lines,
+            .created_ms = now_ms,
+        });
+
+        // Clear current and load the target tab.
+        self.freeLines();
+        self.scroll = 0;
+        for (self.conversation.items) |turn| self.allocator.free(turn.content);
+        self.conversation.clearRetainingCapacity();
+
+        const target_tab = self.tabs.items[tab_idx];
+        for (target_tab.lines.items) |line| {
+            const text_copy = self.allocator.dupe(u8, line.text) catch continue;
+            self.lines.append(self.allocator, .{
+                .kind = line.kind,
+                .text = text_copy,
+                .timestamp_ms = line.timestamp_ms,
+            }) catch {
+                self.allocator.free(text_copy);
+                break;
+            };
+        }
+
+        if (self.current_tab_name) |old| self.allocator.free(old);
+        self.current_tab_name = self.allocator.dupe(u8, target_tab.name) catch null;
+        self.markDirty();
+        self.mutex.unlock();
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Switched to tab {d} ('{s}')", .{ tab_num, target_tab.name }) catch "Tab switched";
+        try self.pushSystem(msg);
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {

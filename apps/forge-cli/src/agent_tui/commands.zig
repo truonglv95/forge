@@ -80,6 +80,12 @@ pub const Command = union(enum) {
     summary,
     retry,
     diff_file: ?[]const u8,
+    // Phase 77-80: Multi-tab support
+    newtab: ?[]const u8,
+    tabs,
+    close_tab,
+    rename_tab: ?[]const u8,
+    switch_tab: ?[]const u8,
     not_command,
 };
 
@@ -104,7 +110,7 @@ pub fn parseSlashCommand(input: []const u8) Command {
         return .help;
     }
     if (matchesSlash(input, "context")) return .context;
-    if (matchesSlash(input, "diff")) return .diff;
+    // /diff is handled below with file argument support (Phase 75)
     if (matchesSlash(input, "timeline") or matchesSlash(input, "tl")) return .timeline;
     if (matchesSlash(input, "mock")) return .mock;
     if (matchesSlash(input, "help") or matchesSlash(input, "?")) {
@@ -266,6 +272,27 @@ pub fn parseSlashCommand(input: []const u8) Command {
         const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
         return .{ .diff_file = if (args.len > 0) args else null };
     }
+    // Phase 77-80: Multi-tab support
+    if (matchesSlash(input, "newtab") or matchesSlash(input, "new")) {
+        if (std.mem.eql(u8, input, "/newtab") or std.mem.eql(u8, input, "/new")) return .{ .newtab = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .newtab = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .newtab = if (args.len > 0) args else null };
+    }
+    if (matchesSlash(input, "tabs") or matchesSlash(input, "tablist")) return .tabs;
+    if (matchesSlash(input, "close")) return .close_tab;
+    if (matchesSlash(input, "rename")) {
+        if (std.mem.eql(u8, input, "/rename")) return .{ .rename_tab = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .rename_tab = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .rename_tab = if (args.len > 0) args else null };
+    }
+    if (matchesSlash(input, "switch") or matchesSlash(input, "sw")) {
+        if (std.mem.eql(u8, input, "/switch") or std.mem.eql(u8, input, "/sw")) return .{ .switch_tab = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .switch_tab = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .switch_tab = if (args.len > 0) args else null };
+    }
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -365,7 +392,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
