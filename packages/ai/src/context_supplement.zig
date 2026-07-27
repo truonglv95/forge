@@ -152,9 +152,10 @@ pub fn formatSpecBlock(
             defer file.close(io);
             const stat = file.stat(io) catch break :blk null;
             const size: usize = @intCast(stat.size);
+            if (size == 0) break :blk null;
             const buf = allocator.alloc(u8, size) catch break :blk null;
             errdefer allocator.free(buf);
-            const read = file.read(io, buf) catch {
+            const read = file.readPositionalAll(io, buf, 0) catch {
                 allocator.free(buf);
                 break :blk null;
             };

@@ -62,6 +62,11 @@ pub const LoadOptions = struct {
     enable_hyde: bool = false,
     hyde_text_generator: ?*const fn (allocator: std.mem.Allocator, ctx: ?*anyopaque, prompt: []const u8) anyerror![]u8 = null,
     hyde_text_generator_ctx: ?*anyopaque = null,
+    /// P1.6: Auto-inject the most recent approved spec's requirements +
+    /// design + tasks into the context (Kiro-style "specs → implementation"
+    /// loop). When true, context_loader will scan .forge/sessions/specs/
+    /// for approved specs and call formatSpecBlock on the best match.
+    include_spec_block: bool = true,
 };
 
 pub const ManifestStatus = enum {
@@ -234,7 +239,7 @@ pub fn build(
     }
 
     if (options.include_lsp_context) {
-        try loadLspBlock(allocator, options, &builder);
+        try loadLspBlock(allocator, io, root, options, &builder);
     }
 
     if (options.include_context_expansion and options.intent != null) {
@@ -993,7 +998,7 @@ fn loadDiagnosticsBlock(allocator: std.mem.Allocator, options: LoadOptions, buil
     }
 }
 
-fn loadLspBlock(allocator: std.mem.Allocator, options: LoadOptions, builder: *context.ContextBuilder) !void {
+fn loadLspBlock(allocator: std.mem.Allocator, io: std.Io, root: workspace.WorkspaceRoot, options: LoadOptions, builder: *context.ContextBuilder) !void {
     for (options.supplement.lsp_hints) |hint| {
         var name_buf: [512]u8 = undefined;
         const kind = switch (hint.kind) {
@@ -1017,6 +1022,73 @@ fn loadLspBlock(allocator: std.mem.Allocator, options: LoadOptions, builder: *co
     // → hooks" loop: the agent sees the spec and follows it.
     if (options.supplement.spec_block) |spec_text| {
         try builder.addBlockWithDetail(.rules, "spec:active", spec_text, "Approved spec for this task");
+    } else if (options.include_spec_block) {
+        // P1.6: Auto-load the most recent approved spec from the workspace.
+        // This makes the spec injection work without requiring callers to
+        // manually populate supplement.spec_block. If a caller already set
+        // spec_block (via supplement), that takes precedence.
+        try loadSpecBlock(allocator, io, root, options, builder);
+    }
+}
+
+/// P1.6: Auto-load the most recent approved spec from the workspace and
+/// inject its requirements + design + tasks into the context. This implements
+/// the Kiro-style "specs → implementation" loop: when an approved spec exists
+/// for the current intent, the agent sees it and implements against it.
+///
+/// Selection strategy: prefer the most recent approved spec whose intent
+/// matches the current task intent. If no match, fall back to the most
+/// recent approved spec. If no approved specs exist, do nothing.
+fn loadSpecBlock(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    options: LoadOptions,
+    builder: *context.ContextBuilder,
+) !void {
+    const spec_writer = @import("spec_writer.zig");
+    const specs = spec_writer.listSpecs(allocator, io, root) catch return;
+    defer spec_writer.freeSpecList(allocator, specs);
+    if (specs.len == 0) return;
+
+    // Find the best matching approved spec.
+    var best_idx: ?usize = null;
+    var best_match_score: u32 = 0;
+    for (specs, 0..) |spec, i| {
+        if (spec.status != .approved) continue;
+        var score: u32 = 1; // base score for being approved
+        // Boost score if intent matches.
+        if (options.intent) |intent| {
+            if (spec.intent.len > 0 and std.mem.indexOf(u8, spec.intent, intent) != null) {
+                score += 10;
+            }
+        }
+        // Boost score if spec has all 3 files (requirements + design + tasks).
+        if (spec.has_requirements and spec.has_design and spec.has_tasks) {
+            score += 5;
+        }
+        if (score > best_match_score) {
+            best_match_score = score;
+            best_idx = i;
+        }
+    }
+
+    if (best_idx) |idx| {
+        const spec = specs[idx];
+        // Build the spec directory path.
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const session_dir = workspace.global_store.getSessionDir(allocator, io, root) catch return;
+        defer allocator.free(session_dir);
+        const spec_root_abs = std.fmt.bufPrint(&path_buf, "{s}/specs/{s}", .{ session_dir, spec.run_id }) catch return;
+
+        const block = context_supplement.formatSpecBlock(allocator, io, spec_root_abs) catch return;
+        if (block) |text| {
+            defer allocator.free(text);
+            var detail_buf: [128]u8 = undefined;
+            const detail = std.fmt.bufPrint(&detail_buf, "Approved spec {s}", .{spec.run_id}) catch "Approved spec";
+            try builder.addBlockWithDetail(.rules, "spec:active", text, detail);
+            try builder.addManifestExtra(.rules, "spec:active", spec.run_id, text.len);
+        }
     }
 }
 

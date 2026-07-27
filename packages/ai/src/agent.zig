@@ -88,6 +88,13 @@ pub const Config = struct {
     max_conversation_compactions: u8 = 4,
     context_budget_tier: context_budget.BudgetTier = .full,
     enable_hyde: bool = false,
+    /// P1.6: When true, refuse to make edits if a pending (not-yet-approved)
+    /// spec exists for the current intent. The user must run
+    /// `forge spec approve <run_id>` first. This enforces the Kiro-style
+    /// "specs → approval → implementation" loop. Default false (opt-in).
+    /// When false, the spec is still injected into context (via
+    /// context_loader's include_spec_block) but not enforced as a gate.
+    enforce_spec_gate: bool = false,
 };
 
 pub const Step = struct {
@@ -143,6 +150,9 @@ pub const AgentError = error{
     InvalidProposal,
     DuplicateLoop,
     NoProgress,
+    /// P1.6: raised when enforce_spec_gate=true and a pending (not-yet-approved)
+    /// spec exists for the current intent. User must run `forge spec approve`.
+    SpecNotApproved,
 };
 
 pub fn run(
@@ -272,6 +282,39 @@ pub fn run(
     // caller pinned one explicitly. On resume we keep the persisted profile.
     if (effective_config.auto_capability and config.resume_session_id == null) {
         effective_config.capability_profile = route.capability_profile;
+    }
+
+    // P1.6: Spec approval gate (Kiro-style). When the agent is about to make
+    // edits (capability = propose or propose_and_task) and there exists a
+    // pending (not-yet-approved) spec for this intent, refuse to proceed.
+    // The user must run `forge spec approve <run_id>` first. This enforces
+    // the "specs → approval → implementation" loop.
+    //
+    // Configured via `enforce_spec_gate: bool = false` (opt-in). When false,
+    // we only log a warning that a pending spec exists but proceed anyway.
+    if (effective_config.enforce_spec_gate and
+        effective_config.capability_profile != .read_only and
+        config.resume_session_id == null)
+    {
+        const spec_writer = @import("spec_writer.zig");
+        const specs_opt: ?[]spec_writer.SpecInfo = spec_writer.listSpecs(allocator, io, root) catch null;
+        if (specs_opt) |specs| {
+            defer spec_writer.freeSpecList(allocator, specs);
+            for (specs) |spec| {
+                if (spec.status != .pending) continue;
+                if (spec.intent.len > 0 and std.mem.indexOf(u8, spec.intent, intent) != null) {
+                    // Found a pending spec matching this intent — block.
+                    event_logger.telemetry(.{
+                        .phase = "gate",
+                        .duration_ms = 0,
+                        .bytes = 0,
+                        .items = 0,
+                        .detail = "spec_not_approved",
+                    }) catch {};
+                    return error.SpecNotApproved;
+                }
+            }
+        }
     }
 
     // Adaptive step budget: when max_steps was not explicitly set by the
