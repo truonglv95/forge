@@ -59,6 +59,15 @@ pub const Command = union(enum) {
     stats,
     compact,
     pin: ?[]const u8,
+    // Phase 62-65: More TUI features
+    alias: ?[]const u8,
+    alias_list,
+    macro_record,
+    macro_stop,
+    macro_play: ?[]const u8,
+    macro_list,
+    notify: ?[]const u8,
+    wordwrap,
     not_command,
 };
 
@@ -179,6 +188,34 @@ pub fn parseSlashCommand(input: []const u8) Command {
         const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
         return .{ .pin = if (args.len > 0) args else null };
     }
+    // Phase 62: Alias — create custom command aliases
+    if (matchesSlash(input, "alias")) {
+        if (std.mem.eql(u8, input, "/alias")) return .alias_list;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .alias_list;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .alias = if (args.len > 0) args else null };
+    }
+    // Phase 63: Macro — record and replay command sequences
+    if (matchesSlash(input, "macro")) {
+        if (std.mem.eql(u8, input, "/macro")) return .macro_list;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .macro_list;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        if (std.mem.eql(u8, args, "record")) return .macro_record;
+        if (std.mem.eql(u8, args, "stop")) return .macro_stop;
+        if (std.mem.eql(u8, args, "list")) return .macro_list;
+        if (std.mem.startsWith(u8, args, "play ")) return .{ .macro_play = args[5..] };
+        if (std.mem.startsWith(u8, args, "play")) return .{ .macro_play = if (args.len > 4) args[4..] else null };
+        return .macro_list;
+    }
+    // Phase 64: Desktop notifications
+    if (matchesSlash(input, "notify")) {
+        if (std.mem.eql(u8, input, "/notify")) return .{ .notify = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .notify = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .notify = if (args.len > 0) args else null };
+    }
+    // Phase 65: Toggle word wrap
+    if (matchesSlash(input, "wordwrap") or matchesSlash(input, "wrap")) return .wordwrap;
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -278,7 +315,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }

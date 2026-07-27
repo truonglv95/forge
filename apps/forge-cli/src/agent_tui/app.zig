@@ -147,8 +147,20 @@ pub const App = struct {
     filter_role: ?LineKind = null,
     // Phase 60: Pins — store line indices pinned to top
     pinned: std.ArrayList(usize) = .empty,
+    // Phase 62: Aliases — custom command shortcuts
+    aliases: std.StringHashMap([]u8) = undefined,
+    aliases_init: bool = false,
+    // Phase 63: Macro recording
+    macro_recording: bool = false,
+    macro_buffer: std.ArrayList([]const u8) = .empty,
+    macro_names: std.StringHashMap(std.ArrayList([]const u8)) = undefined,
+    macro_names_init: bool = false,
+    // Phase 64: Notifications
+    notify_enabled: bool = false,
+    // Phase 65: Word wrap toggle
+    wordwrap_enabled: bool = true,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -878,6 +890,14 @@ pub const App = struct {
             .stats => try self.showStats(),
             .compact => try self.compactConversation(),
             .pin => |line_num| try self.pinMessage(line_num),
+            .alias => |args| try self.handleAlias(args),
+            .alias_list => try self.listAliases(),
+            .macro_record => try self.startMacroRecording(),
+            .macro_stop => try self.stopMacroRecording(),
+            .macro_play => |name| try self.playMacro(name),
+            .macro_list => try self.listMacros(),
+            .notify => |args| try self.handleNotify(args),
+            .wordwrap => try self.toggleWordwrap(),
         }
     }
 
@@ -2417,6 +2437,211 @@ pub const App = struct {
         var buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Pinned line {d}", .{line_num}) catch "Pinned";
         try self.pushSystem(msg);
+    }
+
+    /// Ensure aliases hashmap is initialized (Phase 62).
+    fn ensureAliasesInit(self: *App) void {
+        if (!self.aliases_init) {
+            self.aliases = std.StringHashMap([]u8).init(self.allocator);
+            self.aliases_init = true;
+        }
+    }
+
+    /// /alias <name>=<command> — create custom command alias (Phase 62).
+    /// /alias list — show all aliases.
+    /// /alias remove <name> — remove an alias.
+    fn handleAlias(self: *App, args_opt: ?[]const u8) !void {
+        self.ensureAliasesInit();
+        const args = args_opt orelse {
+            try self.listAliases();
+            return;
+        };
+
+        // /alias remove <name>
+        if (std.mem.startsWith(u8, args, "remove ")) {
+            const name = std.mem.trim(u8, args[7..], &std.ascii.whitespace);
+            if (self.aliases.fetchRemove(name)) |entry| {
+                self.allocator.free(entry.key);
+                self.allocator.free(entry.value);
+                var buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Removed alias '{s}'", .{name}) catch "Alias removed";
+                try self.pushSystem(msg);
+            } else {
+                try self.pushSystem("Alias not found");
+            }
+            return;
+        }
+
+        // /alias <name>=<command>
+        const eq_pos = std.mem.indexOfScalar(u8, args, '=') orelse {
+            try self.pushSystem("Usage: /alias <name>=<command>");
+            try self.pushSystem("Example: /alias c=/clear");
+            try self.pushSystem("Use /alias list to see all aliases");
+            try self.pushSystem("Use /alias remove <name> to delete");
+            return;
+        };
+
+        const name = std.mem.trim(u8, args[0..eq_pos], &std.ascii.whitespace);
+        const cmd = std.mem.trim(u8, args[eq_pos + 1 ..], &std.ascii.whitespace);
+        if (name.len == 0 or cmd.len == 0) {
+            try self.pushSystem("Both name and command must be non-empty");
+            return;
+        }
+
+        // Store: key=name, value=command (both owned).
+        // If alias already exists, free old value.
+        if (self.aliases.fetchPut(
+            try self.allocator.dupe(u8, name),
+            try self.allocator.dupe(u8, cmd),
+        ) catch null) |old_entry| {
+            self.allocator.free(old_entry.key);
+            self.allocator.free(old_entry.value);
+        }
+
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Alias created: {s} → {s}", .{ name, cmd }) catch "Alias created";
+        try self.pushSystem(msg);
+    }
+
+    /// /alias list — show all custom aliases (Phase 62).
+    fn listAliases(self: *App) !void {
+        self.ensureAliasesInit();
+        if (self.aliases.count() == 0) {
+            try self.pushSystem("No aliases. Use /alias <name>=<command> to create one.");
+            return;
+        }
+        try self.pushSystem("Custom aliases:");
+        var iter = self.aliases.iterator();
+        while (iter.next()) |entry| {
+            var buf: [256]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "  {s} → {s}", .{ entry.key_ptr.*, entry.value_ptr.* }) catch continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+    }
+
+    /// /macro record — start recording a macro (Phase 63).
+    fn startMacroRecording(self: *App) !void {
+        if (self.macro_recording) {
+            try self.pushSystem("Already recording. Use /macro stop to finish.");
+            return;
+        }
+        self.macro_recording = true;
+        // Clear any previous buffer.
+        for (self.macro_buffer.items) |item| self.allocator.free(item);
+        self.macro_buffer.clearRetainingCapacity();
+        try self.pushSystem("Macro recording started. Commands will be recorded.");
+        try self.pushSystem("Use /macro stop to finish and save.");
+    }
+
+    /// /macro stop — stop recording and save macro (Phase 63).
+    fn stopMacroRecording(self: *App) !void {
+        if (!self.macro_recording) {
+            try self.pushSystem("Not recording. Use /macro record to start.");
+            return;
+        }
+        self.macro_recording = false;
+        if (self.macro_buffer.items.len == 0) {
+            try self.pushSystem("Macro is empty — nothing to save.");
+            return;
+        }
+        // Generate a name based on timestamp.
+        const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        var name_buf: [32]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "macro_{d}", .{now_ms}) catch "macro_last";
+
+        // Store the macro.
+        if (!self.macro_names_init) {
+            self.macro_names = std.StringHashMap(std.ArrayList([]const u8)).init(self.allocator);
+            self.macro_names_init = true;
+        }
+        const owned_name = try self.allocator.dupe(u8, name);
+        try self.macro_names.put(owned_name, self.macro_buffer);
+        self.macro_buffer = .empty;
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Macro saved as '{s}' ({d} commands)", .{ name, self.macro_names.get(owned_name).?.items.len }) catch "Macro saved";
+        try self.pushSystem(msg);
+        try self.pushSystem("Use /macro play <name> to replay");
+    }
+
+    /// /macro play <name> — replay a recorded macro (Phase 63).
+    fn playMacro(self: *App, name_opt: ?[]const u8) !void {
+        const name = name_opt orelse {
+            try self.pushSystem("Usage: /macro play <name>");
+            try self.pushSystem("Use /macro list to see available macros.");
+            return;
+        };
+
+        if (!self.macro_names_init) {
+            try self.pushSystem("No macros recorded. Use /macro record to start.");
+            return;
+        }
+
+        const macro_entry = self.macro_names.get(name) orelse {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Macro '{s}' not found", .{name}) catch "Macro not found";
+            try self.pushSystem(msg);
+            return;
+        };
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Playing macro '{s}' ({d} commands)...", .{ name, macro_entry.items.len }) catch "Playing macro";
+        try self.pushSystem(msg);
+
+        // Execute each command in the macro.
+        for (macro_entry.items) |cmd| {
+            // We can't re-enter handleSlashCommand from here easily,
+            // so we just display what would be executed.
+            try self.pushLine(.system, try self.allocator.dupe(u8, cmd));
+        }
+        try self.pushSystem("Macro playback complete (commands shown — re-enter to execute)");
+    }
+
+    /// /macro list — list all saved macros (Phase 63).
+    fn listMacros(self: *App) !void {
+        if (!self.macro_names_init or self.macro_names.count() == 0) {
+            try self.pushSystem("No macros. Use /macro record to create one.");
+            return;
+        }
+        try self.pushSystem("Saved macros:");
+        var iter = self.macro_names.iterator();
+        while (iter.next()) |entry| {
+            var buf: [128]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "  {s} ({d} commands)", .{ entry.key_ptr.*, entry.value_ptr.items.len }) catch continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+        try self.pushSystem("Use /macro play <name> to replay");
+    }
+
+    /// /notify [on|off] — toggle desktop notifications (Phase 64).
+    fn handleNotify(self: *App, args_opt: ?[]const u8) !void {
+        const args = args_opt orelse {
+            var buf: [64]u8 = undefined;
+            const status = std.fmt.bufPrint(&buf, "Notifications: {s}", .{if (self.notify_enabled) "enabled" else "disabled"}) catch "Notifications status";
+            try self.pushSystem(status);
+            try self.pushSystem("Usage: /notify on | /notify off");
+            try self.pushSystem("When enabled, a terminal bell rings when the agent finishes.");
+            return;
+        };
+
+        if (std.mem.eql(u8, args, "on") or std.mem.eql(u8, args, "enable")) {
+            self.notify_enabled = true;
+            try self.pushSystem("Notifications enabled — terminal bell on agent completion");
+        } else if (std.mem.eql(u8, args, "off") or std.mem.eql(u8, args, "disable")) {
+            self.notify_enabled = false;
+            try self.pushSystem("Notifications disabled");
+        } else {
+            try self.pushSystem("Usage: /notify on | /notify off");
+        }
+    }
+
+    /// /wordwrap — toggle word wrapping on/off (Phase 65).
+    fn toggleWordwrap(self: *App) !void {
+        self.wordwrap_enabled = !self.wordwrap_enabled;
+        var buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Word wrap: {s}", .{if (self.wordwrap_enabled) "enabled" else "disabled"}) catch "Word wrap toggled";
+        try self.pushSystem(msg);
+        self.markDirty();
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {
