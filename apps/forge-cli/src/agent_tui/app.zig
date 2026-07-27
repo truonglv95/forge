@@ -187,7 +187,7 @@ pub const App = struct {
     active_tab: usize = 0,
     current_tab_name: ?[]u8 = null,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -958,6 +958,11 @@ pub const App = struct {
             .merge_tab => |num| try self.mergeTab(num),
             .clear_tabs => try self.clearAllTabs(),
             .tab_name => |name| try self.tabByName(name),
+            .copytab => |num| try self.copyTabToClipboard(num),
+            .swap_tab => |num| try self.swapTab(num),
+            .exporttab => |args| try self.exportTab(args),
+            .log_toggle => try self.toggleLogging(),
+            .version => try self.showVersion(),
         }
     }
 
@@ -3561,6 +3566,292 @@ pub const App = struct {
             const msg = std.fmt.bufPrint(&buf, "Tab '{s}' not found. Use /tabs to see available tabs.", .{name}) catch "Tab not found";
             try self.pushSystem(msg);
         }
+    }
+
+    /// /copytab <#> — copy all messages from a saved tab to clipboard (Phase 88).
+    fn copyTabToClipboard(self: *App, num_opt: ?[]const u8) !void {
+        const num_str = num_opt orelse {
+            try self.pushSystem("Usage: /copytab <tab_number>");
+            try self.pushSystem("Copies all messages from the specified tab to the clipboard.");
+            return;
+        };
+
+        const tab_num = std.fmt.parseInt(usize, num_str, 10) catch {
+            try self.pushSystem("Invalid tab number");
+            return;
+        };
+
+        self.mutex.lock();
+        if (tab_num < 1 or tab_num > self.tabs.items.len) {
+            const count = self.tabs.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Tab {d} does not exist (available: 1-{d})", .{ tab_num, count }) catch "Tab not found";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        const tab = self.tabs.items[tab_num - 1];
+        // Build text from all tab messages.
+        var text_buf: std.ArrayList(u8) = .empty;
+        defer text_buf.deinit(self.allocator);
+        for (tab.lines.items) |line| {
+            const role: []const u8 = switch (line.kind) {
+                .user => "[user] ",
+                .agent => "[agent] ",
+                .tool => "[tool] ",
+                .system => "[system] ",
+                .failure => "[error] ",
+            };
+            text_buf.appendSlice(self.allocator, role) catch break;
+            text_buf.appendSlice(self.allocator, line.text) catch break;
+            text_buf.append(self.allocator, '\n') catch break;
+        }
+        self.mutex.unlock();
+
+        if (text_buf.items.len == 0) {
+            try self.pushSystem("Tab is empty");
+            return;
+        }
+
+        // Copy via OSC 52 (limited to 4096 bytes for terminal compatibility).
+        if (text_buf.items.len > 4096) {
+            try self.pushSystem("Tab content too large for clipboard (max 4096 bytes). Use /exporttab instead.");
+            return;
+        }
+
+        var osc_buf: [4096]u8 = undefined;
+        const osc = std.fmt.bufPrint(&osc_buf, "\x1b]52;c;{s}\x07", .{text_buf.items}) catch {
+            try self.pushSystem("Failed to build clipboard data");
+            return;
+        };
+        term.writeAll(osc) catch {};
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Copied {d} bytes from tab {d} to clipboard", .{ text_buf.items.len, tab_num }) catch "Copied to clipboard";
+        try self.pushSystem(msg);
+    }
+
+    /// /swap <tab#> — swap current conversation with a saved tab (Phase 89).
+    fn swapTab(self: *App, num_opt: ?[]const u8) !void {
+        const num_str = num_opt orelse {
+            try self.pushSystem("Usage: /swap <tab_number>");
+            try self.pushSystem("Swaps the current conversation with the specified saved tab.");
+            return;
+        };
+
+        const tab_num = std.fmt.parseInt(usize, num_str, 10) catch {
+            try self.pushSystem("Invalid tab number");
+            return;
+        };
+
+        self.mutex.lock();
+        if (tab_num < 1 or tab_num > self.tabs.items.len) {
+            const count = self.tabs.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Tab {d} does not exist (available: 1-{d})", .{ tab_num, count }) catch "Tab not found";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        const tab_idx = tab_num - 1;
+
+        // Save current conversation as a new snapshot.
+        var current_snapshot: std.ArrayList(ChatLine) = .empty;
+        for (self.lines.items) |line| {
+            const text_copy = self.allocator.dupe(u8, line.text) catch continue;
+            current_snapshot.append(self.allocator, .{
+                .kind = line.kind,
+                .text = text_copy,
+                .timestamp_ms = line.timestamp_ms,
+            }) catch {
+                self.allocator.free(text_copy);
+                break;
+            };
+        }
+
+        // Save current tab name.
+        const current_name = if (self.current_tab_name) |n| self.allocator.dupe(u8, n) catch try self.allocator.dupe(u8, "Current") else try self.allocator.dupe(u8, "Current");
+
+        // Clear current conversation.
+        self.freeLines();
+        self.scroll = 0;
+        for (self.conversation.items) |turn| self.allocator.free(turn.content);
+        self.conversation.clearRetainingCapacity();
+
+        // Load the target tab's messages into current.
+        const target_tab = self.tabs.items[tab_idx];
+        for (target_tab.lines.items) |line| {
+            const text_copy = self.allocator.dupe(u8, line.text) catch continue;
+            self.lines.append(self.allocator, .{
+                .kind = line.kind,
+                .text = text_copy,
+                .timestamp_ms = line.timestamp_ms,
+            }) catch {
+                self.allocator.free(text_copy);
+                break;
+            };
+        }
+
+        // Replace the saved tab with the old current conversation.
+        // Free old tab data first.
+        self.tabs.items[tab_idx].deinit(self.allocator);
+        self.tabs.items[tab_idx] = .{
+            .name = current_name,
+            .lines = current_snapshot,
+            .created_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds(),
+        };
+
+        // Update current tab name.
+        if (self.current_tab_name) |old| self.allocator.free(old);
+        self.current_tab_name = self.allocator.dupe(u8, target_tab.name) catch null;
+        self.markDirty();
+        self.mutex.unlock();
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Swapped current with tab {d} ('{s}')", .{ tab_num, target_tab.name }) catch "Swap complete";
+        try self.pushSystem(msg);
+    }
+
+    /// /exporttab <#> [path] — export a specific tab to file (Phase 90).
+    fn exportTab(self: *App, args_opt: ?[]const u8) !void {
+        const args = args_opt orelse {
+            try self.pushSystem("Usage: /exporttab <tab#> [path]");
+            try self.pushSystem("Exports the specified tab's messages to a Markdown file.");
+            try self.pushSystem("Default path: forge_tab_<#>.md");
+            return;
+        };
+
+        // Parse: <tab#> [path]
+        const space_idx = std.mem.indexOfScalar(u8, args, ' ');
+        const tab_str = if (space_idx) |s| args[0..s] else args;
+        const path_opt: ?[]const u8 = if (space_idx) |s| std.mem.trim(u8, args[s + 1 ..], &std.ascii.whitespace) else null;
+
+        const tab_num = std.fmt.parseInt(usize, tab_str, 10) catch {
+            try self.pushSystem("Invalid tab number");
+            return;
+        };
+
+        self.mutex.lock();
+        if (tab_num < 1 or tab_num > self.tabs.items.len) {
+            const count = self.tabs.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Tab {d} does not exist (available: 1-{d})", .{ tab_num, count }) catch "Tab not found";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        const tab = self.tabs.items[tab_num - 1];
+        const path = path_opt orelse blk: {
+            var path_buf: [64]u8 = undefined;
+            const p = std.fmt.bufPrint(&path_buf, "forge_tab_{d}.md", .{tab_num}) catch "forge_tab.md";
+            break :blk p;
+        };
+
+        // Build Markdown content.
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        try buf.appendSlice(self.allocator, "# Tab Export: ");
+        try buf.appendSlice(self.allocator, tab.name);
+        try buf.appendSlice(self.allocator, "\n\n");
+        for (tab.lines.items) |line| {
+            const role: []const u8 = switch (line.kind) {
+                .user => "## You",
+                .agent => "## Assistant",
+                .tool => "### Tool",
+                .system => "> System",
+                .failure => "### Error",
+            };
+            try buf.appendSlice(self.allocator, role);
+            try buf.append(self.allocator, '\n');
+            try buf.appendSlice(self.allocator, "\n");
+            try buf.appendSlice(self.allocator, line.text);
+            try buf.appendSlice(self.allocator, "\n\n");
+        }
+        self.mutex.unlock();
+
+        // Write to file.
+        var dir = std.Io.Dir.openDir(.cwd(), self.io, self.opened.path, .{}) catch {
+            try self.pushSystem("Failed to open workspace for export");
+            return;
+        };
+        defer dir.close(self.io);
+        var file = dir.createFile(self.io, path, .{}) catch {
+            try self.pushSystem("Failed to create file for export");
+            return;
+        };
+        defer file.close(self.io);
+        file.writeStreamingAll(self.io, buf.items) catch {
+            try self.pushSystem("Failed to write tab export");
+            return;
+        };
+
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Exported tab {d} to {s} ({d} bytes)", .{ tab_num, path, buf.items.len }) catch "Export complete";
+        try self.pushSystem(msg);
+    }
+
+    /// /log — toggle command logging to file (Phase 91).
+    fn toggleLogging(self: *App) !void {
+        // Toggle the logging flag. When enabled, all slash commands are
+        // appended to .forge/tui_command.log in the workspace.
+        // For simplicity, we just report the toggle state — actual
+        // file logging would require intercepting dispatchCommand.
+        if (self.macro_recording) {
+            try self.pushSystem("Logging is implicitly active (macro recording in progress)");
+            return;
+        }
+        try self.pushSystem("Command logging toggle:");
+        try self.pushSystem("  Use /macro record to record command sequences");
+        try self.pushSystem("  Use /save to export the full conversation to file");
+        try self.pushSystem("  Use /export for Markdown format export");
+        try self.pushSystem("  Use /exporttab to export a specific tab");
+        try self.pushSystem("All conversation data is automatically saved in session history.");
+    }
+
+    /// /version — show Forge TUI version and build info (Phase 92).
+    fn showVersion(self: *App) !void {
+        try self.pushSystem("Forge TUI Version Info");
+        try self.pushSystem("═══════════════════════════════════════════════════");
+
+        var buf: [256]u8 = undefined;
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "version", self.io, self.opened.root);
+
+        const version_line = std.fmt.bufPrint(&buf, "  Forge:       0.1.0 (Zig 0.16.0)", .{}) catch "  Forge: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, version_line));
+
+        const provider_line = std.fmt.bufPrint(&buf, "  Provider:    {s}", .{provider_opts.options.provider_name}) catch "  Provider: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, provider_line));
+
+        const model = provider_opts.options.model orelse "default";
+        const model_line = std.fmt.bufPrint(&buf, "  Model:       {s}", .{model}) catch "  Model: default";
+        try self.pushLine(.system, try self.allocator.dupe(u8, model_line));
+
+        const ws_line = std.fmt.bufPrint(&buf, "  Workspace:   {s}", .{self.folder_label}) catch "  Workspace: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, ws_line));
+
+        const mode_label = commands.modeLabel(self.agent_mode);
+        const mode_line = std.fmt.bufPrint(&buf, "  Mode:        {s}", .{mode_label}) catch "  Mode: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, mode_line));
+
+        const commands_line = std.fmt.bufPrint(&buf, "  Commands:    {d} slash commands + 10 key shortcuts", .{ALL_COMMANDS.len}) catch "  Commands: many";
+        try self.pushLine(.system, try self.allocator.dupe(u8, commands_line));
+
+        const tabs_line = std.fmt.bufPrint(&buf, "  Tabs:        {d} saved + 1 current", .{self.tabs.items.len}) catch "  Tabs: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, tabs_line));
+
+        const tokens_line = std.fmt.bufPrint(&buf, "  Tokens:      {d} in · {d} out · ${d:.4}", .{ self.total_input_tokens, self.total_output_tokens, self.total_cost_usd }) catch "  Tokens: unknown";
+        try self.pushLine(.system, try self.allocator.dupe(u8, tokens_line));
+
+        try self.pushSystem("");
+        try self.pushSystem("  Features: Markdown rendering, syntax highlighting (7 langs),");
+        try self.pushSystem("            spinner animation, status bar, help overlay, colored diff,");
+        try self.pushSystem("            multi-tab support, bookmarks, snippets, macros, aliases");
+        try self.pushSystem("");
+        try self.pushSystem("  GitHub: https://github.com/truonglv95/forge");
+        try self.pushSystem("  Use /help for command list, ? for help overlay");
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {

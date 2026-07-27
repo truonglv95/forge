@@ -91,6 +91,12 @@ pub const Command = union(enum) {
     merge_tab: ?[]const u8,
     clear_tabs,
     tab_name: ?[]const u8,
+    // Phase 88-92: Copy tab, swap, export tab, log, version
+    copytab: ?[]const u8,
+    swap_tab: ?[]const u8,
+    exporttab: ?[]const u8,
+    log_toggle,
+    version,
     not_command,
 };
 
@@ -321,6 +327,31 @@ pub fn parseSlashCommand(input: []const u8) Command {
         const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
         return .{ .tab_name = if (args.len > 0) args else null };
     }
+    // Phase 88: Copy all messages from a tab to clipboard
+    if (matchesSlash(input, "copytab")) {
+        if (std.mem.eql(u8, input, "/copytab")) return .{ .copytab = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .copytab = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .copytab = if (args.len > 0) args else null };
+    }
+    // Phase 89: Swap current conversation with a saved tab
+    if (matchesSlash(input, "swap")) {
+        if (std.mem.eql(u8, input, "/swap")) return .{ .swap_tab = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .swap_tab = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .swap_tab = if (args.len > 0) args else null };
+    }
+    // Phase 90: Export a specific tab to file
+    if (matchesSlash(input, "exporttab")) {
+        if (std.mem.eql(u8, input, "/exporttab")) return .{ .exporttab = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .exporttab = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .exporttab = if (args.len > 0) args else null };
+    }
+    // Phase 91: Toggle command logging
+    if (matchesSlash(input, "log")) return .log_toggle;
+    // Phase 92: Show version info
+    if (matchesSlash(input, "version") or matchesSlash(input, "ver")) return .version;
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -420,7 +451,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /copytab /swap /exporttab /log /version /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | Ctrl+Tab=cycle tabs | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
