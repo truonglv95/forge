@@ -68,6 +68,12 @@ pub const Command = union(enum) {
     macro_list,
     notify: ?[]const u8,
     wordwrap,
+    // Phase 67-70: Navigation and utility
+    goto_line: ?[]const u8,
+    snippet: ?[]const u8,
+    snippet_list,
+    time,
+    resize,
     not_command,
 };
 
@@ -216,6 +222,25 @@ pub fn parseSlashCommand(input: []const u8) Command {
     }
     // Phase 65: Toggle word wrap
     if (matchesSlash(input, "wordwrap") or matchesSlash(input, "wrap")) return .wordwrap;
+    // Phase 67: Goto specific conversation line
+    if (matchesSlash(input, "goto") or matchesSlash(input, "g")) {
+        if (std.mem.eql(u8, input, "/goto") or std.mem.eql(u8, input, "/g")) return .{ .goto_line = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .goto_line = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .goto_line = if (args.len > 0) args else null };
+    }
+    // Phase 68: Snippet management
+    if (matchesSlash(input, "snippet") or matchesSlash(input, "sn")) {
+        if (std.mem.eql(u8, input, "/snippet") or std.mem.eql(u8, input, "/sn")) return .snippet_list;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .snippet_list;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        if (std.mem.eql(u8, args, "list")) return .snippet_list;
+        return .{ .snippet = if (args.len > 0) args else null };
+    }
+    // Phase 69: Show session time
+    if (matchesSlash(input, "time")) return .time;
+    // Phase 70: Refresh terminal size
+    if (matchesSlash(input, "resize") or matchesSlash(input, "refresh")) return .resize;
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -315,7 +340,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }

@@ -159,8 +159,13 @@ pub const App = struct {
     notify_enabled: bool = false,
     // Phase 65: Word wrap toggle
     wordwrap_enabled: bool = true,
+    // Phase 68: Snippets — saved code snippets
+    snippets: std.StringHashMap([]u8) = undefined,
+    snippets_init: bool = false,
+    // Phase 69: Session start time
+    session_start_ms: i64 = 0,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -205,6 +210,7 @@ pub const App = struct {
         try app.refreshStatus();
         try app.pushStartupIntro();
         app.terminal_size = terminal.size();
+        app.session_start_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
         app.cli_config = loaded_config;
         app.show_explorer = loaded_config.show_explorer;
         app.show_editor = loaded_config.show_editor;
@@ -898,6 +904,11 @@ pub const App = struct {
             .macro_list => try self.listMacros(),
             .notify => |args| try self.handleNotify(args),
             .wordwrap => try self.toggleWordwrap(),
+            .goto_line => |line_num| try self.gotoLine(line_num),
+            .snippet => |args| try self.handleSnippet(args),
+            .snippet_list => try self.listSnippets(),
+            .time => try self.showSessionTime(),
+            .resize => try self.refreshTerminalSize(),
         }
     }
 
@@ -2641,6 +2652,191 @@ pub const App = struct {
         var buf: [64]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Word wrap: {s}", .{if (self.wordwrap_enabled) "enabled" else "disabled"}) catch "Word wrap toggled";
         try self.pushSystem(msg);
+        self.markDirty();
+    }
+
+    /// /goto <line#> — jump to a specific conversation line (Phase 67).
+    /// Adjusts scroll so the specified line is visible in the chat viewport.
+    fn gotoLine(self: *App, line_num_opt: ?[]const u8) !void {
+        const line_num_str = line_num_opt orelse {
+            try self.pushSystem("Usage: /goto <line_number>");
+            try self.pushSystem("Jumps to the specified line in the conversation.");
+            try self.pushSystem("Use /search to find line numbers.");
+            return;
+        };
+
+        const target_line = std.fmt.parseInt(usize, line_num_str, 10) catch {
+            try self.pushSystem("Invalid line number. Usage: /goto <number>");
+            return;
+        };
+
+        self.mutex.lock();
+        const total = self.lines.items.len;
+        if (target_line >= total) {
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Line {d} does not exist (conversation has {d} lines)", .{ target_line, total }) catch "Line not found";
+            try self.pushSystem(msg);
+            return;
+        }
+        self.mutex.unlock();
+
+        // Calculate scroll position to center the target line in the viewport.
+        // The chat viewport shows `chat_rows` lines at a time.
+        // scroll = 0 means showing the bottom (newest). Higher scroll = older.
+        const size = self.terminal_size;
+        const chat_rows_approx: usize = if (size.rows > 4) @as(usize, size.rows) - 4 else 1;
+        const target_scroll = if (total > chat_rows_approx and target_line < total - chat_rows_approx)
+            total - chat_rows_approx - target_line + chat_rows_approx / 2
+        else
+            0;
+
+        self.mutex.lock();
+        self.scroll = @min(target_scroll, if (total > chat_rows_approx) total - chat_rows_approx else 0);
+        self.markDirty();
+        self.mutex.unlock();
+
+        var buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Jumped to line {d}", .{target_line}) catch "Jumped";
+        try self.pushSystem(msg);
+    }
+
+    /// Ensure snippets hashmap is initialized (Phase 68).
+    fn ensureSnippetsInit(self: *App) void {
+        if (!self.snippets_init) {
+            self.snippets = std.StringHashMap([]u8).init(self.allocator);
+            self.snippets_init = true;
+        }
+    }
+
+    /// /snippet <name>=<text> — save a code snippet (Phase 68).
+    /// /snippet list — list all snippets.
+    /// /snippet <name> — insert snippet into input buffer.
+    /// /snippet remove <name> — remove a snippet.
+    fn handleSnippet(self: *App, args_opt: ?[]const u8) !void {
+        self.ensureSnippetsInit();
+        const args = args_opt orelse {
+            try self.listSnippets();
+            return;
+        };
+
+        // /snippet remove <name>
+        if (std.mem.startsWith(u8, args, "remove ")) {
+            const name = std.mem.trim(u8, args[7..], &std.ascii.whitespace);
+            if (self.snippets.fetchRemove(name)) |entry| {
+                self.allocator.free(entry.key);
+                self.allocator.free(entry.value);
+                var buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Removed snippet '{s}'", .{name}) catch "Snippet removed";
+                try self.pushSystem(msg);
+            } else {
+                try self.pushSystem("Snippet not found");
+            }
+            return;
+        }
+
+        // /snippet <name>=<text> — save
+        if (std.mem.indexOfScalar(u8, args, '=')) |eq_pos| {
+            const name = std.mem.trim(u8, args[0..eq_pos], &std.ascii.whitespace);
+            const text = std.mem.trim(u8, args[eq_pos + 1 ..], &std.ascii.whitespace);
+            if (name.len == 0 or text.len == 0) {
+                try self.pushSystem("Both name and text must be non-empty");
+                return;
+            }
+            if (self.snippets.fetchPut(
+                try self.allocator.dupe(u8, name),
+                try self.allocator.dupe(u8, text),
+            ) catch null) |old_entry| {
+                self.allocator.free(old_entry.key);
+                self.allocator.free(old_entry.value);
+            }
+            var buf: [256]u8 = undefined;
+            const preview_len = @min(text.len, 50);
+            const msg = std.fmt.bufPrint(&buf, "Snippet saved: {s} = {s}...", .{ name, text[0..preview_len] }) catch "Snippet saved";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        // /snippet <name> — insert into input
+        if (self.snippets.get(args)) |text| {
+            self.mutex.lock();
+            self.input.appendSlice(self.allocator, text) catch {
+                self.mutex.unlock();
+                try self.pushSystem("Failed to insert snippet (out of memory)");
+                return;
+            };
+            self.cursor = self.input.items.len;
+            self.markDirty();
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const preview_len = @min(text.len, 40);
+            const msg = std.fmt.bufPrint(&buf, "Inserted snippet '{s}': {s}...", .{ args, text[0..preview_len] }) catch "Snippet inserted";
+            try self.pushSystem(msg);
+        } else {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Snippet '{s}' not found. Use /snippet list to see available.", .{args}) catch "Snippet not found";
+            try self.pushSystem(msg);
+        }
+    }
+
+    /// /snippet list — show all saved snippets (Phase 68).
+    fn listSnippets(self: *App) !void {
+        self.ensureSnippetsInit();
+        if (self.snippets.count() == 0) {
+            try self.pushSystem("No snippets. Use /snippet <name>=<text> to create one.");
+            return;
+        }
+        try self.pushSystem("Saved snippets:");
+        var iter = self.snippets.iterator();
+        while (iter.next()) |entry| {
+            var buf: [256]u8 = undefined;
+            const preview_len = @min(entry.value_ptr.*.len, 50);
+            const line = std.fmt.bufPrint(&buf, "  {s} = {s}...", .{ entry.key_ptr.*, entry.value_ptr.*[0..preview_len] }) catch continue;
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
+        try self.pushSystem("Use /snippet <name> to insert into input");
+    }
+
+    /// /time — show elapsed time since session start (Phase 69).
+    fn showSessionTime(self: *App) !void {
+        const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        const elapsed_ms = now_ms - self.session_start_ms;
+        const elapsed_s = @divFloor(elapsed_ms, 1000);
+        const hours = @divFloor(elapsed_s, 3600);
+        const mins = @divFloor(@mod(elapsed_s, 3600), 60);
+        const secs = @mod(elapsed_s, 60);
+
+        var buf: [128]u8 = undefined;
+        if (hours > 0) {
+            const msg = std.fmt.bufPrint(&buf, "Session time: {d}h {d}m {d}s ({d} messages, {d} tokens)", .{
+                hours, mins, secs, self.lines.items.len, self.total_input_tokens + self.total_output_tokens,
+            }) catch "Session time unknown";
+            try self.pushSystem(msg);
+        } else {
+            const msg = std.fmt.bufPrint(&buf, "Session time: {d}m {d}s ({d} messages, {d} tokens)", .{
+                mins, secs, self.lines.items.len, self.total_input_tokens + self.total_output_tokens,
+            }) catch "Session time unknown";
+            try self.pushSystem(msg);
+        }
+    }
+
+    /// /resize — manually refresh terminal size detection (Phase 70).
+    fn refreshTerminalSize(self: *App) !void {
+        const old_size = self.terminal_size;
+        self.terminal_size = self.term.size();
+        if (self.terminal_size.rows != old_size.rows or self.terminal_size.cols != old_size.cols) {
+            var buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Terminal resized: {d}x{d} → {d}x{d}", .{
+                old_size.cols, old_size.rows, self.terminal_size.cols, self.terminal_size.rows,
+            }) catch "Terminal resized";
+            try self.pushSystem(msg);
+        } else {
+            var buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Terminal size: {d}x{d} (no change)", .{
+                self.terminal_size.cols, self.terminal_size.rows,
+            }) catch "Terminal size checked";
+            try self.pushSystem(msg);
+        }
         self.markDirty();
     }
 
