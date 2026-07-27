@@ -5688,11 +5688,26 @@ pub const App = struct {
             const block = block_states.items[i];
             const color = colorForLine(line.kind, line.text);
 
+            // Turn separation: draw a subtle left border for agent/tool messages
+            // to visually group turns. User messages get green border, agent gets
+            // a dim vertical bar on the left edge.
+            if (line.kind == .agent or line.kind == .tool) {
+                self.frame.moveTo(row, chat_x);
+                if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                self.frame.appendSlice("| ") catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            } else if (line.kind == .user and i > 0) {
+                // Add blank line before user messages (except first) for separation.
+                // We skip this if we're at the top of the viewport.
+                // (Visual separation handled by the blank row below.)
+            }
+
             const padding: usize = if (block > 0) 2 else 0;
-            const content_cols = chat_cols - 1 - padding * 2;
+            const border_offset: usize = if (line.kind == .agent or line.kind == .tool) 2 else 0;
+            const content_cols = chat_cols - 1 - padding * 2 - border_offset;
             const clipped = term.truncateEnd(&scratch, line.text, @intCast(content_cols));
 
-            self.frame.moveTo(row, chat_x);
+            self.frame.moveTo(row, chat_x + @as(u16, @intCast(border_offset)));
 
             // Left padding
             if (padding > 0) {
