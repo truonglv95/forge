@@ -2291,13 +2291,28 @@ pub const App = struct {
                     }
                     break :blk text.len;
                 };
-                // Render code block with dim background
+                // Extract language hint from opening fence
+                var lang: []const u8 = "";
+                const fence_end = std.mem.indexOfScalarPos(u8, text, i + 3, '\n') orelse close;
+                if (fence_end > i + 3) {
+                    lang = std.mem.trim(u8, text[i + 3 .. fence_end], &std.ascii.whitespace);
+                }
+                // Render code block with syntax highlighting (Phase 31)
+                try out.appendSlice(self.allocator, term.Style.bg_block);
+                try out.appendSlice(self.allocator, term.Style.cyan);
+                try out.appendSlice(self.allocator, "```");
+                try out.appendSlice(self.allocator, lang);
+                try out.appendSlice(self.allocator, term.Style.reset);
+                // Highlight code content
+                const code_start = fence_end;
+                const code_end = close;
+                if (code_start < code_end) {
+                    try self.highlightCode(&out, text[code_start..code_end], lang);
+                }
                 try out.appendSlice(self.allocator, term.Style.bg_block);
                 try out.appendSlice(self.allocator, term.Style.cyan);
                 if (close < text.len) {
-                    try out.appendSlice(self.allocator, text[i .. close + 3]);
-                } else {
-                    try out.appendSlice(self.allocator, text[i..]);
+                    try out.appendSlice(self.allocator, "```");
                 }
                 try out.appendSlice(self.allocator, term.Style.reset);
                 i = if (close < text.len) close + 3 else text.len;
@@ -2382,6 +2397,79 @@ pub const App = struct {
         }
 
         return out.toOwnedSlice(self.allocator);
+    }
+
+    /// Basic syntax highlighting for code blocks (Phase 31).
+    /// Highlights comments, strings, and language-specific keywords.
+    /// Supports: zig, python/py, javascript/js, typescript/ts, go, rust, c.
+    fn highlightCode(self: *const App, out: *std.ArrayList(u8), code: []const u8, lang: []const u8) !void {
+        const use_hash_comment = std.mem.eql(u8, lang, "python") or std.mem.eql(u8, lang, "py");
+
+        var i: usize = 0;
+        while (i < code.len) {
+            // Line comment: // or #
+            if (!use_hash_comment and i + 2 <= code.len and code[i] == '/' and code[i + 1] == '/') {
+                const eol = std.mem.indexOfScalarPos(u8, code, i, '\n') orelse code.len;
+                try out.appendSlice(self.allocator, term.Style.gray);
+                try out.appendSlice(self.allocator, code[i..eol]);
+                try out.appendSlice(self.allocator, term.Style.reset);
+                i = eol;
+                continue;
+            }
+            if (use_hash_comment and code[i] == '#') {
+                const eol = std.mem.indexOfScalarPos(u8, code, i, '\n') orelse code.len;
+                try out.appendSlice(self.allocator, term.Style.gray);
+                try out.appendSlice(self.allocator, code[i..eol]);
+                try out.appendSlice(self.allocator, term.Style.reset);
+                i = eol;
+                continue;
+            }
+            // String literal: "..." or '...'
+            if (code[i] == '"' or code[i] == '\'') {
+                const quote = code[i];
+                try out.appendSlice(self.allocator, term.Style.green);
+                try out.append(self.allocator, quote);
+                var j = i + 1;
+                while (j < code.len and code[j] != quote) : (j += 1) {
+                    if (code[j] == '\\' and j + 1 < code.len) j += 1; // skip escaped
+                }
+                if (j < code.len) {
+                    try out.appendSlice(self.allocator, code[i + 1 .. j]);
+                    try out.append(self.allocator, quote);
+                    try out.appendSlice(self.allocator, term.Style.reset);
+                    i = j + 1;
+                } else {
+                    try out.appendSlice(self.allocator, code[i + 1 ..]);
+                    try out.appendSlice(self.allocator, term.Style.reset);
+                    i = code.len;
+                }
+                continue;
+            }
+            // Keyword highlighting — check word boundaries
+            if (std.ascii.isAlphabetic(code[i])) {
+                const word_end = blk: {
+                    var j = i;
+                    while (j < code.len and (std.ascii.isAlphanumeric(code[j]) or code[j] == '_')) j += 1;
+                    break :blk j;
+                };
+                const word = code[i..word_end];
+                if (isKeyword(word, lang)) {
+                    try out.appendSlice(self.allocator, term.Style.yellow);
+                    try out.appendSlice(self.allocator, word);
+                    try out.appendSlice(self.allocator, term.Style.reset);
+                } else if (isType(word, lang)) {
+                    try out.appendSlice(self.allocator, term.Style.magenta);
+                    try out.appendSlice(self.allocator, word);
+                    try out.appendSlice(self.allocator, term.Style.reset);
+                } else {
+                    try out.appendSlice(self.allocator, word);
+                }
+                i = word_end;
+                continue;
+            }
+            try out.append(self.allocator, code[i]);
+            i += 1;
+        }
     }
 
     fn formatPromptLine(self: *const App, text: []const u8) ![]u8 {
@@ -2888,6 +2976,52 @@ pub const App = struct {
         return buf[0..@min(width, buf.len)];
     }
 };
+
+/// Check if a word is a keyword for the given language (Phase 31).
+fn isKeyword(word: []const u8, lang: []const u8) bool {
+    // Common keywords across languages
+    const common = [_][]const u8{ "if", "else", "for", "while", "return", "break", "continue", "switch", "case", "default", "true", "false", "null", "None", "nil", "and", "or", "not" };
+    for (common) |kw| if (std.mem.eql(u8, word, kw)) return true;
+
+    if (std.mem.eql(u8, lang, "zig")) {
+        const zig_kws = [_][]const u8{ "const", "var", "fn", "pub", "struct", "enum", "union", "error", "try", "catch", "async", "await", "comptime", "inline", "extern", "export", "packed", "align", "linksection", "orelse", "unreachable", "defer", "errdefer", "usingnamespace", "test", "and", "or", "not", "anytype", "anyerror", "anyframe", "allowzero", "volatile", "callconv", "noalias" };
+        for (zig_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "python") or std.mem.eql(u8, lang, "py")) {
+        const py_kws = [_][]const u8{ "def", "class", "import", "from", "as", "with", "lambda", "yield", "raise", "except", "finally", "global", "nonlocal", "assert", "del", "in", "is", "pass", "elif" };
+        for (py_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "javascript") or std.mem.eql(u8, lang, "js") or std.mem.eql(u8, lang, "typescript") or std.mem.eql(u8, lang, "ts")) {
+        const js_kws = [_][]const u8{ "function", "const", "let", "var", "class", "extends", "super", "new", "this", "typeof", "instanceof", "in", "of", "async", "await", "yield", "throw", "try", "catch", "finally", "import", "export", "from", "as", "void", "delete", "void", "get", "set" };
+        for (js_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "go")) {
+        const go_kws = [_][]const u8{ "func", "type", "struct", "interface", "map", "chan", "go", "defer", "select", "range", "package", "import", "fallthrough", "goto", "type", "make", "new", "len", "cap", "append", "copy", "delete", "panic", "recover" };
+        for (go_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "rust") or std.mem.eql(u8, lang, "rs")) {
+        const rust_kws = [_][]const u8{ "fn", "let", "mut", "struct", "enum", "trait", "impl", "use", "mod", "crate", "self", "Self", "where", "unsafe", "move", "ref", "static", "extern", "dyn", "as", "box", "macro_rules" };
+        for (rust_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    }
+    return false;
+}
+
+/// Check if a word is a type name for the given language (Phase 31).
+fn isType(word: []const u8, lang: []const u8) bool {
+    if (std.mem.eql(u8, lang, "zig")) {
+        const zig_types = [_][]const u8{ "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "bool", "void", "usize", "isize", "anyopaque", "c_int", "c_uint", "c_char", "c_long", "c_ulong", "c_float", "c_double", "c_void" };
+        for (zig_types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "python") or std.mem.eql(u8, lang, "py")) {
+        const py_types = [_][]const u8{ "int", "float", "str", "bool", "list", "dict", "tuple", "set", "bytes", "object", "type" };
+        for (py_types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "javascript") or std.mem.eql(u8, lang, "js") or std.mem.eql(u8, lang, "typescript") or std.mem.eql(u8, lang, "ts")) {
+        const js_types = [_][]const u8{ "string", "number", "boolean", "object", "Array", "Promise", "Map", "Set", "Date", "RegExp", "Error", "Symbol", "BigInt" };
+        for (js_types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "go")) {
+        const go_types = [_][]const u8{ "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float32", "float64", "string", "bool", "byte", "rune", "error", "any" };
+        for (go_types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "rust") or std.mem.eql(u8, lang, "rs")) {
+        const rust_types = [_][]const u8{ "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool", "char", "str", "String", "Vec", "Option", "Result", "Box" };
+        for (rust_types) |t| if (std.mem.eql(u8, word, t)) return true;
+    }
+    return false;
+}
 
 const WorkerResult = union(enum) {
     ok: OkPayload,
