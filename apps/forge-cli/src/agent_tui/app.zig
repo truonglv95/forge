@@ -4633,10 +4633,15 @@ pub const App = struct {
     }
 
     fn onStreamChunk(self: *App, chunk: []const u8) void {
-        // Agent worker delivers the final answer via workerDone; intermediate LLM
-        // token streams during tool turns would append to stale line indices and
-        // appear above already-printed tool steps.
-        if (self.agent_busy) return;
+        // Live token streaming: append chunks to the current streaming line.
+        // When agent_busy=true (multi-step agent turn), we still stream the
+        // LLM's narration text — it appears between tool steps as the model
+        // "thinks out loud". When agent_busy=false (single-shot ask), this is
+        // the primary output stream.
+        //
+        // The stream_line_index is reset on onStepBegin so each new LLM phase
+        // (initial prompt, between tool calls, final answer) starts a fresh
+        // line. This avoids stale line indices appearing above tool steps.
         if (chunk.len == 0) return;
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -4651,8 +4656,12 @@ pub const App = struct {
                 return;
             }
         }
+        // No active streaming line — create a new one. Use a dim "thinking"
+        // style (kind=.system) when agent_busy so it visually distinguishes
+        // from the final agent answer (kind=.agent set by finalizeStreamedResponse).
+        const kind: LineKind = if (self.agent_busy) .system else .agent;
         const owned = self.allocator.dupe(u8, chunk) catch return;
-        self.lines.append(self.allocator, .{ .kind = .agent, .text = owned }) catch {
+        self.lines.append(self.allocator, .{ .kind = kind, .text = owned }) catch {
             self.allocator.free(owned);
             return;
         };
