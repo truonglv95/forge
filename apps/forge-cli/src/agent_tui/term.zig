@@ -27,6 +27,7 @@ pub const Key = union(enum) {
     ctrl_u,
     ctrl_w,
     ctrl_y, // Ctrl+Y = copy code block to clipboard (Phase 38)
+    ctrl_tab, // Ctrl+Tab = cycle through tabs (Phase 82)
     none,
 };
 
@@ -137,6 +138,10 @@ pub const Terminal = struct {
                     else => .escape,
                 };
             }
+            // Ctrl+Tab = ESC [ 9 ; 6 ~ (some terminals) or ESC [ Z (Shift+Tab reverse)
+            // Most terminals send ESC [ Z for Shift+Tab, but Ctrl+Tab varies.
+            // We check for the common xterm sequence: ESC [ 9 ; 6 ~
+            if (n >= 5 and buf[1] == '[' and buf[2] == '9' and buf[3] == ';' and buf[4] == '6') return .ctrl_tab;
             return .escape;
         }
         if (buf[0] == '\t') return .tab;

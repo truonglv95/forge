@@ -612,6 +612,10 @@ pub const App = struct {
                 // Ctrl+Y = copy last code block to clipboard (Phase 38).
                 self.copyLastCodeBlock() catch {};
             },
+            .ctrl_tab => {
+                // Ctrl+Tab = cycle through tabs (Phase 82).
+                self.cycleTab() catch {};
+            },
             .up => {
                 if (self.focus_explorer) {
                     if (self.explorer_scroll_y > 0) self.explorer_scroll_y -= 1;
@@ -3367,6 +3371,35 @@ pub const App = struct {
         try self.pushSystem(msg);
     }
 
+    /// Ctrl+Tab — cycle through tabs (Phase 82).
+    /// If there are saved tabs, switches to the next one in sequence.
+    /// When reaching the end, wraps back to the current (unsaved) tab.
+    fn cycleTab(self: *App) !void {
+        self.mutex.lock();
+        const tab_count = self.tabs.items.len;
+        if (tab_count == 0) {
+            self.mutex.unlock();
+            try self.pushSystem("No saved tabs to cycle. Use /newtab to create one.");
+            return;
+        }
+        // Determine next tab number (1-based).
+        // active_tab tracks the currently displayed tab (0 = current unsaved, 1+ = saved tabs).
+        const next = if (self.active_tab >= tab_count) 1 else self.active_tab + 1;
+        self.mutex.unlock();
+
+        // If next is 0 (wrapping back to current), just notify.
+        if (next == 0 or next > tab_count) {
+            try self.pushSystem("Cycled back to current tab");
+            self.active_tab = 0;
+            return;
+        }
+
+        // Switch to the next tab.
+        var num_buf: [8]u8 = undefined;
+        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{next}) catch "1";
+        try self.switchToTab(num_str);
+    }
+
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {
         const session_id = blk: {
             if (session_id_opt) |id| break :blk try self.allocator.dupe(u8, id);
@@ -4577,12 +4610,14 @@ pub const App = struct {
         var buf: [256]u8 = undefined;
         const mode_label = commands.modeLabel(self.agent_mode);
         const spinner = if (self.agent_busy) self.spinnerChar() else "●";
-        const status_text = std.fmt.bufPrint(&buf, " {s} FORGE │ {s} │ mode:{s} │ {s} │ {s} │ {d} tok ", .{
+        // Phase 82: Show current tab name in status bar.
+        const tab_name = if (self.current_tab_name) |n| n else "main";
+        const status_text = std.fmt.bufPrint(&buf, " {s} FORGE │ [{s}] │ {s} │ mode:{s} │ {s} │ {d} tok ", .{
             spinner,
+            tab_name,
             self.model_label,
             mode_label,
             self.context_label,
-            self.edited_label,
             self.total_input_tokens + self.total_output_tokens,
         }) catch " FORGE ";
 
