@@ -69,6 +69,10 @@ pub const runs = @import("runs.zig");
 pub const sessions = @import("sessions.zig");
 pub const global_store = @import("global_store.zig");
 pub const agent_memory = @import("agent_memory.zig");
+pub const sandbox = @import("sandbox.zig");
+pub const Sandbox = sandbox.Backend;
+pub const SandboxMode = sandbox.Mode;
+pub const SandboxError = sandbox.SandboxError;
 
 pub const theme = @import("theme.zig");
 pub const Theme = theme.Theme;
