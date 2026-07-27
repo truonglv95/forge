@@ -299,6 +299,77 @@ pub const App = struct {
         }
     }
 
+    /// Tab-complete file paths for commands that take path arguments (Phase 43).
+    /// Returns true if a completion was attempted (input was modified or
+    /// the context was a path completion context, even if no match found).
+    /// Commands: /complete, /save, /spec show
+    fn completeFilePath(self: *App) bool {
+        const input = self.input.items;
+        // Check if input contains a space (command + argument).
+        const space_idx = std.mem.indexOfScalar(u8, input, ' ') orelse return false;
+        const cmd = input[0..space_idx];
+        const arg = std.mem.trim(u8, input[space_idx + 1 ..], &std.ascii.whitespace);
+
+        // Only complete for commands that take file paths.
+        const is_path_cmd = std.mem.eql(u8, cmd, "/complete") or
+            std.mem.eql(u8, cmd, "/save") or
+            std.mem.eql(u8, cmd, "/spec");
+        if (!is_path_cmd) return false;
+
+        // For /spec, only complete if it's "show" subcommand
+        if (std.mem.eql(u8, cmd, "/spec")) {
+            if (!std.mem.startsWith(u8, arg, "show ")) return false;
+        }
+
+        // If arg is empty, we can't complete — just return true to skip
+        // command suggestion.
+        if (arg.len == 0) return true;
+
+        // Extract the partial path (for /spec show, skip "show " prefix).
+        var partial: []const u8 = arg;
+        if (std.mem.eql(u8, cmd, "/spec") and std.mem.startsWith(u8, arg, "show ")) {
+            partial = std.mem.trim(u8, arg[5..], &std.ascii.whitespace);
+        }
+
+        // Try to list directory contents matching the partial path.
+        // Simple approach: if partial has no slash, list workspace root.
+        const last_slash = std.mem.lastIndexOfScalar(u8, partial, '/');
+        const dir_part = if (last_slash) |s| partial[0..s] else ".";
+        const file_part = if (last_slash) |s| partial[s + 1 ..] else partial;
+
+        // Open the directory.
+        var dir = std.Io.Dir.openDir(.cwd(), self.io, self.opened.path, .{}) catch return true;
+        defer dir.close(self.io);
+
+        var sub_dir = if (dir_part.len > 0 and !std.mem.eql(u8, dir_part, "."))
+            dir.openDir(self.io, dir_part, .{ .iterate = true }) catch return true
+        else
+            dir.openDir(self.io, ".", .{ .iterate = true }) catch return true;
+        defer sub_dir.close(self.io);
+
+        // Iterate and find first match starting with file_part.
+        var iter = sub_dir.iterate();
+        while (iter.next(self.io) catch null) |entry| {
+            if (std.mem.startsWith(u8, entry.name, file_part)) {
+                // Found a match — replace the file_part in the input.
+                const match_name = entry.name;
+                const prefix_len = input.len - file_part.len;
+                // Trim input to just before file_part.
+                self.input.shrinkRetainingCapacity(prefix_len);
+                self.input.appendSlice(self.allocator, match_name) catch return true;
+                // If it's a directory, add trailing slash.
+                if (entry.kind == .directory) {
+                    self.input.append(self.allocator, '/') catch return true;
+                }
+                self.cursor = self.input.items.len;
+                return true;
+            }
+        }
+
+        // No match found — still return true to skip command suggestion.
+        return true;
+    }
+
     fn handleKey(self: *App, key: term.Key) !void {
         switch (key) {
             .ctrl_c, .ctrl_d => {
@@ -331,8 +402,14 @@ pub const App = struct {
             .tab => {
                 self.mutex.lock();
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
-                    self.applyCommandSuggestion();
-                    self.markDirty();
+                    // Check if we're in a file-path completion context (Phase 43).
+                    // Commands that take file paths: /complete, /save, /spec show
+                    if (self.completeFilePath()) {
+                        self.markDirty();
+                    } else {
+                        self.applyCommandSuggestion();
+                        self.markDirty();
+                    }
                 } else if (self.input.items.len == 0) {
                     self.focus_explorer = !self.focus_explorer;
                     self.markDirty();
