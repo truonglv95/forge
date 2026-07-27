@@ -34,6 +34,10 @@ pub const Command = union(enum) {
     review,
     // Phase 27: Context inspector
     inspect,
+    // Phase 36: Search within conversation
+    search: ?[]const u8,
+    // Phase 37: Edit last user message
+    edit_last,
     not_command,
 };
 
@@ -82,6 +86,15 @@ pub fn parseSlashCommand(input: []const u8) Command {
     }
     if (matchesSlash(input, "review") or matchesSlash(input, "rev")) return .review;
     if (matchesSlash(input, "inspect") or matchesSlash(input, "insp")) return .inspect;
+    // Phase 36: Search within conversation
+    if (matchesSlash(input, "search") or matchesSlash(input, "find") or matchesSlash(input, "s")) {
+        if (std.mem.eql(u8, input, "/search") or std.mem.eql(u8, input, "/find") or std.mem.eql(u8, input, "/s")) return .{ .search = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .search = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .search = if (args.len > 0) args else null };
+    }
+    // Phase 37: Edit last user message
+    if (matchesSlash(input, "edit") or matchesSlash(input, "e")) return .edit_last;
 
     // TUI parity commands (Phase 13)
     // /spec [list|show <id>] — Kiro-style spec management
@@ -172,8 +185,8 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools [list|trust-all] /mode [ask|plan|agent] /context /diff /events /timeline /resume /sessions /spec /runs /complete /model [name] /cost /capability /provider /save [path] /review /help /quit
-    \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review tool | ?=help overlay | Esc=close panel | PgUp/PgDn=scroll | a/n=apply/dismiss | Ctrl+C=cancel/quit
+    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /help /quit
+    \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
 

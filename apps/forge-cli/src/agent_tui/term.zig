@@ -26,6 +26,7 @@ pub const Key = union(enum) {
     ctrl_r,
     ctrl_u,
     ctrl_w,
+    ctrl_y, // Ctrl+Y = copy code block to clipboard (Phase 38)
     none,
 };
 
@@ -116,6 +117,7 @@ pub const Terminal = struct {
         if (buf[0] == 18) return .ctrl_r;
         if (buf[0] == 21) return .ctrl_u;
         if (buf[0] == 23) return .ctrl_w;
+        if (buf[0] == 25) return .ctrl_y;
         if (buf[0] == '\r' or buf[0] == '\n') return .enter;
         if (buf[0] == 127 or buf[0] == 8) return .backspace;
         if (buf[0] == 27) {
@@ -196,7 +198,7 @@ pub fn sleepMs(ms: u32) void {
     _ = std.c.nanosleep(&req, null);
 }
 
-fn writeAll(bytes: []const u8) !void {
+pub fn writeAll(bytes: []const u8) !void {
     var index: usize = 0;
     while (index < bytes.len) {
         const wrote = std.c.write(std.posix.STDOUT_FILENO, bytes[index..].ptr, bytes.len - index);
