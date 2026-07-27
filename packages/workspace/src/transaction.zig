@@ -150,6 +150,33 @@ pub const TransactionService = struct {
         try recovery.writeRecord(self.allocator, self.io, self.root, record);
     }
 
+    /// Re-apply a previously undone transaction. The transaction must be
+    /// in .undone state. Re-applies all file edits from the workspace_edit
+    /// and sets state back to .applied.
+    pub fn redo(self: *TransactionService, record: *TransactionRecord) !void {
+        if (record.state != .undone) return error.InvalidState;
+
+        // Re-apply all file edits.
+        for (record.workspace_edit.files) |file_edit| {
+            const wp = try path_mod.WorkspacePath.parse(file_edit.path);
+            switch (file_edit.operation) {
+                .create, .modify => {
+                    const content = try record.workspace_edit.materializeContent(self.allocator, self.io, self.root, file_edit);
+                    defer self.allocator.free(content);
+                    if (file_edit.operation == .create) {
+                        try atomic.createFile(self.io, self.root, wp, content);
+                    } else {
+                        try atomic.replaceFile(self.io, self.root, wp, content);
+                    }
+                },
+                .delete => try atomic.deleteFile(self.io, self.root, wp),
+            }
+        }
+
+        record.state = .applied;
+        try recovery.writeRecord(self.allocator, self.io, self.root, record);
+    }
+
     fn validateUndoPreconditions(self: *TransactionService, record: *const TransactionRecord) !void {
         if (record.backups.len != record.workspace_edit.files.len) return error.UndoConflict;
 

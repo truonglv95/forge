@@ -142,7 +142,7 @@ pub const App = struct {
     total_output_tokens: u64 = 0,
     total_cost_usd: f64 = 0.0,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -777,6 +777,10 @@ pub const App = struct {
             .inspect => try self.inspectContext(),
             .search => |query| try self.searchConversation(query),
             .edit_last => try self.editLastUserMessage(),
+            .undo => try self.undoLastAction(),
+            .redo => try self.redoLastAction(),
+            .clear_history => try self.clearHistoryOnly(),
+            .clear_context => try self.clearContextOnly(),
         }
     }
 
@@ -1608,6 +1612,150 @@ pub const App = struct {
         var msg_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "Copied {d} bytes of code to clipboard", .{code_buf.items.len}) catch "Code copied to clipboard";
         try self.pushSystem(msg);
+    }
+
+    /// /undo — undo the last agent action (Phase 41).
+    /// Uses the workspace transaction history to find and undo the
+    /// most recent applied transaction.
+    fn undoLastAction(self: *App) !void {
+        try self.pushSystem("Undoing last agent action...");
+
+        // List transaction history to find the latest applied transaction.
+        var list = workspace.history.listEntries(self.allocator, self.io, self.opened.root) catch {
+            try self.pushSystem("Failed to load transaction history");
+            return;
+        };
+        defer list.deinit();
+
+        if (list.items.len == 0) {
+            try self.pushSystem("No transactions to undo");
+            return;
+        }
+
+        // Find the latest applied transaction (search backwards).
+        var latest_applied: ?workspace.history.Entry = null;
+        var i: usize = list.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (list.items[i].state == .applied) {
+                latest_applied = list.items[i];
+                break;
+            }
+        }
+
+        if (latest_applied == null) {
+            try self.pushSystem("No applied transactions to undo");
+            return;
+        }
+
+        const entry = latest_applied.?;
+        var tx_id_buf: [32]u8 = undefined;
+        const tx_id_str = std.fmt.bufPrint(&tx_id_buf, "{d}", .{entry.id}) catch "0";
+
+        // Load the transaction record and undo it.
+        var loaded = workspace.history.loadRecord(self.allocator, self.io, self.opened.root, entry.id) catch {
+            try self.pushSystem("Failed to load transaction record");
+            return;
+        };
+        var service = workspace.TransactionService.init(self.allocator, self.io, self.opened.root);
+        defer loaded.deinit(&service);
+
+        service.undo(&loaded.record) catch {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Undo failed (transaction {s} — files may have changed)", .{tx_id_str}) catch "Undo failed";
+            try self.pushSystem(err_msg);
+            return;
+        };
+
+        workspace.history.updateEntryState(self.io, self.opened.root, entry.id, .undone) catch {};
+
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Undid transaction {s} ({s})", .{ tx_id_str, entry.proposal_path }) catch "Undo successful";
+        try self.pushSystem(msg);
+        try self.pushSystem("Use /redo to re-apply the undone transaction");
+    }
+
+    /// /redo — redo the last undone transaction (Phase 41).
+    fn redoLastAction(self: *App) !void {
+        try self.pushSystem("Redoing last undone action...");
+
+        var list = workspace.history.listEntries(self.allocator, self.io, self.opened.root) catch {
+            try self.pushSystem("Failed to load transaction history");
+            return;
+        };
+        defer list.deinit();
+
+        if (list.items.len == 0) {
+            try self.pushSystem("No transactions to redo");
+            return;
+        }
+
+        // Find the latest undone transaction.
+        var latest_undone: ?workspace.history.Entry = null;
+        var i: usize = list.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (list.items[i].state == .undone) {
+                latest_undone = list.items[i];
+                break;
+            }
+        }
+
+        if (latest_undone == null) {
+            try self.pushSystem("No undone transactions to redo");
+            return;
+        }
+
+        const entry = latest_undone.?;
+        var tx_id_buf: [32]u8 = undefined;
+        const tx_id_str = std.fmt.bufPrint(&tx_id_buf, "{d}", .{entry.id}) catch "0";
+
+        // Load and re-apply.
+        var loaded = workspace.history.loadRecord(self.allocator, self.io, self.opened.root, entry.id) catch {
+            try self.pushSystem("Failed to load transaction record");
+            return;
+        };
+        var service = workspace.TransactionService.init(self.allocator, self.io, self.opened.root);
+        defer loaded.deinit(&service);
+
+        service.redo(&loaded.record) catch {
+            var err_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Redo failed (transaction {s})", .{tx_id_str}) catch "Redo failed";
+            try self.pushSystem(err_msg);
+            return;
+        };
+
+        workspace.history.updateEntryState(self.io, self.opened.root, entry.id, .applied) catch {};
+
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Redid transaction {s} ({s})", .{ tx_id_str, entry.proposal_path }) catch "Redo successful";
+        try self.pushSystem(msg);
+    }
+
+    /// /clear history — clear only conversation history, keep context (Phase 42).
+    fn clearHistoryOnly(self: *App) !void {
+        self.mutex.lock();
+        self.freeLines();
+        self.scroll = 0;
+        for (self.conversation.items) |turn| self.allocator.free(turn.content);
+        self.conversation.clearRetainingCapacity();
+        self.markDirty();
+        self.mutex.unlock();
+        try self.pushSystem("Conversation history cleared (context preserved)");
+        try self.pushStartupIntro();
+    }
+
+    /// /clear context — reset context label, keep history (Phase 42).
+    fn clearContextOnly(self: *App) !void {
+        self.mutex.lock();
+        self.allocator.free(self.context_label);
+        self.context_label = self.allocator.dupe(u8, "0 files") catch "0 files";
+        self.total_input_tokens = 0;
+        self.total_output_tokens = 0;
+        self.total_cost_usd = 0.0;
+        self.markDirty();
+        self.mutex.unlock();
+        try self.pushSystem("Context reset (token counters cleared, history preserved)");
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {

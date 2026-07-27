@@ -38,6 +38,12 @@ pub const Command = union(enum) {
     search: ?[]const u8,
     // Phase 37: Edit last user message
     edit_last,
+    // Phase 41: Undo/redo agent actions
+    undo,
+    redo,
+    // Phase 42: Selective clear
+    clear_history,
+    clear_context,
     not_command,
 };
 
@@ -50,7 +56,8 @@ fn matchesSlash(input: []const u8, name: []const u8) bool {
 pub fn parseSlashCommand(input: []const u8) Command {
     if (input.len == 0 or input[0] != '/') return .not_command;
 
-    if (matchesSlash(input, "cls") or matchesSlash(input, "clear")) return .wipe_history;
+    if (matchesSlash(input, "cls")) return .wipe_history;
+    // /clear is handled below with selective options (Phase 42)
     if (matchesSlash(input, "policy")) return .policy;
     if (matchesSlash(input, "tools")) {
         if (std.mem.eql(u8, input, "/tools")) return .tools_list;
@@ -95,6 +102,18 @@ pub fn parseSlashCommand(input: []const u8) Command {
     }
     // Phase 37: Edit last user message
     if (matchesSlash(input, "edit") or matchesSlash(input, "e")) return .edit_last;
+    // Phase 41: Undo/redo
+    if (matchesSlash(input, "undo") or matchesSlash(input, "u")) return .undo;
+    if (matchesSlash(input, "redo")) return .redo;
+    // Phase 42: Selective clear
+    if (matchesSlash(input, "clear")) {
+        if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .wipe_history;
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        if (std.mem.eql(u8, args, "history")) return .clear_history;
+        if (std.mem.eql(u8, args, "context")) return .clear_context;
+        return .wipe_history;
+    }
 
     // TUI parity commands (Phase 13)
     // /spec [list|show <id>] — Kiro-style spec management
@@ -185,7 +204,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /help /quit
+    \\Commands: /clear [history|context] /policy /tools /mode /context /diff /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /help /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
