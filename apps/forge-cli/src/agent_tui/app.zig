@@ -2138,14 +2138,22 @@ pub const App = struct {
         const edit = proposal.workspaceEdit();
         try edit.validate();
 
+        // Phase 44: Colored diff header
+        try self.pushSystem("═══════════════════ PROPOSAL DIFF ═══════════════════");
+
         var out = std.Io.Writer.Allocating.init(self.allocator);
         defer out.deinit();
         try workspace.preview.renderDiff(self.allocator, self.io, self.opened.root, edit, &out.writer);
 
         var lines = std.mem.splitScalar(u8, out.writer.buffered(), '\n');
         var shown: usize = 0;
+        var added: usize = 0;
+        var removed: usize = 0;
         while (lines.next()) |line| {
             if (line.len == 0) continue;
+            // Count additions/removals for summary.
+            if (line.len > 0 and line[0] == '+') added += 1;
+            if (line.len > 0 and line[0] == '-') removed += 1;
             try self.pushLine(.system, try self.allocator.dupe(u8, line));
             shown += 1;
             if (shown >= 160) {
@@ -2153,6 +2161,12 @@ pub const App = struct {
                 break;
             }
         }
+
+        // Phase 44: Diff summary with colored counts
+        var summary_buf: [128]u8 = undefined;
+        const summary = std.fmt.bufPrint(&summary_buf, "═══ {d} additions · {d} deletions ═══", .{ added, removed }) catch "═══ diff complete ═══";
+        try self.pushSystem(summary);
+        try self.pushSystem("Press 'a' to apply · 'n' to dismiss · /diff to view again");
     }
 
     const EventsQuery = struct {
@@ -2745,9 +2759,22 @@ pub const App = struct {
             .tool => std.fmt.allocPrint(self.allocator, "{s}› tool{s}  {s}", .{
                 term.Style.dim, term.Style.reset, text,
             }),
-            .system => std.fmt.allocPrint(self.allocator, "{s}· system{s}  {s}", .{
-                term.Style.gray, term.Style.reset, text,
-            }),
+            .system => blk: {
+                // Phase 44: Don't add system prefix to diff lines — they
+                // need clean +/- prefixes for proper coloring.
+                if (text.len > 0 and (text[0] == '+' or text[0] == '-' or
+                    std.mem.startsWith(u8, text, "diff --git") or
+                    std.mem.startsWith(u8, text, "index ") or
+                    std.mem.startsWith(u8, text, "---") or
+                    std.mem.startsWith(u8, text, "+++") or
+                    std.mem.startsWith(u8, text, "@@")))
+                {
+                    break :blk self.allocator.dupe(u8, text);
+                }
+                break :blk std.fmt.allocPrint(self.allocator, "{s}· system{s}  {s}", .{
+                    term.Style.gray, term.Style.reset, text,
+                });
+            },
         };
     }
 
