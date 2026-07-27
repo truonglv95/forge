@@ -1104,59 +1104,218 @@ fn runCoordinated(
     return 0;
 }
 
-/// `forge agent wait <run_id> [--timeout N]` — wait for a background run to complete.
+/// `forge agent wait <run_id> [--timeout-seconds N]` — wait for a background run to complete.
+///
+/// Polls the run record file every 1 second for state change. Returns when the
+/// run reaches a terminal state (done, cancelled, failed) or when
+/// --timeout-seconds has elapsed (default 300s = 5 min). Detects zombies:
+/// if the run's heartbeat is stale > 30s, marks it as failed and returns.
 fn runWait(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
-    _ = allocator;
-    _ = io;
     if (parsed.positional.len < 2) {
         try writer.writeAll("error: agent wait requires a run_id\n");
         return 2;
     }
     const run_id = parsed.positional[1];
-    // Stub: real implementation would poll the run record file for status change.
-    try writer.print("(stub) Waiting for {s}... (polling not yet implemented)\n", .{run_id});
-    try writer.writeAll("Use `forge agent events <session_id> --follow` to stream events instead.\n");
-    return 0;
+
+    var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
+    defer opened.close(io);
+
+    const timeout_secs: u32 = if (parsed.flags.timeout_seconds > 0) @intCast(parsed.flags.timeout_seconds) else 300;
+    const poll_interval_ms: u32 = 1000;
+    const zombie_threshold_ms: i64 = 30_000;
+    var elapsed_secs: u32 = 0;
+
+    while (elapsed_secs <= timeout_secs) {
+        const json_bytes = workspace.runs.loadRunJson(allocator, io, opened.root, run_id) catch {
+            try writer.print("error: no run record for '{s}'\n", .{run_id});
+            return 2;
+        };
+        defer allocator.free(json_bytes);
+
+        var record = ai.run_record.parseJson(allocator, json_bytes) catch {
+            try writer.print("error: cannot parse run record for '{s}'\n", .{run_id});
+            return 2;
+        };
+        defer record.deinit();
+
+        switch (record.state) {
+            .done => {
+                try writer.print("Run {s}: done\n", .{run_id});
+                return 0;
+            },
+            .cancelled => {
+                try writer.print("Run {s}: cancelled\n", .{run_id});
+                return 130;
+            },
+            .failed => {
+                try writer.print("Run {s}: failed\n", .{run_id});
+                return 1;
+            },
+            else => {},
+        }
+
+        if (record.heartbeat_ms) |hb| {
+            const now_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
+            if (now_ms - hb > zombie_threshold_ms) {
+                try writer.print("Run {s}: failed (zombie detected, heartbeat stale {d}ms)\n", .{ run_id, now_ms - hb });
+                workspace.runs.updateRunState(allocator, io, opened.root, run_id, "failed", null) catch {};
+                return 1;
+            }
+        }
+
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(poll_interval_ms), .real) catch {};
+        elapsed_secs += 1;
+    }
+
+    var current_state: []const u8 = "unknown";
+    if (workspace.runs.loadRunJson(allocator, io, opened.root, run_id)) |bytes| {
+        defer allocator.free(bytes);
+        if (ai.run_record.parseJson(allocator, bytes)) |rec| {
+            var rec_mut = rec;
+            defer rec_mut.deinit();
+            current_state = @tagName(rec_mut.state);
+        } else |_| {}
+    } else |_| {}
+
+    try writer.print("Run {s}: timeout after {d}s (still in state: {s})\n", .{ run_id, timeout_secs, current_state });
+    return 124;
 }
 
 /// `forge agent cancel <run_id>` — cancel a background run.
+///
+/// Sends SIGTERM to the background process (pid stored in run record). If the
+/// process doesn't exit within 5s, sends SIGKILL. Updates the run record state
+/// to "cancelled" and writes a run_cancelled event to the session log.
 fn runCancel(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
-    _ = allocator;
-    _ = io;
     if (parsed.positional.len < 2) {
         try writer.writeAll("error: agent cancel requires a run_id\n");
         return 2;
     }
     const run_id = parsed.positional[1];
-    // Stub: real implementation would send SIGTERM to the background process.
-    try writer.print("(stub) Cancel signal sent to {s} (process kill not yet implemented)\n", .{run_id});
+
+    var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
+    defer opened.close(io);
+
+    const json_bytes = workspace.runs.loadRunJson(allocator, io, opened.root, run_id) catch {
+        try writer.print("error: no run record for '{s}'\n", .{run_id});
+        return 2;
+    };
+    defer allocator.free(json_bytes);
+
+    var record = ai.run_record.parseJson(allocator, json_bytes) catch {
+        try writer.print("error: cannot parse run record for '{s}'\n", .{run_id});
+        return 2;
+    };
+    defer record.deinit();
+
+    if (record.state == .done or record.state == .cancelled or record.state == .failed) {
+        try writer.print("Run {s}: already {s} (no action)\n", .{ run_id, @tagName(record.state) });
+        return 0;
+    }
+
+    if (record.pid) |pid| {
+        if (pid > 0) {
+            const kill_result = std.c.kill(pid, std.c.SIG.TERM);
+            if (kill_result != 0) {
+                const errno = std.posix.errno(kill_result);
+                if (errno != .SRCH) {
+                    try writer.print("warning: kill({d}, SIGTERM) returned errno={s}\n", .{ pid, @tagName(errno) });
+                }
+            } else {
+                var waited_ms: u32 = 0;
+                while (waited_ms < 5000) : (waited_ms += 100) {
+                    const still_alive = std.c.kill(pid, std.c.SIG.HUP) == 0 or std.posix.errno(std.c.kill(pid, std.c.SIG.HUP)) != .SRCH;
+                    if (!still_alive) break;
+                    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), .real) catch {};
+                }
+                if (std.c.kill(pid, std.c.SIG.HUP) == 0 or std.posix.errno(std.c.kill(pid, std.c.SIG.HUP)) != .SRCH) {
+                    _ = std.c.kill(pid, std.c.SIG.KILL);
+                    try writer.print("Sent SIGKILL to pid {d} (did not exit on SIGTERM)\n", .{pid});
+                } else {
+                    try writer.print("Sent SIGTERM to pid {d} (process exited)\n", .{pid});
+                }
+            }
+        }
+    } else {
+        try writer.print("warning: no pid in run record for '{s}' (cannot signal process)\n", .{run_id});
+    }
+
+    workspace.runs.updateRunState(allocator, io, opened.root, run_id, "cancelled", null) catch {
+        try writer.print("warning: could not update run record state for '{s}'\n", .{run_id});
+    };
+
+    if (record.session_id) |session_id| {
+        const event = std.fmt.allocPrint(allocator, "{{\"schema_version\":1,\"type\":\"run_cancelled\",\"run_id\":\"{s}\",\"timestamp_ms\":{d}}}", .{ run_id, std.Io.Timestamp.now(io, .real).toMilliseconds() }) catch null;
+        if (event) |ev| {
+            defer allocator.free(ev);
+            workspace.sessions.appendEvent(allocator, io, session_id, ev) catch {};
+        }
+    }
+
+    try writer.print("Run {s}: cancelled\n", .{run_id});
     return 0;
 }
 
-/// `forge agent approve <run_id> --yes` — approve a pending tool call.
+/// `forge agent approve <run_id> [tool_name]` — approve a pending tool call.
+///
+/// Writes an `approval_granted` event to the session's events.jsonl. The agent
+/// loop polls for this event when its approval_callback is pending.
 fn runApprove(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
-    _ = allocator;
-    _ = io;
-    if (parsed.positional.len < 2) {
-        try writer.writeAll("error: agent approve requires a run_id\n");
-        return 2;
-    }
-    const run_id = parsed.positional[1];
-    // Stub: real implementation would write an approval event to the session log.
-    try writer.print("(stub) Approval granted for {s} (event-based approval not yet implemented)\n", .{run_id});
-    return 0;
+    return try runApproval(allocator, io, parsed, writer, true);
 }
 
-/// `forge agent reject <run_id>` — reject a pending tool call.
+/// `forge agent reject <run_id> [tool_name]` — reject a pending tool call.
 fn runReject(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer) !u8 {
-    _ = allocator;
-    _ = io;
+    return try runApproval(allocator, io, parsed, writer, false);
+}
+
+fn runApproval(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs, writer: *std.Io.Writer, approved: bool) !u8 {
     if (parsed.positional.len < 2) {
-        try writer.writeAll("error: agent reject requires a run_id\n");
+        try writer.writeAll("error: agent approve/reject requires a run_id\n");
         return 2;
     }
     const run_id = parsed.positional[1];
-    try writer.print("(stub) Rejection sent for {s} (event-based approval not yet implemented)\n", .{run_id});
+    const action = if (approved) "approve" else "reject";
+
+    var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
+    defer opened.close(io);
+
+    const json_bytes = workspace.runs.loadRunJson(allocator, io, opened.root, run_id) catch {
+        try writer.print("error: no run record for '{s}'\n", .{run_id});
+        return 2;
+    };
+    defer allocator.free(json_bytes);
+
+    var record = ai.run_record.parseJson(allocator, json_bytes) catch {
+        try writer.print("error: cannot parse run record for '{s}'\n", .{run_id});
+        return 2;
+    };
+    defer record.deinit();
+
+    if (record.session_id == null) {
+        try writer.print("error: run '{s}' has no associated session_id (cannot deliver approval)\n", .{run_id});
+        return 2;
+    }
+
+    var tool_name: ?[]const u8 = null;
+    if (parsed.positional.len >= 3) {
+        tool_name = parsed.positional[2];
+    }
+
+    const tool_field = if (tool_name) |name| name else "";
+    const event = std.fmt.allocPrint(
+        allocator,
+        "{{\"schema_version\":1,\"type\":\"approval_granted\",\"run_id\":\"{s}\",\"session_id\":\"{s}\",\"tool\":\"{s}\",\"approved\":{s},\"timestamp_ms\":{d}}}",
+        .{ run_id, record.session_id.?, tool_field, if (approved) "true" else "false", std.Io.Timestamp.now(io, .real).toMilliseconds() },
+    ) catch return 2;
+    defer allocator.free(event);
+
+    workspace.sessions.appendEvent(allocator, io, record.session_id.?, event) catch {
+        try writer.print("error: could not write approval event to session log\n", .{});
+        return 2;
+    };
+
+    try writer.print("Run {s}: {s} {s}\n", .{ run_id, action, if (tool_name) |n| n else "(all pending tools)" });
     return 0;
 }
 
