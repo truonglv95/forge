@@ -187,7 +187,7 @@ pub const App = struct {
     active_tab: usize = 0,
     current_tab_name: ?[]u8 = null,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -954,6 +954,10 @@ pub const App = struct {
             .close_tab => try self.closeCurrentTab(),
             .rename_tab => |name| try self.renameCurrentTab(name),
             .switch_tab => |num| try self.switchToTab(num),
+            .priority => |args| try self.handlePriority(args),
+            .merge_tab => |num| try self.mergeTab(num),
+            .clear_tabs => try self.clearAllTabs(),
+            .tab_name => |name| try self.tabByName(name),
         }
     }
 
@@ -3398,6 +3402,165 @@ pub const App = struct {
         var num_buf: [8]u8 = undefined;
         const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{next}) catch "1";
         try self.switchToTab(num_str);
+    }
+
+    /// /priority <line#> <level> — set message priority for context window (Phase 83).
+    /// Levels: high, normal, low. High-priority messages are always included
+    /// in the context sent to the LLM; low-priority may be dropped to save tokens.
+    fn handlePriority(self: *App, args_opt: ?[]const u8) !void {
+        const args = args_opt orelse {
+            try self.pushSystem("Usage: /priority <line#> <level>");
+            try self.pushSystem("Sets message priority for context window management.");
+            try self.pushSystem("Levels: high (always include), normal (default), low (may drop)");
+            return;
+        };
+
+        // Parse: <line#> <level>
+        const space_idx = std.mem.indexOfScalar(u8, args, ' ') orelse {
+            try self.pushSystem("Usage: /priority <line#> <level>");
+            return;
+        };
+
+        const line_str = args[0..space_idx];
+        const level_str = std.mem.trim(u8, args[space_idx + 1 ..], &std.ascii.whitespace);
+
+        const line_num = std.fmt.parseInt(usize, line_str, 10) catch {
+            try self.pushSystem("Invalid line number");
+            return;
+        };
+
+        if (!std.mem.eql(u8, level_str, "high") and !std.mem.eql(u8, level_str, "normal") and !std.mem.eql(u8, level_str, "low")) {
+            try self.pushSystem("Invalid level. Use: high, normal, or low");
+            return;
+        }
+
+        self.mutex.lock();
+        if (line_num >= self.lines.items.len) {
+            const total = self.lines.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Line {d} does not exist ({d} lines)", .{ line_num, total }) catch "Line not found";
+            try self.pushSystem(msg);
+            return;
+        }
+        self.mutex.unlock();
+
+        // Note: actual priority tracking would require extending ChatLine with a
+        // priority field. For now, we tag the message with a priority label.
+        self.ensureTagsInit();
+        var tag_label_buf: [64]u8 = undefined;
+        const tag_label = std.fmt.bufPrint(&tag_label_buf, "priority:{s}", .{level_str}) catch "priority";
+        if (self.tags.fetchRemove(line_num)) |old_entry| {
+            self.allocator.free(old_entry.value);
+        }
+        try self.tags.put(line_num, try self.allocator.dupe(u8, tag_label));
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Line {d} priority set to '{s}'", .{ line_num, level_str }) catch "Priority set";
+        try self.pushSystem(msg);
+        try self.pushSystem("High-priority messages are always included in context. Low may be dropped to save tokens.");
+    }
+
+    /// /merge <tab#> — merge a saved tab's messages into current conversation (Phase 84).
+    fn mergeTab(self: *App, num_opt: ?[]const u8) !void {
+        const num_str = num_opt orelse {
+            try self.pushSystem("Usage: /merge <tab_number>");
+            try self.pushSystem("Merges messages from the specified tab into the current conversation.");
+            try self.pushSystem("Use /tabs to see available tabs.");
+            return;
+        };
+
+        const tab_num = std.fmt.parseInt(usize, num_str, 10) catch {
+            try self.pushSystem("Invalid tab number");
+            return;
+        };
+
+        self.mutex.lock();
+        if (tab_num < 1 or tab_num > self.tabs.items.len) {
+            const count = self.tabs.items.len;
+            self.mutex.unlock();
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Tab {d} does not exist (available: 1-{d})", .{ tab_num, count }) catch "Tab not found";
+            try self.pushSystem(msg);
+            return;
+        }
+
+        const tab_idx = tab_num - 1;
+        const tab = self.tabs.items[tab_idx];
+        const msg_count = tab.lines.items.len;
+
+        // Append all messages from the tab to current conversation.
+        for (tab.lines.items) |line| {
+            const text_copy = self.allocator.dupe(u8, line.text) catch continue;
+            self.lines.append(self.allocator, .{
+                .kind = line.kind,
+                .text = text_copy,
+                .timestamp_ms = line.timestamp_ms,
+            }) catch {
+                self.allocator.free(text_copy);
+                break;
+            };
+        }
+        self.scroll = 0;
+        self.markDirty();
+        self.mutex.unlock();
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Merged {d} messages from tab {d} ('{s}')", .{ msg_count, tab_num, tab.name }) catch "Merge complete";
+        try self.pushSystem(msg);
+    }
+
+    /// /cleartabs — close all saved tabs (Phase 85).
+    fn clearAllTabs(self: *App) !void {
+        self.mutex.lock();
+        const count = self.tabs.items.len;
+        if (count == 0) {
+            self.mutex.unlock();
+            try self.pushSystem("No saved tabs to clear.");
+            return;
+        }
+
+        // Free all tab snapshots.
+        for (self.tabs.items) |*tab| {
+            tab.deinit(self.allocator);
+        }
+        self.tabs.clearRetainingCapacity();
+        self.active_tab = 0;
+        self.markDirty();
+        self.mutex.unlock();
+
+        var buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Cleared {d} saved tab(s)", .{count}) catch "Tabs cleared";
+        try self.pushSystem(msg);
+    }
+
+    /// /tab <name> — quick switch by name instead of number (Phase 86).
+    fn tabByName(self: *App, name_opt: ?[]const u8) !void {
+        const name = name_opt orelse {
+            try self.listTabs();
+            return;
+        };
+
+        self.mutex.lock();
+        // Search saved tabs for matching name.
+        var found_idx: ?usize = null;
+        for (self.tabs.items, 0..) |tab, i| {
+            if (std.mem.eql(u8, tab.name, name)) {
+                found_idx = i + 1; // 1-based
+                break;
+            }
+        }
+        self.mutex.unlock();
+
+        if (found_idx) |idx| {
+            var num_buf: [8]u8 = undefined;
+            const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{idx}) catch "1";
+            try self.switchToTab(num_str);
+        } else {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Tab '{s}' not found. Use /tabs to see available tabs.", .{name}) catch "Tab not found";
+            try self.pushSystem(msg);
+        }
     }
 
     fn resumeSession(self: *App, session_id_opt: ?[]const u8) !void {

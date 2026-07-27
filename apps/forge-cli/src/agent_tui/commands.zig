@@ -86,6 +86,11 @@ pub const Command = union(enum) {
     close_tab,
     rename_tab: ?[]const u8,
     switch_tab: ?[]const u8,
+    // Phase 83-86: Priority, merge, clear tabs, quick switch
+    priority: ?[]const u8,
+    merge_tab: ?[]const u8,
+    clear_tabs,
+    tab_name: ?[]const u8,
     not_command,
 };
 
@@ -293,6 +298,29 @@ pub fn parseSlashCommand(input: []const u8) Command {
         const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
         return .{ .switch_tab = if (args.len > 0) args else null };
     }
+    // Phase 83: Priority — set message priority for context window
+    if (matchesSlash(input, "priority") or matchesSlash(input, "pri")) {
+        if (std.mem.eql(u8, input, "/priority") or std.mem.eql(u8, input, "/pri")) return .{ .priority = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .priority = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .priority = if (args.len > 0) args else null };
+    }
+    // Phase 84: Merge a saved tab into current conversation
+    if (matchesSlash(input, "merge")) {
+        if (std.mem.eql(u8, input, "/merge")) return .{ .merge_tab = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .merge_tab = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .merge_tab = if (args.len > 0) args else null };
+    }
+    // Phase 85: Clear all saved tabs
+    if (matchesSlash(input, "cleartabs")) return .clear_tabs;
+    // Phase 86: Quick switch by name
+    if (matchesSlash(input, "tab")) {
+        if (std.mem.eql(u8, input, "/tab")) return .{ .tab_name = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .tab_name = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .tab_name = if (args.len > 0) args else null };
+    }
     // Phase 42: Selective clear
     if (matchesSlash(input, "clear")) {
         if (std.mem.eql(u8, input, "/clear") or std.mem.eql(u8, input, "/cls")) return .wipe_history;
@@ -392,7 +420,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | Ctrl+Tab=cycle tabs | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
