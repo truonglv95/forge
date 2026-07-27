@@ -4859,10 +4859,16 @@ pub const App = struct {
 
     fn promptPrefix(self: *const App, buf: []u8) ![]const u8 {
         const folder = self.folder_label;
+        // Show mode badge in prompt for clear UX feedback.
+        const mode_icon: []const u8 = switch (self.agent_mode) {
+            .ask => "?",
+            .plan => "+",
+            .agent => "*",
+        };
         if (std.mem.eql(u8, self.branch_label, "no branch")) {
-            return std.fmt.bufPrint(buf, "➜ {s} ", .{folder});
+            return std.fmt.bufPrint(buf, "[{s}] {s} ", .{ mode_icon, folder });
         }
-        return std.fmt.bufPrint(buf, "➜ {s} git:({s}) ", .{ folder, self.branch_label });
+        return std.fmt.bufPrint(buf, "[{s}] {s} ({s}) ", .{ mode_icon, folder, self.branch_label });
     }
 
     fn shouldAutoApprove(self: *App, policy: ai.tool_registry.Policy) bool {
@@ -5456,12 +5462,36 @@ pub const App = struct {
         col += @intCast(term.displayWidth(seg4));
         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
 
-        // Segment 5: Context (gray)
+        // Segment 5: Context with usage bar (gray + colored indicator)
+        // Parse context_label to extract kB value for usage bar.
         if (self.term.use_color) self.frame.appendSlice(term.Style.gray) catch {};
-        const seg5 = std.fmt.bufPrint(&buf, "| {s} ", .{self.context_label}) catch "";
+        const seg5 = std.fmt.bufPrint(&buf, "| ctx:{s} ", .{self.context_label}) catch "";
         self.frame.appendSlice(seg5) catch {};
         col += @intCast(term.displayWidth(seg5));
         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+
+        // Context usage mini-bar: show a 5-char bar based on token count.
+        // Rough estimate: context_max is ~8MB, show bar fill based on total_tokens.
+        const ctx_usage_pct = @min(100, (total_tokens * 100) / 100000); // 100k tokens = full
+        const bar_fill: usize = ctx_usage_pct / 20; // 0-5
+        if (self.term.use_color) {
+            if (ctx_usage_pct > 80) {
+                self.frame.appendSlice(term.Style.bright_red) catch {};
+            } else if (ctx_usage_pct > 50) {
+                self.frame.appendSlice(term.Style.bright_yellow) catch {};
+            } else {
+                self.frame.appendSlice(term.Style.bright_green) catch {};
+            }
+        }
+        var ctx_bar_buf: [8]u8 = undefined;
+        var bi: usize = 0;
+        while (bi < 5) : (bi += 1) {
+            ctx_bar_buf[bi] = if (bi < bar_fill) '#' else '.';
+        }
+        self.frame.appendSlice(ctx_bar_buf[0..5]) catch {};
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        self.frame.appendSlice(" ") catch {};
+        col += 6;
 
         // Segment 6: Branch (magenta) — if not "no branch"
         if (!std.mem.eql(u8, self.branch_label, "no branch")) {
@@ -5971,22 +6001,30 @@ pub const App = struct {
 
     fn liveThinkingLabel(self: *const App, buf: []u8) []const u8 {
         const progress = self.active_progress[0..self.active_progress_len];
+        const spinner = self.spinnerChar();
+
         if (progress.len > 0 and !std.mem.startsWith(u8, progress, "Thinking")) {
-            // Prepend spinner to progress messages for animated feedback.
-            const spinner = self.spinnerChar();
-            // If a tool is running, show a progress bar based on spinner frame.
+            // Tool running — show spinner + progress bar + action + elapsed time.
             if (self.active_tool_running and self.active_tool_len > 0) {
                 const tool_name = self.active_tool[0..self.active_tool_len];
                 const action = getToolAction(tool_name);
-                const bar = self.progressBar(20);
+                const bar = self.progressBar(15);
+
+                // Show elapsed time since tool started.
+                const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+                const elapsed_s = if (self.spinner_last_ms > 0) @divFloor(now_ms - self.spinner_last_ms, 1000) else 0;
+
+                if (elapsed_s > 0) {
+                    return std.fmt.bufPrint(buf, "{s} {s} [{s}] {d}s", .{ spinner, bar, action, elapsed_s }) catch progress;
+                }
                 return std.fmt.bufPrint(buf, "{s} {s} [{s}]", .{ spinner, bar, action }) catch progress;
             }
             return std.fmt.bufPrint(buf, "{s} {s}", .{ spinner, progress }) catch progress;
         }
 
+        // Default thinking indicator with spinner + animated dots.
         const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
         const dots: usize = @intCast(@mod(@divTrunc(now_ms, 320), 3) + 1);
-        const spinner = self.spinnerChar();
         return std.fmt.bufPrint(buf, "{s} Thinking{s}", .{ spinner, "..."[0..dots] }) catch "Thinking...";
     }
 
