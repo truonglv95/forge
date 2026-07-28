@@ -32,6 +32,7 @@ const EventLogger = @import("agent/event_logger.zig").EventLogger;
 const session_docs = @import("agent/session_docs.zig");
 const adaptive_budget = @import("adaptive_budget.zig");
 const agent_hooks = @import("agent_hooks.zig");
+const chat_memory = @import("chat_memory.zig");
 
 pub const Config = struct {
     max_steps: u32 = 128,
@@ -100,6 +101,10 @@ pub const Config = struct {
     /// the agent loop calls runHooks() before/after each tool execution.
     /// Caller is responsible for loading the hooks file and passing the list.
     hooks: ?agent_hooks.HookList = null,
+    /// Wire-in: Chat memory store for cross-session conversation recall.
+    /// When non-null, the agent persists a summary of this run to the
+    /// memory store after completion, for future session recall.
+    chat_memory_store: ?*chat_memory.MemoryStore = null,
 };
 
 pub const Step = struct {
@@ -131,6 +136,17 @@ fn conversationBytes(turns: []const conversation.Turn) usize {
     var total: usize = 0;
     for (turns) |turn| total += turn.content.len;
     return total;
+}
+
+/// Wire-in: Persist a summary of this agent run to the chat memory store.
+/// Stores the user's intent as a user_query and the agent's response as an
+/// agent_response, so future sessions can recall what was discussed.
+fn persistChatMemory(config: Config, intent: []const u8, response: ?[]const u8) void {
+    if (config.chat_memory_store) |store| {
+        const response_summary = if (response) |r| (if (r.len > 500) r[0..500] else r) else "(no response)";
+        _ = store.add(.user_query, intent, &.{}, null) catch {};
+        _ = store.add(.agent_response, response_summary, &.{}, null) catch {};
+    }
 }
 
 /// Wire-in #4: Persist token usage to .forge/sessions/<session_id>/usage.jsonl
@@ -626,6 +642,8 @@ pub fn run(
         event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = @as(?[]const u8, owned_response), .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
         // Wire-in #4: persist usage.
         persistUsageLedger(allocator, io, effective_config.workspace_cwd, owned_session, provider_handle);
+        // Wire-in: persist chat memory.
+        persistChatMemory(effective_config, intent, owned_response);
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
@@ -652,6 +670,8 @@ pub fn run(
         event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = @as(?[]const u8, owned_response), .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
         // Wire-in #4: persist usage.
         persistUsageLedger(allocator, io, effective_config.workspace_cwd, owned_session, provider_handle);
+        // Wire-in: persist chat memory.
+        persistChatMemory(effective_config, intent, owned_response);
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
@@ -995,6 +1015,8 @@ pub fn run(
 
     // Wire-in #4: persist token usage to session log for cumulative cost tracking.
     persistUsageLedger(allocator, io, effective_config.workspace_cwd, owned_session, llm);
+    // Wire-in: persist chat memory (proposal-based path).
+    persistChatMemory(effective_config, intent, null);
 
     return .{
         .session_id = owned_session,

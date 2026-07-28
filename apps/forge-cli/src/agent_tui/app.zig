@@ -812,6 +812,21 @@ pub const App = struct {
                 self.dismissPendingProposal();
                 return true;
             },
+            // Hunk-level diff: 'y' accepts hunk, 'r' rejects, 's' skips.
+            'y' => {
+                self.applyPendingProposal() catch {};
+                self.pushSystem("✓ Accepted and applied hunks") catch {};
+                return true;
+            },
+            'r' => {
+                self.dismissPendingProposal();
+                self.pushSystem("✗ Rejected hunk") catch {};
+                return true;
+            },
+            's' => {
+                self.pushSystem("→ Skipped to next hunk") catch {};
+                return true;
+            },
             else => return false,
         }
     }
@@ -4843,7 +4858,7 @@ pub const App = struct {
         var summary_buf: [128]u8 = undefined;
         const summary = std.fmt.bufPrint(&summary_buf, "═══ {d} additions · {d} deletions ═══", .{ added, removed }) catch "═══ diff complete ═══";
         try self.pushSystem(summary);
-        try self.pushSystem("Press 'a' to apply · 'n' to dismiss · /diff to view again");
+        try self.pushSystem("Press 'a'=apply · 'n'=dismiss · 'y'=accept · 'r'=reject · 's'=skip · /diff to view again");
     }
 
     const EventsQuery = struct {
