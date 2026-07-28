@@ -268,6 +268,8 @@ pub const App = struct {
         // P2.11: init mention picker.
         app.mention_picker = @import("mention_picker.zig").PickerState.init(allocator);
         app.mention_picker_init = true;
+        // Wire-in: enable SGR mouse support for scroll + click.
+        app.term.enableMouse();
         return app;
     }
 
@@ -783,6 +785,49 @@ pub const App = struct {
                     self.cancel_armed = false;
                     self.input.insert(self.allocator, self.cursor, ch) catch {};
                     self.cursor += 1;
+                    self.markDirty();
+                    self.mutex.unlock();
+                }
+            },
+            .mouse => |ev| {
+                // Wire-in: SGR mouse event handling.
+                // Button 64 = scroll up, Button 65 = scroll down.
+                // Button 0 = left click (press), release detected via ev.release.
+                if (ev.button == 64) {
+                    // Scroll up — scroll chat up by 3 lines.
+                    self.mutex.lock();
+                    const page: usize = 3;
+                    if (self.scroll > page) {
+                        self.scroll -= page;
+                    } else {
+                        self.scroll = 0;
+                    }
+                    self.markDirty();
+                    self.mutex.unlock();
+                } else if (ev.button == 65) {
+                    // Scroll down — scroll chat down by 3 lines.
+                    self.mutex.lock();
+                    self.scroll +|= 3;
+                    self.markDirty();
+                    self.mutex.unlock();
+                } else if (ev.button == 0 and !ev.release) {
+                    // Left click — could be used for clicking @mention entries,
+                    // diff hunks, or explorer panel items. For now, just
+                    // dismiss the mention picker if it's open and the click
+                    // is outside the input area.
+                    if (self.mention_picker.active) {
+                        self.mention_picker.close();
+                        self.markDirty();
+                    }
+                }
+            },
+            .paste => |text| {
+                // Wire-in: bracketed paste — insert pasted text into input.
+                if (text.len > 0) {
+                    self.mutex.lock();
+                    self.input.appendSlice(self.allocator, text) catch {};
+                    self.cursor = self.input.items.len;
+                    self.cancel_armed = false;
                     self.markDirty();
                     self.mutex.unlock();
                 }
