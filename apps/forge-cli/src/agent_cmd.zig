@@ -393,7 +393,8 @@ fn runAgent(
     defer scope.deinit();
     if (!parsed.flags.quiet and !parsed.flags.json) scope.installSigint();
 
-    const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, target, io, opened.root);
+    var provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, target, io, opened.root);
+    defer provider_opts.deinit(allocator);
     const explicit_max_steps = parsed.flags.max_steps > 0;
     // Use per-intent default when --max-steps is not explicitly set.
     // The heuristic classify runs in O(1) before context builds, so latency is
@@ -1067,7 +1068,8 @@ fn runCoordinated(
     if (!parsed.flags.quiet and !parsed.flags.json) scope.installSigint();
     const cancel_token = scope.token();
 
-    const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, intent, io, opened.root);
+    var provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, intent, io, opened.root);
+    defer provider_opts.deinit(allocator);
     var provider = ai.provider_factory.create(allocator, io, environ_map, provider_opts.options) catch |err| {
         try writer.print("error: cannot create provider for coordinated workflow: {}\n", .{err});
         return 1;

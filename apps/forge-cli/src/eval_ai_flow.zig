@@ -236,6 +236,7 @@ pub fn run(
                 var eval_flags = flags;
                 if (eval_flags.provider == null) eval_flags.provider = "fake";
                 var provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, eval_flags, task.intent, io, null);
+                defer provider_opts.deinit(allocator);
                 provider_opts.options.fake_context_failures = task.fake_context_failures;
                 if (task.fake_response) |response_text| provider_opts.options.fake_response = response_text;
                 if (task.fake_repair_response) |repair_text| provider_opts.options.fake_plan_response = repair_text;

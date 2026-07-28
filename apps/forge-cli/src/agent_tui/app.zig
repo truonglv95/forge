@@ -243,7 +243,8 @@ pub const App = struct {
         terminal: term.Terminal,
         cancel_scope: cancel_scope_mod.Scope,
     ) !App {
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, "interactive", io, opened.root);
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, "interactive", io, opened.root);
+        defer provider_opts.deinit(allocator);
         const model = try std.fmt.allocPrint(allocator, "{s}/{s}", .{
             provider_opts.options.provider_name,
             provider_opts.options.model orelse "auto",
@@ -1535,7 +1536,8 @@ pub const App = struct {
         try self.pushSystem(echo);
 
         // Build provider options and create a provider for the completion call.
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, prompt, self.io, self.opened.root);
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, prompt, self.io, self.opened.root);
+        defer provider_opts.deinit(self.allocator);
         var provider = ai.provider_factory.create(self.allocator, self.io, self.environ_map, provider_opts.options) catch |err| {
             var err_buf: [128]u8 = undefined;
             const err_msg = std.fmt.bufPrint(&err_buf, "Completion failed: cannot create provider ({s})", .{@errorName(err)}) catch "Completion failed: provider unavailable";
@@ -1672,7 +1674,8 @@ pub const App = struct {
     /// /capability — show provider capabilities (Phase 24).
     fn showCapability(self: *App) !void {
         try self.pushSystem("Provider capabilities:");
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "capability", self.io, self.opened.root);
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "capability", self.io, self.opened.root);
+        defer provider_opts.deinit(self.allocator);
         const provider_name = provider_opts.options.provider_name;
         var buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "  Provider: {s}", .{provider_name}) catch "  Provider: unknown";
@@ -1690,7 +1693,8 @@ pub const App = struct {
 
     /// /provider — show current provider info (Phase 24).
     fn showProvider(self: *App) !void {
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "provider", self.io, self.opened.root);
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "provider", self.io, self.opened.root);
+        defer provider_opts.deinit(self.allocator);
         try self.pushSystem("Provider configuration:");
         var buf: [256]u8 = undefined;
         const name_line = std.fmt.bufPrint(&buf, "  Name: {s}", .{provider_opts.options.provider_name}) catch "  Name: unknown";
@@ -2248,7 +2252,8 @@ pub const App = struct {
         try self.pushSystem("═══════════════════════════════════════════════════");
 
         var buf: [256]u8 = undefined;
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "config", self.io, self.opened.root);
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "config", self.io, self.opened.root);
+        defer provider_opts.deinit(self.allocator);
 
         const provider_line = std.fmt.bufPrint(&buf, "  Provider:     {s}", .{provider_opts.options.provider_name}) catch "  Provider: unknown";
         try self.pushLine(.system, try self.allocator.dupe(u8, provider_line));
@@ -3318,7 +3323,8 @@ pub const App = struct {
         }
 
         // Call the provider.
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "summary", self.io, self.opened.root);
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "summary", self.io, self.opened.root);
+        defer provider_opts.deinit(self.allocator);
         var provider = ai.provider_factory.create(self.allocator, self.io, self.environ_map, provider_opts.options) catch |err| {
             var err_buf: [128]u8 = undefined;
             const err_msg = std.fmt.bufPrint(&err_buf, "Summary failed: cannot create provider ({s})", .{@errorName(err)}) catch "Summary failed: provider unavailable";
@@ -4118,7 +4124,8 @@ pub const App = struct {
         try self.pushSystem("═══════════════════════════════════════════════════");
 
         var buf: [256]u8 = undefined;
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "version", self.io, self.opened.root);
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "version", self.io, self.opened.root);
+        defer provider_opts.deinit(self.allocator);
 
         const version_line = std.fmt.bufPrint(&buf, "  Forge:       0.1.0 (Zig 0.16.0)", .{}) catch "  Forge: unknown";
         try self.pushLine(.system, try self.allocator.dupe(u8, version_line));
@@ -4306,7 +4313,8 @@ pub const App = struct {
         }
 
         // Call the provider.
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "translate", self.io, self.opened.root);
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "translate", self.io, self.opened.root);
+        defer provider_opts.deinit(self.allocator);
         var provider = ai.provider_factory.create(self.allocator, self.io, self.environ_map, provider_opts.options) catch |err| {
             var err_buf: [128]u8 = undefined;
             const err_msg = std.fmt.bufPrint(&err_buf, "Translation failed: cannot create provider ({s})", .{@errorName(err)}) catch "Translation failed: provider unavailable";
@@ -4493,7 +4501,8 @@ pub const App = struct {
     fn callLlm(self: *App, header_text: []const u8, prompt: []const u8) !void {
         try self.pushSystem(header_text);
 
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "ai-workflow", self.io, self.opened.root);
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "ai-workflow", self.io, self.opened.root);
+        defer provider_opts.deinit(self.allocator);
         var provider = ai.provider_factory.create(self.allocator, self.io, self.environ_map, provider_opts.options) catch |err| {
             var err_buf: [128]u8 = undefined;
             const err_msg = std.fmt.bufPrint(&err_buf, "Failed: cannot create provider ({s})", .{@errorName(err)}) catch "Failed: provider unavailable";
@@ -4914,6 +4923,14 @@ pub const App = struct {
         // The stream_line_index is reset on onStepBegin so each new LLM phase
         // (initial prompt, between tool calls, final answer) starts a fresh
         // line. This avoids stale line indices appearing above tool steps.
+        //
+        // REAL-TIME MARKDOWN: Streaming chunks always use kind=.agent so
+        // decorateLine → decorateMarkdown is applied on every render frame.
+        // This makes code blocks, headers, bold, inline code, etc. render
+        // live as the model streams tokens — the user sees formatted output
+        // immediately rather than waiting for finalizeStreamedResponse.
+        // Previously, agent_busy used kind=.system which skipped markdown
+        // decoration (showing raw ```**text**``` during streaming).
         if (chunk.len == 0) return;
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -4924,16 +4941,16 @@ pub const App = struct {
                 const grown = self.allocator.realloc(line.text, new_len) catch return;
                 @memcpy(grown[line.text.len..], chunk);
                 line.text = grown;
+                // Force kind=.agent so markdown renders during streaming.
+                line.kind = .agent;
                 self.markDirty();
                 return;
             }
         }
-        // No active streaming line — create a new one. Use a dim "thinking"
-        // style (kind=.system) when agent_busy so it visually distinguishes
-        // from the final agent answer (kind=.agent set by finalizeStreamedResponse).
-        const kind: LineKind = if (self.agent_busy) .system else .agent;
+        // No active streaming line — create a new one with .agent kind
+        // so decorateMarkdown applies for real-time formatted output.
         const owned = self.allocator.dupe(u8, chunk) catch return;
-        self.lines.append(self.allocator, .{ .kind = kind, .text = owned }) catch {
+        self.lines.append(self.allocator, .{ .kind = .agent, .text = owned }) catch {
             self.allocator.free(owned);
             return;
         };
@@ -6937,6 +6954,7 @@ fn workerMain(ctx: *WorkerCtx) void {
 
     const parsed = app.parsed;
     var provider_opts = ai_workflow.agentProviderOptionsFromFlags(app.allocator, parsed.flags, intent, app.io, app.opened.root);
+    defer provider_opts.deinit(app.allocator);
     provider_opts.options.stream_callback = streamBridge;
     provider_opts.options.stream_context = app;
     const max_steps = if (parsed.flags.max_steps > 0) parsed.flags.max_steps else 8;

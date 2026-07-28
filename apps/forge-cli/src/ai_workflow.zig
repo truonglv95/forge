@@ -38,19 +38,40 @@ pub fn providerOptionsFromFlags(
         workspace_cfg = workspace_cmd.AiConfig.load(allocator, io, opened) catch null;
     }
 
-    const provider_name = flags.provider orelse if (workspace_cfg) |cfg| cfg.provider else null;
+    // CRITICAL FIX: provider_name and base_url come from cfg's storage.
+    // cfg.deinit() is deferred and frees that storage. We MUST dupe them
+    // before this function returns, otherwise the returned OwnedProviderOptions
+    // would hold dangling pointers (use-after-free → @memcpy alias panic
+    // when later used in std.fmt.allocPrint).
+    var owned_provider: ?[]u8 = null;
     var owned_model: ?[]u8 = null;
+    var owned_base_url: ?[]u8 = null;
+
+    const provider_name_raw: ?[]const u8 = flags.provider orelse if (workspace_cfg) |cfg| cfg.provider else null;
+    const provider_name: []const u8 = blk: {
+        if (provider_name_raw) |name| {
+            owned_provider = allocator.dupe(u8, name) catch null;
+            if (owned_provider) |duped| break :blk duped;
+        }
+        break :blk "auto";
+    };
+
     const model_name: ?[]const u8 = if (flags.model) |model| model else if (workspace_cfg) |cfg| if (cfg.model) |model| blk: {
         owned_model = allocator.dupe(u8, model) catch null;
         break :blk owned_model;
     } else null else null;
-    const base_url: ?[]const u8 = if (workspace_cfg) |cfg|
-        ai.config.baseUrlForProvider(provider_name, cfg.ollama_url, cfg.openrouter_url)
-    else
-        null;
+
+    const base_url: ?[]const u8 = if (workspace_cfg) |cfg| blk: {
+        const url = ai.config.baseUrlForProvider(provider_name_raw, cfg.ollama_url, cfg.openrouter_url);
+        if (url) |u| {
+            owned_base_url = allocator.dupe(u8, u) catch null;
+            break :blk owned_base_url;
+        }
+        break :blk null;
+    } else null;
 
     const provider_config = ai.config.ProviderConfig{
-        .name = provider_name orelse "auto",
+        .name = provider_name,
         .model = model_name,
         .base_url = base_url,
     };
@@ -59,16 +80,25 @@ pub fn providerOptionsFromFlags(
     options.fake_plan_response = fake_plan;
     return .{
         .options = options,
+        .owned_provider = owned_provider,
         .owned_model = owned_model,
+        .owned_base_url = owned_base_url,
     };
 }
 
 pub const OwnedProviderOptions = struct {
     options: ai.provider_factory.Options,
+    owned_provider: ?[]u8 = null,
     owned_model: ?[]u8 = null,
+    owned_base_url: ?[]u8 = null,
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        if (self.owned_provider) |p| allocator.free(p);
         if (self.owned_model) |m| allocator.free(m);
+        if (self.owned_base_url) |u| allocator.free(u);
+        self.owned_provider = null;
+        self.owned_model = null;
+        self.owned_base_url = null;
     }
 };
 

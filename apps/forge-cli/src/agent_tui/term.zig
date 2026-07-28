@@ -72,16 +72,31 @@ pub const Terminal = struct {
         // UX FIX: Don't use alt screen buffer (\x1b[?1049h). Instead, use
         // the main screen so users can scroll back with terminal scrollback
         // and select text after exit. Clear screen + hide cursor instead.
-        // Bracketed paste mode still enabled.
-        try writeAll("\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h");
+        //
+        // CRITICAL: Explicitly DISABLE all mouse modes on startup. Some
+        // terminals inherit mouse-on state from a parent shell (tmux with
+        // mouse on, screen, or a previous TUI app that didn't clean up).
+        // If we don't disable, mouse events arrive as raw escape sequences
+        // like "0;12;42M" appearing as visible text in the chat area.
+        // We disable 1000 (normal), 1002 (button-event), 1003 (any-event),
+        // 1005 (UTF-8), and 1006 (SGR) to cover all variants. Bracketed
+        // paste mode (2004) is enabled.
+        try writeAll(
+            "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l" ++
+                "\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h",
+        );
         return .{ .saved = saved, .active = true, .use_color = use_color };
     }
 
     pub fn restore(self: *Terminal) void {
         if (!self.active) return;
         // UX FIX: No alt screen to exit — just restore cursor + disable modes.
-        var restore_seq: []const u8 = "\x1b[?2004l\x1b[?25h";
-        if (self.mouse_enabled) restore_seq = "\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h";
+        // Always disable ALL mouse modes on exit (not just if we enabled them)
+        // to clean up any mouse state inherited from the parent shell. This
+        // prevents raw escape sequences from leaking into the user's shell
+        // after Forge exits.
+        const restore_seq: []const u8 =
+            "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h";
         writeAll(restore_seq) catch {};
         std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, self.saved) catch {};
         self.active = false;
@@ -95,10 +110,12 @@ pub const Terminal = struct {
         self.mouse_enabled = true;
     }
 
-    /// P2: Disable mouse support.
+    /// P2: Disable mouse support. Disables all mouse modes to be
+    /// thorough — some terminals may enable additional modes when 1000h
+    /// is sent (e.g. 1002 button-event tracking).
     pub fn disableMouse(self: *Terminal) void {
         if (!self.active or !self.mouse_enabled) return;
-        writeAll("\x1b[?1006l\x1b[?1000l") catch {};
+        writeAll("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l") catch {};
         self.mouse_enabled = false;
     }
 
