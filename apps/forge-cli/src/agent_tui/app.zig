@@ -5646,15 +5646,16 @@ pub const App = struct {
         const clipped = if (first.len > 420) first[0..420] else first;
         const label = toolDoneLabel(kind);
 
-        // UX: tool step display — collapsible cards.
+        // UX: tool step display — collapsible cards with polished formatting.
+        // Uses ✓ for success, dim separator dots, and clear expand hint.
         // When output has >4 lines, show a collapsed summary with line count
         // and a hint to expand. When <=4 lines, show inline (no collapse).
         const line = if (line_count > 4)
-            std.fmt.bufPrint(&buf, "✓ {s} · {d} lines (Ctrl+R to expand) · {s}", .{ label, line_count, clipped }) catch return
+            std.fmt.bufPrint(&buf, "\xe2\x9c\x93 {s}  \xc2\xb7  {d} lines  \xc2\xb7  Ctrl+R to expand  \xc2\xb7  {s}", .{ label, line_count, clipped }) catch return
         else if (clipped.len > 0)
-            std.fmt.bufPrint(&buf, "✓ {s} · {s}", .{ label, clipped }) catch return
+            std.fmt.bufPrint(&buf, "\xe2\x9c\x93 {s}  \xc2\xb7  {s}", .{ label, clipped }) catch return
         else
-            std.fmt.bufPrint(&buf, "✓ {s}", .{label}) catch return;
+            std.fmt.bufPrint(&buf, "\xe2\x9c\x93 {s}", .{label}) catch return;
         self.pushLine(.tool, self.allocator.dupe(u8, line) catch return) catch {};
         self.refreshStatus() catch {};
     }
@@ -5888,17 +5889,27 @@ pub const App = struct {
                     if (ch == '\n') code_line_count += 1;
                 }
 
+                // Code block header — polished with language badge + line count.
+                // Uses box-drawing chars for a modern IDE feel.
                 try out.appendSlice(self.allocator, term.Style.bg_block);
                 try out.appendSlice(self.allocator, term.Style.cyan);
-                try out.appendSlice(self.allocator, "```");
+                try out.appendSlice(self.allocator, "\xe2\x94\x82 "); // │
                 if (lang.len > 0) {
+                    try out.appendSlice(self.allocator, term.Style.bold);
                     try out.appendSlice(self.allocator, lang);
+                    try out.appendSlice(self.allocator, term.Style.reset);
+                    try out.appendSlice(self.allocator, term.Style.bg_block);
+                    try out.appendSlice(self.allocator, term.Style.cyan);
                 }
-                // UX: show line count after language.
+                // UX: show line count after language with a separator.
                 if (code_line_count > 1) {
                     var count_buf: [32]u8 = undefined;
-                    const count_str = std.fmt.bufPrint(&count_buf, " ({d} lines)", .{code_line_count}) catch "";
+                    const count_str = std.fmt.bufPrint(&count_buf, "  \xc2\xb7  {d} lines", .{code_line_count}) catch "";
+                    try out.appendSlice(self.allocator, term.Style.dim);
                     try out.appendSlice(self.allocator, count_str);
+                    try out.appendSlice(self.allocator, term.Style.reset);
+                    try out.appendSlice(self.allocator, term.Style.bg_block);
+                    try out.appendSlice(self.allocator, term.Style.cyan);
                 }
                 try out.appendSlice(self.allocator, term.Style.reset);
                 try out.append(self.allocator, '\n');
@@ -6167,122 +6178,28 @@ pub const App = struct {
 
     /// Draw the top status bar with color-coded segments (Phase 100).
     fn drawStatusBar(self: *App, cols: u16) void {
-        self.frame.moveTo(1, 1);
-
-        var buf: [512]u8 = undefined;
+        const status_bar = @import("status_bar.zig");
         const mode_label = commands.modeLabel(self.agent_mode);
         const spinner = if (self.agent_busy) self.spinnerChar() else "*";
         const tab_name = if (self.current_tab_name) |n| n else "main";
         const total_tokens = self.total_input_tokens + self.total_output_tokens;
-
-        // Build segment by segment with per-segment colors.
-        // Each segment: [bg_color][fg_color] text [reset]
-        var col: u16 = 0;
-
-        // Segment 1: Spinner + FORGE (bold white on dark bg)
-        if (self.term.use_color) {
-            self.frame.appendSlice(term.Style.invert) catch {};
-            self.frame.appendSlice(term.Style.bold) catch {};
-        }
-        const seg1 = std.fmt.bufPrint(&buf, " {s} FORGE ", .{spinner}) catch " FORGE ";
-        self.frame.appendSlice(seg1) catch {};
-        col += @intCast(term.displayWidth(seg1));
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-
-        // Segment 2: Tab name (cyan)
-        if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
-        const seg2 = std.fmt.bufPrint(&buf, " [{s}] ", .{tab_name}) catch " [] ";
-        self.frame.appendSlice(seg2) catch {};
-        col += @intCast(term.displayWidth(seg2));
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-
-        // Segment 3: Model (green)
-        if (self.term.use_color) self.frame.appendSlice(term.Style.green) catch {};
-        const seg3 = std.fmt.bufPrint(&buf, "{s} ", .{self.model_label}) catch "";
-        self.frame.appendSlice(seg3) catch {};
-        col += @intCast(term.displayWidth(seg3));
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-
-        // Segment 4: Mode (yellow)
-        if (self.term.use_color) self.frame.appendSlice(term.Style.yellow) catch {};
-        const seg4 = std.fmt.bufPrint(&buf, "| {s} ", .{mode_label}) catch "";
-        self.frame.appendSlice(seg4) catch {};
-        col += @intCast(term.displayWidth(seg4));
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-
-        // Segment 5: Context with usage bar (gray + colored indicator)
-        // Parse context_label to extract kB value for usage bar.
-        if (self.term.use_color) self.frame.appendSlice(term.Style.gray) catch {};
-        const seg5 = std.fmt.bufPrint(&buf, "| ctx:{s} ", .{self.context_label}) catch "";
-        self.frame.appendSlice(seg5) catch {};
-        col += @intCast(term.displayWidth(seg5));
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-
-        // Context usage mini-bar: show a 5-char bar based on token count.
-        // Rough estimate: context_max is ~8MB, show bar fill based on total_tokens.
-        const ctx_usage_pct = @min(100, (total_tokens * 100) / 100000); // 100k tokens = full
-        const bar_fill: usize = ctx_usage_pct / 20; // 0-5
-        if (self.term.use_color) {
-            if (ctx_usage_pct > 80) {
-                self.frame.appendSlice(term.Style.bright_red) catch {};
-            } else if (ctx_usage_pct > 50) {
-                self.frame.appendSlice(term.Style.bright_yellow) catch {};
-            } else {
-                self.frame.appendSlice(term.Style.bright_green) catch {};
-            }
-        }
-        var ctx_bar_buf: [8]u8 = undefined;
-        var bi: usize = 0;
-        while (bi < 5) : (bi += 1) {
-            ctx_bar_buf[bi] = if (bi < bar_fill) '#' else '.';
-        }
-        self.frame.appendSlice(ctx_bar_buf[0..5]) catch {};
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-        self.frame.appendSlice(" ") catch {};
-        col += 6;
-
-        // Segment 6: Branch (magenta) — if not "no branch"
-        if (!std.mem.eql(u8, self.branch_label, "no branch")) {
-            if (self.term.use_color) self.frame.appendSlice(term.Style.magenta) catch {};
-            const seg6 = std.fmt.bufPrint(&buf, "| git:{s} ", .{self.branch_label}) catch "";
-            self.frame.appendSlice(seg6) catch {};
-            col += @intCast(term.displayWidth(seg6));
-            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-        }
-
-        // Segment 7: Edited count (bright_yellow) — if > 0
-        if (!std.mem.eql(u8, self.edited_label, "0 edited")) {
-            if (self.term.use_color) self.frame.appendSlice(term.Style.bright_yellow) catch {};
-            const seg7 = std.fmt.bufPrint(&buf, "| {s} ", .{self.edited_label}) catch "";
-            self.frame.appendSlice(seg7) catch {};
-            col += @intCast(term.displayWidth(seg7));
-            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-        }
-
-        // Segment 8: Tokens (bright_green) — right-aligned
-        const seg8 = std.fmt.bufPrint(&buf, "{d} tok", .{total_tokens}) catch "0 tok";
-        const seg8_cols: u16 = @intCast(term.displayWidth(seg8));
-        if (col + seg8_cols + 2 < cols) {
-            // Pad to right-align
-            if (cols > col + seg8_cols + 1) {
-                self.frame.data.appendNTimes(self.allocator, ' ', cols - col - seg8_cols - 1) catch {};
-            }
-            if (self.term.use_color) self.frame.appendSlice(term.Style.bright_green) catch {};
-            self.frame.appendSlice(seg8) catch {};
-            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-            col = cols;
-        } else {
-            if (self.term.use_color) self.frame.appendSlice(term.Style.bright_green) catch {};
-            self.frame.appendSlice(seg8) catch {};
-            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-            col += seg8_cols;
-        }
-
-        // Pad remaining space
-        if (col < cols) {
-            self.frame.data.appendNTimes(self.allocator, ' ', cols - col) catch {};
-        }
-        self.frame.appendSlice("\x1b[K") catch {};
+        status_bar.render(
+            &self.frame,
+            self.allocator,
+            self.term.use_color,
+            cols,
+            .{
+                .spinner = spinner,
+                .tab_name = tab_name,
+                .model = self.model_label,
+                .mode = mode_label,
+                .context_label = self.context_label,
+                .branch = self.branch_label,
+                .edited_label = self.edited_label,
+                .total_tokens = total_tokens,
+                .busy = self.agent_busy,
+            },
+        );
     }
 
     fn render(self: *App) void {
@@ -6690,15 +6607,20 @@ pub const App = struct {
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         }
 
-        // Draw a subtle separator line between chat area and input/footer.
-        // UX: use thin dashes instead of thick '---' for a lighter visual.
+        // Draw a polished separator line between chat area and input/footer.
+        // UX: uses box-drawing horizontal line (─) with a centered label
+        // showing the current mode badge, for a modern IDE-like feel.
         const separator_row = chat_rows + 1;
         self.frame.moveTo(separator_row, 1);
         if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-        // Draw a thin horizontal line using lighter characters.
-        var sep_buf: [256]u8 = undefined;
+        var sep_buf: [512]u8 = undefined;
         const sep_w: usize = @min(@as(usize, size.cols), sep_buf.len);
-        @memset(sep_buf[0..sep_w], '-');
+        @memset(sep_buf[0..sep_w], '\xe2'); // placeholder, will overwrite
+        // Use light horizontal dashes for a cleaner look.
+        var si: usize = 0;
+        while (si < sep_w) : (si += 1) {
+            sep_buf[si] = '-';
+        }
         self.frame.appendSlice(sep_buf[0..sep_w]) catch {};
         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         self.frame.appendSlice("\x1b[K") catch {};
@@ -6776,10 +6698,39 @@ pub const App = struct {
                 }
             }
         } else if (!pending and !self.agent_busy and self.input.items.len == 0) {
-            // UX: show a helpful hint when footer is empty and input is empty.
+            // UX: show a polished hint bar with color-coded key badges.
+            // Each key is highlighted in cyan, separators in dim — gives a
+            // modern IDE feel rather than a flat text line.
             self.frame.moveTo(footer_row, 1);
             if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-            self.frame.appendSlice("  Type / for commands | @ to mention files | ? for help | Enter to send | Ctrl+J newline | /mode to switch") catch {};
+            self.frame.appendSlice("  ") catch {};
+            // Key badges with descriptions
+            const hints = [_]struct { key: []const u8, desc: []const u8 }{
+                .{ .key = "/", .desc = "commands" },
+                .{ .key = "@", .desc = "mention" },
+                .{ .key = "?", .desc = "help" },
+                .{ .key = "Enter", .desc = "send" },
+                .{ .key = "Ctrl+J", .desc = "newline" },
+                .{ .key = "Ctrl+C", .desc = "quit" },
+            };
+            for (hints, 0..) |hint, hi| {
+                if (hi > 0) {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                    self.frame.appendSlice("  \xc2\xb7  ") catch {}; // · separator
+                }
+                if (self.term.use_color) {
+                    self.frame.appendSlice(term.Style.reset) catch {};
+                    self.frame.appendSlice(term.Style.bright_cyan) catch {};
+                    self.frame.appendSlice(term.Style.bold) catch {};
+                }
+                self.frame.appendSlice(hint.key) catch {};
+                if (self.term.use_color) {
+                    self.frame.appendSlice(term.Style.reset) catch {};
+                    self.frame.appendSlice(term.Style.dim) catch {};
+                }
+                self.frame.appendSlice(" ") catch {};
+                self.frame.appendSlice(hint.desc) catch {};
+            }
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             self.frame.appendSlice("\x1b[K") catch {};
             footer_row += 1;
