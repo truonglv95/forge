@@ -48,6 +48,10 @@ pub const State = struct {
     /// file paths beyond the active file (owned).
     composer_mode: bool = false,
     composer_files: std.ArrayList([]const u8) = .empty,
+    /// Wire-in: ComposerBatch for per-file accept/reject + diff preview.
+    /// When non-null, the agent's multi-file proposal is stored here so
+    /// the user can review and selectively accept/reject each file's edits.
+    composer_batch: ?@import("forge-ai").multi_file_edit.ComposerBatch = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) State {
         return .{
@@ -64,6 +68,7 @@ pub const State = struct {
         if (self.proposed_text) |t| self.allocator.free(t);
         self.freeComposerFiles();
         self.composer_files.deinit(self.allocator);
+        if (self.composer_batch) |*batch| batch.deinit();
         self.* = undefined;
     }
 
@@ -145,6 +150,37 @@ pub const State = struct {
             self.allocator.free(t);
             self.proposed_text = null;
         }
+        if (self.composer_batch) |*batch| batch.deinit();
+        self.composer_batch = null;
+    }
+
+    /// Wire-in: Initialize a ComposerBatch for per-file accept/reject.
+    /// Called when the agent returns a multi-file proposal.
+    pub fn initComposerBatch(self: *State) !void {
+        if (self.composer_batch) |*batch| batch.deinit();
+        self.composer_batch = @import("forge-ai").multi_file_edit.ComposerBatch.init(self.allocator);
+    }
+
+    /// Wire-in: Toggle accept/reject for a specific file in the batch.
+    pub fn toggleComposerAccept(self: *State, index: usize) !void {
+        if (self.composer_batch) |*batch| {
+            try batch.toggleAccept(index);
+        }
+    }
+
+    /// Wire-in: Accept all files in the batch.
+    pub fn acceptAllComposer(self: *State) !void {
+        if (self.composer_batch) |*batch| {
+            try batch.acceptAll();
+        }
+    }
+
+    /// Wire-in: Get the list of accepted file indices.
+    pub fn acceptedComposerIndices(self: *State) ![]usize {
+        if (self.composer_batch) |*batch| {
+            return try batch.acceptedIndices();
+        }
+        return &.{};
     }
 
     /// Append a character to the prompt (called from keyboard input).

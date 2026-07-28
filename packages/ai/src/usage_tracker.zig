@@ -193,6 +193,15 @@ pub const PricingTable = struct {
         if (std.mem.eql(u8, provider_name, "ollama")) {
             return .{ .input_per_1k = 0.0, .output_per_1k = 0.0 };
         }
+        // Anthropic — pricing as of 2026-07
+        if (std.mem.eql(u8, provider_name, "anthropic")) {
+            if (std.mem.startsWith(u8, model_name, "claude-sonnet-4")) return .{ .input_per_1k = 3.00, .output_per_1k = 15.00 };
+            if (std.mem.startsWith(u8, model_name, "claude-3-5-sonnet")) return .{ .input_per_1k = 3.00, .output_per_1k = 15.00 };
+            if (std.mem.startsWith(u8, model_name, "claude-3-7-sonnet")) return .{ .input_per_1k = 3.00, .output_per_1k = 15.00 };
+            if (std.mem.startsWith(u8, model_name, "claude-3-5-haiku")) return .{ .input_per_1k = 0.80, .output_per_1k = 4.00 };
+            if (std.mem.startsWith(u8, model_name, "claude-3-opus")) return .{ .input_per_1k = 15.00, .output_per_1k = 75.00 };
+            return .{ .input_per_1k = 3.00, .output_per_1k = 15.00 }; // default anthropic
+        }
         // Fake (testing)
         return .{ .input_per_1k = 0.0, .output_per_1k = 0.0 };
     }
@@ -235,6 +244,34 @@ test "estimatedCostUsd returns 0 for ollama" {
 
     const cost = tracker.estimatedCostUsd("ollama", "qwen2.5:35b");
     try std.testing.expectEqual(@as(f64, 0.0), cost);
+}
+
+test "estimatedCostUsd calculates anthropic sonnet price" {
+    const allocator = std.testing.allocator;
+    var tracker = UsageTracker.init(allocator);
+    defer tracker.deinit();
+
+    try tracker.record("anthropic", "claude-sonnet-4-5", .{ .prompt_tokens = 1000, .completion_tokens = 500, .total_tokens = 1500 }, 0);
+
+    // Input: 1000/1000 * 3.00 = 3.00
+    // Output: 500/1000 * 15.00 = 7.50
+    // Total: 10.50
+    const cost = tracker.estimatedCostUsd("anthropic", "claude-sonnet-4-5");
+    try std.testing.expectApproxEqAbs(@as(f64, 10.50), cost, 0.001);
+}
+
+test "estimatedCostUsd calculates anthropic haiku price" {
+    const allocator = std.testing.allocator;
+    var tracker = UsageTracker.init(allocator);
+    defer tracker.deinit();
+
+    try tracker.record("anthropic", "claude-3-5-haiku", .{ .prompt_tokens = 1000, .completion_tokens = 500, .total_tokens = 1500 }, 0);
+
+    // Input: 1000/1000 * 0.80 = 0.80
+    // Output: 500/1000 * 4.00 = 2.00
+    // Total: 2.80
+    const cost = tracker.estimatedCostUsd("anthropic", "claude-3-5-haiku");
+    try std.testing.expectApproxEqAbs(@as(f64, 2.80), cost, 0.001);
 }
 
 test "persist and load round-trip" {
