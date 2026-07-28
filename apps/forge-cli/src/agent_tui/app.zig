@@ -5813,28 +5813,24 @@ pub const App = struct {
     }
 
     fn decorateLine(self: *const App, kind: LineKind, text: []const u8) ![]u8 {
+        // Clean, minimal line decoration — no verbose "┌ agent" / "› tool" /
+        // "· system" text prefixes. The left border (drawn in render) already
+        // distinguishes roles visually. This keeps the chat area uncluttered.
         return switch (kind) {
             .user => self.formatPromptLine(text),
-            .failure => std.fmt.allocPrint(self.allocator, "× {s}", .{text}),
-            .agent => blk: {
-                // Phase 29: Add role label for agent messages on first line of response.
-                const decorated = try self.decorateMarkdown(text);
-                defer self.allocator.free(decorated);
-                // Only add label if this looks like the start of a response
-                // (not a continuation line starting with whitespace or >).
-                if (text.len > 0 and text[0] != ' ' and text[0] != '>' and text[0] != '!') {
-                    break :blk std.fmt.allocPrint(self.allocator, "{s}┌ agent{s}  {s}", .{
-                        term.Style.dim, term.Style.reset, decorated,
-                    });
+            .failure => std.fmt.allocPrint(self.allocator, "\xc3\x97 {s}", .{text}), // ×
+            .agent => self.decorateMarkdown(text),
+            .tool => blk: {
+                // Tool lines already have › or ✓ prefixes from formatToolBegin/
+                // onStepDone. Just dim the prefix arrow if present.
+                if (text.len > 0 and (text[0] == '\xe2' or text[0] == '\xc2')) {
+                    // UTF-8 prefix (› or ✓) — render as-is, color handled by caller.
+                    break :blk self.allocator.dupe(u8, text);
                 }
-                break :blk self.allocator.dupe(u8, decorated);
+                break :blk self.allocator.dupe(u8, text);
             },
-            .tool => std.fmt.allocPrint(self.allocator, "{s}› tool{s}  {s}", .{
-                term.Style.dim, term.Style.reset, text,
-            }),
             .system => blk: {
-                // Phase 44: Don't add system prefix to diff lines — they
-                // need clean +/- prefixes for proper coloring.
+                // Don't add prefix to diff lines — they need clean +/- prefixes.
                 if (text.len > 0 and (text[0] == '+' or text[0] == '-' or
                     std.mem.startsWith(u8, text, "diff --git") or
                     std.mem.startsWith(u8, text, "index ") or
@@ -5844,9 +5840,7 @@ pub const App = struct {
                 {
                     break :blk self.allocator.dupe(u8, text);
                 }
-                break :blk std.fmt.allocPrint(self.allocator, "{s}· system{s}  {s}", .{
-                    term.Style.gray, term.Style.reset, text,
-                });
+                break :blk self.allocator.dupe(u8, text);
             },
         };
     }
@@ -6482,7 +6476,7 @@ pub const App = struct {
         var scratch: [512]u8 = undefined;
         var live_prompt_row: ?u16 = null;
         for (display_lines.items[start..end], start..) |line, i| {
-            const block = block_states.items[i];
+            _ = block_states.items[i]; // block state tracked elsewhere, not needed for clean render
             const color = colorForLine(line.kind, line.text);
 
             // P1.9: Bookmark indicator — prepend a star marker to lines whose
@@ -6500,41 +6494,28 @@ pub const App = struct {
                 break :blk false;
             };
 
-            // Turn separation: draw a subtle left border for agent/tool messages
-            // to visually group turns. User messages get green border, agent gets
-            // a dim vertical bar on the left edge.
-            if (line.kind == .agent or line.kind == .tool) {
-                self.frame.moveTo(row, chat_x);
-                if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-                self.frame.appendSlice("| ") catch {};
-                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-            } else if (line.kind == .user and i > 0) {
-                // Add blank line before user messages (except first) for separation.
-                // We skip this if we're at the top of the viewport.
-                // (Visual separation handled by the blank row below.)
-            }
-
-            // P1.9: Render bookmark marker before content (on first row of line).
-            // Use a yellow star to make it visually distinct.
-            if (is_bookmarked) {
-                if (self.term.use_color) self.frame.appendSlice(term.Style.bright_yellow) catch {};
-                self.frame.appendSlice("[\xe2\x98\x85] ") catch {}; // [★] in UTF-8
-                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-            }
-
-            const padding: usize = if (block > 0) 2 else 0;
-            const border_offset: usize = if (line.kind == .agent or line.kind == .tool) 2 else 0;
-            const content_cols = chat_cols - 1 - padding * 2 - border_offset;
+            // Clean left border: single dim vertical bar for agent/tool lines,
+            // nothing for user/system. This visually groups turns without clutter.
+            const has_border = (line.kind == .agent or line.kind == .tool);
+            const border_offset: usize = if (has_border) 2 else 0;
+            const content_cols = if (chat_cols > border_offset + 1) chat_cols - border_offset - 1 else 1;
             const clipped = term.truncateEnd(&scratch, line.text, @intCast(content_cols));
 
-            self.frame.moveTo(row, chat_x + @as(u16, @intCast(border_offset)));
-
-            // Left padding
-            if (padding > 0) {
-                if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
-                self.frame.data.appendNTimes(self.allocator, ' ', padding) catch {};
+            self.frame.moveTo(row, chat_x);
+            if (has_border) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                self.frame.appendSlice("\xe2\x94\x82 ") catch {}; // │ (box-drawing vertical)
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             }
 
+            // Bookmark marker (yellow star) before content.
+            if (is_bookmarked) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.bright_yellow) catch {};
+                self.frame.appendSlice("\xe2\x98\x85 ") catch {}; // ★
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            }
+
+            // Content with color based on line kind.
             if (line.kind == .user) {
                 if (!self.agent_busy and !self.show_events and !self.show_timeline and i + 1 == total) live_prompt_row = row;
                 var prefix_buf: [256]u8 = undefined;
@@ -6543,52 +6524,35 @@ pub const App = struct {
                 if (self.term.use_color) self.frame.appendSlice(term.Style.green) catch {};
                 self.frame.appendSlice(prefix_part) catch {};
                 if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-                if (padding > 0 and self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
                 if (self.term.use_color) self.frame.appendSlice(term.Style.white) catch {};
                 self.frame.appendSlice(clipped[prefix_part.len..]) catch {};
             } else if (std.mem.startsWith(u8, clipped, "Thinking")) {
                 if (self.term.use_color) self.frame.appendSlice(term.Style.blue) catch {};
+                self.frame.appendSlice(clipped) catch {};
+            } else if (line.kind == .tool) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+                self.frame.appendSlice(clipped) catch {};
+            } else if (line.kind == .system) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
                 self.frame.appendSlice(clipped) catch {};
             } else {
                 if (self.term.use_color) self.frame.appendSlice(color) catch {};
                 if (self.term.use_color) {
                     if (bgForLine(line.text)) |bg| {
                         self.frame.appendSlice(bg) catch {};
-                    } else if (padding > 0) {
-                        self.frame.appendSlice(term.Style.bg_block) catch {};
                     }
                 }
                 self.frame.appendSlice(clipped) catch {};
             }
 
-            // Right padding and fill
-            if (clipped.len < content_cols) {
-                if (self.term.use_color) {
-                    if (bgForLine(line.text)) |bg| {
-                        self.frame.appendSlice(bg) catch {};
-                    } else if (padding > 0) {
-                        self.frame.appendSlice(term.Style.bg_block) catch {};
-                    }
-                }
-                self.frame.data.appendNTimes(self.allocator, ' ', content_cols - clipped.len + padding) catch {};
-            } else if (padding > 0) {
-                if (self.term.use_color) {
-                    if (bgForLine(line.text)) |bg| {
-                        self.frame.appendSlice(bg) catch {};
-                    } else {
-                        self.frame.appendSlice(term.Style.bg_block) catch {};
-                    }
-                }
-                self.frame.data.appendNTimes(self.allocator, ' ', padding) catch {};
-            }
-
-            self.frame.appendSlice("\x1b[K") catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            self.frame.appendSlice("\x1b[K") catch {};
             row += 1;
         }
+        // Clear remaining chat rows.
         while (row <= chat_rows + 1) : (row += 1) {
             self.frame.moveTo(row, chat_x);
-            self.frame.data.appendNTimes(self.allocator, ' ', chat_cols) catch {};
+            self.frame.appendSlice("\x1b[K") catch {};
         }
 
         // Scroll indicator — show "↑ N lines above" when scrolled up (Phase 100).
