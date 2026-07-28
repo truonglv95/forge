@@ -6,6 +6,7 @@ const context_inspector = @import("../agent/context_inspector.zig");
 const chat_viewport = @import("../agent/chat_viewport.zig");
 const chat_bubble = @import("../agent/chat_bubble.zig");
 const tool_step_card = @import("../agent/tool_step_card.zig");
+const timeline_view = @import("../agent/timeline_view.zig");
 const agent_composer = @import("../agent/agent_composer.zig");
 const scrollbar = @import("../core/scrollbar.zig");
 const agent_panel = @import("../agent/agent_panel.zig");
@@ -78,7 +79,19 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
     wb.clampPromptScroll(agent_w);
     wb.agent_ui.session.lock();
     const context_has_detail = wb.agent_ui.session.context_selected_index != null and snap.context_inspector_expanded;
+    const agent_step_count = wb.agent_ui.session.agent_steps.items.len;
     wb.agent_ui.session.unlock();
+
+    // Wire timeline_view: draw horizontal DAG timeline when agent has steps.
+    // Shows above the chat area, below the header. Only visible when there
+    // are agent steps (tool calls, thoughts) to display.
+    if (agent_step_count > 0) {
+        const timeline_y = chat_tab_y + 40;
+        wb.agent_ui.session.lock();
+        const steps = wb.agent_ui.session.agent_steps.items;
+        timeline_view.drawTimeline(wb, inner_x, timeline_y, content_w, steps, null, state.time);
+        wb.agent_ui.session.unlock();
+    }
     const viewport = chat_viewport.compute(.{
         .agent_x = agent_x,
         .agent_w = agent_w,
