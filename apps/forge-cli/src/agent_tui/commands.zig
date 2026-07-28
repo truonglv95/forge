@@ -70,6 +70,8 @@ pub const Command = union(enum) {
     wordwrap,
     /// P2.10: Toggle vim mode on/off.
     vim,
+    /// Toggle mouse support on/off.
+    mouse,
     // Phase 67-70: Navigation and utility
     goto_line: ?[]const u8,
     snippet: ?[]const u8,
@@ -261,6 +263,8 @@ pub fn parseSlashCommand(input: []const u8) Command {
     if (matchesSlash(input, "wordwrap") or matchesSlash(input, "wrap")) return .wordwrap;
     // P2.10: Vim mode toggle.
     if (matchesSlash(input, "vim")) return .vim;
+    // Mouse support toggle.
+    if (matchesSlash(input, "mouse")) return .mouse;
     // Phase 67: Goto specific conversation line
     if (matchesSlash(input, "goto") or matchesSlash(input, "g")) {
         if (std.mem.eql(u8, input, "/goto") or std.mem.eql(u8, input, "/g")) return .{ .goto_line = null };

@@ -228,7 +228,7 @@ pub const App = struct {
     active_tab: usize = 0,
     current_tab_name: ?[]u8 = null,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/copyall", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/vim", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/findreplace", "/translate", "/annotate", "/share", "/refactor", "/explain", "/fix", "/testgen", "/doc", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/copyall", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/vim", "/mouse", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/findreplace", "/translate", "/annotate", "/share", "/refactor", "/explain", "/fix", "/testgen", "/doc", "/help", "/quit", "/exit" };
     /// Max number of slash command suggestions to display at once. Prevents
     /// the suggestion list from overflowing small terminals (e.g. when user
     /// types just '/', all 74 commands match but we only show the first 8).
@@ -284,8 +284,10 @@ pub const App = struct {
         // P2.11: init mention picker.
         app.mention_picker = @import("mention_picker.zig").PickerState.init(allocator);
         app.mention_picker_init = true;
-        // Wire-in: enable SGR mouse support for scroll + click.
-        app.term.enableMouse();
+        // UX FIX: Do NOT enable mouse by default. Many terminals (tmux, screen,
+        // some xterm configs) don't support SGR mouse and will render raw escape
+        // sequences as visible text (e.g. "0;12174;12m..."). Mouse is opt-in
+        // via /mouse command. Arrow keys + PgUp/PgDn provide scroll without mouse.
         // Render cache: init HashMap.
         app.render_cache = std.AutoHashMap(u64, CachedDisplayLines).init(app.allocator);
         app.render_cache_init = true;
@@ -445,6 +447,7 @@ pub const App = struct {
         if (std.mem.eql(u8, cmd, "/compact")) return "Compact conversation";
         if (std.mem.eql(u8, cmd, "/pin")) return "Pin a line to top";
         if (std.mem.eql(u8, cmd, "/vim")) return "Toggle vim mode";
+        if (std.mem.eql(u8, cmd, "/mouse")) return "Toggle mouse support";
         if (std.mem.eql(u8, cmd, "/wordwrap")) return "Toggle word wrap";
         if (std.mem.eql(u8, cmd, "/help")) return "Show help overlay";
         if (std.mem.eql(u8, cmd, "/quit") or std.mem.eql(u8, cmd, "/exit")) return "Exit Forge";
@@ -1190,6 +1193,7 @@ pub const App = struct {
             .notify => |args| try self.handleNotify(args),
             .wordwrap => try self.toggleWordwrap(),
             .vim => try self.toggleVimMode(),
+            .mouse => try self.toggleMouse(),
             .goto_line => |line_num| try self.gotoLine(line_num),
             .snippet => |args| try self.handleSnippet(args),
             .snippet_list => try self.listSnippets(),
@@ -2988,6 +2992,20 @@ pub const App = struct {
         } else {
             self.vim_mode = .insert;
             try self.pushSystem("Vim mode: disabled (emacs-style input restored)");
+        }
+        self.markDirty();
+    }
+
+    /// /mouse — toggle mouse support on/off.
+    /// Mouse is OFF by default to avoid raw escape sequences in terminals
+    /// that don't support SGR mouse (tmux, screen, some xterm configs).
+    fn toggleMouse(self: *App) !void {
+        if (self.term.mouse_enabled) {
+            self.term.disableMouse();
+            try self.pushSystem("Mouse: disabled. Use Arrow keys / PgUp / PgDn to scroll.");
+        } else {
+            self.term.enableMouse();
+            try self.pushSystem("Mouse: enabled. Scroll wheel to scroll, click to interact. If you see strange characters, run /mouse again to disable.");
         }
         self.markDirty();
     }
@@ -6504,7 +6522,7 @@ pub const App = struct {
             // UX: show a helpful hint when footer is empty and input is empty.
             self.frame.moveTo(footer_row, 1);
             if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-            self.frame.appendSlice("  Type / for commands | @ to mention files | ? for help | Ctrl+J newline | Ctrl+M mode") catch {};
+            self.frame.appendSlice("  Type / for commands | @ to mention files | ? for help | Arrows scroll | Ctrl+J newline | Ctrl+M mode") catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             self.frame.appendSlice("\x1b[K") catch {};
             footer_row += 1;
