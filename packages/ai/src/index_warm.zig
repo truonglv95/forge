@@ -190,6 +190,121 @@ fn backgroundWorker(ctx: *WorkerCtx) void {
     }) catch {};
 }
 
+/// P2.14: Poll the workspace for file changes since the last snapshot and
+/// trigger an incremental re-index if any files were created/modified/deleted.
+/// This is the file-watch incremental re-indexing primitive — callers should
+/// invoke this periodically (e.g. every 5s) from a background thread.
+///
+/// Returns the number of changed files detected (0 = no changes, no reindex).
+/// On change, schedules a background rebuild via scheduleBackground().
+///
+/// The `previous` snapshot is owned by the caller and updated in-place when
+/// changes are detected. On first call (previous = null), captures the
+/// snapshot without triggering a rebuild (assume the initial index is fresh).
+pub fn pollAndReindex(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    root: workspace.WorkspaceRoot,
+    workspace_path: []const u8,
+    previous: *?workspace.watch.Snapshot,
+) !u32 {
+    // Capture current snapshot.
+    var current = workspace.watch.Snapshot.capture(allocator, io, root, workspace_path) catch return 0;
+    errdefer current.deinit();
+
+    // Diff against previous.
+    const prev_ptr: ?*const workspace.watch.Snapshot = if (previous.*) |*snap| snap else null;
+    var events = workspace.watch.diff(allocator, prev_ptr, &current) catch {
+        current.deinit();
+        return 0;
+    };
+    defer events.deinit();
+
+    const changed_count: u32 = @intCast(events.items.len);
+
+    // Update previous to current (free old snapshot first).
+    if (previous.*) |*snap| snap.deinit();
+    previous.* = current;
+
+    // If there are changes and this isn't the first call, schedule a rebuild.
+    if (changed_count > 0 and prev_ptr != null) {
+        scheduleBackground(allocator, io, environ_map, root, workspace_path);
+    }
+
+    return changed_count;
+}
+
+/// P2.14: Background watcher thread context. Spawns a detached thread that
+/// polls the workspace every `poll_interval_ms` and calls pollAndReindex.
+/// The thread runs until `stop` is set to true.
+pub const WatcherCtx = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    workspace_path: []u8,
+    root: workspace.WorkspaceRoot,
+    poll_interval_ms: u32,
+    stop: std.atomic.Value(bool) = .{ .raw = false },
+};
+
+/// Start a background watcher thread. Returns a WatcherCtx pointer that the
+/// caller can use to stop the thread (set ctx.stop = true). The thread
+/// detaches itself and cleans up the ctx on exit.
+pub fn startWatcher(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    root: workspace.WorkspaceRoot,
+    workspace_path: []const u8,
+    poll_interval_ms: u32,
+) ?*WatcherCtx {
+    const ctx = allocator.create(WatcherCtx) catch return null;
+    ctx.* = .{
+        .allocator = allocator,
+        .io = io,
+        .environ_map = environ_map,
+        .workspace_path = allocator.dupe(u8, workspace_path) catch {
+            allocator.destroy(ctx);
+            return null;
+        },
+        .root = root,
+        .poll_interval_ms = poll_interval_ms,
+    };
+
+    const thread = std.Thread.spawn(.{}, watcherLoop, .{ctx}) catch {
+        allocator.free(ctx.workspace_path);
+        allocator.destroy(ctx);
+        return null;
+    };
+    thread.detach();
+    return ctx;
+}
+
+fn watcherLoop(ctx: *WatcherCtx) void {
+    defer {
+        ctx.allocator.free(ctx.workspace_path);
+        ctx.allocator.destroy(ctx);
+    }
+
+    var previous: ?workspace.watch.Snapshot = null;
+    defer if (previous) |*snap| snap.deinit();
+
+    // Initial capture (no rebuild triggered on first call).
+    _ = pollAndReindex(ctx.allocator, ctx.io, ctx.environ_map, ctx.root, ctx.workspace_path, &previous) catch {};
+
+    while (!ctx.stop.load(.acquire)) {
+        // Sleep in small increments so we can check stop frequently.
+        var waited: u32 = 0;
+        while (waited < ctx.poll_interval_ms and !ctx.stop.load(.acquire)) : (waited += 100) {
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+        }
+        if (ctx.stop.load(.acquire)) break;
+
+        _ = pollAndReindex(ctx.allocator, ctx.io, ctx.environ_map, ctx.root, ctx.workspace_path, &previous) catch {};
+    }
+}
+
 const OwnedEmbeddingOptions = struct {
     options: codebase_search.EmbeddingOptions = .{},
     owned_model: ?[]u8 = null,
