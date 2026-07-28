@@ -34,6 +34,10 @@ pub const Op = union(enum) {
     },
     refresh_context_preview,
     propose_edit: workspace.edit.WorkspaceEdit,
+    /// Wire-in: Initialize ComposerBatch when a multi-file proposal is loaded.
+    /// The UI handler calls inline_edit.initComposerBatch() + populates
+    /// the batch with file paths from the proposal.
+    composer_batch_init: struct { file_count: usize },
 
     pub fn deinit(self: *Op, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -60,6 +64,7 @@ pub const Op = union(enum) {
             .run_failed => |*payload| allocator.free(payload.message),
             .propose_edit => |*edit| edit.deinit(allocator),
             .refresh_context_preview => {},
+            .composer_batch_init => {},
         }
     }
 };

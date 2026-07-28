@@ -501,6 +501,18 @@ pub fn loadProposalPreview(host: *const Host, proposal_rel: []const u8) !void {
     if (proposal.files.len > 0) {
         host.open_file(host.context, proposal.files[0].path);
     }
+
+    // Wire-in: Initialize ComposerBatch when proposal has multiple files.
+    // This enables per-file accept/reject in the IDE review panel.
+    // The batch is populated with each file's path so the user can
+    // toggle acceptance per-file before applying.
+    if (proposal.files.len > 1) {
+        host.enqueue_ui(host.context, .{
+            .composer_batch_init = .{
+                .file_count = proposal.files.len,
+            },
+        });
+    }
 }
 
 pub fn refreshRunHistory(host: *const Host) !void {

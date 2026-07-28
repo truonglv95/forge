@@ -625,6 +625,16 @@ pub fn flushAgentUi(wb: anytype) !void {
 
                 openProposalReview(wb);
             },
+            .composer_batch_init => |payload| {
+                // Wire-in: Initialize ComposerBatch for multi-file proposals.
+                // Called when loadProposalPreview detects >1 file in the proposal.
+                wb.editor.inline_edit.initComposerBatch() catch |err| {
+                    wb.logBackgroundError("Init ComposerBatch", err);
+                };
+                var buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Composer: {d} files in proposal — use per-file accept/reject", .{payload.file_count}) catch "Composer batch initialized";
+                try wb.setStatus(msg);
+            },
         }
     }
     if (pending_context_refresh) refreshAgentContextPreview(wb);
