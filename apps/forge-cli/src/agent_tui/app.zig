@@ -55,6 +55,15 @@ const VimMode = enum {
     visual,
 };
 
+/// Render cache entry: stores decorated+wrapped display lines for a source
+/// line so we can skip the expensive decorate+wrap on the next frame.
+const CachedDisplayLines = struct {
+    lines: [][]const u8,
+    kind: LineKind,
+    block_state: u8,
+    version: u64,
+};
+
 const default_context_budget_bytes: usize = 8 * 1024 * 1024;
 
 fn contextBudgetBytes(flags: args_mod.GlobalFlags) usize {
@@ -197,6 +206,13 @@ pub const App = struct {
     render_cache_version: u64 = 0,
     render_cache_width: usize = 0,
     render_min_interval_ms: i64 = 16, // ~60fps cap
+    /// Render cache: maps line text pointer → cached wrapped display lines.
+    /// Keyed on (@intFromPtr(line.text.ptr), line.text.len, width, version).
+    /// When a line hasn't changed since last frame, we skip decorate+wrap
+    /// and reuse the cached display lines. Invalidated on width change
+    /// (version bump) or /clear (lines freed).
+    render_cache: std.AutoHashMap(u64, CachedDisplayLines) = undefined,
+    render_cache_init: bool = false,
     // Phase 68: Snippets — saved code snippets
     snippets: std.StringHashMap([]u8) = undefined,
     snippets_init: bool = false,
@@ -270,6 +286,9 @@ pub const App = struct {
         app.mention_picker_init = true;
         // Wire-in: enable SGR mouse support for scroll + click.
         app.term.enableMouse();
+        // Render cache: init HashMap.
+        app.render_cache = std.AutoHashMap(u64, CachedDisplayLines).init(app.allocator);
+        app.render_cache_init = true;
         return app;
     }
 
@@ -304,6 +323,15 @@ pub const App = struct {
         if (self.last_tool_review_kind) |kind| self.allocator.free(kind);
         // P2.11: deinit mention picker.
         if (self.mention_picker_init) self.mention_picker.deinit();
+        // Render cache: free all cached display lines.
+        if (self.render_cache_init) {
+            var it = self.render_cache.iterator();
+            while (it.next()) |entry| {
+                for (entry.value_ptr.lines) |line| self.allocator.free(line);
+                self.allocator.free(entry.value_ptr.lines);
+            }
+            self.render_cache.deinit();
+        }
         self.frame.deinit();
         self.approval.cond.deinit();
         self.approval.mutex.deinit();
@@ -6046,25 +6074,26 @@ pub const App = struct {
             }
 
             // Render cache: skip decorate+wrap if the line hasn't changed
-            // since last frame. We use a simple heuristic: compare the line's
-            // text pointer + timestamp. If the line.text pointer is the same
-            // as last frame AND the render_cache_version hasn't changed,
-            // we can skip the expensive decorate+wrap and reuse the cached
-            // display lines from the previous frame.
-            //
-            // For simplicity, we only skip lines that are NOT the last line
-            // (the last line may be actively streaming and needs re-render).
+            // since last frame. Keyed on (text_ptr, text_len, width, version).
             const is_last_line = (source_idx + 1 == source_lines.len);
             const can_cache = !is_last_line and !width_changed and !self.agent_busy;
 
-            if (can_cache and self.render_cache_version > 0) {
-                // Try to find cached display lines for this source_idx.
-                // Simple approach: if source_idx < previous frame's display
-                // line count AND the text pointer matches, reuse.
-                // This is a conservative check — we don't have a full HashMap
-                // but the pointer identity check catches the common case
-                // (lines that haven't been modified).
-                // TODO: implement full HashMap cache for O(1) lookup.
+            if (can_cache and self.render_cache_init) {
+                // Build cache key from text pointer + length + version.
+                const cache_key = std.hash.Wyhash.hash(0, std.mem.asBytes(&@intFromPtr(line.text.ptr)) ++ std.mem.asBytes(&line.text.len) ++ std.mem.asBytes(&self.render_cache_version));
+                if (self.render_cache.get(cache_key)) |cached| {
+                    // Cache hit — reuse cached display lines.
+                    for (cached.lines) |part| {
+                        const owned = self.allocator.dupe(u8, part) catch continue;
+                        wrapped_cache.append(self.allocator, owned) catch {
+                            self.allocator.free(owned);
+                            continue;
+                        };
+                        display_lines.append(self.allocator, .{ .kind = cached.kind, .text = owned, .source_idx = source_idx }) catch {};
+                        block_states.append(self.allocator, cached.block_state) catch {};
+                    }
+                    continue; // Skip decorate+wrap — used cache.
+                }
             }
 
             const decorated = self.decorateLine(line.kind, line.text) catch continue;
@@ -6073,6 +6102,43 @@ pub const App = struct {
             const wrap_width: usize = if (self.wordwrap_enabled) width else 99999;
             const wrapped = term.wrapLines(self.allocator, decorated, wrap_width) catch continue;
             defer term.freeLines(self.allocator, wrapped);
+
+            // Store in cache for next frame (only cacheable lines).
+            if (can_cache and self.render_cache_init) {
+                const cache_key = std.hash.Wyhash.hash(0, std.mem.asBytes(&@intFromPtr(line.text.ptr)) ++ std.mem.asBytes(&line.text.len) ++ std.mem.asBytes(&self.render_cache_version));
+                // Dupe the wrapped lines for cache storage.
+                const cached_lines = self.allocator.alloc([]const u8, wrapped.len) catch null;
+                if (cached_lines) |cl| {
+                    var all_duped = true;
+                    for (wrapped, 0..) |part, i| {
+                        cl[i] = self.allocator.dupe(u8, part) catch {
+                            // Free already-duped entries.
+                            for (cl[0..i]) |d| self.allocator.free(d);
+                            self.allocator.free(cl);
+                            all_duped = false;
+                            break;
+                        };
+                    }
+                    if (all_duped) {
+                        const block_state: u8 = if (line.kind == .tool) 1 else current_block;
+                        // Remove old entry if exists (free old lines).
+                        if (self.render_cache.fetchRemove(cache_key)) |old| {
+                            for (old.value.lines) |l| self.allocator.free(l);
+                            self.allocator.free(old.value.lines);
+                        }
+                        self.render_cache.put(cache_key, .{
+                            .lines = cl,
+                            .kind = line.kind,
+                            .block_state = block_state,
+                            .version = self.render_cache_version,
+                        }) catch {
+                            for (cl) |l| self.allocator.free(l);
+                            self.allocator.free(cl);
+                        };
+                    }
+                }
+            }
+
             for (wrapped) |part| {
                 const owned = self.allocator.dupe(u8, part) catch continue;
                 wrapped_cache.append(self.allocator, owned) catch {
