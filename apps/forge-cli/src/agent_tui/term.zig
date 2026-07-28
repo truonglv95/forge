@@ -597,6 +597,44 @@ pub fn displayWidth(text: []const u8) usize {
     var width: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
+        // CRITICAL: Skip ANSI escape sequences. decorateMarkdown injects
+        // color codes like \x1b[36m, \x1b[0m, \x1b[1m into the text. These
+        // are invisible (0 display width) but have byte length 4-8. If we
+        // count them as display chars, wrapLines wraps at the wrong position
+        // and truncateEnd clips text mid-escape-sequence — both cause the
+        // garbled/interleaved layout users see.
+        if (text[i] == 0x1B and i + 1 < text.len and text[i + 1] == '[') {
+            // CSI sequence: ESC [ ... <final byte 0x40-0x7E>
+            i += 2; // skip ESC [
+            while (i < text.len) {
+                const ch = text[i];
+                i += 1;
+                // Final byte is 0x40-0x7E (@, A-Z, a-z, ~, etc.)
+                if (ch >= 0x40 and ch <= 0x7E) break;
+            }
+            continue; // don't increment width
+        }
+        // OSC sequence: ESC ] ... BEL or ST (ESC \)
+        if (text[i] == 0x1B and i + 1 < text.len and text[i + 1] == ']') {
+            i += 2;
+            while (i < text.len) {
+                if (text[i] == 0x07) {
+                    i += 1;
+                    break;
+                } // BEL terminator
+                if (text[i] == 0x1B and i + 1 < text.len and text[i + 1] == '\\') {
+                    i += 2;
+                    break;
+                } // ST terminator
+                i += 1;
+            }
+            continue;
+        }
+        // Lone ESC (shouldn't happen in well-formed text, but skip it)
+        if (text[i] == 0x1B) {
+            i += 1;
+            continue;
+        }
         i += utf8SeqLen(text[i]);
         width += 1;
     }
@@ -611,11 +649,41 @@ fn utf8SeqLen(first: u8) usize {
     return 1;
 }
 
-/// Byte offset after `cols` codepoints (or end of string).
+/// Byte offset after `cols` display columns (or end of string).
+/// Skips ANSI escape sequences (they occupy 0 display columns).
 fn byteOffsetForCols(text: []const u8, cols: usize) usize {
     var i: usize = 0;
     var seen: usize = 0;
     while (i < text.len and seen < cols) {
+        // Skip ANSI escape sequences (same logic as displayWidth).
+        if (text[i] == 0x1B and i + 1 < text.len and text[i + 1] == '[') {
+            i += 2;
+            while (i < text.len) {
+                const ch = text[i];
+                i += 1;
+                if (ch >= 0x40 and ch <= 0x7E) break;
+            }
+            continue;
+        }
+        if (text[i] == 0x1B and i + 1 < text.len and text[i + 1] == ']') {
+            i += 2;
+            while (i < text.len) {
+                if (text[i] == 0x07) {
+                    i += 1;
+                    break;
+                }
+                if (text[i] == 0x1B and i + 1 < text.len and text[i + 1] == '\\') {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if (text[i] == 0x1B) {
+            i += 1;
+            continue;
+        }
         i += utf8SeqLen(text[i]);
         seen += 1;
     }
@@ -648,21 +716,42 @@ pub fn wrapLines(allocator: std.mem.Allocator, text: []const u8, width: usize) !
         lines.deinit(allocator);
     }
 
-    var start: usize = 0;
-    while (start < text.len) {
-        const slice = text[start..];
-        if (displayWidth(slice) <= width) {
-            try lines.append(allocator, try allocator.dupe(u8, slice));
-            break;
+    // CRITICAL: First split on explicit newlines (\n). Without this, multi-line
+    // text (e.g. code blocks from decorateMarkdown) would be treated as one
+    // long line and wrapped mid-word, causing the interleaved/garbled layout
+    // users see when the agent streams a code block. Each \n-separated segment
+    // is then independently wrapped to `width`.
+    var nl_iter = std.mem.splitScalar(u8, text, '\n');
+    var first = true;
+    while (nl_iter.next()) |segment| {
+        if (!first) {
+            // Preserve empty lines between content (don't trim them away).
+            try lines.append(allocator, try allocator.dupe(u8, ""));
         }
-        // Byte length of `width` codepoints (never splits a UTF-8 sequence).
-        var break_at = byteOffsetForCols(slice, width);
-        if (std.mem.lastIndexOfScalar(u8, slice[0..break_at], ' ')) |space| {
-            if (space > 0) break_at = space;
+        first = false;
+
+        if (segment.len == 0) {
+            try lines.append(allocator, try allocator.dupe(u8, ""));
+            continue;
         }
-        try lines.append(allocator, try allocator.dupe(u8, std.mem.trim(u8, slice[0..break_at], &std.ascii.whitespace)));
-        start += break_at;
-        while (start < text.len and text[start] == ' ') start += 1;
+
+        // Wrap this segment to width.
+        var start: usize = 0;
+        while (start < segment.len) {
+            const slice = segment[start..];
+            if (displayWidth(slice) <= width) {
+                try lines.append(allocator, try allocator.dupe(u8, slice));
+                break;
+            }
+            // Byte length of `width` codepoints (never splits a UTF-8 sequence).
+            var break_at = byteOffsetForCols(slice, width);
+            if (std.mem.lastIndexOfScalar(u8, slice[0..break_at], ' ')) |space| {
+                if (space > 0) break_at = space;
+            }
+            try lines.append(allocator, try allocator.dupe(u8, std.mem.trim(u8, slice[0..break_at], &std.ascii.whitespace)));
+            start += break_at;
+            while (start < segment.len and segment[start] == ' ') start += 1;
+        }
     }
     if (lines.items.len == 0) try lines.append(allocator, try allocator.dupe(u8, ""));
     return try lines.toOwnedSlice(allocator);
