@@ -115,10 +115,11 @@ pub const Terminal = struct {
         // to clean up any mouse state inherited from the parent shell. This
         // prevents raw escape sequences from leaking into the user's shell
         // after Forge exits.
-        const restore_seq: []const u8 =
+        const restore_modes_seq: []const u8 =
             "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h";
-        writeAll(restore_seq) catch {};
+        writeAll(restore_modes_seq) catch {};
         std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, self.saved) catch {};
+        writeAll("\r\x1b[K\n") catch {};
         self.active = false;
     }
 
@@ -722,14 +723,7 @@ pub fn wrapLines(allocator: std.mem.Allocator, text: []const u8, width: usize) !
     // users see when the agent streams a code block. Each \n-separated segment
     // is then independently wrapped to `width`.
     var nl_iter = std.mem.splitScalar(u8, text, '\n');
-    var first = true;
     while (nl_iter.next()) |segment| {
-        if (!first) {
-            // Preserve empty lines between content (don't trim them away).
-            try lines.append(allocator, try allocator.dupe(u8, ""));
-        }
-        first = false;
-
         if (segment.len == 0) {
             try lines.append(allocator, try allocator.dupe(u8, ""));
             continue;

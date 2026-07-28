@@ -5385,7 +5385,7 @@ pub const App = struct {
         var buf: [320]u8 = undefined;
         var file_writer = std.Io.File.Writer.init(.stdout(), io, &buf);
         const writer = &file_writer.interface;
-        try writer.print("Resume: forge agent --conversation={s} (or forge agent -c {s})\n", .{ session_id, session_id });
+        try writer.print("Resume: forge agent -c {s}\n", .{session_id});
         try writer.flush();
     }
 
@@ -5629,7 +5629,6 @@ pub const App = struct {
     }
 
     fn onStepDone(self: *App, index: u32, kind: []const u8, summary: []const u8) void {
-        _ = index;
         self.mutex.lock();
         self.active_tool_running = false;
         self.active_tool_len = 0;
@@ -5646,16 +5645,18 @@ pub const App = struct {
         const clipped = if (first.len > 420) first[0..420] else first;
         const label = toolDoneLabel(kind);
 
-        // UX: tool step display — collapsible cards with polished formatting.
-        // Uses ✓ for success, dim separator dots, and clear expand hint.
+        // UX: compact tool activity rows. Keep columns aligned so tool work
+        // reads like a timeline instead of a debug log.
         // When output has >4 lines, show a collapsed summary with line count
         // and a hint to expand. When <=4 lines, show inline (no collapse).
-        const line = if (line_count > 4)
-            std.fmt.bufPrint(&buf, "\xe2\x9c\x93 {s}  \xc2\xb7  {d} lines  \xc2\xb7  Ctrl+R to expand  \xc2\xb7  {s}", .{ label, line_count, clipped }) catch return
+        const line = if (line_count > 4 and clipped.len > 0)
+            std.fmt.bufPrint(&buf, "done {d:0>2}  {s:<15} {d} lines · Ctrl+R expand · {s}", .{ index, label, line_count, clipped }) catch return
+        else if (line_count > 4)
+            std.fmt.bufPrint(&buf, "done {d:0>2}  {s:<15} {d} lines · Ctrl+R expand", .{ index, label, line_count }) catch return
         else if (clipped.len > 0)
-            std.fmt.bufPrint(&buf, "\xe2\x9c\x93 {s}  \xc2\xb7  {s}", .{ label, clipped }) catch return
+            std.fmt.bufPrint(&buf, "done {d:0>2}  {s:<15} {s}", .{ index, label, clipped }) catch return
         else
-            std.fmt.bufPrint(&buf, "\xe2\x9c\x93 {s}", .{label}) catch return;
+            std.fmt.bufPrint(&buf, "done {d:0>2}  {s}", .{ index, label }) catch return;
         self.pushLine(.tool, self.allocator.dupe(u8, line) catch return) catch {};
         self.refreshStatus() catch {};
     }
@@ -5665,9 +5666,9 @@ pub const App = struct {
             if (ai.tool_args.parseReadFileArgs(self.allocator, args_json)) |args| {
                 defer self.allocator.free(args.path);
                 if (args.start_line != null and args.end_line != null) {
-                    return std.fmt.bufPrint(buf, "› Reading {s} lines {d}-{d} · step {d}", .{ args.path, args.start_line.?, args.end_line.?, index }) catch "› Reading file";
+                    return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} {s}:{d}-{d}", .{ index, "Reading", args.path, args.start_line.?, args.end_line.? }) catch "run       Reading";
                 }
-                return std.fmt.bufPrint(buf, "› Reading {s} · step {d}", .{ args.path, index }) catch "› Reading file";
+                return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} {s}", .{ index, "Reading", args.path }) catch "run       Reading";
             } else |_| {}
         }
 
@@ -5679,28 +5680,28 @@ pub const App = struct {
                     if (args.glob) |glob| self.allocator.free(glob);
                 }
                 const scope = args.glob orelse args.path;
-                return std.fmt.bufPrint(buf, "› Searching \"{s}\" in {s} · step {d}", .{ args.pattern, scope, index }) catch "› Searching files";
+                return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} \"{s}\" in {s}", .{ index, "Searching", args.pattern, scope }) catch "run       Searching";
             } else |_| {}
         }
 
         if (std.mem.eql(u8, tool_name, "codebase_search")) {
             if (ai.tool_args.parseCodebaseQuery(self.allocator, args_json)) |query| {
                 defer self.allocator.free(query);
-                return std.fmt.bufPrint(buf, "› Semantic search \"{s}\" · step {d}", .{ query, index }) catch "› Semantic search";
+                return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} \"{s}\"", .{ index, "Semantic", query }) catch "run       Semantic";
             } else |_| {}
         }
 
         if (std.mem.eql(u8, tool_name, "list_tree")) {
             if (ai.tool_args.parseListTreeArgs(self.allocator, args_json)) |args| {
                 defer self.allocator.free(args.path);
-                return std.fmt.bufPrint(buf, "› Listing {s} depth {d} · step {d}", .{ args.path, args.depth, index }) catch "› Listing directory";
+                return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} {s} depth {d}", .{ index, "Listing", args.path, args.depth }) catch "run       Listing";
             } else |_| {}
         }
 
         if (std.mem.eql(u8, tool_name, "run_command")) {
             if (ai.tool_args.parseRunCommand(self.allocator, args_json)) |command| {
                 defer self.allocator.free(command);
-                return std.fmt.bufPrint(buf, "› Running `{s}` · step {d}", .{ command, index }) catch "› Running command";
+                return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} `{s}`", .{ index, "Command", command }) catch "run       Command";
             } else |_| {}
         }
 
@@ -5712,9 +5713,9 @@ pub const App = struct {
         const args_preview = compactArgs(&args_buf, args_json);
         const action = getToolAction(tool_name);
         if (args_preview.len > 0) {
-            return std.fmt.bufPrint(buf, "› {s} {s} · step {d}", .{ action, args_preview, index }) catch action;
+            return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} {s}", .{ index, action, args_preview }) catch action;
         }
-        return std.fmt.bufPrint(buf, "› {s} · step {d}", .{ action, index }) catch action;
+        return std.fmt.bufPrint(buf, "run  {d:0>2}  {s}", .{ index, action }) catch action;
     }
 
     fn formatEditToolBegin(buf: []u8, args_json: []const u8, index: u32) ?[]const u8 {
@@ -5728,12 +5729,12 @@ pub const App = struct {
         defer parsed.deinit();
         const path = parsed.value.path orelse return null;
         if (parsed.value.summary) |summary| {
-            return std.fmt.bufPrint(buf, "› Editing {s} · {s} · step {d}", .{ path, summary, index }) catch null;
+            return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} {s} · {s}", .{ index, "Editing", path, summary }) catch null;
         }
         if (parsed.value.start_line != null and parsed.value.end_line != null) {
-            return std.fmt.bufPrint(buf, "› Editing {s} lines {d}-{d} · step {d}", .{ path, parsed.value.start_line.?, parsed.value.end_line.?, index }) catch null;
+            return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} {s}:{d}-{d}", .{ index, "Editing", path, parsed.value.start_line.?, parsed.value.end_line.? }) catch null;
         }
-        return std.fmt.bufPrint(buf, "› Editing {s} · step {d}", .{ path, index }) catch null;
+        return std.fmt.bufPrint(buf, "run  {d:0>2}  {s:<15} {s}", .{ index, "Editing", path }) catch null;
     }
 
     fn toolDoneLabel(kind: []const u8) []const u8 {
@@ -5793,6 +5794,10 @@ pub const App = struct {
         if (std.mem.startsWith(u8, text, "FORGE Coding Assistant initialized.")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "Context: ")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "Edited ")) return term.Style.bright_yellow;
+        if (std.mem.startsWith(u8, text, "call ")) return term.Style.cyan;
+        if (std.mem.startsWith(u8, text, "run  ")) return term.Style.yellow;
+        if (std.mem.startsWith(u8, text, "done ")) return term.Style.bright_green;
+        if (std.mem.startsWith(u8, text, "out  ")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "› ")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "$ ")) return term.Style.bright_yellow;
         if (std.mem.startsWith(u8, text, "ok ") or std.mem.startsWith(u8, text, "✓ ")) return term.Style.bright_green;
@@ -5818,17 +5823,18 @@ pub const App = struct {
         // distinguishes roles visually. This keeps the chat area uncluttered.
         return switch (kind) {
             .user => self.formatPromptLine(text),
-            .failure => std.fmt.allocPrint(self.allocator, "\xc3\x97 {s}", .{text}), // ×
-            .agent => self.decorateMarkdown(text),
-            .tool => blk: {
-                // Tool lines already have › or ✓ prefixes from formatToolBegin/
-                // onStepDone. Just dim the prefix arrow if present.
-                if (text.len > 0 and (text[0] == '\xe2' or text[0] == '\xc2')) {
-                    // UTF-8 prefix (› or ✓) — render as-is, color handled by caller.
-                    break :blk self.allocator.dupe(u8, text);
+            .failure => std.fmt.allocPrint(self.allocator, "× {s}", .{text}),
+            .agent => blk: {
+                if (self.formatToolResponseLeak(text)) |formatted| {
+                    break :blk formatted;
                 }
-                break :blk self.allocator.dupe(u8, text);
+                if (self.formatAgentToolCall(text)) |formatted| {
+                    break :blk formatted;
+                }
+                const decorated = try self.decorateMarkdown(text);
+                break :blk decorated;
             },
+            .tool => self.allocator.dupe(u8, text),
             .system => blk: {
                 // Don't add prefix to diff lines — they need clean +/- prefixes.
                 if (text.len > 0 and (text[0] == '+' or text[0] == '-' or
@@ -5843,6 +5849,119 @@ pub const App = struct {
                 break :blk self.allocator.dupe(u8, text);
             },
         };
+    }
+
+    fn formatAgentToolCall(self: *const App, text: []const u8) ?[]u8 {
+        const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
+        const json_text = toolCallJsonSlice(trimmed) orelse return null;
+
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json_text, .{}) catch return null;
+        defer parsed.deinit();
+        if (parsed.value != .object) return null;
+        const obj = parsed.value.object;
+        const name_value = obj.get("name") orelse return null;
+        if (name_value != .string) return null;
+        const name = name_value.string;
+
+        var detail_buf: [256]u8 = undefined;
+        const detail = toolCallDetail(&detail_buf, obj.get("arguments"));
+        const action = getToolAction(name);
+        if (detail.len > 0) {
+            return std.fmt.allocPrint(self.allocator, "call --  {s:<15} {s}", .{ action, detail }) catch null;
+        }
+        return std.fmt.allocPrint(self.allocator, "call --  {s}", .{action}) catch null;
+    }
+
+    fn toolCallJsonSlice(text: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
+        if (trimmed.len == 0) return null;
+
+        var candidate = trimmed;
+        if (std.mem.startsWith(u8, candidate, "```")) {
+            const first_newline = std.mem.indexOfScalar(u8, candidate, '\n') orelse return null;
+            const close = std.mem.lastIndexOf(u8, candidate, "```") orelse return null;
+            if (close <= first_newline) return null;
+            candidate = std.mem.trim(u8, candidate[first_newline + 1 .. close], &std.ascii.whitespace);
+        }
+
+        if (candidate.len == 0 or candidate[0] != '{') return null;
+        if (std.mem.indexOf(u8, candidate, "\"name\"") == null) return null;
+        if (std.mem.indexOf(u8, candidate, "\"arguments\"") == null) return null;
+        return candidate;
+    }
+
+    fn isToolResponseLeak(text: []const u8) bool {
+        return std.mem.indexOf(u8, text, "<tool_response>") != null or
+            std.mem.indexOf(u8, text, "</tool_response>") != null;
+    }
+
+    fn formatToolResponseLeak(self: *const App, text: []const u8) ?[]u8 {
+        if (!isToolResponseLeak(text)) return null;
+
+        const lines = countLines(text);
+        return std.fmt.allocPrint(self.allocator, "out  --  Tool output     hidden · {d} lines · Ctrl+R expand", .{lines}) catch null;
+    }
+
+    fn countLines(text: []const u8) usize {
+        if (text.len == 0) return 0;
+        var count: usize = 1;
+        for (text) |ch| {
+            if (ch == '\n') count += 1;
+        }
+        return count;
+    }
+
+    fn toolCallDetail(buf: []u8, arguments: ?std.json.Value) []const u8 {
+        const value = arguments orelse return "";
+        if (value != .object) return "";
+        const obj = value.object;
+
+        if (jsonValueString(obj, "path")) |path| {
+            if (jsonValueInt(obj, "depth")) |depth| {
+                return std.fmt.bufPrint(buf, "{s} depth {d}", .{ path, depth }) catch path;
+            }
+            if (jsonValueInt(obj, "start_line")) |start_line| {
+                if (jsonValueInt(obj, "end_line")) |end_line| {
+                    return std.fmt.bufPrint(buf, "{s}:{d}-{d}", .{ path, start_line, end_line }) catch path;
+                }
+            }
+            return std.fmt.bufPrint(buf, "{s}", .{path}) catch path;
+        }
+
+        if (jsonValueString(obj, "pattern")) |pattern| {
+            if (jsonValueString(obj, "glob")) |glob| {
+                return std.fmt.bufPrint(buf, "\"{s}\" in {s}", .{ pattern, glob }) catch pattern;
+            }
+            return std.fmt.bufPrint(buf, "\"{s}\"", .{pattern}) catch pattern;
+        }
+
+        if (jsonValueString(obj, "query")) |query| {
+            return std.fmt.bufPrint(buf, "\"{s}\"", .{query}) catch query;
+        }
+
+        if (jsonValueString(obj, "command")) |command| {
+            return std.fmt.bufPrint(buf, "`{s}`", .{command}) catch command;
+        }
+
+        if (jsonValueString(obj, "summary")) |summary| {
+            return std.fmt.bufPrint(buf, "{s}", .{summary}) catch summary;
+        }
+
+        return "";
+    }
+
+    fn jsonValueString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+        if (obj.get(key)) |v| {
+            if (v == .string) return v.string;
+        }
+        return null;
+    }
+
+    fn jsonValueInt(obj: std.json.ObjectMap, key: []const u8) ?i64 {
+        if (obj.get(key)) |v| {
+            if (v == .integer) return v.integer;
+        }
+        return null;
     }
 
     /// Render markdown formatting in agent output using ANSI escape codes.
@@ -5885,14 +6004,12 @@ pub const App = struct {
 
                 // Code block header — polished with language badge + line count.
                 // Uses box-drawing chars for a modern IDE feel.
-                try out.appendSlice(self.allocator, term.Style.bg_block);
                 try out.appendSlice(self.allocator, term.Style.cyan);
                 try out.appendSlice(self.allocator, "\xe2\x94\x82 "); // │
                 if (lang.len > 0) {
                     try out.appendSlice(self.allocator, term.Style.bold);
                     try out.appendSlice(self.allocator, lang);
                     try out.appendSlice(self.allocator, term.Style.reset);
-                    try out.appendSlice(self.allocator, term.Style.bg_block);
                     try out.appendSlice(self.allocator, term.Style.cyan);
                 }
                 // UX: show line count after language with a separator.
@@ -5902,7 +6019,6 @@ pub const App = struct {
                     try out.appendSlice(self.allocator, term.Style.dim);
                     try out.appendSlice(self.allocator, count_str);
                     try out.appendSlice(self.allocator, term.Style.reset);
-                    try out.appendSlice(self.allocator, term.Style.bg_block);
                     try out.appendSlice(self.allocator, term.Style.cyan);
                 }
                 try out.appendSlice(self.allocator, term.Style.reset);
@@ -5912,7 +6028,6 @@ pub const App = struct {
                 if (code_content.len > 0) {
                     try self.highlightCodeWithLineNumbers(&out, code_content, lang);
                 }
-                try out.appendSlice(self.allocator, term.Style.bg_block);
                 try out.appendSlice(self.allocator, term.Style.cyan);
                 if (close < text.len) {
                     try out.appendSlice(self.allocator, "```");
@@ -6170,7 +6285,7 @@ pub const App = struct {
         return frames[self.spinner_frame % frames.len];
     }
 
-    /// Draw the top status bar with color-coded segments (Phase 100).
+    /// Draw the top status bar with compact, low-noise segments.
     fn drawStatusBar(self: *App, cols: u16) void {
         const status_bar = @import("status_bar.zig");
         const mode_label = commands.modeLabel(self.agent_mode);
@@ -6261,10 +6376,10 @@ pub const App = struct {
         // when there are more matches than visible (or "N above" when scrolled).
         const more_hint_rows: u16 = if (show_commands and filtered_len > 0 and
             (filtered_total > filtered_len or self.command_scroll_offset > 0)) 1 else 0;
-        const footer_rows: u16 = filtered_len + more_hint_rows + approval_rows + mention_rows;
-        const status_bar_rows: u16 = 1; // Top status bar (Phase 24)
-        if (size.rows <= footer_rows + status_bar_rows + 1) return;
-        const chat_rows = size.rows - footer_rows - status_bar_rows;
+        const idle_hint_rows: u16 = if (!show_commands and !pending and !self.agent_busy and self.input.items.len == 0) 1 else 0;
+        const footer_rows: u16 = filtered_len + more_hint_rows + approval_rows + mention_rows + idle_hint_rows;
+        if (size.rows <= footer_rows + 1) return;
+        const chat_rows = size.rows - footer_rows;
 
         self.frame.begin();
 
@@ -6358,12 +6473,14 @@ pub const App = struct {
                 if (line.kind != role) continue;
             }
 
+            if (line.kind == .agent and isToolResponseLeak(line.text)) continue;
+
             if (line.kind == .agent) {
                 if (line.text.len > 0 and (line.text[0] == '>' or line.text[0] == '!')) {
                     current_block = 1;
                 } else if (current_block == 1 and line.text.len > 0 and line.text[0] != '>' and line.text[0] != '!' and !std.mem.startsWith(u8, line.text, "Thinking")) {
                     current_block = 0;
-                } else if (std.mem.startsWith(u8, line.text, "```")) {
+                } else if (std.mem.startsWith(u8, line.text, "```") and toolCallJsonSlice(line.text) == null) {
                     current_block = if (current_block == 2) 0 else 2;
                 }
             }
@@ -6468,11 +6585,7 @@ pub const App = struct {
         const start = if (total > chat_rows) total - chat_rows - source_scroll_ptr.* else 0;
         const end = @min(total, start + chat_rows);
 
-        // Draw top status bar (Phase 24) — shows model, mode, context, tokens.
-        self.drawStatusBar(size.cols);
-
-        // Chat content starts at row 2 (after status bar at row 1).
-        var row: u16 = 2;
+        var row: u16 = 1;
         var scratch: [512]u8 = undefined;
         var live_prompt_row: ?u16 = null;
         for (display_lines.items[start..end], start..) |line, i| {
@@ -6550,14 +6663,14 @@ pub const App = struct {
             row += 1;
         }
         // Clear remaining chat rows.
-        while (row <= chat_rows + 1) : (row += 1) {
+        while (row <= chat_rows) : (row += 1) {
             self.frame.moveTo(row, chat_x);
             self.frame.appendSlice("\x1b[K") catch {};
         }
 
         // Scroll indicator — show "↑ N lines above" when scrolled up (Phase 100).
         if (source_scroll_ptr.* > 0) {
-            self.frame.moveTo(2, chat_x);
+            self.frame.moveTo(1, chat_x);
             if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
             var scroll_buf: [64]u8 = undefined;
             const scroll_hint = std.fmt.bufPrint(&scroll_buf, "  ^ {d} lines above  ", .{source_scroll_ptr.*}) catch "  ^ scrolled  ";
@@ -6565,31 +6678,13 @@ pub const App = struct {
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         } else if (total > chat_rows) {
             // Show "— follow —" badge when pinned to bottom.
-            self.frame.moveTo(2, chat_x + chat_cols - 14);
+            self.frame.moveTo(1, chat_x + chat_cols - 14);
             if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
             self.frame.appendSlice("  -- follow --  ") catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         }
 
-        // Draw a polished separator line between chat area and input/footer.
-        // UX: uses box-drawing horizontal line (─) with a centered label
-        // showing the current mode badge, for a modern IDE-like feel.
-        const separator_row = chat_rows + 1;
-        self.frame.moveTo(separator_row, 1);
-        if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-        var sep_buf: [512]u8 = undefined;
-        const sep_w: usize = @min(@as(usize, size.cols), sep_buf.len);
-        @memset(sep_buf[0..sep_w], '\xe2'); // placeholder, will overwrite
-        // Use light horizontal dashes for a cleaner look.
-        var si: usize = 0;
-        while (si < sep_w) : (si += 1) {
-            sep_buf[si] = '-';
-        }
-        self.frame.appendSlice(sep_buf[0..sep_w]) catch {};
-        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-        self.frame.appendSlice("\x1b[K") catch {};
-
-        var footer_row = chat_rows + 2;
+        var footer_row = chat_rows + 1;
 
         if (show_commands) {
             if (filtered_len == 0) {
@@ -6615,21 +6710,22 @@ pub const App = struct {
                     const desc = commandDescription(cmd);
 
                     if (ci == self.command_index) {
-                        if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
-                        if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
-                        self.frame.appendSlice(" > ") catch {};
+                        if (self.term.use_color) self.frame.appendSlice(term.Style.bg_input) catch {};
+                        if (self.term.use_color) self.frame.appendSlice(term.Style.bright_cyan) catch {};
+                        self.frame.appendSlice(" / ") catch {};
                         self.frame.appendSlice(cmd) catch {};
                         if (desc.len > 0) {
-                            self.frame.appendSlice("  ") catch {};
+                            if (self.term.use_color) self.frame.appendSlice(term.Style.gray) catch {};
+                            self.frame.appendSlice("   ") catch {};
                             self.frame.appendSlice(desc) catch {};
                         }
                         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
                     } else {
                         if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-                        self.frame.appendSlice("   ") catch {};
+                        self.frame.appendSlice("   /") catch {};
                         self.frame.appendSlice(cmd) catch {};
                         if (desc.len > 0) {
-                            self.frame.appendSlice("  ") catch {};
+                            self.frame.appendSlice("   ") catch {};
                             self.frame.appendSlice(desc) catch {};
                         }
                         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
@@ -7352,6 +7448,7 @@ pub fn run(
     defer scope.deinit();
 
     var terminal = try term.Terminal.init(!parsed.flags.no_color);
+    defer terminal.deinit();
 
     var app = try App.init(allocator, io, environ_map, opened, parsed, terminal, scope);
     defer app.deinit();
@@ -7361,7 +7458,7 @@ pub fn run(
     }
 
     const code = try app.run();
-    app.printResumeHintToStdout(io) catch {};
     terminal.deinit();
+    app.printResumeHintToStdout(io) catch {};
     return code;
 }
