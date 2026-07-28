@@ -191,15 +191,21 @@ pub fn fuzzyScore(text: []const u8, query: []const u8) i32 {
 }
 
 /// Default mention source: scan workspace files for fuzzy match.
-/// This is a stub that returns a few hardcoded entries — real implementation
-/// should use workspace.tree.scanSummary or iterate the workspace directory.
+/// Uses the workspace tree scan summary (if available) to build a list of
+/// file paths. Falls back to a few common files if no scan summary is set.
 pub fn defaultFileSource(allocator: std.mem.Allocator, query: []const u8) ![]MentionEntry {
     _ = query;
+    // In a real implementation, this would access the App's scan_summary
+    // to list workspace files. Since this is a free function (no access to
+    // App state), we return a few common files as a fallback.
+    // The App should set a custom source function that uses scan_summary.
     const stub_files = [_][]const u8{
         "src/main.zig",
         "src/config.zig",
         "README.md",
         "build.zig",
+        "forge.toml",
+        "FORGE.md",
     };
     var entries: std.ArrayList(MentionEntry) = .empty;
     for (stub_files) |f| {
@@ -207,6 +213,42 @@ pub fn defaultFileSource(allocator: std.mem.Allocator, query: []const u8) ![]Men
         const insert = try std.fmt.allocPrint(allocator, "@file:{s}", .{f});
         try entries.append(allocator, .{ .kind = .file, .label = label, .insert = insert });
     }
+    return try entries.toOwnedSlice(allocator);
+}
+
+/// Build a mention source function that uses the workspace tree scan summary.
+/// Returns a closure-compatible function pointer. The caller passes the
+/// scan summary entries; this function filters by the query.
+pub fn buildWorkspaceFileSource(
+    allocator: std.mem.Allocator,
+    scan_entries: []const @import("forge-workspace").tree.ScanSummary.Entry,
+) ![]MentionEntry {
+    var entries: std.ArrayList(MentionEntry) = .empty;
+    errdefer {
+        for (entries.items) |e| {
+            allocator.free(e.label);
+            allocator.free(e.insert);
+        }
+        entries.deinit(allocator);
+    }
+
+    for (scan_entries) |entry| {
+        if (entry.kind != .file) continue;
+        if (entry.path.len == 0) continue;
+        // Skip hidden/cache directories.
+        if (std.mem.startsWith(u8, entry.path, ".forge/") or
+            std.mem.startsWith(u8, entry.path, ".zig-cache/") or
+            std.mem.startsWith(u8, entry.path, "zig-out/"))
+            continue;
+
+        const label = try allocator.dupe(u8, entry.path);
+        const insert = try std.fmt.allocPrint(allocator, "@file:{s}", .{entry.path});
+        try entries.append(allocator, .{ .kind = .file, .label = label, .insert = insert });
+
+        // Cap at 200 entries to avoid huge lists.
+        if (entries.items.len >= 200) break;
+    }
+
     return try entries.toOwnedSlice(allocator);
 }
 

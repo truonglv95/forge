@@ -31,6 +31,7 @@ const context_budget = @import("context_budget.zig");
 const EventLogger = @import("agent/event_logger.zig").EventLogger;
 const session_docs = @import("agent/session_docs.zig");
 const adaptive_budget = @import("adaptive_budget.zig");
+const agent_hooks = @import("agent_hooks.zig");
 
 pub const Config = struct {
     max_steps: u32 = 128,
@@ -95,6 +96,10 @@ pub const Config = struct {
     /// When false, the spec is still injected into context (via
     /// context_loader's include_spec_block) but not enforced as a gate.
     enforce_spec_gate: bool = false,
+    /// Wire-in #3: Loaded agent hooks (from .forge/hooks.toml). When non-null,
+    /// the agent loop calls runHooks() before/after each tool execution.
+    /// Caller is responsible for loading the hooks file and passing the list.
+    hooks: ?agent_hooks.HookList = null,
 };
 
 pub const Step = struct {
@@ -539,6 +544,7 @@ pub fn run(
             .max_context_recovery_attempts = effective_config.max_context_recovery_attempts,
             .max_conversation_bytes = effective_config.max_conversation_bytes,
             .max_conversation_compactions = effective_config.max_conversation_compactions,
+            .hooks = effective_config.hooks,
         })) |maybe_loop_state| {
             var loop_state = maybe_loop_state orelse break :blk false;
             defer loop_state.deinit(allocator);

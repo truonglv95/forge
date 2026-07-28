@@ -58,6 +58,8 @@ pub const Input = struct {
     max_context_recovery_attempts: u8 = 3,
     max_conversation_bytes: usize = 256 * 1024,
     max_conversation_compactions: u8 = 4,
+    /// Wire-in #3: Loaded hooks, passed through to loop Config.
+    hooks: ?@import("../agent_hooks.zig").HookList = null,
 };
 
 pub fn runTransport(
@@ -141,6 +143,7 @@ pub fn runNative(
             .max_context_recovery_attempts = input.max_context_recovery_attempts,
             .max_conversation_bytes = input.max_conversation_bytes,
             .max_conversation_compactions = input.max_conversation_compactions,
+            .hooks = input.hooks,
         },
     );
     return state;

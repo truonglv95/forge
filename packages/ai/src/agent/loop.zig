@@ -77,6 +77,10 @@ pub const Config = struct {
     max_context_recovery_attempts: u8 = 3,
     max_conversation_bytes: usize = 256 * 1024,
     max_conversation_compactions: u8 = 4,
+    /// Wire-in #3: Loaded agent hooks. When non-null, before_tool hooks
+    /// run before each tool dispatch. If a hook blocks, the tool call is
+    /// skipped and a block message is fed back to the model.
+    hooks: ?@import("../agent_hooks.zig").HookList = null,
 };
 
 pub const RunState = struct {
@@ -537,18 +541,26 @@ fn executeTool(
     // Wire-in #3: Run before_tool hooks. If any hook with block_on_failure
     // returns false, block the tool call and feed the block reason back to
     // the model as a tool_result.
-    {
+    if (config.hooks) |*hook_list| {
         const agent_hooks = @import("../agent_hooks.zig");
         const hook_ctx = agent_hooks.HookContext{
             .event = .before_tool,
             .tool_name = effective_call.name,
             .tool_args_json = effective_call.args_json,
         };
-        // Hooks are not loaded here (no io/root in scope). The caller is
-        // responsible for loading hooks and passing them via config.
-        // For now, this is a no-op stub that will be activated when hooks
-        // are wired into Config. The infrastructure is ready.
-        _ = hook_ctx;
+        const allowed = agent_hooks.runHooks(tool_ctx.allocator, tool_ctx.io, hook_list.items, .before_tool, hook_ctx) catch true;
+        if (!allowed) {
+            // Hook blocked the tool call — feed back to model.
+            const block_msg = std.fmt.allocPrint(allocator, "Tool `{s}` was blocked by a before_tool hook", .{effective_call.name}) catch return error.ProviderFailed;
+            defer allocator.free(block_msg);
+            if (append_call) transport.appendToolCall(allocator, conversation, effective_call) catch return error.ProviderFailed;
+            transport.appendToolResult(allocator, conversation, effective_call.name, block_msg, &.{}) catch return error.ProviderFailed;
+            if (config.step_callback) |callback| callback(config.step_context, step_index, "blocked", block_msg);
+            if (config.checkpoint_callback) |checkpoint| {
+                if (!checkpoint(config.checkpoint_context, conversation.items, step_index + 1, "", "")) return error.ProviderFailed;
+            }
+            return;
+        }
     }
 
     if (append_call) transport.appendToolCall(allocator, conversation, effective_call) catch return error.ProviderFailed;
