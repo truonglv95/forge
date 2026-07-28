@@ -6122,7 +6122,12 @@ pub const App = struct {
         self.approval.mutex.unlock();
 
         const approval_rows: u16 = if (pending) 1 else 0;
-        const footer_rows: u16 = filtered_len + approval_rows;
+        // Mention picker popup rows (when active, show up to 5 suggestions).
+        const mention_rows: u16 = if (self.mention_picker.active)
+            @min(@as(u16, 5), @as(u16, @intCast(self.mention_picker.entries.items.len)))
+        else
+            0;
+        const footer_rows: u16 = filtered_len + approval_rows + mention_rows;
         const status_bar_rows: u16 = 1; // Top status bar (Phase 24)
         if (size.rows <= footer_rows + status_bar_rows + 1) return;
         const chat_rows = size.rows - footer_rows - status_bar_rows;
@@ -6533,6 +6538,44 @@ pub const App = struct {
             if (self.term.use_color) self.frame.appendSlice(term.Style.magenta) catch {};
             self.frame.writeRow(footer_row, size.cols, term.truncateEnd(&folder_scratch, approve_line, @intCast(size.cols - 1)));
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            footer_row += 1;
+        }
+
+        // Mention picker popup render — show fuzzy-matched file entries.
+        if (self.mention_picker.active and self.mention_picker.entries.items.len > 0) {
+            const show_count: usize = @min(@as(usize, 5), self.mention_picker.entries.items.len);
+            // Header.
+            self.frame.moveTo(footer_row, 1);
+            if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+            self.frame.appendSlice(" @ mentions (↑↓ navigate, Enter select, Esc cancel):") catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            self.frame.appendSlice("\x1b[K") catch {};
+            footer_row += 1;
+
+            for (self.mention_picker.entries.items[0..show_count], 0..) |entry, i| {
+                self.frame.moveTo(footer_row, 1);
+                if (i == self.mention_picker.selected) {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+                    self.frame.appendSlice(" > ") catch {};
+                    self.frame.appendSlice(entry.label) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                } else {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                    self.frame.appendSlice("   ") catch {};
+                    self.frame.appendSlice(entry.label) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                }
+                self.frame.appendSlice("\x1b[K") catch {};
+                footer_row += 1;
+            }
+        } else if (self.mention_picker.active) {
+            // Picker active but no matches.
+            self.frame.moveTo(footer_row, 1);
+            if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+            self.frame.appendSlice(" @ no matches (Esc to cancel)") catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            self.frame.appendSlice("\x1b[K") catch {};
             footer_row += 1;
         }
 
