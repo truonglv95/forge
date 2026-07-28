@@ -49,7 +49,7 @@ pub fn render(
     col += @intCast(term.displayWidth(seg1));
     if (use_color) frame.appendSlice(term.Style.reset) catch {};
 
-    // Segment 2: Tab name (cyan)
+    // Segment 2: Tab name (cyan) — with thin separator
     if (use_color) frame.appendSlice(term.Style.cyan) catch {};
     const seg2 = std.fmt.bufPrint(&buf, " [{s}] ", .{info.tab_name}) catch " [] ";
     frame.appendSlice(seg2) catch {};
@@ -64,15 +64,24 @@ pub fn render(
     if (use_color) frame.appendSlice(term.Style.reset) catch {};
 
     // Segment 4: Mode (yellow — actionable, /mode to switch)
+    // Use a colored dot separator instead of pipe for a softer look.
+    if (use_color) frame.appendSlice(term.Style.dim) catch {};
+    frame.appendSlice("\xc2\xb7 ") catch {}; // ·
+    if (use_color) frame.appendSlice(term.Style.reset) catch {};
+    col += 2;
     if (use_color) frame.appendSlice(term.Style.yellow) catch {};
-    const seg4 = std.fmt.bufPrint(&buf, "| {s} ", .{info.mode}) catch "";
+    const seg4 = std.fmt.bufPrint(&buf, "{s} ", .{info.mode}) catch "";
     frame.appendSlice(seg4) catch {};
     col += @intCast(term.displayWidth(seg4));
     if (use_color) frame.appendSlice(term.Style.reset) catch {};
 
     // Segment 5: Context (gray) + usage bar (color-coded)
+    if (use_color) frame.appendSlice(term.Style.dim) catch {};
+    frame.appendSlice("\xc2\xb7 ") catch {}; // ·
+    if (use_color) frame.appendSlice(term.Style.reset) catch {};
+    col += 2;
     if (use_color) frame.appendSlice(term.Style.gray) catch {};
-    const seg5 = std.fmt.bufPrint(&buf, "| ctx:{s} ", .{info.context_label}) catch "";
+    const seg5 = std.fmt.bufPrint(&buf, "ctx:{s} ", .{info.context_label}) catch "";
     frame.appendSlice(seg5) catch {};
     col += @intCast(term.displayWidth(seg5));
     if (use_color) frame.appendSlice(term.Style.reset) catch {};
@@ -104,8 +113,12 @@ pub fn render(
 
     // Segment 6: Branch (magenta) — only if not "no branch"
     if (!std.mem.eql(u8, info.branch, "no branch")) {
+        if (use_color) frame.appendSlice(term.Style.dim) catch {};
+        frame.appendSlice("\xc2\xb7 ") catch {}; // ·
+        if (use_color) frame.appendSlice(term.Style.reset) catch {};
+        col += 2;
         if (use_color) frame.appendSlice(term.Style.magenta) catch {};
-        const seg6 = std.fmt.bufPrint(&buf, "| git:{s} ", .{info.branch}) catch "";
+        const seg6 = std.fmt.bufPrint(&buf, "git:{s} ", .{info.branch}) catch "";
         frame.appendSlice(seg6) catch {};
         col += @intCast(term.displayWidth(seg6));
         if (use_color) frame.appendSlice(term.Style.reset) catch {};
@@ -113,8 +126,12 @@ pub fn render(
 
     // Segment 7: Edited count (bright_yellow) — only if > 0
     if (!std.mem.eql(u8, info.edited_label, "0 edited")) {
+        if (use_color) frame.appendSlice(term.Style.dim) catch {};
+        frame.appendSlice("\xc2\xb7 ") catch {}; // ·
+        if (use_color) frame.appendSlice(term.Style.reset) catch {};
+        col += 2;
         if (use_color) frame.appendSlice(term.Style.bright_yellow) catch {};
-        const seg7 = std.fmt.bufPrint(&buf, "| {s} ", .{info.edited_label}) catch "";
+        const seg7 = std.fmt.bufPrint(&buf, "{s} ", .{info.edited_label}) catch "";
         frame.appendSlice(seg7) catch {};
         col += @intCast(term.displayWidth(seg7));
         if (use_color) frame.appendSlice(term.Style.reset) catch {};

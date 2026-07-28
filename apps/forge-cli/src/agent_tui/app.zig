@@ -5473,12 +5473,12 @@ pub const App = struct {
     };
 
     fn pushStartupIntro(self: *App) !void {
-        try self.pushSystem("FORGE Coding Assistant initialized.");
-
+        // Clean, minimal startup intro — no verbose banner.
+        // Actionable info only: workspace, mode, model, next-step hint.
         var line_buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(
             &line_buf,
-            "Workspace: {s} | Mode: {s} | Model: {s}",
+            "Workspace: {s}  \xc2\xb7  Mode: {s}  \xc2\xb7  Model: {s}",
             .{
                 self.folder_label,
                 commands.modeLabel(self.agent_mode),
@@ -5487,10 +5487,8 @@ pub const App = struct {
         ) catch "Workspace ready";
         try self.pushSystem(line);
 
-        // UX: tell user exactly what to do next. Without this hint, new users
-        // see a blank prompt and don't know how to start. The hint is short
-        // and actionable.
-        try self.pushSystem("Type a question and press Enter to ask. Press / for commands, @ to mention files, ? for help.");
+        // UX: single actionable hint line.
+        try self.pushSystem("Type a question and press Enter. Press / for commands, ? for help.");
     }
 
     fn refreshContextLabel(self: *App, intent: []const u8) ?PromptContextSummary {
@@ -6377,9 +6375,11 @@ pub const App = struct {
         const more_hint_rows: u16 = if (show_commands and filtered_len > 0 and
             (filtered_total > filtered_len or self.command_scroll_offset > 0)) 1 else 0;
         const idle_hint_rows: u16 = if (!show_commands and !pending and !self.agent_busy and self.input.items.len == 0) 1 else 0;
+        const status_bar_rows: u16 = 1; // Top status bar
+        const separator_rows: u16 = 1; // Separator line between chat and footer
         const footer_rows: u16 = filtered_len + more_hint_rows + approval_rows + mention_rows + idle_hint_rows;
-        if (size.rows <= footer_rows + 1) return;
-        const chat_rows = size.rows - footer_rows;
+        if (size.rows <= footer_rows + status_bar_rows + separator_rows) return;
+        const chat_rows = size.rows - footer_rows - status_bar_rows - separator_rows;
 
         self.frame.begin();
 
@@ -6585,7 +6585,11 @@ pub const App = struct {
         const start = if (total > chat_rows) total - chat_rows - source_scroll_ptr.* else 0;
         const end = @min(total, start + chat_rows);
 
-        var row: u16 = 1;
+        // Draw top status bar — shows model, mode, context, tokens.
+        self.drawStatusBar(size.cols);
+
+        // Chat content starts at row 2 (after status bar at row 1).
+        var row: u16 = 2;
         var scratch: [512]u8 = undefined;
         var live_prompt_row: ?u16 = null;
         for (display_lines.items[start..end], start..) |line, i| {
@@ -6662,29 +6666,55 @@ pub const App = struct {
             self.frame.appendSlice("\x1b[K") catch {};
             row += 1;
         }
-        // Clear remaining chat rows.
-        while (row <= chat_rows) : (row += 1) {
+        // Clear remaining chat rows (row 2 to chat_rows+1).
+        while (row <= chat_rows + 1) : (row += 1) {
             self.frame.moveTo(row, chat_x);
             self.frame.appendSlice("\x1b[K") catch {};
         }
 
-        // Scroll indicator — show "↑ N lines above" when scrolled up (Phase 100).
+        // Scroll indicator — polished badge in the top-right of chat area (row 2).
         if (source_scroll_ptr.* > 0) {
-            self.frame.moveTo(1, chat_x);
-            if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+            // Scrolled up: show "↑ N" badge.
             var scroll_buf: [64]u8 = undefined;
-            const scroll_hint = std.fmt.bufPrint(&scroll_buf, "  ^ {d} lines above  ", .{source_scroll_ptr.*}) catch "  ^ scrolled  ";
+            const scroll_hint = std.fmt.bufPrint(&scroll_buf, " \xe2\x86\x91 {d} ", .{source_scroll_ptr.*}) catch " \xe2\x86\x91 ";
+            const hint_w: u16 = @intCast(term.displayWidth(scroll_hint));
+            const sc_col: u16 = if (chat_cols > hint_w + 1) chat_cols - hint_w else 1;
+            self.frame.moveTo(2, chat_x + sc_col - 1);
+            if (self.term.use_color) {
+                self.frame.appendSlice(term.Style.bg_block) catch {};
+                self.frame.appendSlice(term.Style.cyan) catch {};
+                self.frame.appendSlice(term.Style.bold) catch {};
+            }
             self.frame.appendSlice(scroll_hint) catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         } else if (total > chat_rows) {
-            // Show "— follow —" badge when pinned to bottom.
-            self.frame.moveTo(1, chat_x + chat_cols - 14);
-            if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-            self.frame.appendSlice("  -- follow --  ") catch {};
+            // Pinned to bottom: show "↓ follow" badge.
+            const follow_hint = " \xe2\x86\x93 follow ";
+            const hint_w: u16 = @intCast(term.displayWidth(follow_hint));
+            const sc_col: u16 = if (chat_cols > hint_w + 1) chat_cols - hint_w else 1;
+            self.frame.moveTo(2, chat_x + sc_col - 1);
+            if (self.term.use_color) {
+                self.frame.appendSlice(term.Style.dim) catch {};
+            }
+            self.frame.appendSlice(follow_hint) catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         }
 
-        var footer_row = chat_rows + 1;
+        // Separator line between chat and footer.
+        const separator_row = chat_rows + 2;
+        self.frame.moveTo(separator_row, 1);
+        if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+        var sep_buf: [512]u8 = undefined;
+        const sep_w: usize = @min(@as(usize, size.cols), sep_buf.len);
+        var si: usize = 0;
+        while (si < sep_w) : (si += 1) {
+            sep_buf[si] = '-';
+        }
+        self.frame.appendSlice(sep_buf[0..sep_w]) catch {};
+        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        self.frame.appendSlice("\x1b[K") catch {};
+
+        var footer_row = chat_rows + 3;
 
         if (show_commands) {
             if (filtered_len == 0) {
