@@ -74,24 +74,58 @@ fn subagentWorker(sub_ctx: anytype) void {
     const agent_mod = @import("../agent.zig");
     const provider_factory = @import("../provider_factory.zig");
 
-    var provider_handle = provider_factory.create(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, .{
-        .provider_name = "fake",
-        .fake_response = "Sub-agent completed (no real provider configured).",
-    }) catch {
+    // Use the real provider from environ_map (auto-resolves based on
+    // available API keys). Falls back to fake if no credentials found.
+    const provider_opts = provider_factory.Options{
+        .provider_name = "auto",
+    };
+
+    var provider_handle = provider_factory.create(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, provider_opts) catch {
+        // Fallback to fake provider if real provider creation fails.
+        var fallback_handle = provider_factory.create(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, .{
+            .provider_name = "fake",
+            .fake_response = "Sub-agent: no provider available (set API key env var)",
+        }) catch {
+            if (sub_ctx.stream_callback) |cb| {
+                cb(sub_ctx.stream_context, "Sub-agent failed: provider creation error");
+            }
+            return;
+        };
+        defer fallback_handle.deinit(sub_ctx.allocator);
+
+        // Run with fake provider as last resort.
+        var result = agent_mod.run(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, sub_ctx.root, sub_ctx.prompt, .{
+            .max_steps = 3,
+            .provider_options = .{
+                .provider_name = "fake",
+                .fake_response = "Sub-agent: no provider available (set API key env var)",
+            },
+            .mode = .ask,
+            .capability_profile = .read_only,
+            .max_repair_attempts = 0,
+        }) catch {
+            if (sub_ctx.stream_callback) |cb| {
+                cb(sub_ctx.stream_context, "Sub-agent failed: agent.run error");
+            }
+            return;
+        };
+        defer agent_mod.deinitResult(sub_ctx.allocator, &result);
+
         if (sub_ctx.stream_callback) |cb| {
-            const msg = "Sub-agent failed: provider creation error";
-            cb(sub_ctx.stream_context, msg);
+            if (result.response_text) |text| {
+                cb(sub_ctx.stream_context, text);
+            } else {
+                cb(sub_ctx.stream_context, "Sub-agent completed (no response text)");
+            }
         }
         return;
     };
     defer provider_handle.deinit(sub_ctx.allocator);
 
+    // Run with the real provider.
     var result = agent_mod.run(sub_ctx.allocator, sub_ctx.io, sub_ctx.environ_map, sub_ctx.root, sub_ctx.prompt, .{
-        .max_steps = 3,
-        .provider_options = .{
-            .provider_name = "fake",
-            .fake_response = "Sub-agent completed (no real provider configured).",
-        },
+        .max_steps = 5,
+        .provider_options = provider_opts,
         .mode = .ask,
         .capability_profile = .read_only,
         .max_repair_attempts = 0,
