@@ -94,6 +94,7 @@ pub const index_warm = @import("index_warm.zig");
 pub const ecosystem = @import("ecosystem.zig");
 pub const task_ledger = @import("task_ledger.zig");
 pub const session_grant = @import("session_grant.zig");
+pub const skills = @import("skills.zig");
 
 pub const ProposalStatus = enum {
     draft,
