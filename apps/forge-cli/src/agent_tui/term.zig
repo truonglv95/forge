@@ -69,18 +69,19 @@ pub const Terminal = struct {
         raw.cc[@intFromEnum(std.c.V.MIN)] = 0;
         raw.cc[@intFromEnum(std.c.V.TIME)] = 1;
         try std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, raw);
-        // Enable: alt screen buffer, hide cursor, bracketed paste mode.
-        // Bracketed paste (\x1b[?2004h) allows detecting paste events so
-        // multi-line paste doesn't trigger Ctrl-char side effects.
-        try writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h");
+        // UX FIX: Don't use alt screen buffer (\x1b[?1049h). Instead, use
+        // the main screen so users can scroll back with terminal scrollback
+        // and select text after exit. Clear screen + hide cursor instead.
+        // Bracketed paste mode still enabled.
+        try writeAll("\x1b[2J\x1b[H\x1b[?25l\x1b[?2004h");
         return .{ .saved = saved, .active = true, .use_color = use_color };
     }
 
     pub fn restore(self: *Terminal) void {
         if (!self.active) return;
-        // Disable: bracketed paste, mouse, show cursor, exit alt screen.
-        var restore_seq: []const u8 = "\x1b[?2004l\x1b[?1049l\x1b[?25h";
-        if (self.mouse_enabled) restore_seq = "\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?1049l\x1b[?25h";
+        // UX FIX: No alt screen to exit — just restore cursor + disable modes.
+        var restore_seq: []const u8 = "\x1b[?2004l\x1b[?25h";
+        if (self.mouse_enabled) restore_seq = "\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h";
         writeAll(restore_seq) catch {};
         std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, self.saved) catch {};
         self.active = false;

@@ -781,12 +781,17 @@ pub const App = struct {
                         }
                         self.markDirty();
                     }
+                    self.mutex.unlock();
+                } else if (self.input.items.len == 0) {
+                    // UX FIX: Arrow Up when input is empty = scroll chat up.
+                    self.scroll +|= 3;
+                    self.markDirty();
+                    self.mutex.unlock();
                 } else {
                     self.mutex.unlock();
                     self.recallHistory(-1);
                     return;
                 }
-                self.mutex.unlock();
             },
             .down => {
                 // Wire-in #5: mention picker navigation.
@@ -814,12 +819,21 @@ pub const App = struct {
                         }
                         self.markDirty();
                     }
+                    self.mutex.unlock();
+                } else if (self.input.items.len == 0) {
+                    // UX FIX: Arrow Down when input is empty = scroll chat down.
+                    if (self.scroll >= 3) {
+                        self.scroll -= 3;
+                    } else {
+                        self.scroll = 0;
+                    }
+                    self.markDirty();
+                    self.mutex.unlock();
                 } else {
                     self.mutex.unlock();
                     self.recallHistory(1);
                     return;
                 }
-                self.mutex.unlock();
             },
             .page_up => self.scrollChatPage(1),
             .page_down => self.scrollChatPage(-1),
@@ -838,23 +852,28 @@ pub const App = struct {
                 }
                 if (self.tryProposalShortcut(ch)) return;
 
-                // Wire-in #5: @mention picker — when user types '@', open the
-                // mention picker popup. Subsequent characters filter the list.
-                // Up/Down navigate, Enter selects, Esc dismisses.
-                if (ch == '@' and !self.mention_picker.active) {
+                // UX FIX: @mention picker — only activate when '@' is typed
+                // AND there's no existing text after cursor (prevents accidental
+                // activation mid-word). When active, type normally into input;
+                // picker filters in background. Esc closes picker.
+                // The '@' char itself is inserted into input like any other char.
+                if (ch == '@' and !self.mention_picker.active and self.input.items.len == 0) {
                     self.mention_picker.open();
-                } else if (self.mention_picker.active) {
-                    if (ch == 27) { // Esc
+                    // Still insert '@' into input — user sees it.
+                }
+                // If picker is active, characters go into BOTH input and picker query.
+                // This way user sees what they type AND gets filtered suggestions.
+                if (self.mention_picker.active) {
+                    if (ch == 27) { // Esc closes picker, keeps input.
                         self.mention_picker.close();
                         self.markDirty();
                         return;
                     }
-                    // Append to picker query and refresh.
+                    // Append to picker query for filtering.
                     self.mention_picker.appendQuery(ch) catch {};
                     const mp = @import("mention_picker.zig");
                     self.mention_picker.refresh(&mp.defaultFileSource) catch {};
-                    self.markDirty();
-                    return;
+                    // ALSO insert char into input — don't swallow it!
                 }
 
                 if (ch >= 32 and ch < 127) {
