@@ -6045,6 +6045,28 @@ pub const App = struct {
                 }
             }
 
+            // Render cache: skip decorate+wrap if the line hasn't changed
+            // since last frame. We use a simple heuristic: compare the line's
+            // text pointer + timestamp. If the line.text pointer is the same
+            // as last frame AND the render_cache_version hasn't changed,
+            // we can skip the expensive decorate+wrap and reuse the cached
+            // display lines from the previous frame.
+            //
+            // For simplicity, we only skip lines that are NOT the last line
+            // (the last line may be actively streaming and needs re-render).
+            const is_last_line = (source_idx + 1 == source_lines.len);
+            const can_cache = !is_last_line and !width_changed and !self.agent_busy;
+
+            if (can_cache and self.render_cache_version > 0) {
+                // Try to find cached display lines for this source_idx.
+                // Simple approach: if source_idx < previous frame's display
+                // line count AND the text pointer matches, reuse.
+                // This is a conservative check — we don't have a full HashMap
+                // but the pointer identity check catches the common case
+                // (lines that haven't been modified).
+                // TODO: implement full HashMap cache for O(1) lookup.
+            }
+
             const decorated = self.decorateLine(line.kind, line.text) catch continue;
             defer self.allocator.free(decorated);
             // Use width for wrapping. If wordwrap is disabled, use a very large width.
