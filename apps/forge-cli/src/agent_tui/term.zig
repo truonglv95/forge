@@ -57,6 +57,14 @@ pub const Terminal = struct {
     /// P2: Accumulated paste content (owned by Terminal, freed on deinit).
     /// Caller reads this when readKey returns .paste.
     paste_buffer: std.ArrayList(u8) = .empty,
+    /// Internal read buffer. When read() returns multiple bytes (e.g. fast
+    /// typing, pasted text without bracketed-paste mode, or piped input),
+    /// we store the leftover bytes here and consume them one at a time on
+    /// subsequent readKey() calls. Without this, typing "hello" quickly
+    /// would only register "h" — the other 4 bytes were discarded.
+    read_buf: [256]u8 = undefined,
+    read_len: usize = 0,
+    read_pos: usize = 0,
     /// P2: Mouse support enabled flag. Set by enableMouse().
     mouse_enabled: bool = false,
 
@@ -66,6 +74,18 @@ pub const Terminal = struct {
         var raw = saved;
         raw.lflag.ICANON = false;
         raw.lflag.ECHO = false;
+        // CRITICAL: Disable ICRNL (input CR-to-NL mapping). Without this,
+        // the terminal converts \r (Enter key, 0x0D) to \n (0x0A) before
+        // delivering it to read(). Since our readKey maps \n (10) to
+        // .ctrl_j (multi-line newline), pressing Enter would insert a
+        // newline instead of submitting the prompt. With ICRNL disabled,
+        // Enter sends \r (13) which maps to .enter (submit). Ctrl+J still
+        // sends \n (10) directly (not affected by ICRNL), so multi-line
+        // input via Ctrl+J continues to work.
+        raw.iflag.ICRNL = false;
+        // Also disable output post-processing of \n to \r\n — we control
+        // line endings ourselves in the frame buffer.
+        raw.oflag.OPOST = false;
         raw.cc[@intFromEnum(std.c.V.MIN)] = 0;
         raw.cc[@intFromEnum(std.c.V.TIME)] = 1;
         try std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, raw);
@@ -173,9 +193,18 @@ pub const Terminal = struct {
     }
 
     pub fn readKey(self: *Terminal) !Key {
-        var buf: [256]u8 = undefined;
-        const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return error.ReadFailed;
-        if (n == 0) return .none;
+        // Consume from internal buffer first. When a previous read() returned
+        // multiple bytes, we stored them in read_buf. This ensures fast
+        // typing, pasted text, and piped input don't lose characters.
+        if (self.read_pos >= self.read_len) {
+            // Buffer exhausted — do a new read.
+            self.read_len = std.posix.read(std.posix.STDIN_FILENO, &self.read_buf) catch return error.ReadFailed;
+            self.read_pos = 0;
+            if (self.read_len == 0) return .none;
+        }
+        // Use the remaining bytes in read_buf as our "buf" for this call.
+        const buf = self.read_buf[self.read_pos..self.read_len];
+        const n = buf.len;
 
         // P2: Detect bracketed paste start sequence \x1b[200~ and accumulate
         // until end sequence \x1b[201~. This is a simplified state machine —
@@ -192,6 +221,8 @@ pub const Terminal = struct {
                     if (buf[i] == 27 and buf[i + 1] == '[' and buf[i + 2] == '2' and buf[i + 3] == '0' and buf[i + 4] == '1' and buf[i + 5] == '~') {
                         // Found end sequence. Return content between start and end.
                         const content = buf[content_start..i];
+                        // Consume all bytes up to and including the end sequence.
+                        self.read_pos += i + 6 - 0;
                         // Copy to a stable buffer (use a static buffer since
                         // we don't have an allocator here). For simplicity,
                         // return a pointer into a thread-local static buffer.
@@ -205,8 +236,8 @@ pub const Terminal = struct {
                 }
             }
             // End sequence not in this read — set pasting state and return .none.
-            // Subsequent reads will accumulate. (Simplified: we return .none
-            // and let caller retry; full impl would buffer bytes here.)
+            // Consume the paste-start bytes so they don't get re-processed.
+            self.read_pos += 6;
             self.pasting = true;
             return .none;
         }
@@ -214,9 +245,26 @@ pub const Terminal = struct {
         // P2: Detect SGR mouse sequence \x1b[<{btn};{col};{row}M or m.
         // Format: ESC [ < button ; col ; row M (press) or m (release).
         if (n >= 6 and buf[0] == 27 and buf[1] == '[' and buf[2] == '<') {
-            // Parse button;col;row M
-            return parseSgrMouse(&buf, n);
+            // Parse button;col;row M. Need to find the M/m terminator to know
+            // how many bytes to consume.
+            var term_idx: ?usize = null;
+            var i: usize = 3;
+            while (i < n) : (i += 1) {
+                if (buf[i] == 'M' or buf[i] == 'm') {
+                    term_idx = i;
+                    break;
+                }
+            }
+            if (term_idx) |ti| {
+                self.read_pos += ti + 1; // consume up to and including M/m
+                return parseSgrMouse(buf, n);
+            }
+            // Incomplete mouse sequence — wait for more bytes.
+            return .none;
         }
+
+        // Single-byte keys: consume exactly 1 byte from the buffer.
+        self.read_pos += 1;
 
         if (buf[0] == 1) return .ctrl_a;
         if (buf[0] == 3) return .ctrl_c;
@@ -224,16 +272,26 @@ pub const Terminal = struct {
         if (buf[0] == 5) return .ctrl_e;
         if (buf[0] == 10) return .ctrl_j; // Ctrl+J = LF = newline for multi-line input
         if (buf[0] == 12) return .ctrl_l;
-        if (buf[0] == 13) return .ctrl_m;
+        // CRITICAL: \r (13) = Enter key. Must check BEFORE the ctrl_m case
+        // below, because Ctrl+M sends the same byte (0x0D) as Enter in raw
+        // mode. Terminals cannot distinguish them, so we treat 13 as Enter
+        // (submit) — this is the expected behavior for a chat prompt.
+        // Ctrl+M mode-cycling is still available via the /mode command.
+        if (buf[0] == 13 or buf[0] == '\r' or buf[0] == '\n') return .enter;
         if (buf[0] == 18) return .ctrl_r;
         if (buf[0] == 21) return .ctrl_u;
         if (buf[0] == 23) return .ctrl_w;
         if (buf[0] == 25) return .ctrl_y;
-        if (buf[0] == '\r' or buf[0] == '\n') return .enter;
         if (buf[0] == 127 or buf[0] == 8) return .backspace;
         if (buf[0] == 27) {
+            // Escape sequence — may be multi-byte. We need to determine how
+            // many bytes to consume. For arrow keys / Home / End / etc.,
+            // the sequence is ESC [ <final>. For Ctrl+Tab it's ESC [ 9 ; 6 ~.
+            // For a plain Escape key, it's just ESC (1 byte).
+            // We already consumed 1 byte (the ESC). If there are more bytes
+            // that form a known sequence, consume them too.
             if (n >= 3 and buf[1] == '[') {
-                return switch (buf[2]) {
+                const result: Key = switch (buf[2]) {
                     'A' => .up,
                     'B' => .down,
                     'C' => .right,
@@ -247,11 +305,23 @@ pub const Terminal = struct {
                     '6' => if (n >= 4 and buf[3] == '~') .page_down else .escape,
                     else => .escape,
                 };
+                // Consume the [ and the final byte (and ~ if present).
+                if (result != .escape) {
+                    if (n >= 4 and buf[3] == '~') {
+                        self.read_pos += 3; // consumed: [ X ~ (3 more bytes)
+                    } else {
+                        self.read_pos += 2; // consumed: [ X (2 more bytes)
+                    }
+                }
+                return result;
             }
             // Ctrl+Tab = ESC [ 9 ; 6 ~ (some terminals) or ESC [ Z (Shift+Tab reverse)
             // Most terminals send ESC [ Z for Shift+Tab, but Ctrl+Tab varies.
             // We check for the common xterm sequence: ESC [ 9 ; 6 ~
-            if (n >= 5 and buf[1] == '[' and buf[2] == '9' and buf[3] == ';' and buf[4] == '6') return .ctrl_tab;
+            if (n >= 5 and buf[1] == '[' and buf[2] == '9' and buf[3] == ';' and buf[4] == '6') {
+                self.read_pos += 4; // consumed: [ 9 ; 6
+                return .ctrl_tab;
+            }
             return .escape;
         }
         if (buf[0] == '\t') return .tab;

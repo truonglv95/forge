@@ -166,6 +166,10 @@ pub const App = struct {
     last_tool_review: ?[]u8 = null,
     last_tool_review_kind: ?[]u8 = null,
     command_index: usize = 0,
+    /// Scroll offset within the slash command suggestion list. Allows
+    /// navigating through ALL matching commands (not just the visible page)
+    /// with Up/Down arrows. Reset to 0 whenever input changes.
+    command_scroll_offset: usize = 0,
     session_grants: ai.session_grant.SessionGrants,
     // Phase 24: TUI completeness
     show_help_overlay: bool = false,
@@ -229,10 +233,24 @@ pub const App = struct {
     current_tab_name: ?[]u8 = null,
 
     const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/copyall", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/vim", "/mouse", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/findreplace", "/translate", "/annotate", "/share", "/refactor", "/explain", "/fix", "/testgen", "/doc", "/help", "/quit", "/exit" };
-    /// Max number of slash command suggestions to display at once. Prevents
-    /// the suggestion list from overflowing small terminals (e.g. when user
-    /// types just '/', all 74 commands match but we only show the first 8).
-    const max_command_suggestions: usize = 8;
+    /// Max number of slash command suggestions to display at once. This is a
+    /// hard cap; the actual number shown is dynamic based on terminal height
+    /// (see `commandSuggestionsForHeight`). Prevents the suggestion list from
+    /// overflowing small terminals.
+    const max_command_suggestions: usize = 20;
+
+    /// Compute the number of command suggestions to show based on terminal
+    /// height. On a 24-row terminal we show ~10; on a 50-row terminal we
+    /// show ~20 (the cap). This ensures users with large terminals can see
+    /// many commands at once, while small terminals don't overflow.
+    fn commandSuggestionsForHeight(rows: u16) usize {
+        // Reserve: 1 (status bar) + 1 (separator) + 1 (input) + 1 (hint) = 4
+        // Plus we want at least 5 rows of chat visible.
+        if (rows <= 10) return 5;
+        const usable: usize = @intCast(rows);
+        const computed = if (usable > 9) usable - 9 else 1;
+        return @min(@max(computed, @as(usize, 8)), max_command_suggestions);
+    }
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -666,9 +684,9 @@ pub const App = struct {
                 const has_space = std.mem.indexOfScalar(u8, self.input.items, ' ') != null;
                 if (is_cmd and !has_space) {
                     var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
-                    const len = @min(self.getFilteredCommands(&filtered), max_command_suggestions);
-                    if (len > 0) {
-                        const idx = if (self.command_index < len) self.command_index else 0;
+                    const total = self.getFilteredCommands(&filtered);
+                    if (total > 0) {
+                        const idx = if (self.command_index < total) self.command_index else 0;
                         const chosen = filtered[idx];
                         if (std.mem.startsWith(u8, chosen, self.input.items)) {
                             self.input.clearRetainingCapacity();
@@ -684,6 +702,9 @@ pub const App = struct {
                 if (self.cursor > 0) {
                     _ = self.input.orderedRemove(self.cursor - 1);
                     self.cursor -= 1;
+                    // Reset command navigation since input changed.
+                    self.command_index = 0;
+                    self.command_scroll_offset = 0;
                 }
                 self.markDirty();
                 self.mutex.unlock();
@@ -776,12 +797,12 @@ pub const App = struct {
                 self.mutex.lock();
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
                     var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
-                    const len = @min(self.getFilteredCommands(&filtered), max_command_suggestions);
-                    if (len > 0) {
+                    const total = self.getFilteredCommands(&filtered);
+                    if (total > 0) {
                         if (self.command_index > 0) {
                             self.command_index -= 1;
                         } else {
-                            self.command_index = len - 1;
+                            self.command_index = total - 1; // wrap to last
                         }
                         self.markDirty();
                     }
@@ -814,12 +835,12 @@ pub const App = struct {
                 self.mutex.lock();
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
                     var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
-                    const len = @min(self.getFilteredCommands(&filtered), max_command_suggestions);
-                    if (len > 0) {
-                        if (self.command_index + 1 < len) {
+                    const total = self.getFilteredCommands(&filtered);
+                    if (total > 0) {
+                        if (self.command_index + 1 < total) {
                             self.command_index += 1;
                         } else {
-                            self.command_index = 0;
+                            self.command_index = 0; // wrap to first
                         }
                         self.markDirty();
                     }
@@ -885,6 +906,12 @@ pub const App = struct {
                     self.cancel_armed = false;
                     self.input.insert(self.allocator, self.cursor, ch) catch {};
                     self.cursor += 1;
+                    // Reset command navigation state when input changes.
+                    // This ensures the suggestion list reflects the new filter.
+                    if (self.input.items.len == 1 or self.input.items[0] == '/') {
+                        self.command_index = 0;
+                        self.command_scroll_offset = 0;
+                    }
                     self.markDirty();
                     self.mutex.unlock();
                 }
@@ -1082,8 +1109,17 @@ pub const App = struct {
 
     fn submitInput(self: *App) !void {
         self.mutex.lock();
-        if (self.agent_busy or self.input.items.len == 0) {
+        if (self.agent_busy) {
             self.mutex.unlock();
+            // UX: tell user the agent is busy so Enter doesn't appear dead.
+            try self.pushSystem("Agent is working... (Ctrl+C to cancel, or wait for completion)");
+            return;
+        }
+        if (self.input.items.len == 0) {
+            self.mutex.unlock();
+            // UX: show a helpful hint when Enter is pressed on empty input.
+            // Without this, users don't know what to do — Enter appears to do nothing.
+            try self.pushSystem("Type a question to ask the agent, or / for commands. Press ? for help.");
             return;
         }
         const raw = try self.allocator.dupe(u8, self.input.items);
@@ -5299,13 +5335,19 @@ pub const App = struct {
         var line_buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(
             &line_buf,
-            "Workspace ready: {s} · {s} · prompt context builds after you ask",
+            "Workspace: {s} | Mode: {s} | Model: {s}",
             .{
+                self.folder_label,
                 commands.modeLabel(self.agent_mode),
                 self.model_label,
             },
         ) catch "Workspace ready";
         try self.pushSystem(line);
+
+        // UX: tell user exactly what to do next. Without this hint, new users
+        // see a blank prompt and don't know how to start. The hint is short
+        // and actionable.
+        try self.pushSystem("Type a question and press Enter to ask. Press / for commands, @ to mention files, ? for help.");
     }
 
     fn refreshContextLabel(self: *App, intent: []const u8) ?PromptContextSummary {
@@ -6106,12 +6148,29 @@ pub const App = struct {
         const show_commands = self.input.items.len > 0 and self.input.items[0] == '/';
         var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
         var filtered_len: u16 = 0;
+        // Total matching commands (before pagination). Used to show
+        // "N more commands" hint when not all matches fit on screen.
+        var filtered_total: usize = 0;
 
         if (show_commands) {
-            const full_len = self.getFilteredCommands(&filtered);
-            filtered_len = @intCast(@min(full_len, max_command_suggestions));
-            if (filtered_len > 0 and self.command_index >= filtered_len) {
-                self.command_index = filtered_len - 1;
+            filtered_total = self.getFilteredCommands(&filtered);
+            const max_show = commandSuggestionsForHeight(size.rows);
+            filtered_len = @intCast(@min(filtered_total, max_show));
+            // Clamp command_index to total matches (not just visible page).
+            if (filtered_total > 0 and self.command_index >= filtered_total) {
+                self.command_index = filtered_total - 1;
+            }
+            // Adjust scroll offset so the selected command is visible.
+            if (filtered_total > 0) {
+                const ci = self.command_index;
+                if (ci < self.command_scroll_offset) {
+                    self.command_scroll_offset = ci;
+                } else if (ci >= self.command_scroll_offset + filtered_len) {
+                    self.command_scroll_offset = ci + 1 - filtered_len;
+                }
+                // Clamp scroll_offset to valid range.
+                const max_scroll = if (filtered_total > filtered_len) filtered_total - filtered_len else 0;
+                if (self.command_scroll_offset > max_scroll) self.command_scroll_offset = max_scroll;
             }
         }
 
@@ -6144,7 +6203,11 @@ pub const App = struct {
             @min(@as(u16, 5), @as(u16, @intCast(self.mention_picker.entries.items.len)))
         else
             0;
-        const footer_rows: u16 = filtered_len + approval_rows + mention_rows;
+        // "+1" accounts for the "N more commands" hint line that appears
+        // when there are more matches than visible (or "N above" when scrolled).
+        const more_hint_rows: u16 = if (show_commands and filtered_len > 0 and
+            (filtered_total > filtered_len or self.command_scroll_offset > 0)) 1 else 0;
+        const footer_rows: u16 = filtered_len + more_hint_rows + approval_rows + mention_rows;
         const status_bar_rows: u16 = 1; // Top status bar (Phase 24)
         if (size.rows <= footer_rows + status_bar_rows + 1) return;
         const chat_rows = size.rows - footer_rows - status_bar_rows;
@@ -6509,14 +6572,20 @@ pub const App = struct {
                 self.frame.appendSlice("\x1b[K") catch {};
                 footer_row += 1;
             } else {
-                for (filtered[0..filtered_len], 0..) |cmd, i| {
-                    const cmd_row = footer_row + @as(u16, @intCast(i));
+                // Render the visible page starting from command_scroll_offset.
+                const offset = self.command_scroll_offset;
+                const visible_end = @min(offset + filtered_len, filtered_total);
+                var visible_i: usize = 0;
+                var ci = offset;
+                while (ci < visible_end) : (ci += 1) {
+                    const cmd = filtered[ci];
+                    const cmd_row = footer_row + @as(u16, @intCast(visible_i));
                     self.frame.moveTo(cmd_row, 1);
 
                     // Get short description for this command.
                     const desc = commandDescription(cmd);
 
-                    if (i == self.command_index) {
+                    if (ci == self.command_index) {
                         if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
                         if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
                         self.frame.appendSlice(" > ") catch {};
@@ -6537,14 +6606,37 @@ pub const App = struct {
                         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
                     }
                     self.frame.appendSlice("\x1b[K") catch {};
+                    visible_i += 1;
                 }
-                footer_row += filtered_len;
+                footer_row += @intCast(visible_i);
+
+                // Show "N more" hint if there are hidden matches.
+                if (filtered_total > visible_end) {
+                    const hidden = filtered_total - visible_end;
+                    self.frame.moveTo(footer_row, 1);
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                    var more_buf: [64]u8 = undefined;
+                    const more_msg = std.fmt.bufPrint(&more_buf, "   ↓ {d} more commands (arrow down to scroll)", .{hidden}) catch "   ↓ more";
+                    self.frame.appendSlice(more_msg) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                    self.frame.appendSlice("\x1b[K") catch {};
+                    footer_row += 1;
+                } else if (offset > 0) {
+                    self.frame.moveTo(footer_row, 1);
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                    var up_buf: [64]u8 = undefined;
+                    const up_msg = std.fmt.bufPrint(&up_buf, "   ↑ {d} commands above (arrow up to scroll)", .{offset}) catch "   ↑ above";
+                    self.frame.appendSlice(up_msg) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                    self.frame.appendSlice("\x1b[K") catch {};
+                    footer_row += 1;
+                }
             }
         } else if (!pending and !self.agent_busy and self.input.items.len == 0) {
             // UX: show a helpful hint when footer is empty and input is empty.
             self.frame.moveTo(footer_row, 1);
             if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-            self.frame.appendSlice("  Type / for commands | @ to mention files | ? for help | Arrows scroll | Ctrl+J newline | Ctrl+M mode") catch {};
+            self.frame.appendSlice("  Type / for commands | @ to mention files | ? for help | Enter to send | Ctrl+J newline | /mode to switch") catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             self.frame.appendSlice("\x1b[K") catch {};
             footer_row += 1;
