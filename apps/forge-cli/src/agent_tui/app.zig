@@ -526,6 +526,19 @@ pub const App = struct {
                 self.mutex.unlock();
             },
             .enter => {
+                // Wire-in #5: mention picker — insert selected mention.
+                if (self.mention_picker.active) {
+                    if (self.mention_picker.current()) |entry| {
+                        self.mutex.lock();
+                        self.input.appendSlice(self.allocator, entry.insert) catch {};
+                        self.cursor = self.input.items.len;
+                        self.markDirty();
+                        self.mutex.unlock();
+                    }
+                    self.mention_picker.close();
+                    self.markDirty();
+                    return;
+                }
                 self.mutex.lock();
                 if (self.focus_explorer) {
                     if (self.scan_summary) |s| {
@@ -666,6 +679,12 @@ pub const App = struct {
                 self.cycleTab() catch {};
             },
             .up => {
+                // Wire-in #5: mention picker navigation.
+                if (self.mention_picker.active) {
+                    self.mention_picker.moveUp();
+                    self.markDirty();
+                    return;
+                }
                 if (self.focus_explorer) {
                     if (self.explorer_scroll_y > 0) self.explorer_scroll_y -= 1;
                     self.markDirty();
@@ -691,6 +710,12 @@ pub const App = struct {
                 self.mutex.unlock();
             },
             .down => {
+                // Wire-in #5: mention picker navigation.
+                if (self.mention_picker.active) {
+                    self.mention_picker.moveDown();
+                    self.markDirty();
+                    return;
+                }
                 if (self.focus_explorer) {
                     if (self.scan_summary) |s| {
                         if (self.explorer_scroll_y + 1 < s.entries.len) self.explorer_scroll_y += 1;
@@ -733,6 +758,26 @@ pub const App = struct {
                     return;
                 }
                 if (self.tryProposalShortcut(ch)) return;
+
+                // Wire-in #5: @mention picker — when user types '@', open the
+                // mention picker popup. Subsequent characters filter the list.
+                // Up/Down navigate, Enter selects, Esc dismisses.
+                if (ch == '@' and !self.mention_picker.active) {
+                    self.mention_picker.open();
+                } else if (self.mention_picker.active) {
+                    if (ch == 27) { // Esc
+                        self.mention_picker.close();
+                        self.markDirty();
+                        return;
+                    }
+                    // Append to picker query and refresh.
+                    self.mention_picker.appendQuery(ch) catch {};
+                    const mp = @import("mention_picker.zig");
+                    self.mention_picker.refresh(&mp.defaultFileSource) catch {};
+                    self.markDirty();
+                    return;
+                }
+
                 if (ch >= 32 and ch < 127) {
                     self.mutex.lock();
                     self.cancel_armed = false;

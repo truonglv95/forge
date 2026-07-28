@@ -301,13 +301,68 @@ pub fn run(
                 step_index += 1;
             },
             .tool_calls => |calls| {
-                // Parallel tool calls: execute sequentially in MVP (thread-safe
-                // provider handles are needed for true parallelism, tracked in
-                // RFC-0015). Each call still increments step_index and is
-                // checkpointed independently.
+                // Wire-in #1: use parallel_dispatch for read-only tools.
+                // Mutation tools (replace_file_content, run_command, etc.)
+                // are still executed sequentially for safety. Read-only tools
+                // (search, read_file, codebase_search, etc.) run on background
+                // threads (up to 4 concurrent), then results are appended to
+                // the conversation sequentially to maintain order.
+                const parallel_dispatch = @import("parallel_dispatch.zig");
+
+                // Check if ALL calls in this batch are parallel-safe.
+                // If yes, use parallel execution. If any is a mutation tool,
+                // fall back to sequential (simpler, avoids partial-apply races).
+                var all_safe = true;
                 for (calls) |call| {
-                    try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, &guard, &agent_state, step_index, true);
-                    step_index += 1;
+                    if (!parallel_dispatch.isParallelSafe(call.name)) {
+                        all_safe = false;
+                        break;
+                    }
+                }
+
+                if (all_safe and calls.len > 1) {
+                    // Parallel execution path.
+                    const results = parallel_dispatch.executeBatch(allocator, tool_ctx, mcp, calls) catch |err| switch (err) {
+                        error.OutOfMemory => return error.ProviderFailed,
+                        else => return error.ProviderFailed,
+                    };
+                    defer parallel_dispatch.freeBatch(allocator, results);
+
+                    for (results) |r| {
+                        // Append the tool_call to conversation first.
+                        transport.appendToolCall(allocator, &conversation, r.call) catch return error.ProviderFailed;
+
+                        // Append the tool_result.
+                        if (r.err) |err| {
+                            const note = std.fmt.allocPrint(allocator, "Tool `{s}` failed: {s}", .{ r.call.name, @errorName(err) }) catch return error.ProviderFailed;
+                            defer allocator.free(note);
+                            transport.appendToolResult(allocator, &conversation, r.call.name, note, &.{}) catch return error.ProviderFailed;
+                            if (config.step_callback) |callback| {
+                                callback(config.step_context, step_index, "error", note);
+                            }
+                        } else {
+                            const bounded = tool_observation.bound(allocator, r.call.name, r.result.text) catch return error.ProviderFailed;
+                            defer allocator.free(bounded);
+                            transport.appendToolResult(allocator, &conversation, r.call.name, bounded, r.result.images) catch return error.ProviderFailed;
+                            agent_state.recordToolResult(allocator, step_index, r.call.name, bounded) catch return error.ProviderFailed;
+                            if (config.step_callback) |callback| {
+                                callback(config.step_context, step_index, r.call.name, bounded);
+                            }
+                        }
+                        if (config.step_begin_callback) |callback| {
+                            callback(config.step_begin_context, step_index, r.call.name, r.call.args_json);
+                        }
+                        if (config.checkpoint_callback) |checkpoint| {
+                            if (!checkpoint(config.checkpoint_context, conversation.items, step_index + 1, "", "")) return error.ProviderFailed;
+                        }
+                        step_index += 1;
+                    }
+                } else {
+                    // Sequential execution path (mutation tools or single call).
+                    for (calls) |call| {
+                        try executeTool(allocator, transport, &conversation, call, tool_ctx, mcp, config, &guard, &agent_state, step_index, true);
+                        step_index += 1;
+                    }
                 }
             },
             .text => {
@@ -478,6 +533,23 @@ fn executeTool(
     if (!tool_registry.isToolAllowed(effective_call.name, tool_ctx.profile, mcp)) return error.NotAllowed;
     try guard.noteToolCall(effective_call.name, effective_call.args_json);
     if (config.step_begin_callback) |callback| callback(config.step_begin_context, step_index, effective_call.name, effective_call.args_json);
+
+    // Wire-in #3: Run before_tool hooks. If any hook with block_on_failure
+    // returns false, block the tool call and feed the block reason back to
+    // the model as a tool_result.
+    {
+        const agent_hooks = @import("../agent_hooks.zig");
+        const hook_ctx = agent_hooks.HookContext{
+            .event = .before_tool,
+            .tool_name = effective_call.name,
+            .tool_args_json = effective_call.args_json,
+        };
+        // Hooks are not loaded here (no io/root in scope). The caller is
+        // responsible for loading hooks and passing them via config.
+        // For now, this is a no-op stub that will be activated when hooks
+        // are wired into Config. The infrastructure is ready.
+        _ = hook_ctx;
+    }
 
     if (append_call) transport.appendToolCall(allocator, conversation, effective_call) catch return error.ProviderFailed;
     if (config.checkpoint_callback) |checkpoint| {

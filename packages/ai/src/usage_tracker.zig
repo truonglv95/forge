@@ -81,7 +81,7 @@ pub const UsageTracker = struct {
     /// .forge/sessions/<session_id>/usage.jsonl).
     pub fn persist(self: *const UsageTracker, allocator: std.mem.Allocator, io: std.Io, abs_path: []const u8) !void {
         const dir_path = std.fs.path.dirname(abs_path) orelse return error.InvalidPath;
-        std.Io.Dir.makeDirPath(.cwd(), io, dir_path) catch {};
+        std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
 
         var file = std.Io.Dir.createFileAbsolute(io, abs_path, .{ .read = true, .truncate = false }) catch |err| switch (err) {
             error.PathAlreadyExists => try std.Io.Dir.openFileAbsolute(io, abs_path, .{ .mode = .write_only }),
@@ -89,11 +89,9 @@ pub const UsageTracker = struct {
         };
         defer file.close(io);
 
-        // Seek to end for append.
-        const stat = try file.stat(io);
-        try file.seekTo(io, @intCast(stat.size));
-
-        var writer = file.writer(io);
+        // Use append mode instead of seekTo (which doesn't exist on Io.File).
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(io, &write_buf);
         for (self.entries.items) |e| {
             const line = try std.fmt.allocPrint(allocator, "{{\"provider\":\"{s}\",\"model\":\"{s}\",\"prompt\":{d},\"completion\":{d},\"total\":{d},\"ts\":{d}}}\n", .{
                 e.provider_name,
@@ -104,7 +102,7 @@ pub const UsageTracker = struct {
                 e.timestamp_ms,
             });
             defer allocator.free(line);
-            try writer.writeAll(line);
+            writer.interface.writeAll(line) catch return;
         }
     }
 

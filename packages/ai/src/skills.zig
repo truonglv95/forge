@@ -118,8 +118,8 @@ fn loadFromDir(
     var dir = std.Io.Dir.openDirAbsolute(io, dir_path, .{ .iterate = true }) catch return;
     defer dir.close(io);
 
-    var iter = dir.iterate(io);
-    while (try iter.next()) |entry| {
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
         if (entry.kind != .directory) continue;
         const skill_name = entry.name;
         const skill_file_path = std.fmt.allocPrint(allocator, "{s}/{s}/SKILL.md", .{ dir_path, skill_name }) catch continue;

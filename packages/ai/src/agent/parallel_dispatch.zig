@@ -106,7 +106,7 @@ pub fn executeBatch(
                 .name = try allocator.dupe(u8, call.name),
                 .args_json = try allocator.dupe(u8, call.args_json),
             },
-            .result = .{ .allocator = allocator, .text = "", .images = &.{} },
+            .result = .{ .text = "", .images = &.{} },
         };
     }
 
@@ -131,7 +131,7 @@ pub fn executeBatch(
 
         if (batch_end > i) {
             // Parallel batch.
-            try executeParallelBatch(allocator, tool_ctx, mcp, calls[i..batch_end], &results[i..batch_end]);
+            try executeParallelBatch(allocator, tool_ctx, mcp, calls[i..batch_end], results[i..batch_end]);
             i = batch_end;
         } else {
             // Sequential call (not parallel-safe).

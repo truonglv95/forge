@@ -67,6 +67,11 @@ pub const LoadOptions = struct {
     /// loop). When true, context_loader will scan .forge/sessions/specs/
     /// for approved specs and call formatSpecBlock on the best match.
     include_spec_block: bool = true,
+    /// Wire-in #2: Auto-inject matching skills into the context. When true,
+    /// context_loader scans .forge/skills/ + ~/.forge/skills/ for skills
+    /// whose trigger keywords match the current intent, and injects their
+    /// markdown body as rules blocks.
+    include_skills: bool = true,
 };
 
 pub const ManifestStatus = enum {
@@ -240,6 +245,11 @@ pub fn build(
 
     if (options.include_lsp_context) {
         try loadLspBlock(allocator, io, root, options, &builder);
+    }
+
+    // Wire-in #2: inject matching skills into context.
+    if (options.include_skills and options.intent != null) {
+        try loadSkillsBlock(allocator, io, root, options, &builder);
     }
 
     if (options.include_context_expansion and options.intent != null) {
@@ -1089,6 +1099,43 @@ fn loadSpecBlock(
             try builder.addBlockWithDetail(.rules, "spec:active", text, detail);
             try builder.addManifestExtra(.rules, "spec:active", spec.run_id, text.len);
         }
+    }
+}
+
+/// Wire-in #2: Load skills from .forge/skills/ + ~/.forge/skills/ and inject
+/// matching ones into the context as rules blocks. Skills are markdown files
+/// with YAML frontmatter (name/description/triggers/tools). When a skill's
+/// trigger keyword appears in the intent, the skill body is injected.
+fn loadSkillsBlock(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    root: workspace.WorkspaceRoot,
+    options: LoadOptions,
+    builder: *context.ContextBuilder,
+) !void {
+    if (!options.include_skills) return;
+    const intent = options.intent orelse return;
+    if (intent.len == 0) return;
+
+    const skills_mod = @import("skills.zig");
+    const home_dir: ?[]const u8 = blk: {
+        if (options.environ_map) |env| {
+            if (env.get("HOME")) |h| break :blk h;
+        }
+        break :blk null;
+    };
+
+    var skill_list = skills_mod.loadAll(allocator, io, root, home_dir) catch return;
+    defer skill_list.deinit();
+
+    for (skill_list.items) |*skill| {
+        if (!skills_mod.skillMatches(skill, intent)) continue;
+        const block = skills_mod.formatSkillBlock(allocator, skill) catch continue;
+        defer allocator.free(block);
+        var name_buf: [128]u8 = undefined;
+        const block_name = std.fmt.bufPrint(&name_buf, "skill:{s}", .{skill.meta.name}) catch "skill:active";
+        try builder.addBlockWithDetail(.rules, block_name, block, skill.meta.description);
+        try builder.addManifestExtra(.rules, block_name, skill.meta.name, block.len);
     }
 }
 

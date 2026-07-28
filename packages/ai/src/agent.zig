@@ -128,6 +128,30 @@ fn conversationBytes(turns: []const conversation.Turn) usize {
     return total;
 }
 
+/// Wire-in #4: Persist token usage to .forge/sessions/<session_id>/usage.jsonl
+/// for cumulative cost tracking across sessions. Called after each agent run
+/// completes (3 return paths: explore-only, inline-edits, proposal-based).
+fn persistUsageLedger(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    workspace_cwd: []const u8,
+    session_id: []const u8,
+    llm: anytype,
+) void {
+    const usage_tracker = @import("usage_tracker.zig");
+    var tracker = usage_tracker.UsageTracker.init(allocator);
+    defer tracker.deinit();
+    const meta = llm.metadata();
+    const usage = llm.usage();
+    if (usage.total_tokens == 0) return; // skip if no tokens consumed
+    tracker.record(meta.provider_name, meta.model_name, usage, std.Io.Timestamp.now(io, .real).toMilliseconds()) catch return;
+
+    // Build path: <workspace_cwd>/.forge/sessions/<session_id>/usage.jsonl
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = std.fmt.bufPrint(&path_buf, "{s}/.forge/sessions/{s}/usage.jsonl", .{ workspace_cwd, session_id }) catch return;
+    tracker.persist(allocator, io, abs_path) catch {};
+}
+
 fn autoBudgetTier(config: Config, provider_context_window: usize) context_budget.BudgetTier {
     if (config.context_budget_tier != .full) return config.context_budget_tier;
     const convo_bytes = conversationBytes(config.conversation);
@@ -594,6 +618,8 @@ pub fn run(
         workspace.sessions.persistSession(io, effective_config.workspace_cwd, session_id, completed_json) catch return error.WorkspaceFailed;
         event_logger.finalAnswer(owned_response) catch {};
         event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = @as(?[]const u8, owned_response), .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
+        // Wire-in #4: persist usage.
+        persistUsageLedger(allocator, io, effective_config.workspace_cwd, owned_session, provider_handle);
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
@@ -618,6 +644,8 @@ pub fn run(
 
         event_logger.finalAnswer(owned_response) catch {};
         event_logger.runCompleted(.{ .steps = owned_steps, .proposal_rel = null, .response_text = @as(?[]const u8, owned_response), .repair_attempts = 0, .usage = provider_handle.usage() }) catch {};
+        // Wire-in #4: persist usage.
+        persistUsageLedger(allocator, io, effective_config.workspace_cwd, owned_session, provider_handle);
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
@@ -958,6 +986,9 @@ pub fn run(
         .repair_attempts = repair_attempt,
         .usage = llm.usage(),
     }) catch {};
+
+    // Wire-in #4: persist token usage to session log for cumulative cost tracking.
+    persistUsageLedger(allocator, io, effective_config.workspace_cwd, owned_session, llm);
 
     return .{
         .session_id = owned_session,
