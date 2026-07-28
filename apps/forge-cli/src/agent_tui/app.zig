@@ -1131,7 +1131,13 @@ pub const App = struct {
 
         const cmd = commands.parseSlashCommand(raw);
         if (cmd != .not_command) {
-            self.allocator.free(raw);
+            // CRITICAL: cmd may hold slices that point into `raw` (e.g.
+            // .model_set, .save, .search, etc. all return substrings of
+            // the input). We must NOT free `raw` until after dispatchCommand
+            // finishes. Previously, freeing raw here caused use-after-free
+            // bugs where /model <name> would show "Model set to: ????" or
+            // empty because the model name slice pointed to freed memory.
+            defer self.allocator.free(raw);
             try self.dispatchCommand(cmd);
             return;
         }
@@ -1668,7 +1674,59 @@ pub const App = struct {
         var buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Current model: {s}", .{self.model_label}) catch "Current model: (unknown)";
         try self.pushSystem(line);
-        try self.pushSystem("Use /model <name> to switch model (requires restart for some providers)");
+
+        // UX: List available models so user can pick one. For Ollama, fetch
+        // locally-installed models from /api/tags. For other providers, show
+        // the builtin model table. This makes /model actually useful —
+        // previously it just said "Use /model <name>" without telling the
+        // user what names are valid.
+        try self.pushSystem("Available models:");
+
+        // Determine current provider and base_url.
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "model-list", self.io, self.opened.root);
+        defer provider_opts.deinit(self.allocator);
+        const provider_name = provider_opts.options.provider_name;
+        const base_url = provider_opts.options.base_url orelse ai.ollama_provider.default_host;
+
+        if (std.mem.eql(u8, provider_name, "ollama") or std.mem.eql(u8, provider_name, "auto")) {
+            // Try fetching local Ollama models.
+            const local_models = ai.ollama_provider.listLocalModels(self.allocator, self.io, base_url) catch &[_][]u8{};
+            defer ai.ollama_provider.freeModels(self.allocator, @constCast(local_models));
+
+            if (local_models.len > 0) {
+                try self.pushSystem("  Ollama (local, installed):");
+                for (local_models) |m| {
+                    const is_current = std.mem.eql(u8, m, provider_opts.options.model orelse "");
+                    const marker: []const u8 = if (is_current) " ← current" else "";
+                    const mline = std.fmt.bufPrint(&buf, "    {s}{s}", .{ m, marker }) catch m;
+                    try self.pushLine(.system, try self.allocator.dupe(u8, mline));
+                }
+            } else {
+                try self.pushSystem("  Ollama: server not reachable (start with: ollama serve)");
+                try self.pushSystem("  Common Ollama models: qwen2.5-coder:7b, qwen2.5-coder:14b, llama3.3:70b, codellama:7b");
+            }
+        }
+
+        // Show builtin models for the current provider.
+        const builtin_models = ai.provider_capability.modelsForProvider(provider_name);
+        var shown_builtin: usize = 0;
+        for (builtin_models) |m| {
+            if (std.mem.eql(u8, m.provider, provider_name) or std.mem.eql(u8, provider_name, "auto")) {
+                if (shown_builtin == 0) {
+                    var pbuf: [128]u8 = undefined;
+                    const header = std.fmt.bufPrint(&pbuf, "  {s} (builtin):", .{m.provider}) catch "  builtin:";
+                    try self.pushSystem(header);
+                }
+                const is_current = std.mem.eql(u8, m.model_id, provider_opts.options.model orelse "");
+                const marker: []const u8 = if (is_current) " ← current" else "";
+                const mline = std.fmt.bufPrint(&buf, "    {s} — {s}{s}", .{ m.model_id, m.display_name, marker }) catch m.model_id;
+                try self.pushLine(.system, try self.allocator.dupe(u8, mline));
+                shown_builtin += 1;
+            }
+        }
+
+        try self.pushSystem("Usage: /model <name> (e.g. /model qwen2.5-coder:7b)");
+        try self.pushSystem("Note: model change takes effect on next agent run");
     }
 
     /// /model <name> — set the model (Phase 24).
@@ -1677,10 +1735,20 @@ pub const App = struct {
             try self.showModel();
             return;
         };
+
+        // UX: Reject empty or whitespace-only model names early so the user
+        // gets immediate feedback instead of seeing "Model set to: " in the
+        // status bar with garbage.
+        const trimmed = std.mem.trim(u8, model_name, &std.ascii.whitespace);
+        if (trimmed.len == 0) {
+            try self.pushSystem("Error: model name cannot be empty. Use /model to list available models.");
+            return;
+        }
+
         // Free old label and set new one.
         self.mutex.lock();
         self.allocator.free(self.model_label);
-        self.model_label = self.allocator.dupe(u8, model_name) catch {
+        self.model_label = self.allocator.dupe(u8, trimmed) catch {
             self.model_label = "unknown";
             self.mutex.unlock();
             try self.pushSystem("Failed to set model (out of memory)");
@@ -1688,7 +1756,7 @@ pub const App = struct {
         };
         self.mutex.unlock();
         var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Model set to: {s}", .{model_name}) catch "Model updated";
+        const msg = std.fmt.bufPrint(&buf, "Model set to: {s}", .{trimmed}) catch "Model updated";
         try self.pushSystem(msg);
         try self.pushSystem("Note: model change takes effect on next agent run");
     }

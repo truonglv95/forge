@@ -360,6 +360,74 @@ pub fn isReachable(allocator: std.mem.Allocator, io: std.Io, base_url: []const u
     return result.status == .ok;
 }
 
+/// Fetch the list of locally-installed models from Ollama's /api/tags endpoint.
+/// Returns an owned array of owned model name strings. Caller must free each
+/// string and the array itself via freeModels.
+///
+/// Returns an empty slice if the server is unreachable or returns no models.
+/// This is a best-effort fetch — errors are swallowed so /model list always
+/// shows something useful (falling back to the builtin model table).
+pub fn listLocalModels(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    base_url: []const u8,
+) ![][]u8 {
+    const endpoint = buildTagsEndpoint(allocator, base_url) catch return &.{};
+    defer allocator.free(endpoint);
+
+    var client = std.http.Client{
+        .allocator = allocator,
+        .io = io,
+    };
+    defer client.deinit();
+
+    var response_alloc = std.Io.Writer.Allocating.init(allocator);
+    defer response_alloc.deinit();
+
+    const result = client.fetch(.{
+        .location = .{ .url = endpoint },
+        .method = .GET,
+        .response_writer = &response_alloc.writer,
+    }) catch return &.{};
+
+    if (result.status != .ok) return &.{};
+    const body = response_alloc.writer.buffer[0..response_alloc.writer.end];
+    if (body.len == 0) return &.{};
+
+    // Parse JSON: { "models": [ { "name": "qwen2.5-coder:7b", ... }, ... ] }
+    // We use a minimal scan since std.json.parseFromSlice may have issues with
+    // the Ollama response shape. Just extract all "name":"..." values.
+    var models: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (models.items) |m| allocator.free(m);
+        models.deinit(allocator);
+    }
+
+    var i: usize = 0;
+    const needle = "\"name\":\"";
+    while (i < body.len) {
+        if (i + needle.len > body.len) break;
+        if (std.mem.eql(u8, body[i .. i + needle.len], needle)) {
+            const start = i + needle.len;
+            const end = std.mem.indexOfScalarPos(u8, body, start, '"') orelse break;
+            const name = body[start..end];
+            const owned = try allocator.dupe(u8, name);
+            try models.append(allocator, owned);
+            i = end + 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    return try models.toOwnedSlice(allocator);
+}
+
+/// Free a list of model names returned by listLocalModels.
+pub fn freeModels(allocator: std.mem.Allocator, models: [][]u8) void {
+    for (models) |m| allocator.free(m);
+    allocator.free(models);
+}
+
 fn trimTrailingSlash(url: []const u8) []const u8 {
     var end = url.len;
     while (end > 0 and url[end - 1] == '/') end -= 1;
