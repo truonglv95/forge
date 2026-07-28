@@ -5627,16 +5627,35 @@ pub const App = struct {
                     lang = std.mem.trim(u8, text[i + 3 .. fence_end], &std.ascii.whitespace);
                 }
                 // Render code block with syntax highlighting (Phase 31)
+                // UX: show language label + line count in the fence header.
+                const code_start = fence_end;
+                const code_end = close;
+                const code_content = if (code_start < code_end) text[code_start..code_end] else "";
+
+                // Count lines in code block for the header.
+                var code_line_count: usize = 1;
+                for (code_content) |ch| {
+                    if (ch == '\n') code_line_count += 1;
+                }
+
                 try out.appendSlice(self.allocator, term.Style.bg_block);
                 try out.appendSlice(self.allocator, term.Style.cyan);
                 try out.appendSlice(self.allocator, "```");
-                try out.appendSlice(self.allocator, lang);
+                if (lang.len > 0) {
+                    try out.appendSlice(self.allocator, lang);
+                }
+                // UX: show line count after language.
+                if (code_line_count > 1) {
+                    var count_buf: [32]u8 = undefined;
+                    const count_str = std.fmt.bufPrint(&count_buf, " ({d} lines)", .{code_line_count}) catch "";
+                    try out.appendSlice(self.allocator, count_str);
+                }
                 try out.appendSlice(self.allocator, term.Style.reset);
-                // Highlight code content
-                const code_start = fence_end;
-                const code_end = close;
-                if (code_start < code_end) {
-                    try self.highlightCode(&out, text[code_start..code_end], lang);
+                try out.append(self.allocator, '\n');
+
+                // Highlight code content with line numbers.
+                if (code_content.len > 0) {
+                    try self.highlightCodeWithLineNumbers(&out, code_content, lang);
                 }
                 try out.appendSlice(self.allocator, term.Style.bg_block);
                 try out.appendSlice(self.allocator, term.Style.cyan);
@@ -5732,56 +5751,94 @@ pub const App = struct {
     /// Highlights comments, strings, and language-specific keywords.
     /// Supports: zig, python/py, javascript/js, typescript/ts, go, rust, c.
     fn highlightCode(self: *const App, out: *std.ArrayList(u8), code: []const u8, lang: []const u8) !void {
+        try self.highlightCodeWithLineNumbers(out, code, lang);
+    }
+
+    /// UX: Syntax highlighting with line numbers.
+    /// Each line is prefixed with a dim line number (1-based, right-aligned
+    /// to 3 digits) for easy reference when discussing code.
+    fn highlightCodeWithLineNumbers(self: *const App, out: *std.ArrayList(u8), code: []const u8, lang: []const u8) !void {
         const use_hash_comment = std.mem.eql(u8, lang, "python") or std.mem.eql(u8, lang, "py");
 
+        var line_num: usize = 1;
+        var line_start: usize = 0;
         var i: usize = 0;
-        while (i < code.len) {
+
+        while (i <= code.len) {
+            // Process line by line.
+            const line_end = std.mem.indexOfScalarPos(u8, code, i, '\n') orelse code.len;
+            const line = code[line_start..line_end];
+
+            // Print line number (dim, right-aligned to 3 chars).
+            var num_buf: [8]u8 = undefined;
+            const num_str = std.fmt.bufPrint(&num_buf, "{d:>3} ", .{line_num}) catch "    ";
+            try out.appendSlice(self.allocator, term.Style.dim);
+            try out.appendSlice(self.allocator, num_str);
+            try out.appendSlice(self.allocator, term.Style.reset);
+
+            // Highlight this line.
+            try self.highlightCodeLine(out, line, lang, use_hash_comment);
+
+            // Add newline (except for the last line if no trailing newline).
+            if (line_end < code.len) {
+                try out.append(self.allocator, '\n');
+            }
+
+            line_num += 1;
+            line_start = line_end + 1;
+            i = line_start;
+            if (line_start > code.len) break;
+        }
+    }
+
+    /// Highlight a single line of code (no line number).
+    fn highlightCodeLine(self: *const App, out: *std.ArrayList(u8), line: []const u8, lang: []const u8, use_hash_comment: bool) !void {
+        var i: usize = 0;
+        while (i < line.len) {
             // Line comment: // or #
-            if (!use_hash_comment and i + 2 <= code.len and code[i] == '/' and code[i + 1] == '/') {
-                const eol = std.mem.indexOfScalarPos(u8, code, i, '\n') orelse code.len;
+            if (!use_hash_comment and i + 2 <= line.len and line[i] == '/' and line[i + 1] == '/') {
                 try out.appendSlice(self.allocator, term.Style.gray);
-                try out.appendSlice(self.allocator, code[i..eol]);
+                try out.appendSlice(self.allocator, line[i..]);
                 try out.appendSlice(self.allocator, term.Style.reset);
-                i = eol;
+                i = line.len;
                 continue;
             }
-            if (use_hash_comment and code[i] == '#') {
-                const eol = std.mem.indexOfScalarPos(u8, code, i, '\n') orelse code.len;
+            if (use_hash_comment and line[i] == '#') {
                 try out.appendSlice(self.allocator, term.Style.gray);
-                try out.appendSlice(self.allocator, code[i..eol]);
+                try out.appendSlice(self.allocator, line[i..]);
                 try out.appendSlice(self.allocator, term.Style.reset);
-                i = eol;
+                i = line.len;
                 continue;
             }
             // String literal: "..." or '...'
-            if (code[i] == '"' or code[i] == '\'') {
-                const quote = code[i];
+            if (line[i] == '"' or line[i] == '\'') {
+                const quote = line[i];
                 try out.appendSlice(self.allocator, term.Style.green);
                 try out.append(self.allocator, quote);
                 var j = i + 1;
-                while (j < code.len and code[j] != quote) : (j += 1) {
-                    if (code[j] == '\\' and j + 1 < code.len) j += 1; // skip escaped
+                while (j < line.len and line[j] != quote) : (j += 1) {
+                    if (line[j] == '\\' and j + 1 < line.len) j += 1; // skip escaped
                 }
-                if (j < code.len) {
-                    try out.appendSlice(self.allocator, code[i + 1 .. j]);
+                if (j < line.len) {
+                    try out.appendSlice(self.allocator, line[i + 1 .. j]);
                     try out.append(self.allocator, quote);
                     try out.appendSlice(self.allocator, term.Style.reset);
                     i = j + 1;
                 } else {
-                    try out.appendSlice(self.allocator, code[i + 1 ..]);
+                    try out.appendSlice(self.allocator, line[i + 1 ..]);
                     try out.appendSlice(self.allocator, term.Style.reset);
-                    i = code.len;
+                    i = line.len;
                 }
                 continue;
             }
             // Keyword highlighting — check word boundaries
-            if (std.ascii.isAlphabetic(code[i])) {
+            if (std.ascii.isAlphabetic(line[i])) {
                 const word_end = blk: {
                     var j = i;
-                    while (j < code.len and (std.ascii.isAlphanumeric(code[j]) or code[j] == '_')) j += 1;
+                    while (j < line.len and (std.ascii.isAlphanumeric(line[j]) or line[j] == '_')) j += 1;
                     break :blk j;
                 };
-                const word = code[i..word_end];
+                const word = line[i..word_end];
                 if (isKeyword(word, lang)) {
                     try out.appendSlice(self.allocator, term.Style.yellow);
                     try out.appendSlice(self.allocator, word);
@@ -5796,7 +5853,7 @@ pub const App = struct {
                 i = word_end;
                 continue;
             }
-            try out.append(self.allocator, code[i]);
+            try out.append(self.allocator, line[i]);
             i += 1;
         }
     }
