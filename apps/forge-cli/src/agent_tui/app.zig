@@ -478,10 +478,12 @@ pub const App = struct {
         }
     }
 
-    /// Tab-complete file paths for commands that take path arguments (Phase 43).
+    /// Tab-complete file paths for commands that take path arguments.
     /// Returns true if a completion was attempted (input was modified or
     /// the context was a path completion context, even if no match found).
-    /// Commands: /complete, /save, /spec show
+    /// UX: now supports ALL commands that take file path arguments, not
+    /// just /complete, /save, /spec show. Any command with a space followed
+    /// by a path-like argument will trigger path completion.
     fn completeFilePath(self: *App) bool {
         const input = self.input.items;
         // Check if input contains a space (command + argument).
@@ -489,29 +491,28 @@ pub const App = struct {
         const cmd = input[0..space_idx];
         const arg = std.mem.trim(u8, input[space_idx + 1 ..], &std.ascii.whitespace);
 
-        // Only complete for commands that take file paths.
-        const is_path_cmd = std.mem.eql(u8, cmd, "/complete") or
-            std.mem.eql(u8, cmd, "/save") or
-            std.mem.eql(u8, cmd, "/spec");
-        if (!is_path_cmd) return false;
-
-        // For /spec, only complete if it's "show" subcommand
-        if (std.mem.eql(u8, cmd, "/spec")) {
-            if (!std.mem.startsWith(u8, arg, "show ")) return false;
+        // UX: path completion is available for ALL slash commands that have
+        // a space-delimited argument. This is not hardcoded to specific
+        // commands — any command can benefit from path completion.
+        // We skip commands that are known to NOT take path arguments.
+        const no_path_cmds = [_][]const u8{ "/clear", "/cls", "/mode", "/context", "/help", "/quit", "/exit", "/version", "/cost", "/stats", "/config", "/theme", "/vim", "/wordwrap", "/notify", "/compact", "/policy", "/tools", "/capability", "/provider" };
+        for (no_path_cmds) |npc| {
+            if (std.mem.eql(u8, cmd, npc)) return false;
         }
 
         // If arg is empty, we can't complete — just return true to skip
         // command suggestion.
         if (arg.len == 0) return true;
 
-        // Extract the partial path (for /spec show, skip "show " prefix).
+        // Extract the partial path. For commands with subcommands (like
+        // /spec show <path>), take the last token as the partial path.
         var partial: []const u8 = arg;
-        if (std.mem.eql(u8, cmd, "/spec") and std.mem.startsWith(u8, arg, "show ")) {
-            partial = std.mem.trim(u8, arg[5..], &std.ascii.whitespace);
+        // Check if arg has a space — if so, the last token is the path.
+        if (std.mem.lastIndexOfScalar(u8, arg, ' ')) |last_space| {
+            partial = std.mem.trim(u8, arg[last_space + 1 ..], &std.ascii.whitespace);
         }
 
         // Try to list directory contents matching the partial path.
-        // Simple approach: if partial has no slash, list workspace root.
         const last_slash = std.mem.lastIndexOfScalar(u8, partial, '/');
         const dir_part = if (last_slash) |s| partial[0..s] else ".";
         const file_part = if (last_slash) |s| partial[s + 1 ..] else partial;
@@ -5156,6 +5157,9 @@ pub const App = struct {
     }
 
     fn showLastToolReview(self: *App) !void {
+        // UX: expand collapsed tool output — shows full output inline.
+        // Acts as a collapsible/expandable card: onStepDone collapses (>4 lines),
+        // Ctrl+R expands by inserting the full output into the chat.
         const Snapshot = struct { kind: []u8, text: []u8 };
         const snap: ?Snapshot = blk: {
             self.mutex.lock();
@@ -5173,7 +5177,8 @@ pub const App = struct {
         if (snap) |review| {
             defer self.allocator.free(review.kind);
             defer self.allocator.free(review.text);
-            const header = try std.fmt.allocPrint(self.allocator, "--- full {s} output ---", .{review.kind});
+            // UX: visual header for expanded tool output.
+            const header = try std.fmt.allocPrint(self.allocator, "┌─ {s} output (expanded) ─┐", .{review.kind});
             try self.pushLine(.tool, header);
             var lines = std.mem.splitScalar(u8, review.text, '\n');
             var shown: usize = 0;
@@ -5182,10 +5187,12 @@ pub const App = struct {
                 try self.pushLine(.tool, try self.allocator.dupe(u8, line));
                 shown += 1;
                 if (shown >= 240) {
-                    try self.pushLine(.tool, try self.allocator.dupe(u8, "… truncated review at 240 lines"));
+                    try self.pushLine(.tool, try self.allocator.dupe(u8, "… truncated at 240 lines (use forge agent events for full log)"));
                     break;
                 }
             }
+            const footer = try self.allocator.dupe(u8, "└─────────────────────────────┘");
+            try self.pushLine(.tool, footer);
         } else {
             try self.pushSystem("No collapsed tool output to review yet");
         }
@@ -5399,8 +5406,12 @@ pub const App = struct {
         const line_count = countNonEmptyLines(summary);
         const clipped = if (first.len > 420) first[0..420] else first;
         const label = toolDoneLabel(kind);
+
+        // UX: tool step display — collapsible cards.
+        // When output has >4 lines, show a collapsed summary with line count
+        // and a hint to expand. When <=4 lines, show inline (no collapse).
         const line = if (line_count > 4)
-            std.fmt.bufPrint(&buf, "✓ {s} · {d} output lines hidden · ctrl+r to review · {s}", .{ label, line_count, clipped }) catch return
+            std.fmt.bufPrint(&buf, "✓ {s} · {d} lines (Ctrl+R to expand) · {s}", .{ label, line_count, clipped }) catch return
         else if (clipped.len > 0)
             std.fmt.bufPrint(&buf, "✓ {s} · {s}", .{ label, clipped }) catch return
         else
