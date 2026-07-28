@@ -188,6 +188,11 @@ pub const App = struct {
     // h/j/k/l movement, dd/yy/p, :%s/foo/bar/g). Default off (emacs-style).
     vim_enabled: bool = false,
     vim_mode: VimMode = .insert,
+    // P2.11: @mention picker state. When active, the input handler shows a
+    // popup with fuzzy-matched file/symbol/docs entries. User navigates with
+    // ↑/↓, selects with Enter, dismisses with Esc.
+    mention_picker: @import("mention_picker.zig").PickerState = undefined,
+    mention_picker_init: bool = false,
     // Rendering optimization: cached wrapped lines + render throttle
     render_cache_version: u64 = 0,
     render_cache_width: usize = 0,
@@ -256,6 +261,9 @@ pub const App = struct {
         app.cli_config = loaded_config;
         app.show_explorer = loaded_config.show_explorer;
         app.show_editor = loaded_config.show_editor;
+        // P2.11: init mention picker.
+        app.mention_picker = @import("mention_picker.zig").PickerState.init(allocator);
+        app.mention_picker_init = true;
         return app;
     }
 
@@ -288,6 +296,8 @@ pub const App = struct {
         if (self.last_session_id) |id| self.allocator.free(id);
         if (self.last_tool_review) |text| self.allocator.free(text);
         if (self.last_tool_review_kind) |kind| self.allocator.free(kind);
+        // P2.11: deinit mention picker.
+        if (self.mention_picker_init) self.mention_picker.deinit();
         self.frame.deinit();
         self.approval.cond.deinit();
         self.approval.mutex.deinit();
