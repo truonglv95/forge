@@ -213,6 +213,10 @@ pub const App = struct {
     current_tab_name: ?[]u8 = null,
 
     const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/copyall", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/vim", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/findreplace", "/translate", "/annotate", "/share", "/refactor", "/explain", "/fix", "/testgen", "/doc", "/help", "/quit", "/exit" };
+    /// Max number of slash command suggestions to display at once. Prevents
+    /// the suggestion list from overflowing small terminals (e.g. when user
+    /// types just '/', all 74 commands match but we only show the first 8).
+    const max_command_suggestions: usize = 8;
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -566,7 +570,7 @@ pub const App = struct {
                 const has_space = std.mem.indexOfScalar(u8, self.input.items, ' ') != null;
                 if (is_cmd and !has_space) {
                     var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
-                    const len = self.getFilteredCommands(&filtered);
+                    const len = @min(self.getFilteredCommands(&filtered), max_command_suggestions);
                     if (len > 0) {
                         const idx = if (self.command_index < len) self.command_index else 0;
                         const chosen = filtered[idx];
@@ -670,7 +674,7 @@ pub const App = struct {
                 self.mutex.lock();
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
                     var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
-                    const len = self.getFilteredCommands(&filtered);
+                    const len = @min(self.getFilteredCommands(&filtered), max_command_suggestions);
                     if (len > 0) {
                         if (self.command_index > 0) {
                             self.command_index -= 1;
@@ -697,7 +701,7 @@ pub const App = struct {
                 self.mutex.lock();
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
                     var filtered: [ALL_COMMANDS.len][]const u8 = undefined;
-                    const len = self.getFilteredCommands(&filtered);
+                    const len = @min(self.getFilteredCommands(&filtered), max_command_suggestions);
                     if (len > 0) {
                         if (self.command_index + 1 < len) {
                             self.command_index += 1;
@@ -5798,7 +5802,8 @@ pub const App = struct {
         var filtered_len: u16 = 0;
 
         if (show_commands) {
-            filtered_len = @intCast(self.getFilteredCommands(&filtered));
+            const full_len = self.getFilteredCommands(&filtered);
+            filtered_len = @intCast(@min(full_len, max_command_suggestions));
             if (filtered_len > 0 and self.command_index >= filtered_len) {
                 self.command_index = filtered_len - 1;
             }

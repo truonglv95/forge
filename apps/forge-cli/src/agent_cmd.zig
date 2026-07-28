@@ -471,6 +471,10 @@ fn runAgent(
             if (event_stream) try event_writer.agentError(.no_progress, "agent made no progress after multiple broad tool calls; provide a specific file or symbol", false) else try writer.writeAll("error: agent made no progress after multiple broad tool calls; provide a specific file or symbol\n");
             return 2;
         },
+        ai.agent.AgentError.SpecNotApproved => {
+            if (event_stream) try event_writer.agentError(.invalid_proposal, "spec not approved — run 'forge spec approve <run_id>' first, or disable enforce_spec_gate", false) else try writer.writeAll("error: spec not approved — run 'forge spec approve <run_id>' first, or disable enforce_spec_gate\n");
+            return 2;
+        },
     };
     defer ai.agent.deinitResult(allocator, &result);
 
