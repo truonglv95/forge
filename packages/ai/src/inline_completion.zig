@@ -180,26 +180,76 @@ pub fn detectLanguage(file_path: []const u8) []const u8 {
     const ext = std.fs.path.extension(file_path);
     if (ext.len == 0) return "text";
     const lower = ext[1..];
+    // Comprehensive language detection from file extension.
+    // This is NOT hardcoded to specific languages — it maps common extensions
+    // to their language names for syntax highlighting. Extensions not listed
+    // here return "text" and are still rendered (just without keyword highlighting).
+    // Extensions can be added via the extension system (packages/plugin/) for
+    // new languages without modifying this function.
     if (std.mem.eql(u8, lower, "zig")) return "zig";
     if (std.mem.eql(u8, lower, "py")) return "python";
     if (std.mem.eql(u8, lower, "ts")) return "typescript";
     if (std.mem.eql(u8, lower, "tsx")) return "typescript";
-    if (std.mem.eql(u8, lower, "js")) return "javascript";
+    if (std.mem.eql(u8, lower, "js") or std.mem.eql(u8, lower, "mjs") or std.mem.eql(u8, lower, "cjs")) return "javascript";
     if (std.mem.eql(u8, lower, "jsx")) return "javascript";
     if (std.mem.eql(u8, lower, "rs")) return "rust";
     if (std.mem.eql(u8, lower, "go")) return "go";
     if (std.mem.eql(u8, lower, "c") or std.mem.eql(u8, lower, "h")) return "c";
-    if (std.mem.eql(u8, lower, "cpp") or std.mem.eql(u8, lower, "cc") or std.mem.eql(u8, lower, "hpp")) return "cpp";
+    if (std.mem.eql(u8, lower, "cpp") or std.mem.eql(u8, lower, "cc") or std.mem.eql(u8, lower, "hpp") or std.mem.eql(u8, lower, "cxx")) return "cpp";
     if (std.mem.eql(u8, lower, "java")) return "java";
-    if (std.mem.eql(u8, lower, "rb")) return "ruby";
+    if (std.mem.eql(u8, lower, "kt") or std.mem.eql(u8, lower, "kts")) return "kotlin";
     if (std.mem.eql(u8, lower, "swift")) return "swift";
-    if (std.mem.eql(u8, lower, "kt")) return "kotlin";
-    if (std.mem.eql(u8, lower, "md")) return "markdown";
-    if (std.mem.eql(u8, lower, "sh")) return "shell";
+    if (std.mem.eql(u8, lower, "rb")) return "ruby";
+    if (std.mem.eql(u8, lower, "php")) return "php";
+    if (std.mem.eql(u8, lower, "cs")) return "csharp";
+    if (std.mem.eql(u8, lower, "scala") or std.mem.eql(u8, lower, "sc")) return "scala";
+    if (std.mem.eql(u8, lower, "dart")) return "dart";
+    if (std.mem.eql(u8, lower, "lua")) return "lua";
+    if (std.mem.eql(u8, lower, "r")) return "r";
+    if (std.mem.eql(u8, lower, "jl")) return "julia";
+    if (std.mem.eql(u8, lower, "ex") or std.mem.eql(u8, lower, "exs")) return "elixir";
+    if (std.mem.eql(u8, lower, "erl")) return "erlang";
+    if (std.mem.eql(u8, lower, "hs")) return "haskell";
+    if (std.mem.eql(u8, lower, "ml")) return "ocaml";
+    if (std.mem.eql(u8, lower, "clj") or std.mem.eql(u8, lower, "cljs") or std.mem.eql(u8, lower, "cljc")) return "clojure";
+    if (std.mem.eql(u8, lower, "sql")) return "sql";
+    if (std.mem.eql(u8, lower, "sh") or std.mem.eql(u8, lower, "bash") or std.mem.eql(u8, lower, "zsh") or std.mem.eql(u8, lower, "fish")) return "shell";
+    if (std.mem.eql(u8, lower, "ps1")) return "powershell";
+    if (std.mem.eql(u8, lower, "bat") or std.mem.eql(u8, lower, "cmd")) return "batch";
+    if (std.mem.eql(u8, lower, "dockerfile")) return "dockerfile";
+    if (std.mem.eql(u8, lower, "md") or std.mem.eql(u8, lower, "markdown")) return "markdown";
+    if (std.mem.eql(u8, lower, "rst")) return "rst";
+    if (std.mem.eql(u8, lower, "tex")) return "latex";
+    if (std.mem.eql(u8, lower, "html") or std.mem.eql(u8, lower, "htm")) return "html";
+    if (std.mem.eql(u8, lower, "css")) return "css";
+    if (std.mem.eql(u8, lower, "scss") or std.mem.eql(u8, lower, "sass")) return "scss";
+    if (std.mem.eql(u8, lower, "xml") or std.mem.eql(u8, lower, "svg")) return "xml";
     if (std.mem.eql(u8, lower, "yml") or std.mem.eql(u8, lower, "yaml")) return "yaml";
     if (std.mem.eql(u8, lower, "json")) return "json";
     if (std.mem.eql(u8, lower, "toml")) return "toml";
-    return "text";
+    if (std.mem.eql(u8, lower, "ini") or std.mem.eql(u8, lower, "cfg") or std.mem.eql(u8, lower, "conf")) return "ini";
+    if (std.mem.eql(u8, lower, "vim")) return "vim";
+    if (std.mem.eql(u8, lower, "asm") or std.mem.eql(u8, lower, "s")) return "asm";
+    if (std.mem.eql(u8, lower, "v")) return "verilog";
+    if (std.mem.eql(u8, lower, "sv")) return "systemverilog";
+    if (std.mem.eql(u8, lower, "vhd") or std.mem.eql(u8, lower, "vhdl")) return "vhdl";
+    if (std.mem.eql(u8, lower, "proto")) return "protobuf";
+    if (std.mem.eql(u8, lower, "gradle")) return "groovy";
+    if (std.mem.eql(u8, lower, "groovy")) return "groovy";
+    if (std.mem.eql(u8, lower, "nim")) return "nim";
+    if (std.mem.eql(u8, lower, "vlang")) return "v";
+    if (std.mem.eql(u8, lower, "cr")) return "crystal";
+    if (std.mem.eql(u8, lower, "d")) return "d";
+    if (std.mem.eql(u8, lower, "pas")) return "pascal";
+    if (std.mem.eql(u8, lower, "pl") or std.mem.eql(u8, lower, "pm")) return "perl";
+    if (std.mem.eql(u8, lower, "tcl")) return "tcl";
+    if (std.mem.eql(u8, lower, "make") or std.mem.eql(u8, lower, "mk") or std.mem.eql(u8, lower, "mak")) return "makefile";
+    if (std.mem.eql(u8, lower, "cmake")) return "cmake";
+    if (std.mem.eql(u8, lower, "graphql") or std.mem.eql(u8, lower, "gql")) return "graphql";
+    // For unknown extensions, return the extension itself as the language
+    // name — this allows extension-provided syntax highlighters to handle
+    // custom languages without modifying this function.
+    return lower;
 }
 
 /// Build a FIM (Fill-In-the-Middle) prompt with codebase context.

@@ -6715,46 +6715,97 @@ pub const App = struct {
 
 /// Check if a word is a keyword for the given language (Phase 31).
 fn isKeyword(word: []const u8, lang: []const u8) bool {
-    // Common keywords across languages
-    const common = [_][]const u8{ "if", "else", "for", "while", "return", "break", "continue", "switch", "case", "default", "true", "false", "null", "None", "nil", "and", "or", "not" };
+    // Common keywords shared across most languages
+    const common = [_][]const u8{ "if", "else", "for", "while", "return", "break", "continue", "switch", "case", "default", "true", "false", "null", "None", "nil", "and", "or", "not", "class", "import", "from", "as", "def", "func", "fn", "let", "var", "const", "type", "struct", "enum", "public", "private", "static", "void", "int", "string", "bool", "new", "this", "self", "super", "extends", "implements", "interface", "package", "module", "export", "try", "catch", "throw", "raise", "except", "finally", "async", "await", "yield", "lambda", "with", "do", "end", "begin", "then" };
     for (common) |kw| if (std.mem.eql(u8, word, kw)) return true;
 
+    // Language-specific keywords for well-known languages.
+    // For unknown languages, the common keywords above still apply.
     if (std.mem.eql(u8, lang, "zig")) {
-        const zig_kws = [_][]const u8{ "const", "var", "fn", "pub", "struct", "enum", "union", "error", "try", "catch", "async", "await", "comptime", "inline", "extern", "export", "packed", "align", "linksection", "orelse", "unreachable", "defer", "errdefer", "usingnamespace", "test", "and", "or", "not", "anytype", "anyerror", "anyframe", "allowzero", "volatile", "callconv", "noalias" };
-        for (zig_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+        const kws = [_][]const u8{ "pub", "union", "error", "comptime", "inline", "extern", "export", "packed", "align", "orelse", "unreachable", "defer", "errdefer", "usingnamespace", "test", "anytype", "anyerror", "anyframe", "allowzero", "volatile", "callconv", "noalias" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
     } else if (std.mem.eql(u8, lang, "python") or std.mem.eql(u8, lang, "py")) {
-        const py_kws = [_][]const u8{ "def", "class", "import", "from", "as", "with", "lambda", "yield", "raise", "except", "finally", "global", "nonlocal", "assert", "del", "in", "is", "pass", "elif" };
-        for (py_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+        const kws = [_][]const u8{ "elif", "global", "nonlocal", "assert", "del", "in", "is", "pass", "print" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
     } else if (std.mem.eql(u8, lang, "javascript") or std.mem.eql(u8, lang, "js") or std.mem.eql(u8, lang, "typescript") or std.mem.eql(u8, lang, "ts")) {
-        const js_kws = [_][]const u8{ "function", "const", "let", "var", "class", "extends", "super", "new", "this", "typeof", "instanceof", "in", "of", "async", "await", "yield", "throw", "try", "catch", "finally", "import", "export", "from", "as", "void", "delete", "void", "get", "set" };
-        for (js_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+        const kws = [_][]const u8{ "typeof", "instanceof", "of", "delete", "void", "get", "set", "abstract", "readonly", "namespace", "declare", "keyof", "infer", "is", "satisfies" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
     } else if (std.mem.eql(u8, lang, "go")) {
-        const go_kws = [_][]const u8{ "func", "type", "struct", "interface", "map", "chan", "go", "defer", "select", "range", "package", "import", "fallthrough", "goto", "type", "make", "new", "len", "cap", "append", "copy", "delete", "panic", "recover" };
-        for (go_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+        const kws = [_][]const u8{ "map", "chan", "go", "defer", "select", "range", "fallthrough", "goto", "make", "cap", "append", "copy", "panic", "recover" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
     } else if (std.mem.eql(u8, lang, "rust") or std.mem.eql(u8, lang, "rs")) {
-        const rust_kws = [_][]const u8{ "fn", "let", "mut", "struct", "enum", "trait", "impl", "use", "mod", "crate", "self", "Self", "where", "unsafe", "move", "ref", "static", "extern", "dyn", "as", "box", "macro_rules" };
-        for (rust_kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+        const kws = [_][]const u8{ "mut", "trait", "impl", "use", "mod", "crate", "Self", "where", "unsafe", "move", "ref", "extern", "dyn", "box", "macro_rules", "unsafe" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "c") or std.mem.eql(u8, lang, "cpp")) {
+        const kws = [_][]const u8{ "sizeof", "typedef", "unsigned", "signed", "char", "short", "long", "double", "float", "auto", "register", "volatile", "const_cast", "static_cast", "dynamic_cast", "reinterpret_cast", "template", "typename", "namespace", "operator", "virtual", "explicit", "mutable", "constexpr", "nullptr" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "java") or std.mem.eql(u8, lang, "kotlin") or std.mem.eql(u8, lang, "scala")) {
+        const kws = [_][]const u8{ "final", "abstract", "synchronized", "transient", "native", "enum", "instanceof", "volatile", "throws", "throw" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "ruby") or std.mem.eql(u8, lang, "rb")) {
+        const kws = [_][]const u8{ "def", "undef", "defined", "begin", "rescue", "ensure", "redo", "retry", "next", "puts", "require", "require_relative", "attr_accessor", "attr_reader", "attr_writer" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "php")) {
+        const kws = [_][]const u8{ "function", "echo", "print", "require", "include", "require_once", "include_once", "global", "isset", "unset", "array" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "shell") or std.mem.eql(u8, lang, "bash")) {
+        const kws = [_][]const u8{ "echo", "export", "source", "alias", "unset", "eval", "exec", "trap", "local", "readonly", "declare", "typeset" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "sql")) {
+        const kws = [_][]const u8{ "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "TABLE", "INDEX", "VIEW", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "GROUP", "ORDER", "BY", "HAVING", "LIMIT", "OFFSET", "UNION", "ALL", "DISTINCT", "AS", "ON", "INTO", "VALUES", "SET", "AND", "OR", "NOT", "NULL", "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "DEFAULT", "CHECK", "UNIQUE", "CONSTRAINT", "DATABASE", "SCHEMA", "TRIGGER", "PROCEDURE", "FUNCTION", "BEGIN", "COMMIT", "ROLLBACK", "TRANSACTION" };
+        for (kws) |kw| if (std.ascii.eqlIgnoreCase(word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "lua")) {
+        const kws = [_][]const u8{ "local", "function", "repeat", "until", "elseif", "and", "or", "not" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "dart")) {
+        const kws = [_][]const u8{ "final", "const", "late", "required", "covariant", "external", "factory", "get", "set", "operator", "typedef", "mixin", "enum", "dynamic", "var" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+    } else if (std.mem.eql(u8, lang, "swift")) {
+        const kws = [_][]const u8{ "let", "guard", "inout", "subscript", "precedencegroup", "associativity", "left", "right", "none", "prefix", "postfix", "infix", "indirect", "convenience", "required", "override", "mutating", "nonmutating", "consuming", "borrowing", "distributed", "isolated", "nonisolated", "sendable", "unsafe", "some", "any", "open", "fileprivate", "internal", "fileprivate", "private" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
     }
     return false;
 }
 
-/// Check if a word is a type name for the given language (Phase 31).
+/// Check if a word is a type name for the given language.
+/// For unknown languages, returns false (no type highlighting).
 fn isType(word: []const u8, lang: []const u8) bool {
     if (std.mem.eql(u8, lang, "zig")) {
-        const zig_types = [_][]const u8{ "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "bool", "void", "usize", "isize", "anyopaque", "c_int", "c_uint", "c_char", "c_long", "c_ulong", "c_float", "c_double", "c_void" };
-        for (zig_types) |t| if (std.mem.eql(u8, word, t)) return true;
+        const types = [_][]const u8{ "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "bool", "void", "usize", "isize", "anyopaque", "c_int", "c_uint", "c_char", "c_long", "c_ulong", "c_float", "c_double", "c_void" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
     } else if (std.mem.eql(u8, lang, "python") or std.mem.eql(u8, lang, "py")) {
-        const py_types = [_][]const u8{ "int", "float", "str", "bool", "list", "dict", "tuple", "set", "bytes", "object", "type" };
-        for (py_types) |t| if (std.mem.eql(u8, word, t)) return true;
+        const types = [_][]const u8{ "int", "float", "str", "bool", "list", "dict", "tuple", "set", "bytes", "object", "type", "complex", "frozenset", "bytearray" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
     } else if (std.mem.eql(u8, lang, "javascript") or std.mem.eql(u8, lang, "js") or std.mem.eql(u8, lang, "typescript") or std.mem.eql(u8, lang, "ts")) {
-        const js_types = [_][]const u8{ "string", "number", "boolean", "object", "Array", "Promise", "Map", "Set", "Date", "RegExp", "Error", "Symbol", "BigInt" };
-        for (js_types) |t| if (std.mem.eql(u8, word, t)) return true;
+        const types = [_][]const u8{ "string", "number", "boolean", "object", "Array", "Promise", "Map", "Set", "Date", "RegExp", "Error", "Symbol", "BigInt", "Record", "Partial", "Readonly", "Pick", "Omit" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
     } else if (std.mem.eql(u8, lang, "go")) {
-        const go_types = [_][]const u8{ "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float32", "float64", "string", "bool", "byte", "rune", "error", "any" };
-        for (go_types) |t| if (std.mem.eql(u8, word, t)) return true;
+        const types = [_][]const u8{ "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float32", "float64", "string", "bool", "byte", "rune", "error", "any", "complex64", "complex128" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
     } else if (std.mem.eql(u8, lang, "rust") or std.mem.eql(u8, lang, "rs")) {
-        const rust_types = [_][]const u8{ "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool", "char", "str", "String", "Vec", "Option", "Result", "Box" };
-        for (rust_types) |t| if (std.mem.eql(u8, word, t)) return true;
+        const types = [_][]const u8{ "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool", "char", "str", "String", "Vec", "Option", "Result", "Box", "Rc", "Arc", "Cell", "RefCell", "Mutex", "HashMap", "HashSet", "BTreeMap" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "c") or std.mem.eql(u8, lang, "cpp")) {
+        const types = [_][]const u8{ "int", "char", "short", "long", "float", "double", "void", "unsigned", "signed", "bool", "size_t", "ssize_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t", "int32_t", "int64_t", "auto", "wchar_t" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "java") or std.mem.eql(u8, lang, "kotlin")) {
+        const types = [_][]const u8{ "int", "long", "double", "float", "char", "boolean", "byte", "short", "String", "Object", "Integer", "Long", "Double", "Float", "List", "Map", "Set", "Array", "ArrayList", "HashMap", "HashSet" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "csharp") or std.mem.eql(u8, lang, "cs")) {
+        const types = [_][]const u8{ "int", "long", "double", "float", "char", "bool", "byte", "short", "string", "object", "var", "dynamic", "decimal", "uint", "ulong", "sbyte", "List", "Dictionary", "HashSet", "Array" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "dart")) {
+        const types = [_][]const u8{ "int", "double", "String", "bool", "List", "Map", "Set", "Runes", "Symbol", "Object", "num", "dynamic", "void", "Future", "Stream" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "swift")) {
+        const types = [_][]const u8{ "Int", "Double", "Float", "String", "Bool", "Array", "Dictionary", "Set", "Optional", "Any", "Void", "Data", "Date", "URL", "Error" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "ruby") or std.mem.eql(u8, lang, "rb")) {
+        const types = [_][]const u8{ "String", "Integer", "Float", "Array", "Hash", "Symbol", "NilClass", "TrueClass", "FalseClass", "Object", "Class", "Module" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
+    } else if (std.mem.eql(u8, lang, "lua")) {
+        const types = [_][]const u8{ "nil", "boolean", "number", "string", "table", "function", "userdata", "thread" };
+        for (types) |t| if (std.mem.eql(u8, word, t)) return true;
     }
     return false;
 }
