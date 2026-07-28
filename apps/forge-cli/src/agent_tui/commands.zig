@@ -68,6 +68,8 @@ pub const Command = union(enum) {
     macro_list,
     notify: ?[]const u8,
     wordwrap,
+    /// P2.10: Toggle vim mode on/off.
+    vim,
     // Phase 67-70: Navigation and utility
     goto_line: ?[]const u8,
     snippet: ?[]const u8,
@@ -257,6 +259,8 @@ pub fn parseSlashCommand(input: []const u8) Command {
     }
     // Phase 65: Toggle word wrap
     if (matchesSlash(input, "wordwrap") or matchesSlash(input, "wrap")) return .wordwrap;
+    // P2.10: Vim mode toggle.
+    if (matchesSlash(input, "vim")) return .vim;
     // Phase 67: Goto specific conversation line
     if (matchesSlash(input, "goto") or matchesSlash(input, "g")) {
         if (std.mem.eql(u8, input, "/goto") or std.mem.eql(u8, input, "/g")) return .{ .goto_line = null };
@@ -524,7 +528,7 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /copyall /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /copytab /swap /exporttab /log /version /findreplace /translate /annotate /share /refactor /explain /fix /testgen /doc /help [cmd] /quit
+    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /copyall /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /vim /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /copytab /swap /exporttab /log /version /findreplace /translate /annotate /share /refactor /explain /fix /testgen /doc /help [cmd] /quit
     \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | Ctrl+Tab=cycle tabs | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
     ;
 }
@@ -566,7 +570,7 @@ pub fn helpOverlayText() []const u8 {
     \\║  Session: /sessions /resume /timeline /events /time /version        ║
     \\║  Specs:   /spec /runs                                               ║
     \\║  Git:     /diff [file] /branch /review                              ║
-    \\║  Config:  /model /theme /config /stats /help /wordwrap              ║
+    \\║  Config:  /model /theme /config /stats /help /wordwrap /vim          ║
     \\║           /resize /log                                              ║
     \\║  Auto:    /alias /macro /notify /snippet                            ║
     \\║  Tabs:    /newtab /tabs /close /rename /switch /merge               ║

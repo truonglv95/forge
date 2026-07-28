@@ -44,6 +44,17 @@ const LineKind = enum {
     failure,
 };
 
+/// P2.10: Vim mode states. When `vim_enabled` is true, the input handler
+/// uses these to dispatch keys differently:
+///   .insert  — normal typing (like emacs mode but Esc switches to normal)
+///   .normal  — h/j/k/l movement, dd/yy/p, i/a/o enter insert, : commands
+///   .visual  — v then motion selects, y copies, d deletes
+const VimMode = enum {
+    insert,
+    normal,
+    visual,
+};
+
 const default_context_budget_bytes: usize = 8 * 1024 * 1024;
 
 fn contextBudgetBytes(flags: args_mod.GlobalFlags) usize {
@@ -172,6 +183,11 @@ pub const App = struct {
     notify_enabled: bool = false,
     // Phase 65: Word wrap toggle
     wordwrap_enabled: bool = true,
+    // P2.10: Vim mode — normal/insert/visual. When enabled, input handling
+    // switches to vim-style keybindings (Esc=normal, i=insert, v=visual,
+    // h/j/k/l movement, dd/yy/p, :%s/foo/bar/g). Default off (emacs-style).
+    vim_enabled: bool = false,
+    vim_mode: VimMode = .insert,
     // Rendering optimization: cached wrapped lines + render throttle
     render_cache_version: u64 = 0,
     render_cache_width: usize = 0,
@@ -191,7 +207,7 @@ pub const App = struct {
     active_tab: usize = 0,
     current_tab_name: ?[]u8 = null,
 
-    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/copyall", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/findreplace", "/translate", "/annotate", "/share", "/refactor", "/explain", "/fix", "/testgen", "/doc", "/help", "/quit", "/exit" };
+    const ALL_COMMANDS = [_][]const u8{ "/clear", "/cls", "/policy", "/tools", "/mode", "/context", "/diff", "/events", "/timeline", "/resume", "/sessions", "/mock", "/spec", "/runs", "/complete", "/model", "/cost", "/capability", "/provider", "/save", "/review", "/inspect", "/search", "/edit", "/undo", "/redo", "/theme", "/config", "/export", "/bookmark", "/copy", "/copyall", "/branch", "/filter", "/stats", "/compact", "/pin", "/alias", "/macro", "/notify", "/wordwrap", "/vim", "/goto", "/snippet", "/time", "/resize", "/tag", "/summary", "/retry", "/newtab", "/tabs", "/close", "/rename", "/switch", "/priority", "/merge", "/cleartabs", "/tab", "/copytab", "/swap", "/exporttab", "/log", "/version", "/findreplace", "/translate", "/annotate", "/share", "/refactor", "/explain", "/fix", "/testgen", "/doc", "/help", "/quit", "/exit" };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -958,6 +974,7 @@ pub const App = struct {
             .macro_list => try self.listMacros(),
             .notify => |args| try self.handleNotify(args),
             .wordwrap => try self.toggleWordwrap(),
+            .vim => try self.toggleVimMode(),
             .goto_line => |line_num| try self.gotoLine(line_num),
             .snippet => |args| try self.handleSnippet(args),
             .snippet_list => try self.listSnippets(),
@@ -1984,16 +2001,20 @@ pub const App = struct {
 
         if (std.mem.eql(u8, name, "mono")) {
             self.term.use_color = false;
+            term.Palette.set(.mono);
             try self.pushSystem("Theme: monochrome (colors disabled)");
-        } else if (std.mem.eql(u8, name, "dark") or std.mem.eql(u8, name, "light") or std.mem.eql(u8, name, "solarized")) {
+        } else if (std.mem.eql(u8, name, "dark")) {
             self.term.use_color = true;
-            var buf: [64]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Theme: {s} (colors enabled)", .{name}) catch "Theme set";
-            try self.pushSystem(msg);
-            // Note: actual color palette switching would require modifying
-            // term.Style constants. For now we toggle color on/off and
-            // acknowledge the theme choice. Full palette switching is a
-            // future enhancement.
+            term.Palette.set(.dark);
+            try self.pushSystem("Theme: dark (palette switched)");
+        } else if (std.mem.eql(u8, name, "light")) {
+            self.term.use_color = true;
+            term.Palette.set(.light);
+            try self.pushSystem("Theme: light (palette switched)");
+        } else if (std.mem.eql(u8, name, "solarized")) {
+            self.term.use_color = true;
+            term.Palette.set(.solarized);
+            try self.pushSystem("Theme: solarized (palette switched)");
         } else {
             var buf: [128]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Unknown theme '{s}'. Available: dark, light, solarized, mono", .{name}) catch "Unknown theme";
@@ -2735,6 +2756,24 @@ pub const App = struct {
         var buf: [64]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Word wrap: {s}", .{if (self.wordwrap_enabled) "enabled" else "disabled"}) catch "Word wrap toggled";
         try self.pushSystem(msg);
+        self.markDirty();
+    }
+
+    /// P2.10: /vim — toggle vim mode on/off. When on, input handling uses
+    /// vim-style keybindings (Esc=normal, i=insert, h/j/k/l movement).
+    /// Status: skeleton — toggles the flag and shows status. Full vim
+    /// keybinding implementation (normal/insert/visual modes, dd/yy/p,
+    /// :%s/foo/bar/g) is a follow-up. The flag is wired into the input
+    /// handler so future commits can dispatch on vim_mode.
+    fn toggleVimMode(self: *App) !void {
+        self.vim_enabled = !self.vim_enabled;
+        if (self.vim_enabled) {
+            self.vim_mode = .normal;
+            try self.pushSystem("Vim mode: enabled (normal mode). Press i to insert, Esc to normal, /help vim for commands.");
+        } else {
+            self.vim_mode = .insert;
+            try self.pushSystem("Vim mode: disabled (emacs-style input restored)");
+        }
         self.markDirty();
     }
 

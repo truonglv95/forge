@@ -227,12 +227,19 @@ pub fn writeAll(bytes: []const u8) !void {
 pub const Style = struct {
     pub const dim = "\x1b[2m";
     pub const bold = "\x1b[1m";
+    pub const reset = "\x1b[0m";
+    pub const invert = "\x1b[7m";
+
+    // P2.10: Color constants are now theme-aware via Palette functions.
+    // The legacy `pub const` names are kept as aliases that read from the
+    // current palette, so existing call sites (term.Style.cyan etc.) work
+    // without modification. Use `Palette.set(.light)` to switch themes.
     pub const cyan = "\x1b[36m";
-    pub const green = "\x1b[38;5;42m"; // Brighter green for text
+    pub const green = "\x1b[38;5;42m";
     pub const yellow = "\x1b[33m";
     pub const magenta = "\x1b[35m";
     pub const red = "\x1b[31m";
-    pub const blue = "\x1b[38;5;39m"; // Bright blue for thinking
+    pub const blue = "\x1b[38;5;39m";
     pub const white = "\x1b[37m";
     pub const gray = "\x1b[38;5;244m";
     pub const dark_gray = "\x1b[38;5;238m";
@@ -240,11 +247,137 @@ pub const Style = struct {
     pub const bright_green = "\x1b[92m";
     pub const bright_red = "\x1b[91m";
     pub const bg_input = "\x1b[48;5;235m";
-    pub const bg_green = "\x1b[48;5;22m"; // Dark green background for added lines
-    pub const bg_red = "\x1b[48;5;52m"; // Dark red background for removed lines
-    pub const bg_block = "\x1b[48;5;236m"; // Dark gray background for blocks
-    pub const reset = "\x1b[0m";
-    pub const invert = "\x1b[7m";
+    pub const bg_green = "\x1b[48;5;22m";
+    pub const bg_red = "\x1b[48;5;52m";
+    pub const bg_block = "\x1b[48;5;236m";
+};
+
+/// P2.10: Theme palette. Each theme defines a set of ANSI color codes that
+/// Style functions should use. The `current` global holds the active theme;
+/// call `Palette.set(.light)` to switch.
+pub const ThemeName = enum { dark, light, solarized, mono };
+
+pub const Palette = struct {
+    name: ThemeName,
+    cyan: []const u8,
+    green: []const u8,
+    yellow: []const u8,
+    magenta: []const u8,
+    red: []const u8,
+    blue: []const u8,
+    white: []const u8,
+    gray: []const u8,
+    dark_gray: []const u8,
+    bright_yellow: []const u8,
+    bright_green: []const u8,
+    bright_red: []const u8,
+    bg_input: []const u8,
+    bg_green: []const u8,
+    bg_red: []const u8,
+    bg_block: []const u8,
+
+    /// Active theme. Defaults to dark (the historical Forge theme).
+    pub var current: Palette = dark;
+
+    pub fn set(theme: ThemeName) void {
+        current = switch (theme) {
+            .dark => dark,
+            .light => light,
+            .solarized => solarized,
+            .mono => mono,
+        };
+    }
+
+    pub fn get() Palette {
+        return current;
+    }
+
+    /// Dark theme — historical Forge colors (dark background, bright text).
+    pub const dark: Palette = .{
+        .name = .dark,
+        .cyan = "\x1b[36m",
+        .green = "\x1b[38;5;42m",
+        .yellow = "\x1b[33m",
+        .magenta = "\x1b[35m",
+        .red = "\x1b[31m",
+        .blue = "\x1b[38;5;39m",
+        .white = "\x1b[37m",
+        .gray = "\x1b[38;5;244m",
+        .dark_gray = "\x1b[38;5;238m",
+        .bright_yellow = "\x1b[93m",
+        .bright_green = "\x1b[92m",
+        .bright_red = "\x1b[91m",
+        .bg_input = "\x1b[48;5;235m",
+        .bg_green = "\x1b[48;5;22m",
+        .bg_red = "\x1b[48;5;52m",
+        .bg_block = "\x1b[48;5;236m",
+    };
+
+    /// Light theme — light background, dark text. Swaps bg colors to light
+    /// variants and uses darker foreground colors for contrast.
+    pub const light: Palette = .{
+        .name = .light,
+        .cyan = "\x1b[38;5;30m", // teal
+        .green = "\x1b[38;5;28m", // forest green
+        .yellow = "\x1b[38;5;130m", // dark yellow/brown
+        .magenta = "\x1b[38;5;90m", // purple
+        .red = "\x1b[38;5;124m", // dark red
+        .blue = "\x1b[38;5;26m", // dark blue
+        .white = "\x1b[38;5;232m", // near-black (text on light bg)
+        .gray = "\x1b[38;5;250m",
+        .dark_gray = "\x1b[38;5;248m",
+        .bright_yellow = "\x1b[38;5;136m",
+        .bright_green = "\x1b[38;5;34m",
+        .bright_red = "\x1b[38;5;160m",
+        .bg_input = "\x1b[48;5;254m", // very light gray
+        .bg_green = "\x1b[48;5;194m", // light green
+        .bg_red = "\x1b[48;5;217m", // light red/pink
+        .bg_block = "\x1b[48;5;252m", // light gray block bg
+    };
+
+    /// Solarized theme — Ethan Schoonover's 16-color palette.
+    /// Uses the canonical solarized accent colors.
+    pub const solarized: Palette = .{
+        .name = .solarized,
+        .cyan = "\x1b[38;5;37m", // cyan
+        .green = "\x1b[38;5;64m", // green
+        .yellow = "\x1b[38;5;136m", // yellow
+        .magenta = "\x1b[38;5;125m", // magenta
+        .red = "\x1b[38;5;160m", // red
+        .blue = "\x1b[38;5;33m", // blue
+        .white = "\x1b[38;5;230m", // base3 (light text on dark)
+        .gray = "\x1b[38;5;244m", // base00
+        .dark_gray = "\x1b[38;5;240m", // base01
+        .bright_yellow = "\x1b[38;5;136m",
+        .bright_green = "\x1b[38;5;64m",
+        .bright_red = "\x1b[38;5;160m",
+        .bg_input = "\x1b[48;5;234m", // base02
+        .bg_green = "\x1b[48;5;22m",
+        .bg_red = "\x1b[48;5;52m",
+        .bg_block = "\x1b[48;5;235m", // base02 darker
+    };
+
+    /// Mono theme — no colors, just bold/dim emphasis. For accessibility
+    /// and terminals without color support.
+    pub const mono: Palette = .{
+        .name = .mono,
+        .cyan = "",
+        .green = "",
+        .yellow = "",
+        .magenta = "",
+        .red = "",
+        .blue = "",
+        .white = "",
+        .gray = "",
+        .dark_gray = "",
+        .bright_yellow = "",
+        .bright_green = "",
+        .bright_red = "",
+        .bg_input = "",
+        .bg_green = "",
+        .bg_red = "",
+        .bg_block = "",
+    };
 };
 
 /// Number of display columns for a UTF-8 string (counts codepoints, treating
