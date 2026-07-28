@@ -281,6 +281,11 @@ pub const AnthropicProvider = struct {
             self.latest_usage = usage;
         }
 
+        // P3.15: Emit thinking blocks via callback before parsing the final
+        // completion. This lets the TUI/IDE display Claude's reasoning in
+        // real-time (italic gray "thinking out loud").
+        emitThinkingBlocks(self, allocator, response_body);
+
         const completion_with_id = parseCompletionResponseWithId(allocator, response_body) catch |err| switch (err) {
             error.MalformedResponse => return provider.ProviderError.MalformedResponse,
             error.OutOfMemory => return provider.ProviderError.ProviderInternalError,
@@ -398,10 +403,30 @@ fn buildToolLoopPayload(allocator: std.mem.Allocator, model: []const u8, convers
     else
         conversation_json;
 
+    // P3.15: Enable extended thinking for Claude 3.5+ models. The thinking
+    // budget is separate from max_tokens — Claude uses it for internal
+    // reasoning before producing the visible response. We set budget_tokens
+    // to 4096 (a reasonable default; can be made configurable later).
+    // Only enable for models that support it (claude-sonnet-4, claude-3-5-sonnet,
+    // claude-3-7, etc.). Skip for haiku and older models.
+    const enable_thinking = std.mem.indexOf(u8, model, "claude-sonnet") != null or
+        std.mem.indexOf(u8, model, "claude-3-5") != null or
+        std.mem.indexOf(u8, model, "claude-3-7") != null;
+
     if (tools_json.len > 0 and !std.mem.eql(u8, tools_json, "[]")) {
+        if (enable_thinking) {
+            return std.fmt.allocPrint(allocator,
+                \\{{"model":"{s}","max_tokens":{d},"messages":{s},"tools":{s},"thinking":{{"type":"enabled","budget_tokens":4096}}}}
+            , .{ model, max_tokens_default, conv, tools_json });
+        }
         return std.fmt.allocPrint(allocator,
             \\{{"model":"{s}","max_tokens":{d},"messages":{s},"tools":{s}}}
         , .{ model, max_tokens_default, conv, tools_json });
+    }
+    if (enable_thinking) {
+        return std.fmt.allocPrint(allocator,
+            \\{{"model":"{s}","max_tokens":{d},"messages":{s},"thinking":{{"type":"enabled","budget_tokens":4096}}}}
+        , .{ model, max_tokens_default, conv });
     }
     return std.fmt.allocPrint(allocator,
         \\{{"model":"{s}","max_tokens":{d},"messages":{s}}}
@@ -506,6 +531,15 @@ fn parseCompletionResponseWithId(allocator: std.mem.Allocator, body: []const u8)
     if (content != .array) return error.MalformedResponse;
     if (content.array.items.len == 0) return error.MalformedResponse;
 
+    // P3.15: First pass — extract thinking blocks and emit via callback.
+    // Anthropic returns thinking as content blocks with type "thinking".
+    // We emit these via the thinking_callback (set on the provider struct)
+    // so the TUI/IDE can display them as italic gray "thinking out loud".
+    // Note: parseCompletionResponseWithId is a free function and doesn't
+    // have access to self.thinking_callback. The caller (completeTurnImpl)
+    // handles thinking emission separately — see extractThinkingBlocks.
+
+    // Second pass: look for tool_use blocks.
     for (content.array.items) |block| {
         if (block != .object) continue;
         const block_type = block.object.get("type") orelse continue;
@@ -531,6 +565,7 @@ fn parseCompletionResponseWithId(allocator: std.mem.Allocator, body: []const u8)
         };
     }
 
+    // No tool_use: concatenate text blocks (skip thinking blocks).
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     for (content.array.items) |block| {
@@ -545,6 +580,31 @@ fn parseCompletionResponseWithId(allocator: std.mem.Allocator, body: []const u8)
 
     if (buf.items.len == 0) return error.MalformedResponse;
     return .{ .completion = .{ .text = try buf.toOwnedSlice(allocator) } };
+}
+
+/// P3.15: Extract thinking content blocks from a Messages API response and
+/// emit them via the provider's thinking_callback. Called by completeTurnImpl
+/// before parseCompletionResponseWithId so the TUI/IDE can display thinking
+/// in real-time (before the final text/tool_call is processed).
+fn emitThinkingBlocks(self: *AnthropicProvider, allocator: std.mem.Allocator, body: []const u8) void {
+    if (self.thinking_callback == null) return;
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return;
+    const content = parsed.value.object.get("content") orelse return;
+    if (content != .array) return;
+
+    for (content.array.items) |block| {
+        if (block != .object) continue;
+        const block_type = block.object.get("type") orelse continue;
+        if (block_type != .string) continue;
+        if (!std.mem.eql(u8, block_type.string, "thinking")) continue;
+        const thinking_val = block.object.get("thinking") orelse continue;
+        if (thinking_val != .string) continue;
+        self.thinking_callback.?(self.thinking_context, thinking_val.string);
+    }
 }
 
 fn extractTextFromResponse(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
