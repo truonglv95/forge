@@ -5473,12 +5473,12 @@ pub const App = struct {
     };
 
     fn pushStartupIntro(self: *App) !void {
-        // Clean, minimal startup intro — no verbose banner.
-        // Actionable info only: workspace, mode, model, next-step hint.
+        // Polished startup intro with semantic icons.
+        // ◎ for workspace info, → for actionable hint.
         var line_buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(
             &line_buf,
-            "Workspace: {s}  \xc2\xb7  Mode: {s}  \xc2\xb7  Model: {s}",
+            "\xe2\x97\x8e {s}  \xc2\xb7  {s}  \xc2\xb7  {s}",
             .{
                 self.folder_label,
                 commands.modeLabel(self.agent_mode),
@@ -5487,8 +5487,8 @@ pub const App = struct {
         ) catch "Workspace ready";
         try self.pushSystem(line);
 
-        // UX: single actionable hint line.
-        try self.pushSystem("Type a question and press Enter. Press / for commands, ? for help.");
+        // UX: single actionable hint line with arrow icon.
+        try self.pushSystem("\xe2\x86\x92 Type a question and press Enter. Press / for commands, ? for help.");
     }
 
     fn refreshContextLabel(self: *App, intent: []const u8) ?PromptContextSummary {
@@ -5541,7 +5541,8 @@ pub const App = struct {
 
     fn promptPrefix(self: *const App, buf: []u8) ![]const u8 {
         const folder = self.folder_label;
-        // Show mode badge in prompt for clear UX feedback.
+        // Clean prompt: just folder name + mode icon, no brackets.
+        // Inspired by modern CLI tools — minimal, scannable.
         const mode_icon: []const u8 = switch (self.agent_mode) {
             .ask => "?",
             .plan => "+",
@@ -5549,11 +5550,11 @@ pub const App = struct {
         };
         // UX: show multi-line indicator if input contains newlines.
         const has_newline = std.mem.indexOfScalar(u8, self.input.items, '\n') != null;
-        const ml_indicator: []const u8 = if (has_newline) "ML " else "";
+        const ml_indicator: []const u8 = if (has_newline) "~ " else "";
         if (std.mem.eql(u8, self.branch_label, "no branch")) {
-            return std.fmt.bufPrint(buf, "[{s}]{s} {s} ", .{ mode_icon, ml_indicator, folder });
+            return std.fmt.bufPrint(buf, "{s}{s} {s} ", .{ mode_icon, ml_indicator, folder });
         }
-        return std.fmt.bufPrint(buf, "[{s}]{s} {s} ({s}) ", .{ mode_icon, ml_indicator, folder, self.branch_label });
+        return std.fmt.bufPrint(buf, "{s}{s} {s} ", .{ mode_icon, ml_indicator, folder });
     }
 
     fn shouldAutoApprove(self: *App, policy: ai.tool_registry.Policy) bool {
@@ -6611,19 +6612,26 @@ pub const App = struct {
                 break :blk false;
             };
 
-            // Clean left border: single dim vertical bar for agent/tool lines,
-            // nothing for user/system. This visually groups turns without clutter.
-            const has_border = (line.kind == .agent or line.kind == .tool);
-            const border_offset: usize = if (has_border) 2 else 0;
+            // Semantic left border: icon + vertical bar for each line kind.
+            // Inspired by modern AI CLI tools — icons make scanning instant.
+            //   user    → ▶ (green)    agent   → │ (dim)
+            //   tool    → ⚙ (yellow)   system  → · (dim, no border)
+            //   failure → ✕ (red)
+            const icon_info: struct { icon: []const u8, color: []const u8, has_bar: bool } = switch (line.kind) {
+                .user => .{ .icon = "\xe2\x96\xb6 ", .color = term.Style.green, .has_bar = false }, // ▶
+                .agent => .{ .icon = "\xe2\x94\x82 ", .color = term.Style.dim, .has_bar = false }, // │
+                .tool => .{ .icon = "\xe2\x9a\x99 ", .color = term.Style.bright_yellow, .has_bar = false }, // ⚙
+                .system => .{ .icon = "  ", .color = term.Style.dim, .has_bar = false },
+                .failure => .{ .icon = "\xe2\x9c\x95 ", .color = term.Style.bright_red, .has_bar = false }, // ✕
+            };
+            const border_offset: usize = 2; // icon width
             const content_cols = if (chat_cols > border_offset + 1) chat_cols - border_offset - 1 else 1;
             const clipped = term.truncateEnd(&scratch, line.text, @intCast(content_cols));
 
             self.frame.moveTo(row, chat_x);
-            if (has_border) {
-                if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-                self.frame.appendSlice("\xe2\x94\x82 ") catch {}; // │ (box-drawing vertical)
-                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-            }
+            if (self.term.use_color) self.frame.appendSlice(icon_info.color) catch {};
+            self.frame.appendSlice(icon_info.icon) catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
 
             // Bookmark marker (yellow star) before content.
             if (is_bookmarked) {
@@ -6647,10 +6655,18 @@ pub const App = struct {
                 if (self.term.use_color) self.frame.appendSlice(term.Style.blue) catch {};
                 self.frame.appendSlice(clipped) catch {};
             } else if (line.kind == .tool) {
-                if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+                // Tool lines: cyan for run, green for done (✓ prefix already in text)
+                if (std.mem.startsWith(u8, clipped, "done")) {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.bright_green) catch {};
+                } else {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+                }
                 self.frame.appendSlice(clipped) catch {};
             } else if (line.kind == .system) {
                 if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                self.frame.appendSlice(clipped) catch {};
+            } else if (line.kind == .failure) {
+                if (self.term.use_color) self.frame.appendSlice(term.Style.bright_red) catch {};
                 self.frame.appendSlice(clipped) catch {};
             } else {
                 if (self.term.use_color) self.frame.appendSlice(color) catch {};
