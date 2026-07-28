@@ -922,6 +922,7 @@ fn agentRunInner(ctx: *GenerateContext, provider_options: ai.provider_factory.Op
         error.NoProgress => return error.NoProgress,
         error.InvalidProposal => return error.InvalidProposal,
         error.StepLimitReached => return error.StepLimitReached,
+        error.SpecNotApproved => return error.ProviderFailed,
     };
     defer ai.agent.deinitResult(host.allocator, &result);
 
