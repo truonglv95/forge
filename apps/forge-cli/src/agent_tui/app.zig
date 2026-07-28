@@ -6017,6 +6017,17 @@ pub const App = struct {
             }
         }
 
+        // Render cache: skip decorate+wrap for lines that haven't changed
+        // since the last frame. Keyed on (line text pointer, width).
+        // The cache is invalidated when:
+        //   - width changes (terminal resize)
+        //   - wordwrap_enabled changes
+        //   - new lines are added (line pointers shift)
+        //   - /clear or /compact is called
+        if (width_changed) {
+            self.render_cache_version +%= 1; // invalidate cache
+        }
+
         for (source_lines, 0..) |line, source_idx| {
             // P1.9: filter_role — skip lines that don't match the active filter.
             // Only applies when filter_role is set (null = no filter).
