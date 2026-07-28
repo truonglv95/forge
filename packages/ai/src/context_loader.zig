@@ -340,6 +340,7 @@ fn loadMemoryBlock(
     options: LoadOptions,
     builder: *context.ContextBuilder,
 ) !void {
+    // Load agent_memory entries (persistent preferences/decisions/facts).
     var list = workspace.agent_memory.listEntries(allocator, io, root) catch return;
     defer list.deinit();
     if (list.items.len == 0) return;
@@ -364,6 +365,68 @@ fn loadMemoryBlock(
         var detail_buf: [64]u8 = undefined;
         const detail = std.fmt.bufPrint(&detail_buf, "{d} memory entr(y/ies) selected", .{selected.len}) catch "agent memory";
         try builder.addBlockWithDetail(.memory, "memory:agent", text, detail);
+    }
+
+    // Wire-in: Also load chat_memory entries (cross-session conversation recall).
+    // chat_memory stores conversation summaries (user queries + agent responses)
+    // from previous sessions. We inject the most recent entries as context so
+    // the agent can recall what was discussed previously.
+    const chat_memory_mod = @import("chat_memory.zig");
+    const home_dir: ?[]const u8 = blk: {
+        if (options.environ_map) |env| {
+            if (env.get("HOME")) |h| break :blk h;
+        }
+        break :blk null;
+    };
+    _ = home_dir;
+
+    // Load chat memory from .forge/memory/chat_memory.toml (if exists).
+    // We use a simple approach: create a temporary MemoryStore, try to load
+    // from the workspace's memory dir, and inject recent entries.
+    var chat_store = chat_memory_mod.MemoryStore.init(allocator);
+    defer chat_store.deinit();
+
+    // Try to load from .forge/memory/ directory.
+    const session_dir = workspace.global_store.getSessionDir(allocator, io, root) catch return;
+    defer allocator.free(session_dir);
+    var mem_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const mem_path = std.fmt.bufPrint(&mem_path_buf, "{s}/memory/chat_memory.toml", .{session_dir}) catch return;
+
+    // Try to read the file (if it doesn't exist, silently skip).
+    const file_content = workspace.global_store.readAbsoluteFile(allocator, io, mem_path) catch return;
+    defer allocator.free(file_content);
+
+    // Parse the TOML-like format and populate the store.
+    // Simple parser: look for [[memory]] sections with summary= lines.
+    var lines = std.mem.splitScalar(u8, file_content, '\n');
+    var current_summary: ?[]const u8 = null;
+    var current_role: chat_memory_mod.MemoryEntry.Role = .user_query;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+        if (std.mem.startsWith(u8, trimmed, "role = ")) {
+            const role_str = trimmed[7..];
+            if (std.mem.eql(u8, role_str, "user_query")) current_role = .user_query;
+            if (std.mem.eql(u8, role_str, "agent_response")) current_role = .agent_response;
+        } else if (std.mem.startsWith(u8, trimmed, "summary = ")) {
+            current_summary = trimmed[10..];
+        } else if (trimmed.len == 0 and current_summary != null) {
+            // End of entry — add to store.
+            _ = chat_store.add(current_role, current_summary.?, &.{}, null) catch {};
+            current_summary = null;
+            current_role = .user_query;
+        }
+    }
+    // Handle last entry without trailing newline.
+    if (current_summary) |s| {
+        _ = chat_store.add(current_role, s, &.{}, null) catch {};
+    }
+
+    // Inject recent chat memory entries as a context block.
+    if (chat_store.entries.items.len > 0) {
+        const ctx_text = chat_store.formatContext(&.{}, allocator, 2048) catch return;
+        defer allocator.free(ctx_text);
+        try builder.addBlockWithDetail(.memory, "memory:chat", ctx_text, "Previous conversation context");
+        try builder.addManifestExtra(.memory, "memory:chat", "chat_history", ctx_text.len);
     }
 }
 
