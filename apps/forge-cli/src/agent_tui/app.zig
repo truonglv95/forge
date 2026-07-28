@@ -206,6 +206,9 @@ pub const App = struct {
     // ↑/↓, selects with Enter, dismisses with Esc.
     mention_picker: @import("mention_picker.zig").PickerState = undefined,
     mention_picker_init: bool = false,
+    /// Help panel component — structured modal overlay (not log-style text).
+    help_panel: @import("help_panel.zig").State = .{},
+    help_panel_init: bool = false,
     // Rendering optimization: cached wrapped lines + render throttle
     render_cache_version: u64 = 0,
     render_cache_width: usize = 0,
@@ -303,6 +306,9 @@ pub const App = struct {
         // P2.11: init mention picker.
         app.mention_picker = @import("mention_picker.zig").PickerState.init(allocator);
         app.mention_picker_init = true;
+        // Help panel: structured modal component (replaces log-style helpOverlayText).
+        app.help_panel = .{};
+        app.help_panel_init = true;
         // UX FIX: Do NOT enable mouse by default. Many terminals (tmux, screen,
         // some xterm configs) don't support SGR mouse and will render raw escape
         // sequences as visible text (e.g. "0;12174;12m..."). Mouse is opt-in
@@ -344,6 +350,8 @@ pub const App = struct {
         if (self.last_tool_review_kind) |kind| self.allocator.free(kind);
         // P2.11: deinit mention picker.
         if (self.mention_picker_init) self.mention_picker.deinit();
+        // Help panel: free flat_entries if allocated.
+        if (self.help_panel_init) self.help_panel.deinit(self.allocator);
         // Render cache: free all cached display lines.
         if (self.render_cache_init) {
             var it = self.render_cache.iterator();
@@ -573,6 +581,73 @@ pub const App = struct {
     }
 
     fn handleKey(self: *App, key: term.Key) !void {
+        // Help panel navigation — when overlay is showing, intercept keys
+        // for navigation instead of closing on any key.
+        if (self.show_help_overlay) {
+            switch (key) {
+                .escape, .ctrl_c => {
+                    self.show_help_overlay = false;
+                    self.markDirty();
+                    return;
+                },
+                .up => {
+                    self.help_panel.moveUp();
+                    self.markDirty();
+                    return;
+                },
+                .down => {
+                    self.help_panel.moveDown();
+                    self.markDirty();
+                    return;
+                },
+                .page_up => {
+                    const page: usize = 10;
+                    self.help_panel.movePageUp(page);
+                    self.markDirty();
+                    return;
+                },
+                .page_down => {
+                    const page: usize = 10;
+                    self.help_panel.movePageDown(page);
+                    self.markDirty();
+                    return;
+                },
+                .home => {
+                    self.help_panel.selected = 0;
+                    self.help_panel.scroll_offset = 0;
+                    self.markDirty();
+                    return;
+                },
+                .end => {
+                    if (self.help_panel.flat_init and self.help_panel.flat_entries.len > 0) {
+                        self.help_panel.selected = self.help_panel.flat_entries.len - 1;
+                        self.markDirty();
+                    }
+                    return;
+                },
+                .enter => {
+                    // Insert selected command into input buffer.
+                    if (self.help_panel.selectedCommand()) |cmd| {
+                        self.input.clearRetainingCapacity();
+                        self.input.appendSlice(self.allocator, cmd) catch {};
+                        self.cursor = self.input.items.len;
+                        self.show_help_overlay = false;
+                        self.markDirty();
+                    }
+                    return;
+                },
+                .char => |ch| {
+                    // '?' toggles off, any other char also closes (quick dismiss)
+                    if (ch == '?') {
+                        self.show_help_overlay = false;
+                        self.markDirty();
+                    }
+                    return;
+                },
+                else => return,
+            }
+        }
+
         switch (key) {
             .ctrl_c, .ctrl_d => {
                 if (self.agent_busy) {
@@ -6889,50 +6964,25 @@ pub const App = struct {
             }
         }
 
-        // Help overlay — real modal with background fill (Phase 100).
+        // Help panel — structured modal component (replaces log-style overlay).
+        // Rendered as a bordered box with categorized commands, key bindings,
+        // and keyboard navigation (Up/Down/Enter/Esc).
         if (self.show_help_overlay) {
-            const overlay_text = commands.helpOverlayText();
-            var overlay_lines: std.ArrayList([]const u8) = .empty;
-            defer overlay_lines.deinit(self.allocator);
-            var split = std.mem.splitScalar(u8, overlay_text, '\n');
-            while (split.next()) |line| {
-                overlay_lines.append(self.allocator, line) catch {};
-            }
-            const overlay_h: u16 = @intCast(overlay_lines.items.len);
-            const overlay_w: u16 = 72; // Width of the box drawing
-            const start_row: u16 = if (size.rows > overlay_h + 4) @divFloor(size.rows - overlay_h, 2) else 1;
-            const start_col: u16 = if (size.cols > overlay_w + 2) @divFloor(size.cols - overlay_w, 2) else 1;
-
-            // Clear the full screen rows the overlay occupies, then fill with bg_block.
-            for (0..overlay_h + 2) |i| {
-                const overlay_row = start_row + @as(u16, @intCast(i));
-                self.frame.moveTo(overlay_row, 1);
-                if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
-                self.frame.data.appendNTimes(self.allocator, ' ', @intCast(size.cols)) catch {};
-                self.frame.appendSlice("\x1b[K") catch {};
-                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-            }
-
-            // Draw overlay text on top of the filled background.
-            for (0..overlay_h) |i| {
-                const overlay_row = start_row + @as(u16, @intCast(i));
-                self.frame.moveTo(overlay_row, start_col);
-                if (self.term.use_color) {
-                    self.frame.appendSlice(term.Style.bg_block) catch {};
-                    self.frame.appendSlice(term.Style.bold) catch {};
-                }
-                self.frame.appendSlice(overlay_lines.items[i]) catch {};
-                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-            }
-
-            // Footer hint with cyan highlight.
-            self.frame.moveTo(start_row + overlay_h + 1, start_col);
-            if (self.term.use_color) {
-                self.frame.appendSlice(term.Style.bg_block) catch {};
-                self.frame.appendSlice(term.Style.cyan) catch {};
-            }
-            self.frame.appendSlice("  Press any key to close this overlay") catch {};
-            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            const help_panel = @import("help_panel.zig");
+            const mode_label = commands.modeLabel(self.agent_mode);
+            help_panel.render(
+                &self.frame,
+                self.allocator,
+                self.term.use_color,
+                size,
+                &self.help_panel,
+                .{
+                    .workspace = self.folder_label,
+                    .branch = self.branch_label,
+                    .mode = mode_label,
+                    .model = self.model_label,
+                },
+            ) catch {};
         }
 
         self.frame.flush();

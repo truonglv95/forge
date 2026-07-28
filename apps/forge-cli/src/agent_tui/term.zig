@@ -456,6 +456,7 @@ pub const Style = struct {
     pub const bright_yellow = "\x1b[93m";
     pub const bright_green = "\x1b[92m";
     pub const bright_red = "\x1b[91m";
+    pub const bright_cyan = "\x1b[96m";
     pub const bg_input = "\x1b[48;5;235m";
     pub const bg_green = "\x1b[48;5;22m";
     pub const bg_red = "\x1b[48;5;52m";
