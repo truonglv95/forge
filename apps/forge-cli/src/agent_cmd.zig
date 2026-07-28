@@ -58,6 +58,18 @@ pub fn run(
     if (std.mem.eql(u8, subcommand, "branch")) {
         return runBranch(allocator, io, parsed, writer);
     }
+    // P3: forge agent exec — headless CI mode. Like `agent run` but forces
+    // --yes, --non-interactive, --json, and no color. Designed for CI/CD
+    // pipelines where the agent must run unattended and produce parseable
+    // NDJSON output with clean exit codes.
+    if (std.mem.eql(u8, subcommand, "exec")) {
+        if (parsed.positional.len < 2) {
+            try writer.writeAll("error: agent exec requires an intent\n");
+            return 2;
+        }
+        const intent = parsed.positional[1];
+        return runExec(allocator, io, environ_map, parsed, intent, writer);
+    }
     if (!std.mem.eql(u8, subcommand, "run")) {
         try writer.print("error: unknown agent subcommand '{s}'\n", .{subcommand});
         return 2;
@@ -304,6 +316,61 @@ fn runTimeline(
         try writer.writeAll("  (no timeline data)\n");
     }
     return 0;
+}
+
+/// P3: `forge agent exec <intent>` — headless CI mode.
+///
+/// Like `agent run` but forces:
+///   --yes (auto-approve all tools)
+///   --non-interactive (no TUI, no prompts)
+///   --json (NDJSON event stream output)
+///   --no-color (no ANSI escape codes)
+///
+/// Exit codes:
+///   0 = agent completed successfully (proposal applied, validation passed)
+///   1 = agent failed (provider error, validation failure, etc.)
+///   2 = agent error (invalid args, workspace failed)
+///   130 = agent cancelled (SIGINT)
+///
+/// Designed for CI/CD pipelines. The NDJSON output can be parsed to extract
+/// session_id, steps, token usage, and cost for reporting.
+fn runExec(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    parsed_in: args_mod.CliArgs,
+    target: []const u8,
+    writer: *std.Io.Writer,
+) !u8 {
+    // Force headless flags: modify a copy of parsed flags.
+    var parsed = parsed_in;
+    parsed.flags.yes = true;
+    parsed.flags.auto_approve = true;
+    parsed.flags.trust_all = true;
+    parsed.flags.non_interactive = true;
+    parsed.flags.json = true;
+    parsed.flags.no_color = true;
+    parsed.flags.quiet = false;
+
+    // Emit a start event so CI can track the run.
+    try writer.print("{{\"type\":\"exec_start\",\"intent\":\"{s}\",\"timestamp_ms\":{d}}}\n", .{
+        target,
+        std.Io.Timestamp.now(io, .real).toMilliseconds(),
+    });
+
+    // Run the agent (foreground, not background, not coordinated).
+    const exit_code = runAgent(allocator, io, environ_map, parsed, target, false, writer) catch |err| {
+        try writer.print("{{\"type\":\"exec_error\",\"error\":\"{s}\"}}\n", .{@errorName(err)});
+        return 1;
+    };
+
+    // Emit a completion event.
+    try writer.print("{{\"type\":\"exec_complete\",\"exit_code\":{d},\"timestamp_ms\":{d}}}\n", .{
+        exit_code,
+        std.Io.Timestamp.now(io, .real).toMilliseconds(),
+    });
+
+    return exit_code;
 }
 
 fn runAgent(
