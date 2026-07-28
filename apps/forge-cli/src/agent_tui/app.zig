@@ -405,13 +405,61 @@ pub const App = struct {
                 len += 1;
             }
         }
-        if (len == 0) {
-            for (ALL_COMMANDS) |cmd| {
-                out[len] = cmd;
-                len += 1;
-            }
-        }
+        // UX fix: when no commands match, don't flood with all 74 commands.
+        // Return 0 instead — the render loop will show "No matching commands".
         return len;
+    }
+
+    /// UX: Return a short description for a slash command, shown in the
+    /// suggestion list so users know what each command does without
+    /// having to type /help.
+    fn commandDescription(cmd: []const u8) []const u8 {
+        if (std.mem.eql(u8, cmd, "/clear") or std.mem.eql(u8, cmd, "/cls")) return "Clear chat";
+        if (std.mem.eql(u8, cmd, "/mode")) return "Switch ask/plan/agent";
+        if (std.mem.eql(u8, cmd, "/context")) return "Show context inspector";
+        if (std.mem.eql(u8, cmd, "/diff")) return "Show proposal diff";
+        if (std.mem.eql(u8, cmd, "/events")) return "View NDJSON event log";
+        if (std.mem.eql(u8, cmd, "/timeline")) return "Show task ledger timeline";
+        if (std.mem.eql(u8, cmd, "/resume")) return "Resume a session";
+        if (std.mem.eql(u8, cmd, "/sessions")) return "List sessions";
+        if (std.mem.eql(u8, cmd, "/spec")) return "Spec-driven dev (Kiro)";
+        if (std.mem.eql(u8, cmd, "/runs")) return "List background runs";
+        if (std.mem.eql(u8, cmd, "/complete")) return "Inline tab completion";
+        if (std.mem.eql(u8, cmd, "/model")) return "Show/change model";
+        if (std.mem.eql(u8, cmd, "/cost")) return "Show token usage + cost";
+        if (std.mem.eql(u8, cmd, "/provider")) return "Show provider info";
+        if (std.mem.eql(u8, cmd, "/save")) return "Save conversation";
+        if (std.mem.eql(u8, cmd, "/review")) return "Code review";
+        if (std.mem.eql(u8, cmd, "/search")) return "Search workspace";
+        if (std.mem.eql(u8, cmd, "/edit")) return "Multi-file edit (Composer)";
+        if (std.mem.eql(u8, cmd, "/undo")) return "Undo last transaction";
+        if (std.mem.eql(u8, cmd, "/redo")) return "Redo undone transaction";
+        if (std.mem.eql(u8, cmd, "/theme")) return "Switch color theme";
+        if (std.mem.eql(u8, cmd, "/config")) return "Show configuration";
+        if (std.mem.eql(u8, cmd, "/bookmark")) return "Bookmark a line";
+        if (std.mem.eql(u8, cmd, "/copy")) return "Copy last code block";
+        if (std.mem.eql(u8, cmd, "/copyall")) return "Copy all chat";
+        if (std.mem.eql(u8, cmd, "/branch")) return "Create git branch";
+        if (std.mem.eql(u8, cmd, "/filter")) return "Filter by message type";
+        if (std.mem.eql(u8, cmd, "/stats")) return "Conversation statistics";
+        if (std.mem.eql(u8, cmd, "/compact")) return "Compact conversation";
+        if (std.mem.eql(u8, cmd, "/pin")) return "Pin a line to top";
+        if (std.mem.eql(u8, cmd, "/vim")) return "Toggle vim mode";
+        if (std.mem.eql(u8, cmd, "/wordwrap")) return "Toggle word wrap";
+        if (std.mem.eql(u8, cmd, "/help")) return "Show help overlay";
+        if (std.mem.eql(u8, cmd, "/quit") or std.mem.eql(u8, cmd, "/exit")) return "Exit Forge";
+        if (std.mem.eql(u8, cmd, "/refactor")) return "AI refactor code";
+        if (std.mem.eql(u8, cmd, "/explain")) return "AI explain code";
+        if (std.mem.eql(u8, cmd, "/fix")) return "AI fix bugs";
+        if (std.mem.eql(u8, cmd, "/testgen")) return "AI generate tests";
+        if (std.mem.eql(u8, cmd, "/doc")) return "AI generate docs";
+        if (std.mem.eql(u8, cmd, "/version")) return "Show version";
+        if (std.mem.eql(u8, cmd, "/policy")) return "Show tool policy";
+        if (std.mem.eql(u8, cmd, "/tools")) return "List available tools";
+        if (std.mem.eql(u8, cmd, "/capability")) return "Show model capabilities";
+        if (std.mem.eql(u8, cmd, "/inspect")) return "Inspect context";
+        if (std.mem.eql(u8, cmd, "/notify")) return "Toggle notifications";
+        return "";
     }
 
     fn applyCommandSuggestion(self: *App) void {
@@ -5255,10 +5303,13 @@ pub const App = struct {
             .plan => "+",
             .agent => "*",
         };
+        // UX: show multi-line indicator if input contains newlines.
+        const has_newline = std.mem.indexOfScalar(u8, self.input.items, '\n') != null;
+        const ml_indicator: []const u8 = if (has_newline) "ML " else "";
         if (std.mem.eql(u8, self.branch_label, "no branch")) {
-            return std.fmt.bufPrint(buf, "[{s}] {s} ", .{ mode_icon, folder });
+            return std.fmt.bufPrint(buf, "[{s}]{s} {s} ", .{ mode_icon, ml_indicator, folder });
         }
-        return std.fmt.bufPrint(buf, "[{s}] {s} ({s}) ", .{ mode_icon, folder, self.branch_label });
+        return std.fmt.bufPrint(buf, "[{s}]{s} {s} ({s}) ", .{ mode_icon, ml_indicator, folder, self.branch_label });
     }
 
     fn shouldAutoApprove(self: *App, policy: ai.tool_registry.Policy) bool {
@@ -6307,11 +6358,11 @@ pub const App = struct {
         }
 
         // Draw a subtle separator line between chat area and input/footer.
-        // This gives a clear visual boundary for "where do I type?".
+        // UX: use thin dashes instead of thick '---' for a lighter visual.
         const separator_row = chat_rows + 1;
         self.frame.moveTo(separator_row, 1);
         if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-        // Draw a thin horizontal line across the full width.
+        // Draw a thin horizontal line using lighter characters.
         var sep_buf: [256]u8 = undefined;
         const sep_w: usize = @min(@as(usize, size.cols), sep_buf.len);
         @memset(sep_buf[0..sep_w], '-');
@@ -6322,25 +6373,54 @@ pub const App = struct {
         var footer_row = chat_rows + 2;
 
         if (show_commands) {
-            for (filtered[0..filtered_len], 0..) |cmd, i| {
-                const cmd_row = footer_row + @as(u16, @intCast(i));
-                self.frame.moveTo(cmd_row, 1);
-
-                if (i == self.command_index) {
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
-                    self.frame.appendSlice(" > ") catch {};
-                    self.frame.appendSlice(cmd) catch {};
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-                } else {
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-                    self.frame.appendSlice("   ") catch {};
-                    self.frame.appendSlice(cmd) catch {};
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-                }
+            if (filtered_len == 0) {
+                // UX fix: show "No matching commands" instead of empty footer.
+                self.frame.moveTo(footer_row, 1);
+                if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                self.frame.appendSlice("   No matching commands. Type /help for list.") catch {};
+                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
                 self.frame.appendSlice("\x1b[K") catch {};
+                footer_row += 1;
+            } else {
+                for (filtered[0..filtered_len], 0..) |cmd, i| {
+                    const cmd_row = footer_row + @as(u16, @intCast(i));
+                    self.frame.moveTo(cmd_row, 1);
+
+                    // Get short description for this command.
+                    const desc = commandDescription(cmd);
+
+                    if (i == self.command_index) {
+                        if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+                        if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+                        self.frame.appendSlice(" > ") catch {};
+                        self.frame.appendSlice(cmd) catch {};
+                        if (desc.len > 0) {
+                            self.frame.appendSlice("  ") catch {};
+                            self.frame.appendSlice(desc) catch {};
+                        }
+                        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                    } else {
+                        if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                        self.frame.appendSlice("   ") catch {};
+                        self.frame.appendSlice(cmd) catch {};
+                        if (desc.len > 0) {
+                            self.frame.appendSlice("  ") catch {};
+                            self.frame.appendSlice(desc) catch {};
+                        }
+                        if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                    }
+                    self.frame.appendSlice("\x1b[K") catch {};
+                }
+                footer_row += filtered_len;
             }
-            footer_row += filtered_len;
+        } else if (!pending and !self.agent_busy and self.input.items.len == 0) {
+            // UX: show a helpful hint when footer is empty and input is empty.
+            self.frame.moveTo(footer_row, 1);
+            if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+            self.frame.appendSlice("  Type / for commands | @ to mention files | ? for help | Ctrl+J newline | Ctrl+M mode") catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+            self.frame.appendSlice("\x1b[K") catch {};
+            footer_row += 1;
         }
 
         if (pending) {
