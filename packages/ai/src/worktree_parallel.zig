@@ -77,7 +77,7 @@ pub fn createWorktrees(
 
         // Create a new branch and worktree: git worktree add -b <branch> <path> HEAD
         const argv = [_][]const u8{
-            "git", "-C", workspace_path, "worktree", "add", "-b",
+            "git",       "-C",          workspace_path, "worktree", "add", "-b",
             branch_name, worktree_path, "HEAD",
         };
 
