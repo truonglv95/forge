@@ -217,6 +217,9 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  models     List AI models or query routing (list|capability|route) (RFC-0016)
         \\  chat       Interactive chat REPL with @mentions and slash commands (RFC-0017)
         \\  edit       Composer-style multi-file inline edit (RFC-0013 Composer)
+        \\  review     AI code review
+        \\  test-gen   AI test generation
+        \\  serve      Start HTTP daemon for forge-mobile PWA (port 7777)
         \\  help       Show this help
         \\
         \\Options:
@@ -228,14 +231,18 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --trust-all          Trust all agent tools for this session; edit tools auto-apply via transactions
         \\  --auto-approve       Alias for trusting all agent tool approvals in this session
         \\  --file <path>        Include file in AI context (repeatable)
-        \\  --provider <name>    AI provider: auto|fake|gemini|ollama|openrouter (default: from forge.toml or auto)
+        \\  --provider <name>    AI provider: auto|fake|gemini|ollama|openrouter|anthropic|openai|nvidia (default: from forge.toml or auto)
         \\  --model <name>       Model id (default: from forge.toml or provider default)
         \\  --budget-bytes <n>   Context byte budget for forge context (default: 8MiB)
         \\  --capability <name>  Agent capability: read_only|propose|propose_and_task
         \\  --mode <name>        Routing mode for forge context: ask|plan|agent
+        \\  --max-steps <n>      Max agent steps (default: 256, or adaptive by intent)
+        \\  --harness            Enable Superpower Harness (7-phase workflow)
+        \\  --parallel           Run parallel multi-agent (planner+reviewer+implementer)
+        \\  --coordinated        Run coordinated multi-agent (sequential planner→reviewer→implementer)
+        \\  --background         Run agent in background (forge agent run --background)
         \\  --once               Single watch poll (for tests)
         \\  --max-polls <n>      Limit watch polling iterations
-        \\  --max-steps <n>      Limit agent steps (default: 8)
         \\  --fetch              Allow parser sync to resolve fetchable parser packs (stub)
         \\  --repeat <n>         Repeat eval suite runs (default: 1)
         \\  --output <path>      Write eval results JSONL (default: .forge/evals/latest.jsonl)

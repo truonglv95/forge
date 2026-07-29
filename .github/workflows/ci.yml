@@ -85,6 +85,16 @@ jobs:
           ./zig-out/bin/forge providers
           ./zig-out/bin/forge models list
 
+      - name: Smoke test serve
+        run: |
+          ./zig-out/bin/forge serve --provider fake &
+          SERVE_PID=$!
+          sleep 2
+          curl -sf http://localhost:7777/api/health | grep -q '"ok"'
+          curl -sf http://localhost:7777/api/model | grep -q 'model'
+          curl -sf http://localhost:7777/ | grep -q 'Forge Mobile'
+          kill $SERVE_PID 2>/dev/null || true
+
   test-windows:
     name: Format Check (Windows)
     runs-on: windows-2022

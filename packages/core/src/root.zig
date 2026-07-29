@@ -4,7 +4,7 @@ const std = @import("std");
 const util = @import("forge-util");
 
 pub const telemetry = @import("telemetry.zig");
-pub const version = "0.1.0";
+pub const version = "0.2.0";
 
 pub const Subsystem = enum {
     kernel,
