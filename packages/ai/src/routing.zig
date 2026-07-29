@@ -370,6 +370,9 @@ pub fn wireAllowedForIntent(wire_name: []const u8, intent: TaskIntent, intent_te
     if (std.mem.eql(u8, wire_name, "fetch_url")) {
         return intentNeedsWeb(intent_text) or intent == .plan_change;
     }
+    if (std.mem.eql(u8, wire_name, "web_search")) {
+        return intentNeedsWeb(intent_text) or intent == .plan_change;
+    }
     if (std.mem.eql(u8, wire_name, "run_command")) {
         return intent == .debug_failure or intent == .edit_code or intent == .plan_change;
     }
@@ -424,6 +427,7 @@ pub fn formatToolsSummary(
         "codebase_search",
         "remember",
         "fetch_url",
+        "web_search",
         "run_command",
         "replace_file_content",
     };

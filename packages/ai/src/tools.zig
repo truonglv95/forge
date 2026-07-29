@@ -32,6 +32,7 @@ pub const ToolId = enum {
     find_files,
     remember,
     fetch_url,
+    web_search,
     list_tree,
     run_task,
     run_command,
@@ -49,11 +50,11 @@ pub const ToolId = enum {
 pub fn isAllowed(profile: CapabilityProfile, tool: ToolId) bool {
     return switch (profile) {
         .read_only => switch (tool) {
-            .get_editor_context, .read_file, .read_many_files, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .lsp_definition, .lsp_hover, .lsp_document_symbols, .lsp_diagnostics, .find_files, .fetch_url, .list_tree, .show_context, .diff_preview => true,
+            .get_editor_context, .read_file, .read_many_files, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .lsp_definition, .lsp_hover, .lsp_document_symbols, .lsp_diagnostics, .find_files, .fetch_url, .web_search, .list_tree, .show_context, .diff_preview => true,
             else => false,
         },
         .propose => switch (tool) {
-            .get_editor_context, .read_file, .read_many_files, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .lsp_definition, .lsp_hover, .lsp_document_symbols, .lsp_diagnostics, .find_files, .fetch_url, .list_tree, .show_context, .propose_edit, .multi_edit, .remember, .run_command, .diff_preview, .git_stage, .git_commit => true,
+            .get_editor_context, .read_file, .read_many_files, .git_diff, .search, .codebase_search, .lsp_workspace_symbol, .lsp_find_references, .lsp_definition, .lsp_hover, .lsp_document_symbols, .lsp_diagnostics, .find_files, .fetch_url, .web_search, .list_tree, .show_context, .propose_edit, .multi_edit, .remember, .run_command, .diff_preview, .git_stage, .git_commit => true,
             else => false,
         },
         .propose_and_task => switch (tool) {
@@ -80,6 +81,7 @@ pub fn name(tool: ToolId) []const u8 {
         .find_files => "find_files",
         .remember => "remember",
         .fetch_url => "fetch_url",
+        .web_search => "web_search",
         .list_tree => "list_tree",
         .run_task => "run_task",
         .run_command => "run_command",

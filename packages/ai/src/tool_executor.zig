@@ -313,6 +313,39 @@ pub fn fetchUrl(ctx: Context, url: []const u8) AgentToolError!FetchUrlOutcome {
     };
 }
 
+/// web_search tool — searches the web for a query and returns results.
+/// Supports Brave Search API, Tavily API, or DuckDuckGo HTML fallback.
+pub fn webSearch(ctx: Context, query: []const u8, num: usize) AgentToolError!Outcome {
+    try checkCancel(ctx);
+    try requireTool(ctx, .web_search);
+
+    const web_search = @import("web_search.zig");
+    const effective_num = if (num == 0) 5 else @min(num, 10);
+
+    const results = web_search.search(
+        ctx.allocator,
+        ctx.io,
+        ctx.environ_map,
+        query,
+        .{ .num = effective_num },
+    ) catch |err| switch (err) {
+        error.NoApiKey => {
+            const msg = std.fmt.allocPrint(ctx.allocator, "web_search failed: no API key set. Set BRAVE_API_KEY or TAVILY_API_KEY env var, or use DuckDuckGo fallback (which may be blocked).", .{}) catch return error.WorkspaceFailed;
+            return .{ .summary = msg };
+        },
+        error.NoResults => {
+            const msg = std.fmt.allocPrint(ctx.allocator, "web_search '{s}' -> no results", .{query}) catch return error.WorkspaceFailed;
+            return .{ .summary = msg };
+        },
+        else => return error.WorkspaceFailed,
+    };
+    defer web_search.freeResults(ctx.allocator, results);
+
+    // Format results as the summary (Outcome only has summary field).
+    const content = web_search.formatResults(ctx.allocator, results) catch return error.WorkspaceFailed;
+    return .{ .summary = content };
+}
+
 pub fn findFiles(ctx: Context, pattern: []const u8, search_path: []const u8, head_limit: usize) AgentToolError!Outcome {
     try checkCancel(ctx);
     try requireTool(ctx, .find_files);

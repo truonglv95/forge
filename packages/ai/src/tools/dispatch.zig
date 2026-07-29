@@ -172,6 +172,15 @@ pub fn execute(
         }
         return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
     }
+    if (std.mem.eql(u8, call.name, "web_search")) {
+        const WebSearchArgs = struct { query: []const u8, num: ?usize = null };
+        var parsed = std.json.parseFromSlice(WebSearchArgs, allocator, call.args_json, .{ .ignore_unknown_fields = true }) catch return error.ParseFailed;
+        defer parsed.deinit();
+        const num = parsed.value.num orelse 5;
+        const out = tool_executor.webSearch(tool_ctx, parsed.value.query, num) catch |err| return mapTool(err);
+        defer allocator.free(out.summary);
+        return .{ .text = allocator.dupe(u8, out.summary) catch return error.WorkspaceFailed };
+    }
     if (std.mem.eql(u8, call.name, "run_command")) {
         const command = args.parseRunCommand(allocator, call.args_json) catch return error.ParseFailed;
         defer allocator.free(command);
