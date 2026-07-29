@@ -94,6 +94,10 @@ pub fn run(
     if (parsed.flags.harness) {
         return runHarness(allocator, io, environ_map, parsed, intent, writer);
     }
+    // Parallel multi-agent mode: spawn N agents in parallel.
+    if (parsed.flags.parallel) {
+        return runParallelAgents(allocator, io, environ_map, parsed, intent, writer);
+    }
     return runAgent(allocator, io, environ_map, parsed, intent, false, writer);
 }
 
@@ -1519,5 +1523,51 @@ fn runHarness(
         }
     }
 
+    return 0;
+}
+
+/// `forge agent run --parallel "..."` — runs multiple agents in parallel.
+/// Each agent gets its own thread with isolated context. Results are
+/// collected and merged at the end.
+fn runParallelAgents(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    parsed: args_mod.CliArgs,
+    intent: []const u8,
+    writer: *std.Io.Writer,
+) !u8 {
+    _ = io;
+    _ = environ_map;
+    _ = parsed;
+    const parallel = @import("forge-ai").parallel_agents;
+
+    try writer.print("\n\xe2\x9a\xa1 Parallel Multi-Agent \xe2\x9a\xa1\n", .{});
+    try writer.print("Intent: {s}\n\n", .{intent});
+
+    // Default: planner + reviewer + implementer running in parallel.
+    const specs = [_]parallel.ParallelAgentSpec{
+        .{ .role = "planner", .prompt = intent, .max_steps = 16 },
+        .{ .role = "reviewer", .prompt = intent, .max_steps = 10 },
+        .{ .role = "implementer", .prompt = intent, .max_steps = 24 },
+    };
+
+    try writer.print("Spawning {d} agents in parallel...\n\n", .{specs.len});
+
+    const results = parallel.runParallel(allocator, &specs) catch |err| {
+        try writer.print("Parallel execution failed: {}\n", .{err});
+        return 2;
+    };
+    defer {
+        for (results) |*r| r.deinit(allocator);
+        allocator.free(results);
+    }
+
+    const summary = parallel.formatResults(allocator, results) catch "Failed to format results";
+    defer allocator.free(summary);
+    try writer.print("{s}", .{summary});
+
+    _ = environ_map;
+    _ = parsed;
     return 0;
 }

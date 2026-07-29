@@ -161,3 +161,4 @@ pub const model_capabilities = @import("model_capabilities.zig");
 pub const auth = @import("auth/supabase_auth.zig");
 pub const auth_token_store = @import("auth/token_store.zig");
 pub const auth_session = @import("auth/session.zig");
+pub const parallel_agents = @import("parallel_agents.zig");

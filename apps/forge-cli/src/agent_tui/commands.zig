@@ -59,6 +59,8 @@ pub const Command = union(enum) {
     stats,
     compact,
     pin: ?[]const u8,
+    // LSP diagnostics command
+    diagnostics: ?[]const u8,
     // Phase 62-65: More TUI features
     alias: ?[]const u8,
     alias_list,
@@ -224,6 +226,13 @@ pub fn parseSlashCommand(input: []const u8) Command {
     }
     // Phase 58: Show conversation statistics
     if (matchesSlash(input, "stats") or matchesSlash(input, "statistics")) return .stats;
+    // LSP diagnostics: /diagnostics [file]
+    if (matchesSlash(input, "diagnostics") or matchesSlash(input, "diag")) {
+        if (std.mem.eql(u8, input, "/diagnostics") or std.mem.eql(u8, input, "/diag")) return .{ .diagnostics = null };
+        const space_index = std.mem.indexOfScalar(u8, input, ' ') orelse return .{ .diagnostics = null };
+        const args = std.mem.trim(u8, input[space_index + 1 ..], &std.ascii.whitespace);
+        return .{ .diagnostics = if (args.len > 0) args else null };
+    }
     // Phase 59: Compact conversation
     if (matchesSlash(input, "compact")) return .compact;
     // Phase 60: Pin messages

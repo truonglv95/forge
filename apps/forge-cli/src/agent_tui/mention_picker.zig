@@ -252,10 +252,11 @@ pub fn buildWorkspaceFileSource(
     return try entries.toOwnedSlice(allocator);
 }
 
-/// git:diff source — returns changed files from git diff --stat.
-/// Requires the workspace path to run git. Falls back to empty if git fails.
+/// git:diff source — returns changed files from git diff --name-only.
+/// Requires io for std.process.run (Zig 0.16 API).
 pub fn gitDiffSource(
     allocator: std.mem.Allocator,
+    io: std.Io,
     workspace_path: []const u8,
     query: []const u8,
 ) ![]MentionEntry {
@@ -269,11 +270,21 @@ pub fn gitDiffSource(
         entries.deinit(allocator);
     }
 
-    // Run `git diff --name-only` in the workspace.
-    // Note: Zig 0.16 uses std.process.run (not Child.run), requires io.
-    // Since this function doesn't have io, we return empty for now.
-    // TODO: Pass io from caller when wiring into TUI.
-    _ = workspace_path;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "diff", "--name-only" },
+        .cwd = .{ .path = workspace_path },
+    }) catch return entries.toOwnedSlice(allocator);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const label = try allocator.dupe(u8, trimmed);
+        const insert = try std.fmt.allocPrint(allocator, "@git:diff:{s}", .{trimmed});
+        try entries.append(allocator, .{ .kind = .git_diff, .label = label, .insert = insert, .detail = "modified" });
+    }
 
     return try entries.toOwnedSlice(allocator);
 }
@@ -281,6 +292,7 @@ pub fn gitDiffSource(
 /// git:status source — returns files from git status --porcelain.
 pub fn gitStatusSource(
     allocator: std.mem.Allocator,
+    io: std.Io,
     workspace_path: []const u8,
     query: []const u8,
 ) ![]MentionEntry {
@@ -294,9 +306,24 @@ pub fn gitStatusSource(
         entries.deinit(allocator);
     }
 
-    // Note: Zig 0.16 uses std.process.run (not Child.run), requires io.
-    // Since this function doesn't have io, we return empty for now.
-    _ = workspace_path;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "status", "--porcelain" },
+        .cwd = .{ .path = workspace_path },
+    }) catch return entries.toOwnedSlice(allocator);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        if (line.len < 4) continue;
+        const status = line[0..2];
+        const filename = std.mem.trim(u8, line[3..], " \t\r");
+        if (filename.len == 0) continue;
+        const label = try allocator.dupe(u8, filename);
+        const insert = try std.fmt.allocPrint(allocator, "@git:status:{s}", .{filename});
+        const detail = try allocator.dupe(u8, status);
+        try entries.append(allocator, .{ .kind = .git_status, .label = label, .insert = insert, .detail = detail });
+    }
 
     return try entries.toOwnedSlice(allocator);
 }
@@ -304,6 +331,7 @@ pub fn gitStatusSource(
 /// spec source — returns spec files from .forge/specs/ directory.
 pub fn specSource(
     allocator: std.mem.Allocator,
+    io: std.Io,
     workspace_path: []const u8,
     query: []const u8,
 ) ![]MentionEntry {
@@ -317,10 +345,20 @@ pub fn specSource(
         entries.deinit(allocator);
     }
 
-    // Note: Zig 0.16 requires io for directory iteration. Since this function
-    // doesn't have io, we return empty for now.
-    // TODO: Pass io from caller when wiring into TUI.
-    _ = workspace_path;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const specs_path = std.fmt.bufPrint(&path_buf, "{s}/.forge/specs", .{workspace_path}) catch return entries.toOwnedSlice(allocator);
+
+    var dir = std.Io.Dir.openDirAbsolute(io, specs_path, .{ .iterate = true }) catch return entries.toOwnedSlice(allocator);
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (iter.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
+        const label = try allocator.dupe(u8, entry.name);
+        const insert = try std.fmt.allocPrint(allocator, "@spec:{s}", .{entry.name});
+        try entries.append(allocator, .{ .kind = .spec, .label = label, .insert = insert, .detail = "spec" });
+    }
 
     return try entries.toOwnedSlice(allocator);
 }

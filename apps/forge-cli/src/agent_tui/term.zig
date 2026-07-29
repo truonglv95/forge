@@ -600,54 +600,88 @@ pub const Palette = struct {
     };
 };
 
-/// Number of display columns for a UTF-8 string (counts codepoints, treating
-/// each as width 1). Good enough for Latin + Vietnamese; not full wcwidth.
+/// Number of display columns for a UTF-8 string. Uses wcwidth-style
+/// logic: CJK/fullwidth characters = 2 columns, combining = 0, rest = 1.
+/// Also skips ANSI escape sequences (0 display width).
 pub fn displayWidth(text: []const u8) usize {
     var width: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        // CRITICAL: Skip ANSI escape sequences. decorateMarkdown injects
-        // color codes like \x1b[36m, \x1b[0m, \x1b[1m into the text. These
-        // are invisible (0 display width) but have byte length 4-8. If we
-        // count them as display chars, wrapLines wraps at the wrong position
-        // and truncateEnd clips text mid-escape-sequence — both cause the
-        // garbled/interleaved layout users see.
         if (text[i] == 0x1B and i + 1 < text.len and text[i + 1] == '[') {
-            // CSI sequence: ESC [ ... <final byte 0x40-0x7E>
-            i += 2; // skip ESC [
+            i += 2;
             while (i < text.len) {
                 const ch = text[i];
                 i += 1;
-                // Final byte is 0x40-0x7E (@, A-Z, a-z, ~, etc.)
                 if (ch >= 0x40 and ch <= 0x7E) break;
             }
-            continue; // don't increment width
+            continue;
         }
-        // OSC sequence: ESC ] ... BEL or ST (ESC \)
         if (text[i] == 0x1B and i + 1 < text.len and text[i + 1] == ']') {
             i += 2;
             while (i < text.len) {
                 if (text[i] == 0x07) {
                     i += 1;
                     break;
-                } // BEL terminator
+                }
                 if (text[i] == 0x1B and i + 1 < text.len and text[i + 1] == '\\') {
                     i += 2;
                     break;
-                } // ST terminator
+                }
                 i += 1;
             }
             continue;
         }
-        // Lone ESC (shouldn't happen in well-formed text, but skip it)
         if (text[i] == 0x1B) {
             i += 1;
             continue;
         }
-        i += utf8SeqLen(text[i]);
-        width += 1;
+        const seq_len = utf8SeqLen(text[i]);
+        if (i + seq_len > text.len) break;
+        const cp = decodeCodepoint(text[i..][0..seq_len]);
+        width += charWidth(cp);
+        i += seq_len;
     }
     return width;
+}
+
+/// Decode a UTF-8 sequence (1-4 bytes) to a Unicode codepoint.
+fn decodeCodepoint(bytes: []const u8) u21 {
+    if (bytes.len == 0) return 0;
+    const b0 = bytes[0];
+    if (b0 < 0x80) return b0;
+    if (b0 >= 0xF0 and bytes.len >= 4) {
+        return @as(u21, b0 & 0x07) << 18 | @as(u21, bytes[1] & 0x3F) << 12 | @as(u21, bytes[2] & 0x3F) << 6 | @as(u21, bytes[3] & 0x3F);
+    }
+    if (b0 >= 0xE0 and bytes.len >= 3) {
+        return @as(u21, b0 & 0x0F) << 12 | @as(u21, bytes[1] & 0x3F) << 6 | @as(u21, bytes[2] & 0x3F);
+    }
+    if (b0 >= 0xC0 and bytes.len >= 2) {
+        return @as(u21, b0 & 0x1F) << 6 | @as(u21, bytes[1] & 0x3F);
+    }
+    return b0;
+}
+
+/// wcwidth-style character width: 2 for CJK/fullwidth, 0 for combining, 1 for rest.
+fn charWidth(cp: u21) usize {
+    // Control characters and NULL = 0
+    if (cp == 0) return 0;
+    if (cp < 0x20 or cp == 0x7F) return 0;
+    // Combining diacritical marks (U+0300-U+036F)
+    if (cp >= 0x300 and cp <= 0x36F) return 0;
+    // CJK ranges (width 2)
+    if (cp >= 0x1100 and cp <= 0x115F) return 2; // Hangul Jamo
+    if (cp >= 0x2E80 and cp <= 0x303E) return 2; // CJK Radicals
+    if (cp >= 0x3041 and cp <= 0x33FF) return 2; // CJK symbols, Hiragana, Katakana
+    if (cp >= 0x3400 and cp <= 0x4DBF) return 2; // CJK Extension A
+    if (cp >= 0x4E00 and cp <= 0x9FFF) return 2; // CJK Unified Ideographs
+    if (cp >= 0xA000 and cp <= 0xA4CF) return 2; // Yi
+    if (cp >= 0xAC00 and cp <= 0xD7A3) return 2; // Hangul Syllables
+    if (cp >= 0xF900 and cp <= 0xFAFF) return 2; // CJK Compatibility
+    if (cp >= 0xFE30 and cp <= 0xFE4F) return 2; // CJK Compatibility Forms
+    if (cp >= 0xFF00 and cp <= 0xFF60) return 2; // Fullwidth Forms
+    if (cp >= 0xFFE0 and cp <= 0xFFE6) return 2; // Fullwidth Signs
+    if (cp >= 0x20000 and cp <= 0x3FFFD) return 2; // CJK Extension B-F
+    return 1;
 }
 
 fn utf8SeqLen(first: u8) usize {
@@ -693,8 +727,13 @@ fn byteOffsetForCols(text: []const u8, cols: usize) usize {
             i += 1;
             continue;
         }
-        i += utf8SeqLen(text[i]);
-        seen += 1;
+        const seq_len = utf8SeqLen(text[i]);
+        if (i + seq_len > text.len) break;
+        const cp = decodeCodepoint(text[i..][0..seq_len]);
+        const w = charWidth(cp);
+        if (seen + w > cols) break; // don't overshoot
+        i += seq_len;
+        seen += w;
     }
     return @min(i, text.len);
 }
@@ -910,4 +949,71 @@ test "FrameBuffer writeRow pads to width" {
     fb.writeRow(1, 20, "hello");
     // Should contain "hello" followed by spaces to fill 20 cols
     try std.testing.expect(fb.data.items.len > 5);
+}
+
+// =============================================================================
+// Helper functions to reduce duplication across app.zig
+// =============================================================================
+
+/// Write text to system clipboard via OSC 52 escape sequence.
+/// Works in most modern terminals (xterm, iTerm2, Kitty, Alacritty, Windows Terminal).
+/// Replaces 4+ inline OSC 52 implementations across app.zig.
+pub fn writeClipboard(text: []const u8) void {
+    // OSC 52: ESC ] 52 ; c ; <base64> BEL
+    // We use a simple base64 encoder inline.
+    var buf: [16384]u8 = undefined;
+    if (text.len > 12000) return; // too large for OSC 52
+
+    const b64_len = base64Encode(text, &buf);
+    var seq_buf: [20000]u8 = undefined;
+    const seq = std.fmt.bufPrint(&seq_buf, "\x1b]52;c;{s}\x07", .{buf[0..b64_len]}) catch return;
+    writeAll(seq) catch {};
+}
+
+/// Simple base64 encoder (RFC 4648). Returns number of bytes written.
+fn base64Encode(input: []const u8, output: []u8) usize {
+    const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var oi: usize = 0;
+    var i: usize = 0;
+    while (i + 3 <= input.len) : (i += 3) {
+        if (oi + 4 > output.len) break;
+        output[oi] = table[input[i] >> 2];
+        output[oi + 1] = table[((input[i] & 0x03) << 4) | (input[i + 1] >> 4)];
+        output[oi + 2] = table[((input[i + 1] & 0x0F) << 2) | (input[i + 2] >> 6)];
+        output[oi + 3] = table[input[i + 2] & 0x3F];
+        oi += 4;
+    }
+    // Handle remaining bytes
+    if (i < input.len and oi + 4 <= output.len) {
+        output[oi] = table[input[i] >> 2];
+        if (i + 1 < input.len) {
+            output[oi + 1] = table[((input[i] & 0x03) << 4) | (input[i + 1] >> 4)];
+            output[oi + 2] = table[(input[i + 1] & 0x0F) << 2];
+            output[oi + 3] = '=';
+        } else {
+            output[oi + 1] = table[(input[i] & 0x03) << 4];
+            output[oi + 2] = '=';
+            output[oi + 3] = '=';
+        }
+        oi += 4;
+    }
+    return oi;
+}
+
+/// LineKind label for display — replaces 9+ duplicated switch blocks.
+pub fn lineKindLabel(kind: u8) []const u8 {
+    return switch (kind) {
+        0 => "user",
+        1 => "agent",
+        2 => "tool",
+        3 => "system",
+        4 => "failure",
+        else => "unknown",
+    };
+}
+
+/// Format a buffer-printed string or return a fallback.
+/// Replaces 100+ `bufPrint(...) catch return` patterns.
+pub fn fmtBufOr(buf: []u8, comptime fmt: []const u8, args: anytype, fallback: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, fmt, args) catch fallback;
 }
