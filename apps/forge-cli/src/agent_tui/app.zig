@@ -421,6 +421,12 @@ pub const App = struct {
             self.mutex.unlock();
 
             if (busy) {
+                // When busy, check if SIGINT was received to cancel the agent.
+                if (self.cancel_scope.token().isCancelled()) {
+                    self.cancel_scope.cancel();
+                    try self.pushSystem("Cancelling agent... (Ctrl+C again to quit)");
+                    self.markDirty();
+                }
                 self.handleApprovalInput();
                 term.sleepMs(16);
                 continue;
@@ -7223,9 +7229,9 @@ pub const App = struct {
                 live_prompt_row.? + @as(u16, @intCast(newline_count));
 
             const caret_col: u16 = if (newline_count == 0)
-                @intCast(@min(@as(usize, size.cols), prefix_cols + cursor_text_cols + 1))
+                @intCast(@min(@as(usize, size.cols), prefix_cols + cursor_text_cols))
             else
-                @intCast(@min(@as(usize, size.cols), @as(usize, chat_x) + cursor_text_cols + 1));
+                @intCast(@min(@as(usize, size.cols), @as(usize, chat_x) + cursor_text_cols));
 
             self.frame.moveTo(caret_row, caret_col);
             self.frame.appendSlice("\x1b[?25h") catch {};

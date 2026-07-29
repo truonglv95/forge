@@ -194,20 +194,24 @@ pub const Terminal = struct {
     }
 
     pub fn readKey(self: *Terminal) !Key {
-        // Consume from internal buffer first. When a previous read() returned
-        // multiple bytes, we stored them in read_buf. This ensures fast
-        // typing, pasted text, and piped input don't lose characters.
         if (self.read_pos >= self.read_len) {
-            // Buffer exhausted — do a new read.
-            // CRITICAL: Handle EINTR (signal interruption). When SIGINT is
-            // installed via sigaction, Ctrl+C interrupts read() with EINTR.
-            // We must retry the read instead of returning error.ReadFailed,
-            // otherwise the main loop breaks and the terminal may not be
-            // restored properly.
-            self.read_len = std.posix.read(std.posix.STDIN_FILENO, &self.read_buf) catch |err| switch (err) {
-                error.WouldBlock => return .none,
-                else => return error.ReadFailed,
-            };
+            // CRITICAL: Retry on EINTR. When SIGINT handler is installed,
+            // Ctrl+C interrupts read() with EINTR. We MUST retry instead
+            // of returning error — otherwise the main loop breaks and
+            // terminal cleanup may not run properly.
+            var retry_count: u8 = 0;
+            while (retry_count < 3) : (retry_count += 1) {
+                self.read_len = std.posix.read(std.posix.STDIN_FILENO, &self.read_buf) catch |err| switch (err) {
+                    error.WouldBlock => return .none,
+                    // EINTR or similar — retry up to 3 times, then return .none
+                    // so the main loop can check cancel state.
+                    else => {
+                        if (retry_count < 2) continue;
+                        return .none;
+                    },
+                };
+                break;
+            }
             self.read_pos = 0;
             if (self.read_len == 0) return .none;
         }
