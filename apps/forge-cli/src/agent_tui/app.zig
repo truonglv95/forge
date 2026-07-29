@@ -7229,7 +7229,7 @@ pub const App = struct {
                 live_prompt_row.? + @as(u16, @intCast(newline_count));
 
             const caret_col: u16 = if (newline_count == 0)
-                @intCast(@min(@as(usize, size.cols), prefix_cols + cursor_text_cols))
+                @intCast(@min(@as(usize, size.cols), @as(usize, chat_x) + prefix_cols + cursor_text_cols))
             else
                 @intCast(@min(@as(usize, size.cols), @as(usize, chat_x) + cursor_text_cols));
 
