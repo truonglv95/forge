@@ -32,10 +32,10 @@ jobs:
         run: zig fmt --check --ast-check build.zig apps packages tools
 
       - name: Build
-        run: zig build
+        run: zig build -Dwith-glx=false
 
       - name: Test
-        run: zig build test
+        run: zig build test -Dwith-glx=false
 
       - name: Agent reliability eval (fake)
         run: |
@@ -69,10 +69,10 @@ jobs:
         run: zig fmt --check --ast-check build.zig apps packages tools
 
       - name: Build
-        run: zig build
+        run: zig build -Dwith-glx=false
 
       - name: Test
-        run: zig build test
+        run: zig build test -Dwith-glx=false
 
       - name: Agent reliability eval (fake)
         run: |

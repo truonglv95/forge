@@ -22,7 +22,6 @@ extern fn forge_close_fd(fd: c_int) void;
 ///
 /// Also serves the PWA frontend from embedded HTML.
 /// Default port: 7777.
-
 const PORT: u16 = 7777;
 
 pub fn run(
@@ -164,7 +163,8 @@ fn handleClient(clientfd: c_int, ctx: *const ServeCtx) !void {
                 },
             ) catch |err| {
                 var err_buf: [256]u8 = undefined;
-                const err_json = std.fmt.bufPrint(&err_buf,
+                const err_json = std.fmt.bufPrint(
+                    &err_buf,
                     "{{\"role\":\"agent\",\"response\":\"Agent error: {s}\",\"status\":\"error\"}}",
                     .{@errorName(err)},
                 ) catch "{\"error\":\"agent failed\"}";
@@ -179,24 +179,38 @@ fn handleClient(clientfd: c_int, ctx: *const ServeCtx) !void {
             defer escaped.deinit(ctx.allocator);
             for (response_text) |ch| {
                 switch (ch) {
-                    '"' => { escaped.appendSlice(ctx.allocator, "\\\"") catch {}; },
-                    '\\' => { escaped.appendSlice(ctx.allocator, "\\\\") catch {}; },
-                    '\n' => { escaped.appendSlice(ctx.allocator, "\\n") catch {}; },
-                    '\r' => { escaped.appendSlice(ctx.allocator, "\\r") catch {}; },
-                    '\t' => { escaped.appendSlice(ctx.allocator, "\\t") catch {}; },
-                    else => { escaped.append(ctx.allocator, ch) catch {}; },
+                    '"' => {
+                        escaped.appendSlice(ctx.allocator, "\\\"") catch {};
+                    },
+                    '\\' => {
+                        escaped.appendSlice(ctx.allocator, "\\\\") catch {};
+                    },
+                    '\n' => {
+                        escaped.appendSlice(ctx.allocator, "\\n") catch {};
+                    },
+                    '\r' => {
+                        escaped.appendSlice(ctx.allocator, "\\r") catch {};
+                    },
+                    '\t' => {
+                        escaped.appendSlice(ctx.allocator, "\\t") catch {};
+                    },
+                    else => {
+                        escaped.append(ctx.allocator, ch) catch {};
+                    },
                 }
             }
 
             // Build JSON response.
             var json_buf: [16384]u8 = undefined;
-            const json = std.fmt.bufPrint(&json_buf,
+            const json = std.fmt.bufPrint(
+                &json_buf,
                 "{{\"role\":\"agent\",\"response\":\"{s}\",\"status\":\"ok\",\"steps\":{d}}}",
                 .{ escaped.items, result.steps.len },
             ) catch {
                 // Response too large — truncate.
                 const trunc = if (escaped.items.len > 8000) escaped.items[0..8000] else escaped.items;
-                const trunc_json = std.fmt.bufPrint(&json_buf,
+                const trunc_json = std.fmt.bufPrint(
+                    &json_buf,
                     "{{\"role\":\"agent\",\"response\":\"{s}...(truncated)\",\"status\":\"ok\"}}",
                     .{trunc},
                 ) catch "{\"error\":\"too large\"}";
@@ -231,7 +245,8 @@ fn handleClient(clientfd: c_int, ctx: *const ServeCtx) !void {
         var i: u8 = 0;
         while (i < 6) : (i += 1) {
             var event_buf: [256]u8 = undefined;
-            const event = std.fmt.bufPrint(&event_buf,
+            const event = std.fmt.bufPrint(
+                &event_buf,
                 "data: {{\"type\":\"heartbeat\",\"seq\":{d}}}\n\n",
                 .{i},
             ) catch break;
@@ -244,8 +259,7 @@ fn handleClient(clientfd: c_int, ctx: *const ServeCtx) !void {
 
     // forge share — collaborative session info.
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/api/share/info")) {
-        try sendResponse(clientfd, "application/json",
-            "{\"feature\":\"forge-share\",\"status\":\"active\",\"clients\":0,\"description\":\"Collaborative coding via WebSocket. Connect to /api/events/stream for realtime updates.\"}");
+        try sendResponse(clientfd, "application/json", "{\"feature\":\"forge-share\",\"status\":\"active\",\"clients\":0,\"description\":\"Collaborative coding via WebSocket. Connect to /api/events/stream for realtime updates.\"}");
         return;
     }
 
@@ -259,7 +273,8 @@ fn handleClient(clientfd: c_int, ctx: *const ServeCtx) !void {
 
 fn sendResponse(fd: c_int, content_type: []const u8, body: []const u8) !void {
     var hdr_buf: [512]u8 = undefined;
-    const hdr = std.fmt.bufPrint(&hdr_buf,
+    const hdr = std.fmt.bufPrint(
+        &hdr_buf,
         "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
         .{ content_type, body.len },
     ) catch return;
