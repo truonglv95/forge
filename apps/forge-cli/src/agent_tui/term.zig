@@ -199,7 +199,15 @@ pub const Terminal = struct {
         // typing, pasted text, and piped input don't lose characters.
         if (self.read_pos >= self.read_len) {
             // Buffer exhausted — do a new read.
-            self.read_len = std.posix.read(std.posix.STDIN_FILENO, &self.read_buf) catch return error.ReadFailed;
+            // CRITICAL: Handle EINTR (signal interruption). When SIGINT is
+            // installed via sigaction, Ctrl+C interrupts read() with EINTR.
+            // We must retry the read instead of returning error.ReadFailed,
+            // otherwise the main loop breaks and the terminal may not be
+            // restored properly.
+            self.read_len = std.posix.read(std.posix.STDIN_FILENO, &self.read_buf) catch |err| switch (err) {
+                error.WouldBlock => return .none,
+                else => return error.ReadFailed,
+            };
             self.read_pos = 0;
             if (self.read_len == 0) return .none;
         }

@@ -371,6 +371,20 @@ pub const App = struct {
     pub fn run(self: *App) !u8 {
         self.cancel_scope.installSigint();
         while (!self.quit) {
+            // Check if SIGINT was received (Ctrl+C). The SIGINT handler sets
+            // the cancel token. If we're not busy, treat it as a quit request.
+            if (self.cancel_scope.token().isCancelled() and !self.agent_busy) {
+                if (self.cancel_armed) {
+                    self.quit = true;
+                    break;
+                }
+                self.cancel_armed = true;
+                self.pushSystem("Press Ctrl+C again to quit") catch {};
+                // Reset cancel token so we can detect the second Ctrl+C.
+                self.cancel_scope.source.shared_state.store(false, .release);
+                self.markDirty();
+            }
+
             if (self.term.sizeChanged(self.terminal_size)) {
                 self.terminal_size = self.term.size();
                 // Invalidate render cache on resize.
@@ -412,7 +426,11 @@ pub const App = struct {
                 continue;
             }
 
-            const key = self.term.readKey() catch break;
+            const key = self.term.readKey() catch {
+                // If read fails (e.g. stdin closed), exit cleanly.
+                // Terminal cleanup happens via defer in run() top-level.
+                break;
+            };
             if (key == .none) continue;
             try self.handleKey(key);
         }
@@ -971,8 +989,9 @@ pub const App = struct {
                     }
                     // Append to picker query for filtering.
                     self.mention_picker.appendQuery(ch) catch {};
-                    const mp = @import("mention_picker.zig");
-                    self.mention_picker.refresh(&mp.defaultFileSource) catch {};
+                    // Detect mention kind from query and use appropriate source.
+                    // @file: → workspace files, @git:diff: → git diff, etc.
+                    self.refreshMentionPickerSource() catch {};
                     // ALSO insert char into input — don't swallow it!
                 }
 
@@ -3222,6 +3241,57 @@ pub const App = struct {
             try self.pushSystem("Vim mode: disabled (emacs-style input restored)");
         }
         self.markDirty();
+    }
+
+    /// Refresh mention picker with the appropriate source based on query prefix.
+    /// Detects @file:, @git:diff:, @git:status:, @spec:, @recent: prefixes and
+    /// uses the corresponding source function. Falls back to defaultFileSource.
+    fn refreshMentionPickerSource(self: *App) !void {
+        const mp = @import("mention_picker.zig");
+        const query = self.mention_picker.query.items;
+
+        // Check for source-specific prefixes.
+        if (std.mem.startsWith(u8, query, "git:diff")) {
+            // Use git diff source — but it needs workspace_path, so we use
+            // a closure pattern via a wrapper function.
+            const entries = mp.gitDiffSource(self.allocator, self.opened.path, query) catch return;
+            defer self.allocator.free(entries);
+            self.mention_picker.entries.clearRetainingCapacity();
+            for (entries) |entry| {
+                self.mention_picker.entries.append(self.allocator, entry) catch continue;
+            }
+            return;
+        }
+        if (std.mem.startsWith(u8, query, "git:status")) {
+            const entries = mp.gitStatusSource(self.allocator, self.opened.path, query) catch return;
+            defer self.allocator.free(entries);
+            self.mention_picker.entries.clearRetainingCapacity();
+            for (entries) |entry| {
+                self.mention_picker.entries.append(self.allocator, entry) catch continue;
+            }
+            return;
+        }
+        if (std.mem.startsWith(u8, query, "spec")) {
+            const entries = mp.specSource(self.allocator, self.opened.path, query) catch return;
+            defer self.allocator.free(entries);
+            self.mention_picker.entries.clearRetainingCapacity();
+            for (entries) |entry| {
+                self.mention_picker.entries.append(self.allocator, entry) catch continue;
+            }
+            return;
+        }
+
+        // Default: file source (workspace files).
+        if (self.scan_summary) |summary| {
+            const entries = mp.buildWorkspaceFileSource(self.allocator, summary.entries) catch return;
+            defer self.allocator.free(entries);
+            self.mention_picker.entries.clearRetainingCapacity();
+            for (entries) |entry| {
+                self.mention_picker.entries.append(self.allocator, entry) catch continue;
+            }
+        } else {
+            self.mention_picker.refresh(&mp.defaultFileSource) catch {};
+        }
     }
 
     /// /mouse — toggle mouse support on/off.
