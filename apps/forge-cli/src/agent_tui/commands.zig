@@ -625,3 +625,126 @@ test "parseModeName" {
     try std.testing.expectEqual(ai.tools.Mode.agent, parseModeName("agent").?);
     try std.testing.expect(parseModeName("invalid") == null);
 }
+
+test "parseSlashCommand /model with no args" {
+    const cmd = parseSlashCommand("/model");
+    try std.testing.expect(cmd == .model_show);
+}
+
+test "parseSlashCommand /model with args" {
+    const cmd = parseSlashCommand("/model qwen2.5-coder:7b");
+    try std.testing.expect(cmd == .model_set);
+    try std.testing.expectEqualStrings("qwen2.5-coder:7b", cmd.model_set.?);
+}
+
+test "parseSlashCommand /complete with prompt" {
+    const cmd = parseSlashCommand("/complete hello world");
+    try std.testing.expect(cmd == .complete_prompt);
+    try std.testing.expectEqualStrings("hello world", cmd.complete_prompt.?);
+}
+
+test "parseSlashCommand /save with path" {
+    const cmd = parseSlashCommand("/save /tmp/chat.md");
+    try std.testing.expect(cmd == .save);
+    try std.testing.expectEqualStrings("/tmp/chat.md", cmd.save.?);
+}
+
+test "parseSlashCommand /save without path" {
+    const cmd = parseSlashCommand("/save");
+    try std.testing.expect(cmd == .save);
+    try std.testing.expectEqual(@as(?[]const u8, null), cmd.save);
+}
+
+test "parseSlashCommand /search with query" {
+    const cmd = parseSlashCommand("/search auth");
+    try std.testing.expect(cmd == .search);
+    try std.testing.expectEqualStrings("auth", cmd.search.?);
+}
+
+test "parseSlashCommand /search without query" {
+    const cmd = parseSlashCommand("/search");
+    try std.testing.expect(cmd == .search);
+    try std.testing.expectEqual(@as(?[]const u8, null), cmd.search);
+}
+
+test "parseSlashCommand /undo and /redo" {
+    try std.testing.expect(parseSlashCommand("/undo") == .undo);
+    try std.testing.expect(parseSlashCommand("/redo") == .redo);
+}
+
+test "parseSlashCommand /cost and /capability" {
+    try std.testing.expect(parseSlashCommand("/cost") == .cost);
+    try std.testing.expect(parseSlashCommand("/capability") == .capability);
+}
+
+test "parseSlashCommand /theme with name" {
+    const cmd = parseSlashCommand("/theme dark");
+    try std.testing.expect(cmd == .theme);
+    try std.testing.expectEqualStrings("dark", cmd.theme.?);
+}
+
+test "parseSlashCommand /bookmark with line" {
+    const cmd = parseSlashCommand("/bookmark 5");
+    try std.testing.expect(cmd == .bookmark);
+    try std.testing.expectEqualStrings("5", cmd.bookmark.?);
+}
+
+test "parseSlashCommand /branch with name" {
+    const cmd = parseSlashCommand("/branch feature-x");
+    try std.testing.expect(cmd == .branch);
+    try std.testing.expectEqualStrings("feature-x", cmd.branch.?);
+}
+
+test "parseSlashCommand /filter with role" {
+    const cmd = parseSlashCommand("/filter user");
+    try std.testing.expect(cmd == .filter);
+    try std.testing.expectEqualStrings("user", cmd.filter.?);
+}
+
+test "parseSlashCommand unknown command returns help" {
+    const cmd = parseSlashCommand("/nonexistent");
+    try std.testing.expect(cmd == .help);
+}
+
+test "parseSlashCommand empty input returns not_command" {
+    const cmd = parseSlashCommand("");
+    try std.testing.expect(cmd == .not_command);
+}
+
+test "parseSlashCommand non-slash input returns not_command" {
+    const cmd = parseSlashCommand("hello world");
+    try std.testing.expect(cmd == .not_command);
+}
+
+test "modeLabel returns correct labels" {
+    try std.testing.expectEqualStrings("ask", modeLabel(.ask));
+    try std.testing.expectEqualStrings("plan", modeLabel(.plan));
+    try std.testing.expectEqualStrings("agent", modeLabel(.agent));
+}
+
+test "nextMode cycles ask -> plan -> agent -> ask" {
+    try std.testing.expectEqual(ai.tools.Mode.plan, nextMode(.ask));
+    try std.testing.expectEqual(ai.tools.Mode.agent, nextMode(.plan));
+    try std.testing.expectEqual(ai.tools.Mode.ask, nextMode(.agent));
+}
+
+test "matchesSlash handles exact match" {
+    try std.testing.expect(matchesSlash("/clear", "clear"));
+    try std.testing.expect(matchesSlash("/cls", "cls"));
+}
+
+test "matchesSlash handles match with args" {
+    try std.testing.expect(matchesSlash("/tools list", "tools"));
+    try std.testing.expect(matchesSlash("/model qwen", "model"));
+}
+
+test "matchesSlash rejects non-match" {
+    try std.testing.expect(!matchesSlash("/clear", "cls"));
+    try std.testing.expect(!matchesSlash("/tools", "model"));
+    try std.testing.expect(!matchesSlash("hello", "clear"));
+}
+
+test "matchesSlash rejects empty input" {
+    try std.testing.expect(!matchesSlash("", "clear"));
+    try std.testing.expect(!matchesSlash("/", "clear"));
+}

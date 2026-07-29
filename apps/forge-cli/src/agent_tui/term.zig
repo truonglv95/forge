@@ -792,3 +792,122 @@ test "wrapLines keeps UTF-8 intact" {
         try std.testing.expect(std.unicode.utf8ValidateSlice(line));
     }
 }
+
+test "displayWidth skips ANSI escape sequences" {
+    // ANSI color codes are invisible (0 display width).
+    // \x1b[36m = cyan, \x1b[0m = reset, \x1b[1m = bold
+    try std.testing.expectEqual(@as(usize, 5), displayWidth("\x1b[36mhello\x1b[0m"));
+    try std.testing.expectEqual(@as(usize, 3), displayWidth("\x1b[1m\x1b[31mfoo\x1b[0m"));
+    try std.testing.expectEqual(@as(usize, 0), displayWidth("\x1b[36m\x1b[0m"));
+    try std.testing.expectEqual(@as(usize, 5), displayWidth("hello"));
+}
+
+test "displayWidth handles mixed ANSI and text" {
+    // "ab" + ANSI + "cd" + ANSI + "e" = 5 visible chars
+    try std.testing.expectEqual(@as(usize, 5), displayWidth("ab\x1b[36mcd\x1b[0me"));
+}
+
+test "displayWidth handles lone ESC" {
+    try std.testing.expectEqual(@as(usize, 3), displayWidth("ab\x1bc"));
+    try std.testing.expectEqual(@as(usize, 0), displayWidth("\x1b"));
+}
+
+test "wrapLines splits on newlines" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapLines(allocator, "line1\nline2\nline3", 100);
+    defer freeLines(allocator, wrapped);
+    try std.testing.expectEqual(@as(usize, 3), wrapped.len);
+    try std.testing.expectEqualStrings("line1", wrapped[0]);
+    try std.testing.expectEqualStrings("line2", wrapped[1]);
+    try std.testing.expectEqualStrings("line3", wrapped[2]);
+}
+
+test "wrapLines preserves empty lines" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapLines(allocator, "a\n\nb", 100);
+    defer freeLines(allocator, wrapped);
+    try std.testing.expectEqual(@as(usize, 3), wrapped.len);
+    try std.testing.expectEqualStrings("a", wrapped[0]);
+    try std.testing.expectEqualStrings("", wrapped[1]);
+    try std.testing.expectEqualStrings("b", wrapped[2]);
+}
+
+test "wrapLines handles empty input" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapLines(allocator, "", 10);
+    defer freeLines(allocator, wrapped);
+    try std.testing.expectEqual(@as(usize, 1), wrapped.len);
+}
+
+test "wrapLines handles single line shorter than width" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapLines(allocator, "short", 100);
+    defer freeLines(allocator, wrapped);
+    try std.testing.expectEqual(@as(usize, 1), wrapped.len);
+    try std.testing.expectEqualStrings("short", wrapped[0]);
+}
+
+test "wrapLines wraps long line at word boundary" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapLines(allocator, "hello world foo bar", 10);
+    defer freeLines(allocator, wrapped);
+    try std.testing.expect(wrapped.len >= 2);
+    // First line should be "hello" (word boundary break, not mid-word)
+    try std.testing.expectEqualStrings("hello", wrapped[0]);
+}
+
+test "wrapLines handles width 0" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapLines(allocator, "hello", 0);
+    defer freeLines(allocator, wrapped);
+    try std.testing.expectEqual(@as(usize, 0), wrapped.len);
+}
+
+test "truncateEnd returns text as-is when short enough" {
+    var buf: [64]u8 = undefined;
+    const out = truncateEnd(&buf, "short", 100);
+    try std.testing.expectEqualStrings("short", out);
+}
+
+test "truncateEnd truncates long text with ellipsis" {
+    var buf: [64]u8 = undefined;
+    const out = truncateEnd(&buf, "this is a very long text", 10);
+    try std.testing.expect(out.len <= 10);
+    // Should end with "..."
+    try std.testing.expectEqualStrings("...", out[out.len - 3 ..]);
+}
+
+test "truncateEnd handles ANSI escapes in width calculation" {
+    var buf: [64]u8 = undefined;
+    // \x1b[36m + "hello" + \x1b[0m = 5 visible chars, should not be truncated
+    const out = truncateEnd(&buf, "\x1b[36mhello\x1b[0m", 100);
+    try std.testing.expectEqualStrings("\x1b[36mhello\x1b[0m", out);
+}
+
+test "FrameBuffer appendSlice and flush" {
+    var fb = FrameBuffer.init(std.testing.allocator);
+    defer fb.deinit();
+    fb.begin();
+    try fb.appendSlice("hello");
+    try fb.appendSlice(" world");
+    // begin() prepends \x1b[H, so check that "hello world" is at the end
+    try std.testing.expect(std.mem.endsWith(u8, fb.data.items, "hello world"));
+}
+
+test "FrameBuffer moveTo generates correct escape" {
+    var fb = FrameBuffer.init(std.testing.allocator);
+    defer fb.deinit();
+    fb.begin();
+    fb.moveTo(5, 10);
+    // Should contain \x1b[5;10H
+    try std.testing.expect(std.mem.indexOf(u8, fb.data.items, "\x1b[5;10H") != null);
+}
+
+test "FrameBuffer writeRow pads to width" {
+    var fb = FrameBuffer.init(std.testing.allocator);
+    defer fb.deinit();
+    fb.begin();
+    fb.writeRow(1, 20, "hello");
+    // Should contain "hello" followed by spaces to fill 20 cols
+    try std.testing.expect(fb.data.items.len > 5);
+}

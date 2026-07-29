@@ -5587,22 +5587,19 @@ pub const App = struct {
     };
 
     fn pushStartupIntro(self: *App) !void {
-        // Polished startup intro with semantic icons.
-        // ◎ for workspace info, → for actionable hint.
+        // Clean, minimal startup — single line with actionable info.
         var line_buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(
             &line_buf,
-            "\xe2\x97\x8e {s}  \xc2\xb7  {s}  \xc2\xb7  {s}",
+            "{s} | {s} | {s}",
             .{
                 self.folder_label,
                 commands.modeLabel(self.agent_mode),
                 self.model_label,
             },
-        ) catch "Workspace ready";
+        ) catch "Ready";
         try self.pushSystem(line);
-
-        // UX: single actionable hint line with arrow icon.
-        try self.pushSystem("\xe2\x86\x92 Type a question and press Enter. Press / for commands, ? for help.");
+        try self.pushSystem("Type a question and press Enter. Press / for commands, ? for help.");
     }
 
     fn refreshContextLabel(self: *App, intent: []const u8) ?PromptContextSummary {
@@ -7615,27 +7612,6 @@ pub fn run(
 
     if (parsed.flags.conversation) |session_id| {
         try app.resumeSession(session_id);
-    } else {
-        // Auto-restore last session if it's resumable and recent (<24h).
-        // This matches Claude Code/Cursor behavior of restoring the last
-        // conversation by default, so users don't lose context on restart.
-        if (workspace.sessions.findLatestResumable(allocator, io, opened.path)) |maybe_resumable| {
-            if (maybe_resumable) |resumable| {
-                defer {
-                    allocator.free(resumable.session_id);
-                    allocator.free(resumable.intent);
-                    allocator.free(resumable.execution_state);
-                }
-                // Check if session is recent (<24h = 86400000 ms).
-                const now_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
-                const session_age_ok = true; // findLatestResumable doesn't expose timestamp; accept for now.
-                _ = session_age_ok;
-                _ = now_ms;
-                // Auto-resume with a hint message.
-                app.pushSystem("Auto-resumed last session. Use /clear to start fresh.") catch {};
-                app.resumeSession(resumable.session_id) catch {};
-            }
-        } else |_| {}
     }
 
     const code = try app.run();
