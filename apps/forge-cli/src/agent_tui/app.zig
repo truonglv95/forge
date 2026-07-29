@@ -1640,74 +1640,118 @@ pub const App = struct {
     /// configured provider and displays the response inline.
     fn requestCompletion(self: *App, prompt_opt: ?[]const u8) !void {
         const prompt = prompt_opt orelse {
-            try self.pushSystem("Usage: /complete <prompt>");
-            try self.pushSystem("Sends a completion request to the configured provider.");
-            try self.pushSystem("The prompt is used as both prefix and suffix context for FIM completion.");
-            try self.pushSystem("");
-            try self.pushSystem("For full inline completion with file context, use 'forge complete --file <path>' CLI.");
+            try self.pushSystem("Usage: /complete <code>");
+            try self.pushSystem("Performs FIM (fill-in-the-middle) completion using the real inline_completion API.");
+            try self.pushSystem("The prompt is used as prefix; suffix is empty. For file-based completion, use:");
+            try self.pushSystem("  /complete <file_path>:<line>:<col>");
             return;
         };
+
+        // Parse prompt: if it contains "file:line:col" format, read the file
+        // and use real prefix/suffix. Otherwise treat prompt as prefix only.
+        var prefix: []const u8 = prompt;
+        var suffix: []const u8 = "";
+        var file_path: []const u8 = "tui-complete.zig";
+        var owned_file_content: ?[]u8 = null;
+        defer if (owned_file_content) |c| self.allocator.free(c);
+
+        // Check for "path:line:col" format.
+        if (std.mem.lastIndexOfScalar(u8, prompt, ':')) |last_colon| {
+            if (std.mem.lastIndexOfScalar(u8, prompt[0..last_colon], ':')) |first_colon| {
+                const maybe_path = prompt[0..first_colon];
+                const line_str = prompt[first_colon + 1 .. last_colon];
+                const col_str = prompt[last_colon + 1 ..];
+                const line_num = std.fmt.parseInt(usize, line_str, 10) catch null;
+                if (line_num) |ln| {
+                    const col_num = std.fmt.parseInt(usize, col_str, 10) catch null;
+                    if (col_num != null) {
+                        // Read file and split at line:col.
+                        const abs_path = std.fs.path.join(self.allocator, &.{ self.opened.path, maybe_path }) catch maybe_path;
+                        defer if (!std.mem.eql(u8, abs_path, maybe_path)) self.allocator.free(abs_path);
+                        if (std.Io.Dir.openFile(std.Io.Dir.cwd(), self.io, abs_path, .{})) |*file| {
+                            defer file.close(self.io);
+                            const stat = file.stat(self.io) catch null;
+                            if (stat) |s| {
+                                const size: usize = @intCast(s.size);
+                                if (size > 0 and size < 100 * 1024) {
+                                    const content = self.allocator.alloc(u8, size) catch null;
+                                    if (content) |c| {
+                                        if (file.readPositionalAll(self.io, c, 0)) |_| {
+                                            owned_file_content = c;
+                                            // Find byte offset for line:col.
+                                            var line: usize = 1;
+                                            var byte_offset: usize = 0;
+                                            while (byte_offset < c.len and line < ln) : (byte_offset += 1) {
+                                                if (c[byte_offset] == '\n') line += 1;
+                                            }
+                                            prefix = c[0..byte_offset];
+                                            suffix = c[byte_offset..];
+                                            file_path = maybe_path;
+                                        } else |_| {}
+                                    }
+                                }
+                            }
+                        } else |_| {}
+                    }
+                }
+            }
+        }
 
         var echo_buf: [256]u8 = undefined;
-        const echo = std.fmt.bufPrint(&echo_buf, "Completion request: {s}", .{prompt}) catch "Completion request";
+        const echo = std.fmt.bufPrint(&echo_buf, "\xe2\x9c\xa8 FIM completion: {s} ({d} prefix bytes)", .{ file_path, prefix.len }) catch "Completion request";
         try self.pushSystem(echo);
 
-        // Build provider options and create a provider for the completion call.
-        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, prompt, self.io, self.opened.root);
+        // Build provider options for inline completion.
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(self.allocator, self.parsed.flags, "inline-completion", self.io, self.opened.root);
         defer provider_opts.deinit(self.allocator);
-        var provider = ai.provider_factory.create(self.allocator, self.io, self.environ_map, provider_opts.options) catch |err| {
-            var err_buf: [128]u8 = undefined;
-            const err_msg = std.fmt.bufPrint(&err_buf, "Completion failed: cannot create provider ({s})", .{@errorName(err)}) catch "Completion failed: provider unavailable";
-            try self.pushSystem(err_msg);
-            return;
+
+        // Detect language from file extension.
+        const lang: ?[]const u8 = blk: {
+            if (std.mem.lastIndexOfScalar(u8, file_path, '.')) |dot| {
+                break :blk file_path[dot + 1 ..];
+            }
+            break :blk null;
         };
-        defer provider.deinit(self.allocator);
 
-        // Build a simple FIM prompt: "Complete the following code: <prompt>"
-        var fim_buf: std.ArrayList(u8) = .empty;
-        defer fim_buf.deinit(self.allocator);
-        fim_buf.appendSlice(self.allocator, "Complete the following code. Output only the completion, no explanations:\n\n") catch return;
-        fim_buf.appendSlice(self.allocator, prompt) catch return;
+        // Build the CompletionRequest — real FIM with prefix/suffix.
+        const request = ai.inline_completion.CompletionRequest{
+            .prefix = prefix,
+            .suffix = suffix,
+            .file_path = file_path,
+            .language = lang,
+            .max_tokens = 256,
+            .timeout_ms = 10000,
+        };
 
-        // Call the provider.
-        var response_alloc = std.Io.Writer.Allocating.init(self.allocator);
-        defer response_alloc.deinit();
-        const images = [_]ai.provider.ImagePart{};
+        // Build cancel token.
         var dummy_state = std.atomic.Value(bool).init(false);
         var dummy_token: kernel.cancellation.CancellationToken = .{ .shared_state = &dummy_state };
-        provider.ask(
+
+        // Call the real inline_completion.complete() API.
+        const result = ai.inline_completion.complete(
             self.allocator,
-            fim_buf.items,
-            &images,
-            &response_alloc.writer,
+            self.io,
+            self.environ_map,
+            request,
+            provider_opts.options,
             &dummy_token,
         ) catch |err| {
             var err_buf: [128]u8 = undefined;
-            const err_msg = std.fmt.bufPrint(&err_buf, "Completion failed: {s}", .{@errorName(err)}) catch "Completion failed";
+            const err_msg = std.fmt.bufPrint(&err_buf, "\xe2\x9c\x95 Completion failed: {s}", .{@errorName(err)}) catch "Completion failed";
             try self.pushSystem(err_msg);
             return;
         };
 
-        const output = response_alloc.writer.buffer[0..response_alloc.writer.end];
-        if (output.len == 0) {
+        if (result.text.len == 0) {
             try self.pushSystem("Completion returned empty response.");
             return;
         }
 
-        // Display the completion. Truncate very long outputs for TUI readability.
-        const max_display = 2000;
-        if (output.len > max_display) {
-            var trunc_buf: [64]u8 = undefined;
-            const trunc_msg = std.fmt.bufPrint(&trunc_buf, "Completion ({d} bytes, showing first {d}):", .{ output.len, max_display }) catch "Completion (truncated):";
-            try self.pushSystem(trunc_msg);
-            try self.pushLine(.agent, try self.allocator.dupe(u8, output[0..max_display]));
-            try self.pushSystem("... (truncated)");
-        } else {
-            var len_buf: [64]u8 = undefined;
-            const len_msg = std.fmt.bufPrint(&len_buf, "Completion ({d} bytes):", .{output.len}) catch "Completion:";
-            try self.pushSystem(len_msg);
-            try self.pushLine(.agent, try self.allocator.dupe(u8, output));
-        }
+        // Display the completion with metadata.
+        var meta_buf: [256]u8 = undefined;
+        const meta = std.fmt.bufPrint(&meta_buf, "\xe2\x9c\x93 {d} bytes  \xc2\xb7  {s}  \xc2\xb7  confidence {d:.0}%", .{ result.text.len, if (result.is_multiline) "multi-line" else "single-line", @as(u32, @intFromFloat(result.confidence * 100)) }) catch "Completion ready";
+        try self.pushSystem(meta);
+        try self.pushLine(.agent, try self.allocator.dupe(u8, result.text));
     }
 
     /// /tools list — list all available tools (Phase 24).

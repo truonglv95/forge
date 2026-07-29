@@ -31,12 +31,21 @@ pub const HookError = error{
 };
 
 /// Hook lifecycle event types.
+/// Covers Claude Code parity events + Forge-specific extensions.
 pub const HookEvent = enum {
     before_tool,
     after_tool,
     on_approval,
     on_run_start,
     on_run_complete,
+    // Claude Code parity events:
+    on_user_prompt_submit, // fires when user submits a prompt (before context build)
+    on_pre_compact, // fires before context compaction
+    on_session_start, // fires when agent session starts
+    on_session_end, // fires when agent session ends (natural or cancelled)
+    on_subagent_stop, // fires when a subagent completes
+    on_stop, // fires when agent stops (before on_session_end)
+    on_notification, // fires for notifications (e.g. approval needed, errors)
 };
 
 /// A single hook configuration entry.
@@ -221,6 +230,14 @@ fn parseEventName(s: []const u8) ?HookEvent {
     if (std.mem.eql(u8, s, "on_approval")) return .on_approval;
     if (std.mem.eql(u8, s, "on_run_start")) return .on_run_start;
     if (std.mem.eql(u8, s, "on_run_complete")) return .on_run_complete;
+    // Claude Code parity events:
+    if (std.mem.eql(u8, s, "on_user_prompt_submit")) return .on_user_prompt_submit;
+    if (std.mem.eql(u8, s, "on_pre_compact")) return .on_pre_compact;
+    if (std.mem.eql(u8, s, "on_session_start")) return .on_session_start;
+    if (std.mem.eql(u8, s, "on_session_end")) return .on_session_end;
+    if (std.mem.eql(u8, s, "on_subagent_stop")) return .on_subagent_stop;
+    if (std.mem.eql(u8, s, "on_stop")) return .on_stop;
+    if (std.mem.eql(u8, s, "on_notification")) return .on_notification;
     return null;
 }
 
