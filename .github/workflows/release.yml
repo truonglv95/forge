@@ -4,82 +4,142 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 0.2.0)'
+        required: true
 
 permissions:
   contents: write
 
 jobs:
-  build-macos:
-    name: Build and Package macOS
-    runs-on: macos-latest
+  build-linux:
+    name: Build Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
     steps:
-      - name: Checkout
+      - name: Check out
         uses: actions/checkout@v4
 
       - name: Install Zig 0.16.0
-        run: |
-          ZIG_VERSION="0.16.0"
-          ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/zig-macos-aarch64-${ZIG_VERSION}.tar.xz"
-          curl -fsSL "$ZIG_URL" -o zig.tar.xz
-          tar -xf zig.tar.xz
-          echo "$(pwd)/zig-macos-aarch64-${ZIG_VERSION}" >> "$GITHUB_PATH"
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
-      - name: Parse version from tag
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libfreetype-dev libfontconfig1-dev
+
+      - name: Build
+        run: zig build -Dwith-glx=false -Doptimize=ReleaseFast
+
+      - name: Package
+        run: |
+          mkdir -p forge-linux-x86_64/bin
+          cp zig-out/bin/forge forge-linux-x86_64/bin/
+          cp README.md forge-linux-x86_64/
+          cp LICENSE forge-linux-x86_64/
+          tar czf forge-linux-x86_64.tar.gz forge-linux-x86_64/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-linux-x86_64
+          path: forge-linux-x86_64.tar.gz
+
+  build-macos:
+    name: Build macOS arm64
+    runs-on: macos-14
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Package
+        run: |
+          mkdir -p forge-macos-arm64/bin
+          cp zig-out/bin/forge forge-macos-arm64/bin/
+          cp zig-out/bin/forge-ide forge-macos-arm64/bin/
+          cp README.md forge-macos-arm64/
+          cp LICENSE forge-macos-arm64/
+          tar czf forge-macos-arm64.tar.gz forge-macos-arm64/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-macos-arm64
+          path: forge-macos-arm64.tar.gz
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Determine version
         id: version
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Build and Package (unsigned DMG)
-        env:
-          FORGE_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          chmod +x scripts/package-mac.sh
-          bash scripts/package-mac.sh --dmg
-
-      - name: Compute SHA256
-        id: sha
-        run: |
-          DMG="zig-out/Forge-${{ steps.version.outputs.version }}-arm64.dmg"
-          if [ ! -f "$DMG" ]; then
-            DMG=$(ls zig-out/Forge-*.dmg 2>/dev/null | head -1)
+          if [ "${{ github.event.inputs.version }}" != "" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
           fi
-          SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
-          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
-          echo "dmg_path=$DMG" >> "$GITHUB_OUTPUT"
-          echo "dmg_name=$(basename $DMG)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: Forge IDE ${{ steps.version.outputs.version }}
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, 'alpha') || contains(steps.version.outputs.version, 'beta') }}
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Forge v${{ steps.version.outputs.version }}
           body: |
-            ## Forge IDE ${{ steps.version.outputs.version }}
+            ## Forge v${{ steps.version.outputs.version }}
 
-            ### Installation
-            1. Download the `.dmg` file below
-            2. Open the DMG and drag **Forge IDE** to Applications
-            3. Right-click the app and select Open (first launch on unsigned build)
+            ### Downloads
+            - **Linux x86_64**: `forge-linux-x86_64.tar.gz`
+            - **macOS arm64**: `forge-macos-arm64.tar.gz`
 
-            ### SHA256 Checksums
+            ### Install
+            ```bash
+            # Linux
+            tar xzf forge-linux-x86_64.tar.gz
+            sudo cp forge-linux-x86_64/bin/forge /usr/local/bin/
+
+            # macOS
+            tar xzf forge-macos-arm64.tar.gz
+            sudo cp forge-macos-arm64/bin/forge /usr/local/bin/
+
+            # Verify
+            forge version
             ```
-            ${{ steps.sha.outputs.sha256 }}  ${{ steps.sha.outputs.dmg_name }}
+
+            ### Quick Start
+            ```bash
+            forge agent          # Interactive TUI
+            forge serve          # Mobile PWA on :7777
+            forge ask "question" # Ask AI
             ```
-
-            ### Changelog
-            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
-          files: ${{ steps.sha.outputs.dmg_path }}
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: forge-ide-macos-${{ steps.version.outputs.version }}
-          path: |
-            zig-out/Forge-*.dmg
-            zig-out/stage/
-          retention-days: 30
+          files: |
+            artifacts/forge-linux-x86_64/forge-linux-x86_64.tar.gz
+            artifacts/forge-macos-arm64/forge-macos-arm64.tar.gz
+          draft: false
+          prerelease: false

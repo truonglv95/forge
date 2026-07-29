@@ -24,6 +24,31 @@ extern fn forge_close_fd(fd: c_int) void;
 /// Default port: 7777.
 const PORT: u16 = 7777;
 
+/// Check if FORGE_SERVE_TOKEN env var is set. If so, all API requests
+/// must include `Authorization: Bearer <token>` header. PWA HTML is
+/// always served without auth (it prompts for token in JS).
+fn getAuthToken(environ_map: ?*const std.process.Environ.Map) ?[]const u8 {
+    if (environ_map) |map| {
+        return map.get("FORGE_SERVE_TOKEN");
+    }
+    return null;
+}
+
+/// Verify auth token from request. Returns true if authorized or no token configured.
+fn checkAuth(request: []const u8, expected_token: ?[]const u8) bool {
+    if (expected_token == null) return true; // No auth required
+    const auth_header = "Authorization: Bearer ";
+    if (std.mem.indexOf(u8, request, auth_header)) |pos| {
+        const token_start = pos + auth_header.len;
+        const token_end = std.mem.indexOfScalarPos(u8, request, token_start, '\r') orelse
+            std.mem.indexOfScalarPos(u8, request, token_start, '\n') orelse
+            request.len;
+        const provided = request[token_start..token_end];
+        return std.mem.eql(u8, provided, expected_token.?);
+    }
+    return false;
+}
+
 pub fn run(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -38,6 +63,9 @@ pub fn run(
     };
     defer opened.close(io);
 
+    // Check for auth token.
+    const auth_token = getAuthToken(environ_map);
+
     const serve_ctx = ServeCtx{
         .allocator = allocator,
         .io = io,
@@ -45,12 +73,18 @@ pub fn run(
         .opened = opened,
         .parsed = parsed,
         .writer = writer,
+        .auth_token = auth_token,
     };
 
     try writer.print("Forge Serve — HTTP daemon for forge-mobile\n", .{});
     try writer.print("Listening on http://localhost:{d}\n", .{PORT});
     try writer.print("PWA: http://localhost:{d}/app\n", .{PORT});
     try writer.print("API: http://localhost:{d}/api/health\n", .{PORT});
+    if (auth_token != null) {
+        try writer.print("Auth: ENABLED (set FORGE_SERVE_TOKEN env var)\n", .{});
+    } else {
+        try writer.print("Auth: DISABLED (set FORGE_SERVE_TOKEN to enable)\n", .{});
+    }
     try writer.print("Press Ctrl+C to stop.\n\n", .{});
 
     // Create TCP server using C helper.
@@ -84,6 +118,7 @@ const ServeCtx = struct {
     opened: workspace_cmd.OpenedWorkspace,
     parsed: args_mod.CliArgs,
     writer: *std.Io.Writer,
+    auth_token: ?[]const u8,
 };
 
 fn handleClient(clientfd: c_int, ctx: *const ServeCtx) !void {
@@ -98,6 +133,16 @@ fn handleClient(clientfd: c_int, ctx: *const ServeCtx) !void {
     const path_start = method_end + 1;
     const path_end = std.mem.indexOfScalarPos(u8, request, path_start, ' ') orelse return;
     const path = request[path_start..path_end];
+
+    // PWA HTML is always served without auth.
+    const is_pwa = std.mem.eql(u8, method, "GET") and
+        (std.mem.eql(u8, path, "/app") or std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/index.html"));
+
+    // Auth check for API endpoints.
+    if (!is_pwa and !checkAuth(request, ctx.auth_token)) {
+        try sendResponse(clientfd, "application/json", "{\"error\":\"unauthorized\",\"hint\":\"Set Authorization: Bearer <token> header. Token from FORGE_SERVE_TOKEN env var.\"}");
+        return;
+    }
 
     try ctx.writer.print("{s} {s}\n", .{ method, path });
 
