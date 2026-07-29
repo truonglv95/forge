@@ -26,6 +26,10 @@ pub fn build(b: *std.Build) void {
         .file = b.path("packages/util/src/process_spawn.c"),
         .flags = &.{},
     });
+    util.addCSourceFile(.{
+        .file = b.path("packages/util/src/serve_helper.c"),
+        .flags = &.{},
+    });
     util.linkSystemLibrary("c", .{});
     const core = b.addModule("forge-core", .{
         .root_source_file = b.path("packages/core/src/root.zig"),

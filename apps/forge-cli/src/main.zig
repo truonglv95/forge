@@ -29,6 +29,7 @@ const spec_cmd = @import("spec_cmd.zig");
 const complete_cmd = @import("complete.zig");
 const providers_cmd = @import("providers_cmd.zig");
 const chat_cmd = @import("chat_cmd.zig");
+const serve_cmd = @import("serve_cmd.zig");
 const edit_cmd = @import("edit_cmd.zig");
 const review_cmd = @import("review_cmd.zig");
 const test_gen_cmd = @import("test_gen_cmd.zig");
@@ -164,6 +165,9 @@ fn run(
         },
         .test_gen => {
             return test_gen_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
+        .serve => {
+            return serve_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
         .help => {
             try printHelp(writer);
