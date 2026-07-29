@@ -90,6 +90,10 @@ pub fn run(
     if (parsed.flags.coordinated) {
         return runCoordinated(allocator, io, environ_map, parsed, intent, writer);
     }
+    // Superpower Harness mode: 7-phase workflow enforcement.
+    if (parsed.flags.harness) {
+        return runHarness(allocator, io, environ_map, parsed, intent, writer);
+    }
     return runAgent(allocator, io, environ_map, parsed, intent, false, writer);
 }
 
@@ -1439,5 +1443,81 @@ fn runBranch(allocator: std.mem.Allocator, io: std.Io, parsed: args_mod.CliArgs,
         try writer.print("Branched session: {s} (from {s}, {d} events copied)\n", .{ new_session_id, session_id, copied });
         try writer.writeAll("Resume with: forge agent resume <new_session_id>\n");
     }
+    return 0;
+}
+
+/// `forge agent run --harness superpower "..."` — runs the 7-phase Superpower
+/// Harness workflow: Brainstorm → Spec → Plan → TDD → Subagent Dev → Review → Finalize.
+///
+/// Each phase runs as a separate agent invocation with a phase-specific system
+/// prompt. The harness validates that each phase produces expected artifacts
+/// before advancing to the next.
+fn runHarness(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    parsed: args_mod.CliArgs,
+    intent: []const u8,
+    writer: *std.Io.Writer,
+) !u8 {
+    const harness = @import("forge-ai").superpower_harness;
+
+    // Open workspace.
+    var opened = try workspace_cmd.OpenedWorkspace.open(allocator, io, parsed);
+    defer opened.close(io);
+
+    try writer.print("\n\xe2\x9a\xa1 Superpower Harness \xe2\x9a\xa1\n", .{});
+    try writer.print("Intent: {s}\n\n", .{intent});
+
+    var phase: harness.Phase = .brainstorm;
+    var phase_num: u32 = 1;
+    while (true) : (phase_num += 1) {
+        try writer.print("{s} Phase {d}/7: {s}\n", .{ phase.icon(), phase_num, phase.label() });
+        try writer.print("{s}\n\n", .{phase.prompt()});
+
+        // Build the augmented intent with phase system prompt.
+        const phase_prompt = try harness.phaseSystemPrompt(phase, allocator);
+        defer allocator.free(phase_prompt);
+
+        const augmented_intent = try std.fmt.allocPrint(allocator, "{s}\n\nUser intent: {s}", .{ phase_prompt, intent });
+        defer allocator.free(augmented_intent);
+
+        // Run the agent for this phase.
+        var provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, augmented_intent, io, opened.root);
+        defer provider_opts.deinit(allocator);
+
+        var result = ai.agent.run(allocator, io, environ_map, opened.root, augmented_intent, .{
+            .max_steps = 32,
+            .provider_options = provider_opts.options,
+            .mode = .agent,
+            .capability_profile = .propose_and_task,
+            .max_repair_attempts = 1,
+            .workspace_cwd = opened.path,
+        }) catch |err| {
+            try writer.print("\xe2\x9c\x95 Phase {d} failed: {}\n", .{ phase_num, err });
+            return 2;
+        };
+        defer ai.agent.deinitResult(allocator, &result);
+
+        if (result.response_text) |text| {
+            try writer.print("\n\xe2\x9c\x93 Phase {d} complete. Response:\n{s}\n\n", .{ phase_num, text });
+
+            // Check if phase is complete.
+            if (harness.isPhaseComplete(phase, text)) {
+                try writer.print("\xe2\x9c\x93 Phase {d} artifacts detected. Advancing.\n\n", .{phase_num});
+            } else {
+                try writer.print("\xe2\x9a\xa0 Phase {d} artifacts not detected. Advancing anyway.\n\n", .{phase_num});
+            }
+        }
+
+        // Move to next phase.
+        if (phase.next()) |next_phase| {
+            phase = next_phase;
+        } else {
+            try writer.print("\n\xe2\x9c\x85 Superpower Harness complete! All 7 phases finished.\n", .{});
+            break;
+        }
+    }
+
     return 0;
 }

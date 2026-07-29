@@ -252,6 +252,156 @@ pub fn buildWorkspaceFileSource(
     return try entries.toOwnedSlice(allocator);
 }
 
+/// git:diff source — returns changed files from git diff --stat.
+/// Requires the workspace path to run git. Falls back to empty if git fails.
+pub fn gitDiffSource(
+    allocator: std.mem.Allocator,
+    workspace_path: []const u8,
+    query: []const u8,
+) ![]MentionEntry {
+    _ = query;
+    var entries: std.ArrayList(MentionEntry) = .empty;
+    errdefer {
+        for (entries.items) |e| {
+            allocator.free(e.label);
+            allocator.free(e.insert);
+        }
+        entries.deinit(allocator);
+    }
+
+    // Run `git diff --stat` in the workspace.
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "git", "diff", "--stat", "--name-only" },
+        .cwd = workspace_path,
+    }) catch return entries.toOwnedSlice(allocator);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Parse output: one file per line.
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        const label = try allocator.dupe(u8, trimmed);
+        const insert = try std.fmt.allocPrint(allocator, "@git:diff:{s}", .{trimmed});
+        try entries.append(allocator, .{ .kind = .git_diff, .label = label, .insert = insert, .detail = "modified" });
+    }
+
+    return try entries.toOwnedSlice(allocator);
+}
+
+/// git:status source — returns files from git status --porcelain.
+pub fn gitStatusSource(
+    allocator: std.mem.Allocator,
+    workspace_path: []const u8,
+    query: []const u8,
+) ![]MentionEntry {
+    _ = query;
+    var entries: std.ArrayList(MentionEntry) = .empty;
+    errdefer {
+        for (entries.items) |e| {
+            allocator.free(e.label);
+            allocator.free(e.insert);
+        }
+        entries.deinit(allocator);
+    }
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "git", "status", "--porcelain" },
+        .cwd = workspace_path,
+    }) catch return entries.toOwnedSlice(allocator);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Parse output: "XY filename" where X/Y are status codes.
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        if (line.len < 4) continue;
+        const status = line[0..2];
+        const filename = std.mem.trim(u8, line[3..], " \t\r");
+        if (filename.len == 0) continue;
+        const label = try allocator.dupe(u8, filename);
+        const insert = try std.fmt.allocPrint(allocator, "@git:status:{s}", .{filename});
+        const detail = try std.fmt.allocPrint(allocator, "{s}", .{status});
+        try entries.append(allocator, .{ .kind = .git_status, .label = label, .insert = insert, .detail = detail });
+    }
+
+    return try entries.toOwnedSlice(allocator);
+}
+
+/// spec source — returns spec files from .forge/specs/ directory.
+pub fn specSource(
+    allocator: std.mem.Allocator,
+    workspace_path: []const u8,
+    query: []const u8,
+) ![]MentionEntry {
+    _ = query;
+    var entries: std.ArrayList(MentionEntry) = .empty;
+    errdefer {
+        for (entries.items) |e| {
+            allocator.free(e.label);
+            allocator.free(e.insert);
+        }
+        entries.deinit(allocator);
+    }
+
+    // List files in .forge/specs/ directory.
+    var specs_dir = std.Io.Dir.open(std.Io.Dir.cwd(), @import("std").Io.Dir.cwd(), workspace_path, .{ .iterate = true }) catch return entries.toOwnedSlice(allocator);
+    defer specs_dir.close(@import("std").Io.Dir.cwd());
+
+    // Build path: workspace_path/.forge/specs
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const specs_path = std.fmt.bufPrint(&path_buf, "{s}/.forge/specs", .{workspace_path}) catch return entries.toOwnedSlice(allocator);
+
+    var dir = std.fs.cwd().openDir(specs_path, .{ .iterate = true }) catch return entries.toOwnedSlice(allocator);
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (iter.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
+        const label = try allocator.dupe(u8, entry.name);
+        const insert = try std.fmt.allocPrint(allocator, "@spec:{s}", .{entry.name});
+        try entries.append(allocator, .{ .kind = .spec, .label = label, .insert = insert, .detail = "spec" });
+    }
+
+    return try entries.toOwnedSlice(allocator);
+}
+
+/// recent source — returns recently modified files from workspace.
+pub fn recentSource(
+    allocator: std.mem.Allocator,
+    scan_entries: []const @import("forge-workspace").tree.ScanSummary.Entry,
+    query: []const u8,
+) ![]MentionEntry {
+    _ = query;
+    var entries: std.ArrayList(MentionEntry) = .empty;
+    errdefer {
+        for (entries.items) |e| {
+            allocator.free(e.label);
+            allocator.free(e.insert);
+        }
+        entries.deinit(allocator);
+    }
+
+    // Sort by modification time (most recent first) — scan_entries doesn't
+    // have mtime, so we just take the first 10 files as "recent".
+    var count: usize = 0;
+    for (scan_entries) |entry| {
+        if (entry.kind != .file) continue;
+        if (entry.path.len == 0) continue;
+        if (count >= 10) break;
+        const label = try allocator.dupe(u8, entry.path);
+        const insert = try std.fmt.allocPrint(allocator, "@recent:{s}", .{entry.path});
+        try entries.append(allocator, .{ .kind = .recent, .label = label, .insert = insert, .detail = "recent" });
+        count += 1;
+    }
+
+    return try entries.toOwnedSlice(allocator);
+}
+
 // =============================================================================
 // Tests
 // =============================================================================

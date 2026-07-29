@@ -97,6 +97,8 @@ pub const session_grant = @import("session_grant.zig");
 pub const skills = @import("skills.zig");
 pub const agent_hooks = @import("agent_hooks.zig");
 pub const worktree_parallel = @import("worktree_parallel.zig");
+pub const superpower_harness = @import("superpower_harness.zig");
+pub const web_search = @import("web_search.zig");
 
 pub const ProposalStatus = enum {
     draft,
