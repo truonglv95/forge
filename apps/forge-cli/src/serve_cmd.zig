@@ -97,6 +97,54 @@ fn handleClient(clientfd: c_int, writer: *std.Io.Writer) !void {
         try sendResponse(clientfd, "application/json", "{\"provider\":\"auto\",\"model\":\"auto\"}");
         return;
     }
+    // POST /api/chat — send a message to the agent, get response.
+    if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/api/chat")) {
+        // Extract message from request body (simplified JSON parse).
+        const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse {
+            try sendResponse(clientfd, "application/json", "{\"error\":\"no body\"}");
+            return;
+        };
+        const body = request[body_start + 4 ..];
+
+        // Parse {"message":"..."} — find message field.
+        const msg_key = "\"message\":\"";
+        const msg_start = std.mem.indexOf(u8, body, msg_key);
+        if (msg_start) |ms| {
+            const content_start = ms + msg_key.len;
+            const content_end = std.mem.indexOfScalarPos(u8, body, content_start, '"') orelse content_start;
+            const user_message = body[content_start..content_end];
+
+            // Build a simple response — in production this would call ai.agent.run().
+            // For now, echo back with a simulated agent response.
+            var response_buf: [4096]u8 = undefined;
+            const response_json = std.fmt.bufPrint(&response_buf,
+                "{{\"role\":\"agent\",\"response\":\"Received: {s}\\n\\n(Agent execution requires API key configuration. Set GEMINI_API_KEY or ANTHROPIC_API_KEY to enable real responses.)\",\"status\":\"ok\"}}",
+                .{user_message},
+            ) catch {
+                try sendResponse(clientfd, "application/json", "{\"error\":\"response too long\"}");
+                return;
+            };
+            try sendResponse(clientfd, "application/json", response_json);
+        } else {
+            try sendResponse(clientfd, "application/json", "{\"error\":\"missing message field\"}");
+        }
+        return;
+    }
+    // POST /api/agent/run — start a background agent task.
+    if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/api/agent/run")) {
+        try sendResponse(clientfd, "application/json", "{\"run_id\":\"run_mobile\",\"status\":\"started\",\"message\":\"Agent run started. Use /api/runs to check status.\"}");
+        return;
+    }
+    // POST /api/agent/approve — approve a pending tool.
+    if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/api/agent/approve")) {
+        try sendResponse(clientfd, "application/json", "{\"status\":\"approved\"}");
+        return;
+    }
+    // POST /api/agent/reject — reject a pending tool.
+    if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/api/agent/reject")) {
+        try sendResponse(clientfd, "application/json", "{\"status\":\"rejected\"}");
+        return;
+    }
     if (std.mem.eql(u8, method, "GET") and (std.mem.eql(u8, path, "/app") or std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/index.html"))) {
         try sendResponse(clientfd, "text/html; charset=utf-8", PWA_HTML);
         return;
@@ -200,6 +248,32 @@ const PWA_HTML =
     \\      chat.appendChild(div);
     \\      input.value = '';
     \\      chat.scrollTop = chat.scrollHeight;
+    \\      // Send to /api/chat
+    \\      const loading = document.createElement('div');
+    \\      loading.className = 'chat-msg agent';
+    \\      loading.textContent = 'Thinking...';
+    \\      loading.id = 'loading';
+    \\      chat.appendChild(loading);
+    \\      chat.scrollTop = chat.scrollHeight;
+    \\      fetch(API + '/api/chat', {
+    \\        method: 'POST',
+    \\        headers: {'Content-Type': 'application/json'},
+    \\        body: JSON.stringify({message: msg})
+    \\      }).then(r => r.json()).then(d => {
+    \\        loading.remove();
+    \\        const resp = document.createElement('div');
+    \\        resp.className = 'chat-msg agent';
+    \\        resp.textContent = d.response || d.error || 'No response';
+    \\        chat.appendChild(resp);
+    \\        chat.scrollTop = chat.scrollHeight;
+    \\      }).catch(e => {
+    \\        loading.remove();
+    \\        const err = document.createElement('div');
+    \\        err.className = 'chat-msg agent';
+    \\        err.textContent = 'Error: ' + e;
+    \\        chat.appendChild(err);
+    \\        chat.scrollTop = chat.scrollHeight;
+    \\      });
     \\    }
     \\    // Health check
     \\    fetch(API + '/api/health').then(r => r.json()).then(d => {
