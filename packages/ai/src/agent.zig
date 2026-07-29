@@ -35,7 +35,7 @@ const agent_hooks = @import("agent_hooks.zig");
 const chat_memory = @import("chat_memory.zig");
 
 pub const Config = struct {
-    max_steps: u32 = 128,
+    max_steps: u32 = 256,
     context_max_bytes: usize = 8 * 1024 * 1024,
     embedding: codebase_search.EmbeddingOptions = .{},
     provider_options: provider_factory.Options,
@@ -141,11 +141,27 @@ fn conversationBytes(turns: []const conversation.Turn) usize {
 /// Wire-in: Persist a summary of this agent run to the chat memory store.
 /// Stores the user's intent as a user_query and the agent's response as an
 /// agent_response, so future sessions can recall what was discussed.
-fn persistChatMemory(config: Config, intent: []const u8, response: ?[]const u8) void {
+fn persistChatMemory(io: std.Io, config: Config, intent: []const u8, response: ?[]const u8) void {
     if (config.chat_memory_store) |store| {
         const response_summary = if (response) |r| (if (r.len > 500) r[0..500] else r) else "(no response)";
+        // Set timestamp from current time so entries are chronologically ordered.
+        const now_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
         _ = store.add(.user_query, intent, &.{}, null) catch {};
         _ = store.add(.agent_response, response_summary, &.{}, null) catch {};
+        // Set timestamps on the 2 most recent entries.
+        if (store.entries.items.len >= 2) {
+            store.entries.items[store.entries.items.len - 1].timestamp = now_ms;
+            store.entries.items[store.entries.items.len - 2].timestamp = now_ms;
+        }
+        // Persist to disk: <workspace_cwd>/.forge/memory/chat.toml
+        // Resolve absolute path via std.Io.Dir (Zig 0.16 API).
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const memory_path = std.fmt.bufPrint(&path_buf, "{s}/.forge/memory/chat.toml", .{config.workspace_cwd}) catch return;
+        // Serialize and write using workspace.global_store.replaceAbsoluteFile
+        // (creates parent dirs automatically, atomic rename).
+        const toml = store.serialize(std.heap.page_allocator) catch return;
+        defer std.heap.page_allocator.free(toml);
+        workspace.global_store.replaceAbsoluteFile(io, memory_path, toml) catch {};
     }
 }
 
@@ -643,7 +659,7 @@ pub fn run(
         // Wire-in #4: persist usage.
         persistUsageLedger(allocator, io, effective_config.workspace_cwd, owned_session, provider_handle);
         // Wire-in: persist chat memory.
-        persistChatMemory(effective_config, intent, owned_response);
+        persistChatMemory(io, effective_config, intent, owned_response);
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
@@ -671,7 +687,7 @@ pub fn run(
         // Wire-in #4: persist usage.
         persistUsageLedger(allocator, io, effective_config.workspace_cwd, owned_session, provider_handle);
         // Wire-in: persist chat memory.
-        persistChatMemory(effective_config, intent, owned_response);
+        persistChatMemory(io, effective_config, intent, owned_response);
         return .{
             .session_id = owned_session,
             .steps = owned_steps,
@@ -1016,7 +1032,7 @@ pub fn run(
     // Wire-in #4: persist token usage to session log for cumulative cost tracking.
     persistUsageLedger(allocator, io, effective_config.workspace_cwd, owned_session, llm);
     // Wire-in: persist chat memory (proposal-based path).
-    persistChatMemory(effective_config, intent, null);
+    persistChatMemory(io, effective_config, intent, null);
 
     return .{
         .session_id = owned_session,

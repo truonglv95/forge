@@ -88,10 +88,13 @@ pub fn computeAdaptiveBudget(input: StepBudgetInput) StepBudget {
     }
 
     // Cap at a reasonable maximum to prevent runaway loops.
-    const cap: u32 = 64;
+    // 256 allows multi-hour coding tasks (Claude Code agents routinely run
+    // 200+ steps). The agent loop has its own safety: StepLimitReached
+    // saves a compact checkpoint so users can resume.
+    const cap: u32 = 256;
     if (base > cap) {
         base = cap;
-        rationale = "capped at maximum (64 steps)";
+        rationale = "capped at maximum (256 steps)";
     }
 
     return .{ .max_steps = base, .rationale = rationale };
