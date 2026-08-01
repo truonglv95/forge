@@ -28,6 +28,7 @@ const StreamEvent = struct {
     };
 
     const ToolCallDelta = struct {
+        id: ?[]const u8 = null,
         function: ?struct {
             name: ?[]const u8 = null,
             arguments: ?std.json.Value = null,
@@ -59,6 +60,10 @@ pub const Parser = struct {
     latest_usage: provider_mod.TokenUsage = .{},
     tool_call_name: ?[]u8 = null,
     tool_call_args_json: ?[]u8 = null,
+    /// ID returned by the model for the most recent tool_call (e.g. "call_abc123").
+    /// Required for OpenAI-compatible APIs to round-trip tool_result.tool_call_id.
+    /// When null, falls back to "forge_tool_call" (legacy behavior).
+    tool_call_id: ?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, callbacks: Callbacks) Parser {
         return .{
@@ -73,6 +78,7 @@ pub const Parser = struct {
         self.assembled.deinit(self.allocator);
         if (self.tool_call_name) |name| self.allocator.free(name);
         if (self.tool_call_args_json) |args| self.allocator.free(args);
+        if (self.tool_call_id) |id| self.allocator.free(id);
     }
 
     pub fn ioWriter(self: *Parser) *std.Io.Writer {
@@ -111,12 +117,14 @@ pub const Parser = struct {
         return self.assembled.items;
     }
 
-    pub fn takeToolCall(self: *Parser) ?struct { name: []u8, args_json: []u8 } {
+    pub fn takeToolCall(self: *Parser) ?struct { name: []u8, args_json: []u8, id: ?[]u8 = null } {
         const name = self.tool_call_name orelse return null;
         const args_json = self.tool_call_args_json orelse return null;
         self.tool_call_name = null;
         self.tool_call_args_json = null;
-        return .{ .name = name, .args_json = args_json };
+        const id = self.tool_call_id;
+        self.tool_call_id = null;
+        return .{ .name = name, .args_json = args_json, .id = id };
     }
 
     fn flushWriterBuffer(self: *Parser, w: *std.Io.Writer) ParseError!void {
@@ -194,6 +202,17 @@ pub const Parser = struct {
     fn handleToolCallDeltas(self: *Parser, calls: []const StreamEvent.ToolCallDelta) ParseError!void {
         if (calls.len == 0) return;
         const first = calls[0];
+        // Capture the tool_call id (e.g. "call_abc123") so we can round-trip
+        // it in the tool_result message. OpenAI-compatible APIs require
+        // tool_result.tool_call_id to match the tool_call.id from the
+        // assistant message. Without this, providers like Z.AI reject the
+        // second turn with HTTP 400.
+        if (first.id) |id_val| {
+            if (id_val.len > 0) {
+                if (self.tool_call_id) |owned| self.allocator.free(owned);
+                self.tool_call_id = self.allocator.dupe(u8, id_val) catch return error.MalformedResponse;
+            }
+        }
         const function = first.function orelse return;
         if (function.name) |name| {
             if (name.len > 0) {

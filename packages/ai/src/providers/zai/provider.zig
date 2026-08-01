@@ -291,7 +291,6 @@ fn loadZaiCredentials(
     io: std.Io,
     environ_map: ?*const std.process.Environ.Map,
 ) !credentials.Credentials {
-    _ = io;
     // 1. ZAI_TOKEN env var (highest priority — lets users override)
     if (environ_map) |map| {
         if (map.get("ZAI_TOKEN")) |tok| {
@@ -314,10 +313,15 @@ fn loadZaiCredentials(
     };
 
     for (config_paths) |path| {
-        const file = std.fs.openFileAbsolute(path, .{}) catch continue;
-        defer file.close();
-        const contents = file.readToEndAlloc(allocator, 65536) catch continue;
+        const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch continue;
+        defer file.close(io);
+        const stat = file.stat(io) catch continue;
+        if (stat.size > 65536) continue;
+        const size: usize = @intCast(stat.size);
+        const contents = allocator.alloc(u8, size) catch continue;
         defer allocator.free(contents);
+        const read_len = file.readPositionalAll(io, contents, 0) catch continue;
+        if (read_len != size) continue;
 
         // Parse JSON to extract `token` field
         var parsed = std.json.parseFromSlice(struct {

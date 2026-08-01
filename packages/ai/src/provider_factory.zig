@@ -217,9 +217,11 @@ fn providerAvailable(
                         if (tok.len > 0) break :blk true;
                     }
                 }
-                const file = std.fs.openFileAbsolute("/etc/.z-ai-config", .{}) catch break :blk false;
-                file.close();
-                break :blk true;
+                if (std.Io.Dir.openFileAbsolute(io, "/etc/.z-ai-config", .{})) |file| {
+                    file.close(io);
+                    break :blk true;
+                } else |_| {}
+                break :blk false;
             }
             break :blk true;
         },
