@@ -42,6 +42,18 @@ case "$PROVIDER" in
       exit 0
     fi
     ;;
+  groq)
+    if [[ -z "${GROQ_API_KEY:-}" ]]; then
+      echo "SKIP: live eval ($PROVIDER) — no GROQ_API_KEY"
+      exit 0
+    fi
+    ;;
+  cerebras)
+    if [[ -z "${CEREBRAS_API_KEY:-}" ]]; then
+      echo "SKIP: live eval ($PROVIDER) — no CEREBRAS_API_KEY"
+      exit 0
+    fi
+    ;;
   ollama)
     if ! command -v ollama >/dev/null 2>&1; then
       echo "SKIP: live eval ($PROVIDER) — ollama not installed"
@@ -57,7 +69,7 @@ case "$PROVIDER" in
     ;;
   *)
     echo "error: unsupported provider '$PROVIDER'"
-    echo "supported: gemini | anthropic | openai | openrouter | nvidia | ollama | fake"
+    echo "supported: gemini | anthropic | openai | openrouter | nvidia | groq | cerebras | ollama | fake"
     exit 2
     ;;
 esac

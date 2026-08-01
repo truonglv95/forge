@@ -19,8 +19,8 @@ ui_font_size = 12
 [ai]
 # AI edits must remain review-only. Direct apply is not a supported mode.
 apply_mode = "review"
-# Provider: auto | fake | gemini | ollama | openrouter
-# auto prefers Ollama when reachable, then Gemini credentials, then fake
+# Provider: auto | fake | gemini | ollama | openrouter | openai | anthropic | nvidia | groq | cerebras
+# auto prefers Ollama when reachable, then forge_cloud, then credentials, then fake
 provider = "ollama"
 model = "qwen3.5:35b"
 # Ollama server URL. Change this to a remote server when local Ollama is unavailable.
@@ -34,3 +34,13 @@ embedding_model = "nomic-embed-text"
 embedding_url = "http://localhost:11434"
 # Enable MCP tools from .mcp.json (Cursor / VS Code compatible format)
 mcp = true
+
+# Free-tier providers (set env vars to enable):
+#   GROQ_API_KEY       — https://console.groq.com  (~500 tok/s, 30 RPM, 14k req/day)
+#   CEREBRAS_API_KEY   — https://cloud.cerebras.ai (~2000 tok/s, 30 RPM, ~1M tok/day)
+#   GEMINI_API_KEY     — https://aistudio.google.com (free tier, 15 RPM, 1M tok/day)
+#   OPENROUTER_API_KEY — https://openrouter.ai (free `:free` suffix models, 20 req/day)
+#   NVIDIA_API_KEY     — https://build.nvidia.com (free NIM endpoints)
+# Then set provider = "groq" | "cerebras" | "gemini" | "openrouter" | "nvidia" and
+# model = "<model-id-from-`forge providers`>".
+# See docs/AI_ECOSYSTEM.md and docs/evaluation/FREE_LLM_SOURCES_2026.md for full list.

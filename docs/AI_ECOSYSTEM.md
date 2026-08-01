@@ -56,6 +56,12 @@ forge ecosystem list
 6. Provider / Model Options
    Provider hints describe preferred models by role, context window, and backend.
    They are advisory metadata; runtime provider selection remains configurable.
+   Forge ships 9 built-in providers (see `forge providers` for the live list):
+   `fake`, `ollama`, `gemini`, `anthropic`, `openrouter`, `openai`, `nvidia`,
+   `groq`, `cerebras`, `forge_cloud`. The last 5 (Groq, Cerebras, Gemini free
+   tier, OpenRouter free models, NVIDIA NIM) plus local Ollama are all
+   **free-tier** — see `docs/evaluation/FREE_LLM_SOURCES_2026.md` for the
+   full matrix of free quotas, rate limits, and recommended models per use case.
 
 7. Permission / Security Model
    Permissions define risk and approval mode. Tools and context sources refer to

@@ -22,12 +22,14 @@ fn renderProviders(writer: *std.Io.Writer, json: bool) !u8 {
     }{
         .{ .name = "auto", .note = "Auto-route based on task and capability" },
         .{ .name = "fake", .note = "Deterministic test provider" },
-        .{ .name = "gemini", .note = "Google Gemini (gemini-2.5-pro, gemini-2.5-flash)" },
+        .{ .name = "gemini", .note = "Google Gemini (gemini-2.5-pro, gemini-2.5-flash) — free tier" },
         .{ .name = "anthropic", .note = "Anthropic Claude (claude-sonnet-4-5, claude-haiku-4)" },
-        .{ .name = "ollama", .note = "Local Ollama models (qwen2.5-coder, llama3.3)" },
-        .{ .name = "openrouter", .note = "OpenRouter multi-model gateway" },
+        .{ .name = "ollama", .note = "Local Ollama models (qwen2.5-coder, llama3.3) — free/local" },
+        .{ .name = "openrouter", .note = "OpenRouter multi-model gateway (free `:free` suffix models)" },
         .{ .name = "openai", .note = "OpenAI-compatible (GPT-4o, etc.)" },
-        .{ .name = "nvidia", .note = "NVIDIA NIM endpoints" },
+        .{ .name = "nvidia", .note = "NVIDIA NIM endpoints — free tier" },
+        .{ .name = "groq", .note = "Groq LPU (llama-3.3-70b-versatile) — free tier, ~500 tok/s" },
+        .{ .name = "cerebras", .note = "Cerebras CS-3 (llama-3.3-70b) — free tier, ~2000 tok/s" },
     };
 
     if (json) {

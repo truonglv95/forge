@@ -7,6 +7,8 @@ const openrouter_provider = @import("providers/openrouter/provider.zig");
 const nvidia_provider = @import("providers/nvidia/provider.zig");
 const openai_provider = @import("providers/openai/provider.zig");
 const anthropic_provider = @import("providers/anthropic/provider.zig");
+const groq_provider = @import("providers/groq/provider.zig");
+const cerebras_provider = @import("providers/cerebras/provider.zig");
 const forge_cloud_provider = @import("providers/forge_cloud/provider.zig");
 const credentials = @import("credentials.zig");
 
@@ -100,6 +102,14 @@ fn wrapCreateForgeCloud(allocator: std.mem.Allocator, io: std.Io, environ_map: ?
     return forge_cloud_provider.ForgeCloudProvider.create(allocator, io, environ_map, options);
 }
 
+fn wrapCreateGroq(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return groq_provider.GroqProvider.create(allocator, io, environ_map, options);
+}
+
+fn wrapCreateCerebras(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return cerebras_provider.CerebrasProvider.create(allocator, io, environ_map, options);
+}
+
 const registry = [_]ProviderDef{
     // forge_cloud is always available — it's the backend proxy that
     // handles auth + LLM calls. When the user is logged in, "auto"
@@ -144,6 +154,22 @@ const registry = [_]ProviderDef{
         .availability = .{ .credentials = .{
             .env_vars = &[_][]const u8{ "GEMINI_API_KEY", "GOOGLE_API_KEY" },
             .keychain_service = "forge-gemini",
+        } },
+    },
+    .{
+        .name = "groq",
+        .create = wrapCreateGroq,
+        .availability = .{ .credentials = .{
+            .env_vars = &[_][]const u8{"GROQ_API_KEY"},
+            .keychain_service = "forge-groq",
+        } },
+    },
+    .{
+        .name = "cerebras",
+        .create = wrapCreateCerebras,
+        .availability = .{ .credentials = .{
+            .env_vars = &[_][]const u8{"CEREBRAS_API_KEY"},
+            .keychain_service = "forge-cerebras",
         } },
     },
     .{ .name = "fake", .create = wrapCreateFake, .availability = .always },
