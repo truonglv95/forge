@@ -54,6 +54,14 @@ case "$PROVIDER" in
       exit 0
     fi
     ;;
+  zai)
+    # Z.AI uses /etc/.z-ai-config (pre-auth) or ZAI_TOKEN env var.
+    if [[ -z "${ZAI_TOKEN:-}" && ! -r /etc/.z-ai-config && ! -r ~/.z-ai-config ]]; then
+      echo "SKIP: live eval ($PROVIDER) — no /etc/.z-ai-config and no ZAI_TOKEN"
+      echo "  Install z-ai-web-dev-sdk CLI: npm i -g z-ai-web-dev-sdk"
+      exit 0
+    fi
+    ;;
   ollama)
     if ! command -v ollama >/dev/null 2>&1; then
       echo "SKIP: live eval ($PROVIDER) — ollama not installed"
@@ -69,7 +77,7 @@ case "$PROVIDER" in
     ;;
   *)
     echo "error: unsupported provider '$PROVIDER'"
-    echo "supported: gemini | anthropic | openai | openrouter | nvidia | groq | cerebras | ollama | fake"
+    echo "supported: zai | gemini | anthropic | openai | openrouter | nvidia | groq | cerebras | ollama | fake"
     exit 2
     ;;
 esac

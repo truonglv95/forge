@@ -6,6 +6,7 @@ pub const anthropic = @import("anthropic/provider.zig");
 pub const forge_cloud = @import("forge_cloud/provider.zig");
 pub const groq = @import("groq/provider.zig");
 pub const cerebras = @import("cerebras/provider.zig");
+pub const zai = @import("zai/provider.zig");
 
 // Tool Transports
 pub const fake_tool_transport = @import("fake/tool_transport.zig");
@@ -15,6 +16,7 @@ pub const openrouter_tool_transport = @import("openrouter/tool_transport.zig");
 pub const anthropic_tool_transport = @import("anthropic/tool_transport.zig");
 pub const groq_tool_transport = @import("groq/tool_transport.zig");
 pub const cerebras_tool_transport = @import("cerebras/tool_transport.zig");
+pub const zai_tool_transport = @import("zai/tool_transport.zig");
 
 // Subcomponents
 pub const gemini_embedder = @import("gemini/embedder.zig");

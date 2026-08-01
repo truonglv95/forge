@@ -22,6 +22,7 @@ fn renderProviders(writer: *std.Io.Writer, json: bool) !u8 {
     }{
         .{ .name = "auto", .note = "Auto-route based on task and capability" },
         .{ .name = "fake", .note = "Deterministic test provider" },
+        .{ .name = "zai", .note = "Z.AI GLM (glm-4-plus, glm-4.5, glm-zero) — pre-auth, free in dev" },
         .{ .name = "gemini", .note = "Google Gemini (gemini-2.5-pro, gemini-2.5-flash) — free tier" },
         .{ .name = "anthropic", .note = "Anthropic Claude (claude-sonnet-4-5, claude-haiku-4)" },
         .{ .name = "ollama", .note = "Local Ollama models (qwen2.5-coder, llama3.3) — free/local" },

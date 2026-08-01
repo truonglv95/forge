@@ -9,6 +9,7 @@ const openai_provider = @import("providers/openai/provider.zig");
 const anthropic_provider = @import("providers/anthropic/provider.zig");
 const groq_provider = @import("providers/groq/provider.zig");
 const cerebras_provider = @import("providers/cerebras/provider.zig");
+const zai_provider = @import("providers/zai/provider.zig");
 const forge_cloud_provider = @import("providers/forge_cloud/provider.zig");
 const credentials = @import("credentials.zig");
 
@@ -110,11 +111,20 @@ fn wrapCreateCerebras(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*c
     return cerebras_provider.CerebrasProvider.create(allocator, io, environ_map, options);
 }
 
+fn wrapCreateZai(allocator: std.mem.Allocator, io: std.Io, environ_map: ?*const std.process.Environ.Map, options: Options) anyerror!provider_mod.Provider {
+    return zai_provider.ZaiProvider.create(allocator, io, environ_map, options);
+}
+
 const registry = [_]ProviderDef{
     // forge_cloud is always available — it's the backend proxy that
     // handles auth + LLM calls. When the user is logged in, "auto"
     // resolves to this provider.
     .{ .name = "forge_cloud", .create = wrapCreateForgeCloud, .availability = .always },
+    // z.ai (GLM) — pre-authenticated via /etc/.z-ai-config when the
+    // z-ai-web-dev-sdk CLI is installed. Treat as "always available"
+    // because the config file presence is the auth check itself.
+    // High priority in auto-resolve since it works zero-config in dev.
+    .{ .name = "zai", .create = wrapCreateZai, .availability = .always },
     .{ .name = "ollama", .create = wrapCreateOllama, .availability = .ollama_probe },
     .{
         .name = "openai",
@@ -196,6 +206,20 @@ fn providerAvailable(
             // provider would fail at create() with MissingCredentials.
             if (std.mem.eql(u8, def.name, "forge_cloud")) {
                 break :blk options.access_token != null;
+            }
+            // z.ai is "always" available, but only if the .z-ai-config
+            // file exists (z-ai-web-dev-sdk CLI installed). The create()
+            // function will probe /etc/.z-ai-config and ZAI_TOKEN env.
+            if (std.mem.eql(u8, def.name, "zai")) {
+                // Quick presence check: env var OR config file readable.
+                if (environ_map) |map| {
+                    if (map.get("ZAI_TOKEN")) |tok| {
+                        if (tok.len > 0) break :blk true;
+                    }
+                }
+                const file = std.fs.openFileAbsolute("/etc/.z-ai-config", .{}) catch break :blk false;
+                file.close();
+                break :blk true;
             }
             break :blk true;
         },

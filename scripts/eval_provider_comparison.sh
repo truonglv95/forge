@@ -27,11 +27,12 @@ fi
 if [ $# -lt 1 ]; then
     echo "usage: $0 <provider1,provider2,...> [corpus]" >&2
     echo "" >&2
-    echo "Providers: fake, gemini, ollama, openai, anthropic, openrouter, nvidia, groq, cerebras" >&2
+    echo "Providers: fake, zai, gemini, ollama, openai, anthropic, openrouter, nvidia, groq, cerebras" >&2
     echo "" >&2
     echo "Free-tier combos (no credit card required):" >&2
+    echo "  $0 zai,groq,cerebras           # zero-config if /etc/.z-ai-config exists" >&2
+    echo "  $0 zai,gemini,openrouter       # mix pre-auth + signup-based" >&2
     echo "  $0 groq,cerebras,gemini" >&2
-    echo "  $0 openrouter,groq,cerebras" >&2
     echo "" >&2
     echo "Examples:" >&2
     echo "  $0 fake,gemini,ollama" >&2
