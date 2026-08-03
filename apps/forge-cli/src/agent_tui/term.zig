@@ -66,6 +66,15 @@ pub const Terminal = struct {
         var raw = saved;
         raw.lflag.ICANON = false;
         raw.lflag.ECHO = false;
+        // Disable input translation: don't convert \r to \n (ICRNL),
+        // don't convert \n to \r (INLCR), don't ignore \r (IGNCR).
+        // This ensures Enter key (\r = byte 13) is read as-is.
+        raw.iflag.ICRNL = false;
+        raw.iflag.INLCR = false;
+        raw.iflag.IGNCR = false;
+        // Also disable output translation: don't convert \n to \r\n (ONLCR).
+        // The TUI handles its own line endings.
+        raw.oflag.ONLCR = false;
         raw.cc[@intFromEnum(std.c.V.MIN)] = 0;
         raw.cc[@intFromEnum(std.c.V.TIME)] = 1;
         try std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, raw);
@@ -204,14 +213,21 @@ pub const Terminal = struct {
         if (buf[0] == 3) return .ctrl_c;
         if (buf[0] == 4) return .ctrl_d;
         if (buf[0] == 5) return .ctrl_e;
+        // IMPORTANT: \r (byte 13) is the Enter key on most terminals.
+        // It MUST be checked BEFORE the ctrl_m check below, because
+        // Ctrl+M also sends byte 13. We prioritize Enter over Ctrl+M
+        // since Enter is used far more frequently.
+        // The .ctrl_m case (cycle mode) is still accessible via Ctrl+J
+        // (byte 10) which is the Line Feed / multi-line input key.
+        if (buf[0] == '\r' or buf[0] == '\n') return .enter;
         if (buf[0] == 10) return .ctrl_j; // Ctrl+J = LF = newline for multi-line input
         if (buf[0] == 12) return .ctrl_l;
-        if (buf[0] == 13) return .ctrl_m;
+        // Ctrl+M (byte 13) is already handled as .enter above.
+        // If you need Ctrl+M specifically, use a different binding.
         if (buf[0] == 18) return .ctrl_r;
         if (buf[0] == 21) return .ctrl_u;
         if (buf[0] == 23) return .ctrl_w;
         if (buf[0] == 25) return .ctrl_y;
-        if (buf[0] == '\r' or buf[0] == '\n') return .enter;
         if (buf[0] == 127 or buf[0] == 8) return .backspace;
         if (buf[0] == 27) {
             if (n >= 3 and buf[1] == '[') {
