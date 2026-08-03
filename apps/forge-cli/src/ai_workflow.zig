@@ -38,16 +38,24 @@ pub fn providerOptionsFromFlags(
         workspace_cfg = workspace_cmd.AiConfig.load(allocator, io, opened) catch null;
     }
 
-    const provider_name = flags.provider orelse if (workspace_cfg) |cfg| cfg.provider else null;
+    var owned_provider: ?[]u8 = null;
+    const provider_name: ?[]const u8 = if (flags.provider) |provider|
+        provider
+    else if (workspace_cfg) |cfg| blk: {
+        owned_provider = allocator.dupe(u8, cfg.provider) catch null;
+        break :blk owned_provider;
+    } else null;
     var owned_model: ?[]u8 = null;
     const model_name: ?[]const u8 = if (flags.model) |model| model else if (workspace_cfg) |cfg| if (cfg.model) |model| blk: {
         owned_model = allocator.dupe(u8, model) catch null;
         break :blk owned_model;
     } else null else null;
-    const base_url: ?[]const u8 = if (workspace_cfg) |cfg|
-        ai.config.baseUrlForProvider(provider_name, cfg.ollama_url, cfg.openrouter_url)
-    else
-        null;
+    var owned_base_url: ?[]u8 = null;
+    const base_url: ?[]const u8 = if (workspace_cfg) |cfg| blk: {
+        const url = ai.config.baseUrlForProvider(provider_name, cfg.ollama_url, cfg.openrouter_url) orelse break :blk null;
+        owned_base_url = allocator.dupe(u8, url) catch null;
+        break :blk owned_base_url;
+    } else null;
 
     const provider_config = ai.config.ProviderConfig{
         .name = provider_name orelse "auto",
@@ -59,16 +67,23 @@ pub fn providerOptionsFromFlags(
     options.fake_plan_response = fake_plan;
     return .{
         .options = options,
+        .owned_provider = owned_provider,
         .owned_model = owned_model,
+        .owned_base_url = owned_base_url,
     };
 }
 
 pub const OwnedProviderOptions = struct {
     options: ai.provider_factory.Options,
+    owned_provider: ?[]u8 = null,
     owned_model: ?[]u8 = null,
+    owned_base_url: ?[]u8 = null,
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        if (self.owned_provider) |p| allocator.free(p);
         if (self.owned_model) |m| allocator.free(m);
+        if (self.owned_base_url) |u| allocator.free(u);
+        self.* = .{ .options = .{} };
     }
 };
 
@@ -125,8 +140,7 @@ pub fn agentProviderOptionsFromFlags(
     var owned = providerOptionsFromFlags(allocator, .ask, flags, io, root);
     owned.options.fake_response = ai.proposal_workflow.fakeAgentResponseForIntent(intent);
     owned.options.fake_tool_loop = true;
-    const max_steps = if (flags.max_steps > 0) flags.max_steps else 8;
-    owned.options.fake_tool_loop_short = max_steps <= 2;
+    owned.options.fake_tool_loop_short = flags.max_steps > 0 and flags.max_steps <= 2;
     return owned;
 }
 
@@ -210,6 +224,7 @@ pub fn writeError(writer: *std.Io.Writer, err: WorkflowError) !u8 {
         error.AuthenticationFailed,
         error.RateLimitExceeded,
         error.ContextLengthExceeded,
+        error.ModelUnavailable,
         error.NetworkError,
         error.MalformedResponse,
         error.ProviderInternalError,

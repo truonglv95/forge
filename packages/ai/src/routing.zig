@@ -182,8 +182,9 @@ pub fn planWithIntent(
 }
 
 /// True when heuristic classification is uncertain and an LLM arbiter may help.
-/// Returns the recommended default max_tool_steps for a given intent.
-/// These values are used when the caller has not explicitly set --max-steps.
+/// Returns the legacy recommended max_tool_steps for a given intent.
+/// Interactive agent runs now default to no step cap; these values are kept
+/// for evals, older callers, and explicit budgeted workflows.
 ///
 /// | Intent            | Steps | Rationale                                      |
 /// |-------------------|-------|------------------------------------------------|

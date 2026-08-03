@@ -48,9 +48,18 @@ pub const Telemetry = struct {
     detail: []const u8 = "",
 };
 pub const TelemetryCallback = *const fn (?*anyopaque, Telemetry) void;
+pub const RateLimitCallback = *const fn (
+    ?*anyopaque,
+    attempt: u8,
+    max_attempts: u8,
+    delay_ms: u32,
+    conversation_bytes: usize,
+) void;
 
 pub const Config = struct {
-    max_tool_steps: u32 = 6,
+    /// 0 means no step cap; the model decides when the task is complete.
+    /// Non-zero values are an explicit safety/debug override.
+    max_tool_steps: u32 = 0,
     cancel_token: ?*const kernel.cancellation.CancellationToken = null,
     turn_callback: ?TurnCallback = null,
     turn_context: ?*anyopaque = null,
@@ -71,6 +80,9 @@ pub const Config = struct {
     approval_context: ?*anyopaque = null,
     telemetry_callback: ?TelemetryCallback = null,
     telemetry_context: ?*anyopaque = null,
+    rate_limit_callback: ?RateLimitCallback = null,
+    rate_limit_context: ?*anyopaque = null,
+    max_rate_limit_retries: u8 = 8,
     approve_every_time_tools: bool = false,
     task_intent: routing.TaskIntent = .explore_codebase,
     preloaded_retrieval: bool = false,
@@ -101,6 +113,7 @@ pub const LoopError = error{
     AuthenticationFailed,
     RateLimitExceeded,
     ContextLengthExceeded,
+    ModelUnavailable,
     NetworkError,
     StepLimitReached,
     DuplicateLoop,
@@ -214,7 +227,7 @@ pub fn run(
     var context_recoveries: u8 = 0;
     var rate_limit_retries: u8 = 0;
     var conversation_compactions: u8 = 0;
-    while (turn_i < config.max_tool_steps) : (turn_i += 1) {
+    while (config.max_tool_steps == 0 or turn_i < config.max_tool_steps) {
         if (config.cancel_token) |token| {
             if (token.isCancelled()) return error.Cancelled;
         }
@@ -238,10 +251,16 @@ pub fn run(
                 error.Cancelled => return error.Cancelled,
                 error.AuthenticationFailed => return error.AuthenticationFailed,
                 error.RateLimitExceeded => {
-                    // Retry with exponential backoff: 10s, 20s, 40s
-                    if (rate_limit_retries >= 3) return error.RateLimitExceeded;
+                    // Many free/provider limits reset on a minute window. Wait
+                    // long enough to clear that window before retrying the
+                    // exact same conversation state.
+                    if (rate_limit_retries >= config.max_rate_limit_retries) return error.RateLimitExceeded;
+                    const attempt = rate_limit_retries + 1;
+                    const delay_ms = rateLimitDelayMs(attempt);
                     rate_limit_retries += 1;
-                    const delay_ms: u32 = 10_000 * (@as(u32, 1) << @intCast(rate_limit_retries - 1));
+                    if (config.rate_limit_callback) |callback| {
+                        callback(config.rate_limit_context, attempt, config.max_rate_limit_retries, delay_ms, conversation.items.len);
+                    }
                     emitTelemetry(config, .{
                         .phase = "rate_limit_retry",
                         .duration_ms = delay_ms,
@@ -249,13 +268,13 @@ pub fn run(
                         .items = rate_limit_retries,
                         .detail = "waiting before retry",
                     });
-                    // Sleep in 50ms slices for cancel checking
+                    // Sleep in short slices so Ctrl+C can cancel during the wait.
                     var waited: u32 = 0;
                     while (waited < delay_ms) {
                         if (config.cancel_token) |token| {
                             if (token.isCancelled()) return error.Cancelled;
                         }
-                        const slice: u32 = @min(50, delay_ms - waited);
+                        const slice: u32 = @min(250, delay_ms - waited);
                         std.Io.sleep(tool_ctx.io, std.Io.Duration.fromMilliseconds(@intCast(slice)), .real) catch {};
                         waited += slice;
                     }
@@ -293,6 +312,7 @@ pub fn run(
                     }
                     continue;
                 },
+                error.ModelUnavailable => return error.ModelUnavailable,
                 error.NetworkError => return error.NetworkError,
                 error.MalformedResponse => {
                     emitTelemetry(config, .{
@@ -322,6 +342,7 @@ pub fn run(
             .detail = "ok",
         });
         defer completion.deinit(allocator);
+        turn_i +|= 1;
 
         switch (completion) {
             .tool_call => |call| {
@@ -394,6 +415,20 @@ pub fn run(
                 }
             },
             .text => {
+                if (recoverTextToolCall(allocator, completion.text) catch return error.ProviderFailed) |recovered_call| {
+                    var text_call = recovered_call;
+                    defer text_call.deinit(allocator);
+                    emitTelemetry(config, .{
+                        .phase = "repair",
+                        .duration_ms = 0,
+                        .bytes = completion.text.len,
+                        .items = malformed_repairs + 1,
+                        .detail = "text_tool_call",
+                    });
+                    try executeTool(allocator, transport, &conversation, text_call, tool_ctx, mcp, config, &guard, &agent_state, step_index, true);
+                    step_index += 1;
+                    continue;
+                }
                 if (agent_state.finalGateIssue(allocator, completion.text) catch return error.ProviderFailed) |issue| {
                     defer allocator.free(issue);
                     emitTelemetry(config, .{ .phase = "gate", .items = step_index, .detail = "final_blocked" });
@@ -411,6 +446,20 @@ pub fn run(
     }
     try checkpointCompactResume(allocator, transport, &conversation, intent, ctx_builder, config, &agent_state, step_index);
     return error.StepLimitReached;
+}
+
+fn rateLimitDelayMs(attempt: u8) u32 {
+    const delays_ms = [_]u32{
+        60_000,
+        90_000,
+        120_000,
+        180_000,
+        240_000,
+        300_000,
+    };
+    const idx: usize = @intCast(attempt - 1);
+    if (idx < delays_ms.len) return delays_ms[idx];
+    return delays_ms[delays_ms.len - 1];
 }
 
 fn compactConversationIfNeeded(
@@ -522,6 +571,49 @@ fn emitTelemetry(config: Config, event: Telemetry) void {
     if (config.telemetry_callback) |callback| {
         callback(config.telemetry_context, event);
     }
+}
+
+fn recoverTextToolCall(allocator: std.mem.Allocator, text: []const u8) !?turn.ToolCall {
+    const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
+    if (!std.mem.startsWith(u8, trimmed, "<tool_call")) return null;
+
+    const function_marker = "<function=";
+    const function_pos = std.mem.indexOf(u8, trimmed, function_marker) orelse return null;
+    var name_start = function_pos + function_marker.len;
+    while (name_start < trimmed.len and std.ascii.isWhitespace(trimmed[name_start])) : (name_start += 1) {}
+    var name_end = name_start;
+    while (name_end < trimmed.len) : (name_end += 1) {
+        const c = trimmed[name_end];
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '.')) break;
+    }
+    if (name_end == name_start) return null;
+    const name = trimmed[name_start..name_end];
+
+    const args_json = extractTextToolArgs(trimmed) orelse "{}";
+    return .{
+        .name = try allocator.dupe(u8, name),
+        .args_json = try allocator.dupe(u8, args_json),
+    };
+}
+
+fn extractTextToolArgs(text: []const u8) ?[]const u8 {
+    if (std.mem.indexOf(u8, text, "<arguments>")) |start| {
+        const body_start = start + "<arguments>".len;
+        const rest = text[body_start..];
+        const body_end = std.mem.indexOf(u8, rest, "</arguments>") orelse rest.len;
+        const body = std.mem.trim(u8, rest[0..body_end], &std.ascii.whitespace);
+        if (body.len > 0) return body;
+    }
+
+    if (std.mem.indexOfScalar(u8, text, '{')) |start| {
+        if (std.mem.lastIndexOfScalar(u8, text, '}')) |end| {
+            if (end >= start) {
+                const body = std.mem.trim(u8, text[start .. end + 1], &std.ascii.whitespace);
+                if (body.len > 0) return body;
+            }
+        }
+    }
+    return null;
 }
 
 fn millisSince(io: std.Io, start_ms: i64) i64 {
@@ -926,6 +1018,12 @@ test "LoopGuard evidence resets stagnation counter" {
     try guard.noteToolCall("read_file", "{\"path\":\"y\"}");
 }
 
+test "rate limit retry delays start at minute window and cap" {
+    try std.testing.expectEqual(@as(u32, 60_000), rateLimitDelayMs(1));
+    try std.testing.expectEqual(@as(u32, 90_000), rateLimitDelayMs(2));
+    try std.testing.expectEqual(@as(u32, 300_000), rateLimitDelayMs(8));
+}
+
 test "conversationHasReadEvidence matches raw and escaped tool output" {
     const allocator = std.testing.allocator;
     try std.testing.expect(conversationHasReadEvidence(
@@ -1082,6 +1180,208 @@ test "run compacts and retries after context length exceeded" {
     try std.testing.expectEqual(@as(u8, 2), mock.calls);
     try std.testing.expectEqual(@as(u8, 2), mock.user_appends);
     try std.testing.expectEqualStrings("Recovered answer.", state.final_text.?);
+}
+
+test "run without max_tool_steps lets model decide completion" {
+    const allocator = std.testing.allocator;
+
+    const MockTransport = struct {
+        calls: u8 = 0,
+
+        fn transport(self: *@This()) turn.Transport {
+            return .{
+                .ptr = self,
+                .complete_turn = complete,
+                .append_user_text = appendUser,
+                .append_tool_call = appendToolCall,
+                .append_tool_result = appendToolResult,
+            };
+        }
+
+        fn complete(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation_json: []const u8,
+            tool_declarations_json: []const u8,
+            cancel_token: ?*const kernel.cancellation.CancellationToken,
+        ) turn.TransportError!turn.Completion {
+            _ = conversation_json;
+            _ = tool_declarations_json;
+            _ = cancel_token;
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.calls += 1;
+            if (self.calls <= 10) {
+                return .{ .tool_call = .{
+                    .name = try alloc.dupe(u8, "list_tree"),
+                    .args_json = try alloc.dupe(u8, "{\"path\":\".\",\"depth\":1}"),
+                } };
+            }
+            return .{ .text = try alloc.dupe(u8, "Done after enough evidence.") };
+        }
+
+        fn appendUser(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            text: []const u8,
+        ) turn.TransportError!void {
+            _ = ptr;
+            if (conversation.items.len > 0) try conversation.append(alloc, ',');
+            try conversation.appendSlice(alloc, text);
+        }
+
+        fn appendToolCall(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            call: turn.ToolCall,
+        ) turn.TransportError!void {
+            _ = ptr;
+            if (conversation.items.len > 0) try conversation.append(alloc, ',');
+            try conversation.appendSlice(alloc, call.name);
+        }
+
+        fn appendToolResult(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            tool_name: []const u8,
+            result: []const u8,
+            images: []const provider.ImagePart,
+        ) turn.TransportError!void {
+            _ = ptr;
+            _ = tool_name;
+            _ = images;
+            if (conversation.items.len > 0) try conversation.append(alloc, ',');
+            try conversation.appendSlice(alloc, result);
+        }
+    };
+
+    var builder = context.ContextBuilder.init(allocator, 4096);
+    defer builder.deinit();
+    try builder.addBlock(.intent, "intent", "inspect many files");
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sample.txt", .data = "hello" });
+
+    const tool_ctx = tool_executor.Context{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .root = workspace.WorkspaceRoot.init(tmp.dir, "."),
+        .cwd = ".",
+        .profile = .read_only,
+    };
+
+    var mock = MockTransport{};
+    var state = try run(allocator, mock.transport(), tool_registry.native_declarations_json, "inspect many files", &builder, tool_ctx, null, .{
+        .max_tool_steps = 0,
+    });
+    defer state.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u8, 11), mock.calls);
+    try std.testing.expectEqualStrings("Done after enough evidence.", state.final_text.?);
+}
+
+test "run recovers text-form tool call instead of finishing" {
+    const allocator = std.testing.allocator;
+
+    const MockTransport = struct {
+        calls: u8 = 0,
+        tool_calls: u8 = 0,
+
+        fn transport(self: *@This()) turn.Transport {
+            return .{
+                .ptr = self,
+                .complete_turn = complete,
+                .append_user_text = appendUser,
+                .append_tool_call = appendToolCall,
+                .append_tool_result = appendToolResult,
+            };
+        }
+
+        fn complete(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation_json: []const u8,
+            tool_declarations_json: []const u8,
+            cancel_token: ?*const kernel.cancellation.CancellationToken,
+        ) turn.TransportError!turn.Completion {
+            _ = conversation_json;
+            _ = tool_declarations_json;
+            _ = cancel_token;
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.calls += 1;
+            if (self.calls == 1) {
+                return .{ .text = try alloc.dupe(u8, "<tool_call>\n<function=list_tree") };
+            }
+            return .{ .text = try alloc.dupe(u8, "Workspace listed; answer complete.") };
+        }
+
+        fn appendUser(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            text: []const u8,
+        ) turn.TransportError!void {
+            _ = ptr;
+            if (conversation.items.len > 0) try conversation.append(alloc, ',');
+            try conversation.appendSlice(alloc, text);
+        }
+
+        fn appendToolCall(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            call: turn.ToolCall,
+        ) turn.TransportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.tool_calls += 1;
+            if (!std.mem.eql(u8, call.name, "list_tree")) return error.MalformedResponse;
+            if (!std.mem.eql(u8, call.args_json, "{}")) return error.MalformedResponse;
+            if (conversation.items.len > 0) try conversation.append(alloc, ',');
+            try conversation.appendSlice(alloc, call.name);
+        }
+
+        fn appendToolResult(
+            ptr: *anyopaque,
+            alloc: std.mem.Allocator,
+            conversation: *std.ArrayList(u8),
+            tool_name: []const u8,
+            result: []const u8,
+            images: []const provider.ImagePart,
+        ) turn.TransportError!void {
+            _ = ptr;
+            _ = tool_name;
+            _ = images;
+            if (conversation.items.len > 0) try conversation.append(alloc, ',');
+            try conversation.appendSlice(alloc, result);
+        }
+    };
+
+    var builder = context.ContextBuilder.init(allocator, 4096);
+    defer builder.deinit();
+    try builder.addBlock(.intent, "intent", "inspect workspace");
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true, .access_sub_paths = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sample.txt", .data = "hello" });
+
+    const tool_ctx = tool_executor.Context{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .root = workspace.WorkspaceRoot.init(tmp.dir, "."),
+        .cwd = ".",
+        .profile = .read_only,
+    };
+
+    var mock = MockTransport{};
+    var state = try run(allocator, mock.transport(), tool_registry.native_declarations_json, "inspect workspace", &builder, tool_ctx, null, .{});
+    defer state.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u8, 2), mock.calls);
+    try std.testing.expectEqual(@as(u8, 1), mock.tool_calls);
+    try std.testing.expectEqualStrings("Workspace listed; answer complete.", state.final_text.?);
 }
 
 test "step limit checkpoints compact resume state" {

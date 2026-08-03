@@ -5,6 +5,7 @@ const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
+const prompt_pack = @import("../../prompt_pack.zig");
 const kernel = @import("forge-kernel");
 const ollama_ndjson = @import("ndjson.zig");
 
@@ -178,9 +179,11 @@ fn fetchStreamChatInto(
     const ollama_tools = tool_registry.geminiDeclarationsToOllama(allocator, tools_json) catch return error.ProviderFailed;
     defer allocator.free(ollama_tools);
 
+    const system_escaped = try jsonString(allocator, prompt_pack.transport_system_guardrail);
+    defer allocator.free(system_escaped);
     const payload = try std.fmt.allocPrint(allocator,
-        \\{{"model":"{s}","messages":[{s}],"tools":{s},"stream":true,"options":{{"num_ctx":{d}}}}}
-    , .{ ollama.model_name, messages_body, ollama_tools, ollama.num_ctx });
+        \\{{"model":"{s}","messages":[{{"role":"system","content":{s}}},{s}],"tools":{s},"stream":true,"options":{{"num_ctx":{d}}}}}
+    , .{ ollama.model_name, system_escaped, messages_body, ollama_tools, ollama.num_ctx });
     defer allocator.free(payload);
 
     var client = std.http.Client{ .allocator = allocator, .io = io };

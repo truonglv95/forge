@@ -6,6 +6,7 @@ const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
+const prompt_pack = @import("../../prompt_pack.zig");
 const kernel = @import("forge-kernel");
 
 pub const OpenRouterTransport = struct {
@@ -50,6 +51,7 @@ pub const OpenRouterTransport = struct {
             error.AuthenticationFailed => error.AuthenticationFailed,
             error.RateLimitExceeded => error.RateLimitExceeded,
             error.ContextLengthExceeded => error.ContextLengthExceeded,
+            error.ModelUnavailable => error.ModelUnavailable,
             error.NetworkError => error.NetworkError,
             else => error.ProviderFailed,
         };
@@ -149,9 +151,11 @@ fn fetchStreamChatInto(
 
     const model_escaped = try jsonString(allocator, openrouter.model_name);
     defer allocator.free(model_escaped);
+    const system_escaped = try jsonString(allocator, prompt_pack.transport_system_guardrail);
+    defer allocator.free(system_escaped);
     const payload = try std.fmt.allocPrint(allocator,
-        \\{{"model":{s},"messages":[{s}],"tools":{s},"tool_choice":"auto","stream":true}}
-    , .{ model_escaped, messages_body, openai_tools });
+        \\{{"model":{s},"messages":[{{"role":"system","content":{s}}},{s}],"tools":{s},"tool_choice":"auto","stream":true}}
+    , .{ model_escaped, system_escaped, messages_body, openai_tools });
     defer allocator.free(payload);
 
     const auth = try std.fmt.allocPrint(allocator, "Bearer {s}", .{openrouter.creds.api_key});
@@ -166,41 +170,89 @@ fn fetchStreamChatInto(
     defer client.deinit();
 
     openrouter_provider.logRequest("tool-stream", endpoint, openrouter.model_name);
+    openrouter_provider.emitDebug(openrouter, allocator, "OpenRouter tool-stream request endpoint={s} model={s}\n", .{ endpoint, openrouter.model_name });
+    var response_alloc = std.Io.Writer.Allocating.init(allocator);
+    defer response_alloc.deinit();
+
     const result = client.fetch(.{
         .location = .{ .url = endpoint },
         .method = .POST,
         .payload = payload,
         .headers = .{ .content_type = .{ .override = "application/json" } },
         .extra_headers = &headers,
-        .response_writer = parser.ioWriter(),
+        .response_writer = &response_alloc.writer,
     }) catch return error.NetworkError;
 
-    parser.releaseWriter();
     openrouter_provider.logResponse("tool-stream", result.status, openrouter.model_name);
+    openrouter_provider.emitDebug(openrouter, allocator, "OpenRouter tool-stream response status={} model={s}\n", .{ result.status, openrouter.model_name });
 
-    return switch (result.status) {
-        .ok => {},
+    const body = response_alloc.writer.buffered();
+    switch (result.status) {
+        .ok => {
+            const writer = parser.ioWriter();
+            writer.writeAll(body) catch {
+                parser.releaseWriter();
+                return error.ProviderFailed;
+            };
+            parser.releaseWriter();
+        },
         .unauthorized, .forbidden => {
+            emitErrorBody(openrouter, allocator, body);
             debugLog("OpenRouter auth failed: {}\n", .{result.status});
             return error.AuthenticationFailed;
         },
         .too_many_requests => {
+            emitErrorBody(openrouter, allocator, body);
             debugLog("OpenRouter rate limit: {}\n", .{result.status});
             return error.RateLimitExceeded;
         },
+        .not_found => {
+            emitErrorBody(openrouter, allocator, body);
+            debugLog("OpenRouter model unavailable: {}\n", .{result.status});
+            return error.ModelUnavailable;
+        },
         .payload_too_large, .uri_too_long, .bad_request => {
+            emitErrorBody(openrouter, allocator, body);
             debugLog("OpenRouter context/bad request: {}\n", .{result.status});
             return error.ContextLengthExceeded;
         },
         .request_timeout, .service_unavailable, .bad_gateway, .gateway_timeout => {
+            emitErrorBody(openrouter, allocator, body);
             debugLog("OpenRouter network error: {}\n", .{result.status});
             return error.NetworkError;
         },
         else => {
+            emitErrorBody(openrouter, allocator, body);
             debugLog("OpenRouter provider failed with status: {}\n", .{result.status});
             return error.ProviderFailed;
         },
-    };
+    }
+}
+
+fn emitErrorBody(openrouter: *openrouter_provider.OpenRouterProvider, allocator: std.mem.Allocator, body: []const u8) void {
+    if (body.len == 0) return;
+    var compact: [360]u8 = undefined;
+    const preview = compactBody(&compact, body);
+    openrouter_provider.emitDebug(openrouter, allocator, "OpenRouter error body={s}\n", .{preview});
+}
+
+fn compactBody(buf: []u8, body: []const u8) []const u8 {
+    var out_len: usize = 0;
+    var last_space = false;
+    const limit = @min(buf.len, 320);
+    for (body) |c| {
+        const is_space = std.ascii.isWhitespace(c);
+        if (is_space and last_space) continue;
+        if (out_len >= limit) break;
+        buf[out_len] = if (is_space) ' ' else c;
+        out_len += 1;
+        last_space = is_space;
+    }
+    if (out_len == limit and body.len > limit and limit >= 3) {
+        @memcpy(buf[limit - 3 .. limit], "...");
+        return buf[0..limit];
+    }
+    return buf[0..out_len];
 }
 
 fn debugLog(comptime fmt: []const u8, args: anytype) void {

@@ -88,6 +88,7 @@ pub const TransportError = error{
     AuthenticationFailed,
     RateLimitExceeded,
     ContextLengthExceeded,
+    ModelUnavailable,
     NetworkError,
     MalformedResponse,
     OutOfMemory,

@@ -5,6 +5,7 @@ const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
+const prompt_pack = @import("../../prompt_pack.zig");
 const kernel = @import("forge-kernel");
 const gemini_sse = @import("sse.zig");
 
@@ -179,16 +180,18 @@ fn fetchStreamGenerateContentInto(
         std.mem.eql(u8, declarations_json, "") or
         declarations_json.len == 0;
 
+    const system_escaped = try jsonString(allocator, prompt_pack.transport_system_guardrail);
+    defer allocator.free(system_escaped);
     const payload = if (schema_mode) blk: {
         // Minimal WorkspaceEdit schema: object with schema_version int and
         // operations array. The model still fills content — we only constrain
         // the outer shape so parse never fails due to non-JSON preamble.
         break :blk try std.fmt.allocPrint(allocator,
-            \\{{"contents":[{s}],"generationConfig":{{"temperature":0.2,"thinkingConfig":{{"includeThoughts":true}},"responseMimeType":"application/json","responseSchema":{{"type":"OBJECT","properties":{{"schema_version":{{"type":"INTEGER"}},"operations":{{"type":"ARRAY","items":{{"type":"OBJECT"}}}}}},"required":["schema_version","operations"]}}}}}}
-        , .{contents_body});
+            \\{{"systemInstruction":{{"parts":[{{"text":{s}}}]}},"contents":[{s}],"generationConfig":{{"temperature":0.2,"thinkingConfig":{{"includeThoughts":true}},"responseMimeType":"application/json","responseSchema":{{"type":"OBJECT","properties":{{"schema_version":{{"type":"INTEGER"}},"operations":{{"type":"ARRAY","items":{{"type":"OBJECT"}}}}}},"required":["schema_version","operations"]}}}}}}
+        , .{ system_escaped, contents_body });
     } else try std.fmt.allocPrint(allocator,
-        \\{{"contents":[{s}],"tools":[{{"functionDeclarations":{s}}}],"generationConfig":{{"temperature":0.2,"thinkingConfig":{{"includeThoughts":true}}}}}}
-    , .{ contents_body, declarations_json });
+        \\{{"systemInstruction":{{"parts":[{{"text":{s}}}]}},"contents":[{s}],"tools":[{{"functionDeclarations":{s}}}],"generationConfig":{{"temperature":0.2,"thinkingConfig":{{"includeThoughts":true}}}}}}
+    , .{ system_escaped, contents_body, declarations_json });
     defer allocator.free(payload);
 
     const api_headers = [_]std.http.Header{

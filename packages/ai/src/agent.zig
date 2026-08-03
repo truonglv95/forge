@@ -35,7 +35,9 @@ const agent_hooks = @import("agent_hooks.zig");
 const chat_memory = @import("chat_memory.zig");
 
 pub const Config = struct {
-    max_steps: u32 = 128,
+    /// 0 means no default step cap for native tool-loop models.
+    /// Non-zero values are explicit safety/debug limits.
+    max_steps: u32 = 0,
     context_max_bytes: usize = 8 * 1024 * 1024,
     embedding: codebase_search.EmbeddingOptions = .{},
     provider_options: provider_factory.Options,
@@ -59,10 +61,15 @@ pub const Config = struct {
     progress_json: bool = false,
     progress_callback: ?*const fn (?*anyopaque, progress.Phase) void = null,
     progress_context: ?*anyopaque = null,
+    telemetry_callback: ?agent_loop.TelemetryCallback = null,
+    telemetry_context: ?*anyopaque = null,
     step_callback: ?*const fn (?*anyopaque, Step) void = null,
     step_context: ?*anyopaque = null,
     compaction_callback: ?agent_loop.CompactionCallback = null,
     compaction_context: ?*anyopaque = null,
+    rate_limit_callback: ?agent_loop.RateLimitCallback = null,
+    rate_limit_context: ?*anyopaque = null,
+    max_rate_limit_retries: u8 = 8,
     step_begin_callback: ?*const fn (?*anyopaque, StepBegin) void = null,
     step_begin_context: ?*anyopaque = null,
     turn_callback: ?*const fn (?*anyopaque, u32) void = null,
@@ -138,6 +145,10 @@ fn conversationBytes(turns: []const conversation.Turn) usize {
     return total;
 }
 
+fn stepBudgetAtLeast(max_steps: u32, required: u32) bool {
+    return max_steps == 0 or max_steps >= required;
+}
+
 /// Wire-in: Persist a summary of this agent run to the chat memory store.
 /// Stores the user's intent as a user_query and the agent's response as an
 /// agent_response, so future sessions can recall what was discussed.
@@ -189,6 +200,7 @@ pub const AgentError = error{
     AuthenticationFailed,
     RateLimitExceeded,
     ContextLengthExceeded,
+    ModelUnavailable,
     NetworkError,
     WorkspaceFailed,
     Cancelled,
@@ -362,8 +374,8 @@ pub fn run(
         }
     }
 
-    // Adaptive step budget: when max_steps was not explicitly set by the
-    // caller (still at default 128), compute an intent-aware budget.
+    // Legacy compatibility: callers that still pass the old sentinel 128 get
+    // an intent-aware budget. New callers leave max_steps=0 for no default cap.
     // This prevents both premature StepLimitReached on complex tasks and
     // wasted tokens on simple questions.
     if (effective_config.max_steps == 128 and config.resume_session_id == null) {
@@ -512,6 +524,9 @@ pub fn run(
                     .items = event.items,
                     .detail = event.detail,
                 }) catch {};
+                if (self.config.telemetry_callback) |callback| {
+                    callback(self.config.telemetry_context, event);
+                }
             }
         };
         var native_ctx = NativeCtx{
@@ -556,6 +571,9 @@ pub fn run(
             .approval_context = effective_config.approval_context,
             .telemetry_callback = NativeCtx.onTelemetry,
             .telemetry_context = &native_ctx,
+            .rate_limit_callback = effective_config.rate_limit_callback,
+            .rate_limit_context = effective_config.rate_limit_context,
+            .max_rate_limit_retries = effective_config.max_rate_limit_retries,
             .approve_every_time_tools = effective_config.approve_every_time_tools,
             .max_context_recovery_attempts = effective_config.max_context_recovery_attempts,
             .max_conversation_bytes = effective_config.max_conversation_bytes,
@@ -572,6 +590,7 @@ pub fn run(
             error.AuthenticationFailed => return error.AuthenticationFailed,
             error.RateLimitExceeded => return error.RateLimitExceeded,
             error.ContextLengthExceeded => return error.ContextLengthExceeded,
+            error.ModelUnavailable => return error.ModelUnavailable,
             error.NetworkError => return error.NetworkError,
             error.StepLimitReached => return error.StepLimitReached,
             error.DuplicateLoop => return error.DuplicateLoop,
@@ -600,17 +619,17 @@ pub fn run(
             next_index += 1;
         }
 
-        if (effective_config.max_steps >= 3 and tools.isAllowed(effective_config.capability_profile, .list_tree)) {
-            if (effective_config.max_steps < next_index + 1) return error.StepLimitReached;
+        if (stepBudgetAtLeast(effective_config.max_steps, 3) and tools.isAllowed(effective_config.capability_profile, .list_tree)) {
+            if (!stepBudgetAtLeast(effective_config.max_steps, next_index + 1)) return error.StepLimitReached;
             const tree_out = tool_executor.listTree(tool_ctx, ".", 3) catch |err| return mapToolError(err);
             defer allocator.free(tree_out.summary);
             try appendStep(allocator, &steps, next_index, "list_tree", tree_out.summary, null, effective_config);
             next_index += 1;
         }
 
-        if (effective_config.max_steps >= 4 and tools.isAllowed(effective_config.capability_profile, .read_file)) {
+        if (stepBudgetAtLeast(effective_config.max_steps, 4) and tools.isAllowed(effective_config.capability_profile, .read_file)) {
             if (first_match_path) |rel_path| {
-                if (effective_config.max_steps < next_index + 1) return error.StepLimitReached;
+                if (!stepBudgetAtLeast(effective_config.max_steps, next_index + 1)) return error.StepLimitReached;
                 const read_out = tool_executor.readFile(tool_ctx, rel_path, null, null) catch |err| return mapToolError(err);
                 defer allocator.free(read_out.summary);
                 try appendStep(allocator, &steps, next_index, "read_file", read_out.summary, null, effective_config);
@@ -689,7 +708,7 @@ pub fn run(
         };
     }
 
-    if (effective_config.max_steps < next_index) return error.StepLimitReached;
+    if (!stepBudgetAtLeast(effective_config.max_steps, next_index)) return error.StepLimitReached;
     if (!tools.isAllowed(effective_config.capability_profile, .propose_edit)) return error.StepLimitReached;
 
     const llm = provider_handle;
@@ -891,7 +910,7 @@ pub fn run(
         var evidence: ?[]const u8 = null;
         defer if (evidence) |e| allocator.free(e);
         if (trial.hint_paths.len > 0 and tools.isAllowed(effective_config.capability_profile, .read_file)) {
-            if (effective_config.max_steps >= next_index + 1) {
+            if (stepBudgetAtLeast(effective_config.max_steps, next_index + 1)) {
                 if (tool_executor.readFile(tool_ctx, trial.hint_paths[0], null, null)) |read_out| {
                     evidence = read_out.summary;
                     try appendStep(allocator, &steps, next_index, "read_file", evidence.?, null, effective_config);
@@ -1279,7 +1298,7 @@ pub fn resumeSession(
     resumed.resume_next_step_index = doc.next_step_index;
     resumed.resume_pending_tool = doc.pending_tool;
     resumed.resume_pending_tool_args = doc.pending_tool_args;
-    resumed.max_steps = @max(config.max_steps, doc.max_steps);
+    resumed.max_steps = if (config.max_steps == 0) 0 else @max(config.max_steps, doc.max_steps);
     resumed.capability_profile = leastPrivilegeProfile(config.capability_profile, parseCapabilityProfile(doc.capability_profile));
     return run(allocator, io, environ_map, root, doc.intent, resumed);
 }

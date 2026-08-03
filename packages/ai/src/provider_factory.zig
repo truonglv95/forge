@@ -20,6 +20,7 @@ pub const FactoryError = error{
     AuthenticationFailed,
     RateLimitExceeded,
     ContextLengthExceeded,
+    ModelUnavailable,
     MalformedResponse,
     Cancelled,
 } || std.mem.Allocator.Error || std.fmt.ParseIntError;

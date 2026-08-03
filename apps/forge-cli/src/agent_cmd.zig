@@ -394,21 +394,10 @@ fn runAgent(
     if (!parsed.flags.quiet and !parsed.flags.json) scope.installSigint();
 
     const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, target, io, opened.root);
-    const explicit_max_steps = parsed.flags.max_steps > 0;
-    // Use per-intent default when --max-steps is not explicitly set.
-    // The heuristic classify runs in O(1) before context builds, so latency is
-    // negligible. The resolved intent (post-LLM) may later update agent_config
-    // but the initial value gives a safe upper bound for the explore phase.
-    const heuristic_intent = ai.routing.classify(.{
-        .mode = modeFromFlags(parsed.flags),
-        .intent = if (parsed.positional.len > 1) parsed.positional[1] else "",
-        .has_active_file = false,
-        .has_selection = false,
-    });
-    const max_steps: u32 = if (explicit_max_steps)
-        parsed.flags.max_steps
-    else
-        ai.routing.defaultStepsForIntent(heuristic_intent);
+    // Default to no artificial step cap. The agent stops when the model
+    // returns a grounded final answer; --max-steps remains a manual safety
+    // override for debugging/evals.
+    const max_steps: u32 = parsed.flags.max_steps;
     const progress_writer: ?*std.Io.Writer = null;
     var cancel_token = scope.token();
     const event_stream = eventStreamMode(parsed.flags) catch {
@@ -433,6 +422,10 @@ fn runAgent(
     var event_writer = AgentEventWriter{
         .allocator = allocator,
         .writer = writer,
+    };
+    var rate_limit_print = RateLimitPrintCtx{
+        .writer = writer,
+        .enabled = !parsed.flags.quiet and !parsed.flags.json and !event_stream,
     };
     if (event_stream) {
         try event_writer.sessionStarted(if (is_resume) "agent_resume" else "agent_run");
@@ -460,6 +453,8 @@ fn runAgent(
         .turn_context = &event_writer,
         .compaction_callback = if (event_stream) AgentEventWriter.onCompaction else null,
         .compaction_context = &event_writer,
+        .rate_limit_callback = if (event_stream) AgentEventWriter.onRateLimit else RateLimitPrintCtx.onRateLimit,
+        .rate_limit_context = if (event_stream) @as(?*anyopaque, &event_writer) else @as(?*anyopaque, &rate_limit_print),
         .step_begin_callback = if (event_stream) AgentEventWriter.onStepBegin else null,
         .step_begin_context = &event_writer,
         .step_callback = if (event_stream) AgentEventWriter.onStep else null,
@@ -495,7 +490,7 @@ fn runAgent(
     else
         ai.agent.run(allocator, io, environ_map, opened.root, target, agent_config)) catch |err| switch (err) {
         ai.agent.AgentError.StepLimitReached => {
-            if (event_stream) try event_writer.agentError(.step_limit_reached, "agent reached step limit; compact checkpoint saved, resume the session to continue", true) else try writer.writeAll("error: agent reached step limit; compact checkpoint saved, resume the session to continue\n");
+            if (event_stream) try event_writer.agentError(.step_limit_reached, "agent reached the explicit step cap; compact checkpoint saved, resume with a higher --max-steps or omit the cap", true) else try writer.writeAll("error: agent reached the explicit step cap; compact checkpoint saved, resume with a higher --max-steps or omit the cap\n");
             return 2;
         },
         ai.agent.AgentError.Cancelled => {
@@ -516,6 +511,10 @@ fn runAgent(
         },
         ai.agent.AgentError.ContextLengthExceeded => {
             if (event_stream) try event_writer.agentError(.context_length_exceeded, "agent compacted context but the provider still rejected it; resume, reduce --budget-bytes, or switch model", true) else try writer.writeAll("error: agent compacted context but the provider still rejected it; resume, reduce --budget-bytes, or switch model\n");
+            return 2;
+        },
+        ai.agent.AgentError.ModelUnavailable => {
+            if (event_stream) try event_writer.agentError(.provider_failed, "agent provider model unavailable or not found; switch model", false) else try writer.writeAll("error: agent provider model unavailable or not found; switch model\n");
             return 2;
         },
         ai.agent.AgentError.NetworkError => {
@@ -702,6 +701,21 @@ fn eventStreamMode(flags: args_mod.GlobalFlags) !bool {
     return error.UnsupportedEventStream;
 }
 
+const RateLimitPrintCtx = struct {
+    writer: *std.Io.Writer,
+    enabled: bool,
+
+    fn onRateLimit(ctx: ?*anyopaque, attempt: u8, max_attempts: u8, delay_ms: u32, conversation_bytes: usize) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        if (!self.enabled) return;
+        self.writer.print(
+            "rate limited: waiting {d}s before retry {d}/{d} with existing context ({d}kB)\n",
+            .{ delay_ms / 1000, attempt, max_attempts, conversation_bytes / 1024 },
+        ) catch {};
+        self.writer.flush() catch {};
+    }
+};
+
 const AgentEventWriter = struct {
     allocator: std.mem.Allocator,
     writer: *std.Io.Writer,
@@ -714,6 +728,11 @@ const AgentEventWriter = struct {
     fn onCompaction(ctx: ?*anyopaque, reason: []const u8, before_bytes: usize, after_bytes: usize, step_index: u32, attempt: u8) void {
         const self: *@This() = @ptrCast(@alignCast(ctx.?));
         self.contextCompacted(reason, before_bytes, after_bytes, step_index, attempt) catch {};
+    }
+
+    fn onRateLimit(ctx: ?*anyopaque, attempt: u8, max_attempts: u8, delay_ms: u32, conversation_bytes: usize) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        self.rateLimitRetry(attempt, max_attempts, delay_ms, conversation_bytes) catch {};
     }
 
     fn onStepBegin(ctx: ?*anyopaque, step: ai.agent.StepBegin) void {
@@ -784,6 +803,15 @@ const AgentEventWriter = struct {
                 after_bytes,
                 if (before_bytes > after_bytes) before_bytes - after_bytes else 0,
             },
+        );
+    }
+
+    fn rateLimitRetry(self: *@This(), attempt: u8, max_attempts: u8, delay_ms: u32, conversation_bytes: usize) !void {
+        const detail_json = try jsonString(self.allocator, "waiting before retry with existing context");
+        defer self.allocator.free(detail_json);
+        try self.writer.print(
+            "{{\"schema_version\":{d},\"type\":\"{s}\",\"phase\":\"rate_limit_retry\",\"duration_ms\":{d},\"bytes\":{d},\"items\":{d},\"max_attempts\":{d},\"detail\":{s}}}\n",
+            .{ ai.agent_event.schema_version, ai.agent_event.typeName(.telemetry), delay_ms, conversation_bytes, attempt, max_attempts, detail_json },
         );
     }
 

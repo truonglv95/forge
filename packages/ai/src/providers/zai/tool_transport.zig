@@ -6,6 +6,7 @@ const tool_registry = @import("../../tools/registry.zig");
 const tool_args = @import("../../tools/args.zig");
 const mcp_registry = @import("../../mcp_registry.zig");
 const turn = @import("../../agent/turn.zig");
+const prompt_pack = @import("../../prompt_pack.zig");
 const kernel = @import("forge-kernel");
 
 /// Tool-loop transport for Z.AI (GLM). The Z.AI internal API at
@@ -156,9 +157,11 @@ fn fetchStreamChatInto(
 
     const model_escaped = try jsonString(allocator, zai.model_name);
     defer allocator.free(model_escaped);
+    const system_escaped = try jsonString(allocator, prompt_pack.transport_system_guardrail);
+    defer allocator.free(system_escaped);
     const payload = try std.fmt.allocPrint(allocator,
-        \\{{"model":{s},"messages":[{s}],"tools":{s},"tool_choice":"auto","stream":true}}
-    , .{ model_escaped, messages_body, openai_tools });
+        \\{{"model":{s},"messages":[{{"role":"system","content":{s}}},{s}],"tools":{s},"tool_choice":"auto","stream":true}}
+    , .{ model_escaped, system_escaped, messages_body, openai_tools });
     defer allocator.free(payload);
 
     const auth = try std.fmt.allocPrint(allocator, "Bearer {s}", .{zai_provider.gateway_bearer});

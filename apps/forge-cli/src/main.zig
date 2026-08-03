@@ -231,7 +231,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --mode <name>        Routing mode for forge context: ask|plan|agent
         \\  --once               Single watch poll (for tests)
         \\  --max-polls <n>      Limit watch polling iterations
-        \\  --max-steps <n>      Limit agent steps (default: 8)
+        \\  --max-steps <n>      Optional safety cap for agent steps (default: unlimited)
         \\  --fetch              Allow parser sync to resolve fetchable parser packs (stub)
         \\  --repeat <n>         Repeat eval suite runs (default: 1)
         \\  --output <path>      Write eval results JSONL (default: .forge/evals/latest.jsonl)

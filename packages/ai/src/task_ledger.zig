@@ -275,7 +275,8 @@ pub const AgentState = struct {
     }
 
     pub fn finalGateIssue(self: AgentState, allocator: std.mem.Allocator, final_text: []const u8) !?[]const u8 {
-        if (std.mem.trim(u8, final_text, &std.ascii.whitespace).len == 0) {
+        const trimmed = std.mem.trim(u8, final_text, &std.ascii.whitespace);
+        if (trimmed.len == 0) {
             return try allocator.dupe(u8, "Final answer blocked: missing summary text.");
         }
         if (self.hasEdits() and !self.validationAfterLastEdit()) {
@@ -283,6 +284,9 @@ pub const AgentState = struct {
         }
         if (self.hasEdits() and self.validation.status == .not_run) {
             return try allocator.dupe(u8, "Final answer blocked: missing verification status after edits.");
+        }
+        if (isLowInformationFinal(trimmed)) {
+            return try allocator.dupe(u8, "Final answer blocked: the answer is too generic. Provide a concrete answer to the user's request: summarize what was found or changed, name key files or evidence, and include validation status if relevant.");
         }
         return null;
     }
@@ -921,6 +925,65 @@ fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     return false;
 }
 
+fn containsAnyIgnoreCase(haystack: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (std.ascii.indexOfIgnoreCase(haystack, needle) != null) return true;
+    }
+    return false;
+}
+
+fn wordCount(text: []const u8) usize {
+    var count: usize = 0;
+    var in_word = false;
+    for (text) |c| {
+        if (std.ascii.isWhitespace(c)) {
+            in_word = false;
+        } else if (!in_word) {
+            count += 1;
+            in_word = true;
+        }
+    }
+    return count;
+}
+
+fn isLowInformationFinal(text: []const u8) bool {
+    const stripped = blk: {
+        if (std.ascii.indexOfIgnoreCase(text, "final answer:")) |idx| {
+            break :blk std.mem.trim(u8, text[idx + "final answer:".len ..], &std.ascii.whitespace);
+        }
+        break :blk text;
+    };
+    const words = wordCount(stripped);
+
+    const generic = containsAnyIgnoreCase(stripped, &.{
+        "the task is complete",
+        "task is complete",
+        "no further actions are required",
+        "nothing else is needed",
+        "all essential",
+    });
+    if (generic and words < 24) return true;
+
+    const detail = containsAnyIgnoreCase(stripped, &.{
+        "changed",
+        "fixed",
+        "found",
+        "added",
+        "removed",
+        "updated",
+        "validated",
+        "validation",
+        "tested",
+        "not run",
+        ".zig",
+        ".ts",
+        ".js",
+        ".md",
+        "/",
+    });
+    return generic and !detail;
+}
+
 fn looksLikeValidationResult(summary: []const u8) bool {
     return std.mem.startsWith(u8, summary, "run_command exit ") or
         std.mem.indexOf(u8, summary, "validation [") != null or
@@ -1220,5 +1283,19 @@ test "agent state final gate requires validation after edits" {
 
     try state.recordToolResult(allocator, 3, "run_command", "run_command exit 0\nzig build");
     const allowed = try state.finalGateIssue(allocator, "Done. Validation passed.");
+    try std.testing.expect(allowed == null);
+}
+
+test "agent state final gate rejects low information final answers" {
+    const allocator = std.testing.allocator;
+    var state = try AgentState.init(allocator, "review the codebase");
+    defer state.deinit(allocator);
+
+    const blocked = try state.finalGateIssue(allocator, "Final answer:\nprovided. The task is complete.");
+    try std.testing.expect(blocked != null);
+    defer allocator.free(blocked.?);
+    try std.testing.expect(std.mem.indexOf(u8, blocked.?, "too generic") != null);
+
+    const allowed = try state.finalGateIssue(allocator, "Found that the TUI renderer wraps ANSI-colored text before layout. Validation was not run.");
     try std.testing.expect(allowed == null);
 }

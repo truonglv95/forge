@@ -570,8 +570,8 @@ pub fn helpOverlayText() []const u8 {
     \\║  Session: /sessions /resume /timeline /events /time /version        ║
     \\║  Specs:   /spec /runs                                               ║
     \\║  Git:     /diff [file] /branch /review                              ║
-    \\║  Config:  /model /theme /config /stats /help /wordwrap /vim          ║
-    \\║           /resize /log                                              ║
+    \\║  Config:  /model /model add|remove|list /theme /config /stats        ║
+    \\║           /help /wordwrap /vim /resize /log                          ║
     \\║  Auto:    /alias /macro /notify /snippet                            ║
     \\║  Tabs:    /newtab /tabs /close /rename /switch /merge               ║
     \\║           /cleartabs /tab /copytab /swap /exporttab                 ║

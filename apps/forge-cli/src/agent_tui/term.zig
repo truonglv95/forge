@@ -57,6 +57,7 @@ pub const Terminal = struct {
     /// P2: Accumulated paste content (owned by Terminal, freed on deinit).
     /// Caller reads this when readKey returns .paste.
     paste_buffer: std.ArrayList(u8) = .empty,
+    paste_len: usize = 0,
     /// P2: Mouse support enabled flag. Set by enableMouse().
     mouse_enabled: bool = false,
 
@@ -78,18 +79,20 @@ pub const Terminal = struct {
         raw.cc[@intFromEnum(std.c.V.MIN)] = 0;
         raw.cc[@intFromEnum(std.c.V.TIME)] = 1;
         try std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, raw);
-        // Enable: alt screen buffer, hide cursor, bracketed paste mode.
+        // Enable: alt screen buffer, hide cursor, bracketed paste mode, and
+        // alternate-scroll mode so wheel/trackpad scrolling can drive the TUI
+        // without enabling mouse tracking (which blocks native text selection).
         // Bracketed paste (\x1b[?2004h) allows detecting paste events so
         // multi-line paste doesn't trigger Ctrl-char side effects.
-        try writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h");
+        try writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1007h");
         return .{ .saved = saved, .active = true, .use_color = use_color };
     }
 
     pub fn restore(self: *Terminal) void {
         if (!self.active) return;
         // Disable: bracketed paste, mouse, show cursor, exit alt screen.
-        var restore_seq: []const u8 = "\x1b[?2004l\x1b[?1049l\x1b[?25h";
-        if (self.mouse_enabled) restore_seq = "\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?1049l\x1b[?25h";
+        var restore_seq: []const u8 = "\x1b[?1007l\x1b[?2004l\x1b[?1049l\x1b[?25h";
+        if (self.mouse_enabled) restore_seq = "\x1b[?1006l\x1b[?1000l\x1b[?1007l\x1b[?2004l\x1b[?1049l\x1b[?25h";
         writeAll(restore_seq) catch {};
         std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, self.saved) catch {};
         self.active = false;
@@ -105,7 +108,7 @@ pub const Terminal = struct {
 
     /// P2: Disable mouse support.
     pub fn disableMouse(self: *Terminal) void {
-        if (!self.active or !self.mouse_enabled) return;
+        if (!self.active) return;
         writeAll("\x1b[?1006l\x1b[?1000l") catch {};
         self.mouse_enabled = false;
     }
@@ -168,6 +171,10 @@ pub const Terminal = struct {
         const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return error.ReadFailed;
         if (n == 0) return .none;
 
+        if (self.pasting) {
+            return self.readPasteContinuation(buf[0..n]);
+        }
+
         // P2: Detect bracketed paste start sequence \x1b[200~ and accumulate
         // until end sequence \x1b[201~. This is a simplified state machine —
         // it detects the start, returns .paste with the content between start
@@ -183,21 +190,14 @@ pub const Terminal = struct {
                     if (buf[i] == 27 and buf[i + 1] == '[' and buf[i + 2] == '2' and buf[i + 3] == '0' and buf[i + 4] == '1' and buf[i + 5] == '~') {
                         // Found end sequence. Return content between start and end.
                         const content = buf[content_start..i];
-                        // Copy to a stable buffer (use a static buffer since
-                        // we don't have an allocator here). For simplicity,
-                        // return a pointer into a thread-local static buffer.
-                        // Real implementation should use an allocator.
-                        if (content.len < paste_static_buf.len) {
-                            @memcpy(paste_static_buf[0..content.len], content);
-                            return .{ .paste = paste_static_buf[0..content.len] };
-                        }
-                        return .{ .paste = "" }; // content too long, return empty
+                        self.paste_len = 0;
+                        self.appendPasteBytes(content);
+                        return .{ .paste = paste_static_buf[0..self.paste_len] };
                     }
                 }
             }
-            // End sequence not in this read — set pasting state and return .none.
-            // Subsequent reads will accumulate. (Simplified: we return .none
-            // and let caller retry; full impl would buffer bytes here.)
+            self.paste_len = 0;
+            self.appendPasteBytes(buf[content_start..n]);
             self.pasting = true;
             return .none;
         }
@@ -253,9 +253,42 @@ pub const Terminal = struct {
             return .escape;
         }
         if (buf[0] == '\t') return .tab;
+        if (n > 1 and isPlainTextPaste(buf[0..n])) {
+            self.paste_len = 0;
+            self.appendPasteBytes(buf[0..n]);
+            return .{ .paste = paste_static_buf[0..self.paste_len] };
+        }
         return .{ .char = buf[0] };
     }
+
+    fn readPasteContinuation(self: *Terminal, bytes: []const u8) Key {
+        var i: usize = 0;
+        while (i + 5 < bytes.len) : (i += 1) {
+            if (bytes[i] == 27 and bytes[i + 1] == '[' and bytes[i + 2] == '2' and bytes[i + 3] == '0' and bytes[i + 4] == '1' and bytes[i + 5] == '~') {
+                self.appendPasteBytes(bytes[0..i]);
+                self.pasting = false;
+                return .{ .paste = paste_static_buf[0..self.paste_len] };
+            }
+        }
+        self.appendPasteBytes(bytes);
+        return .none;
+    }
+
+    fn appendPasteBytes(self: *Terminal, bytes: []const u8) void {
+        if (self.paste_len >= paste_static_buf.len) return;
+        const writable = @min(bytes.len, paste_static_buf.len - self.paste_len);
+        @memcpy(paste_static_buf[self.paste_len .. self.paste_len + writable], bytes[0..writable]);
+        self.paste_len += writable;
+    }
 };
+
+fn isPlainTextPaste(bytes: []const u8) bool {
+    for (bytes) |c| {
+        if (c == 27) return false;
+        if (c < 32 and c != '\t' and c != '\n' and c != '\r') return false;
+    }
+    return true;
+}
 
 /// P2: Static buffer for paste content (thread-local would be better, but
 /// the TUI is single-threaded so a global is fine). Sized to hold typical
@@ -365,6 +398,7 @@ pub fn writeAll(bytes: []const u8) !void {
 pub const Style = struct {
     pub const dim = "\x1b[2m";
     pub const bold = "\x1b[1m";
+    pub const italic = "\x1b[3m";
     pub const reset = "\x1b[0m";
     pub const invert = "\x1b[7m";
 
@@ -381,6 +415,9 @@ pub const Style = struct {
     pub const white = "\x1b[37m";
     pub const gray = "\x1b[38;5;244m";
     pub const dark_gray = "\x1b[38;5;238m";
+    pub const violet = "\x1b[38;5;99m";
+    pub const lime = "\x1b[38;5;118m";
+    pub const border = "\x1b[38;5;244m";
     pub const bright_yellow = "\x1b[93m";
     pub const bright_green = "\x1b[92m";
     pub const bright_red = "\x1b[91m";
@@ -530,7 +567,7 @@ pub fn displayWidth(text: []const u8) usize {
     return width;
 }
 
-fn utf8SeqLen(first: u8) usize {
+pub fn utf8SeqLen(first: u8) usize {
     if (first < 0x80) return 1;
     if (first >= 0xF0) return 4;
     if (first >= 0xE0) return 3;
@@ -576,20 +613,33 @@ pub fn wrapLines(allocator: std.mem.Allocator, text: []const u8, width: usize) !
     }
 
     var start: usize = 0;
-    while (start < text.len) {
-        const slice = text[start..];
-        if (displayWidth(slice) <= width) {
-            try lines.append(allocator, try allocator.dupe(u8, slice));
-            break;
+    while (start <= text.len) {
+        const paragraph_end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+        var paragraph_start = start;
+
+        if (paragraph_start == paragraph_end) {
+            try lines.append(allocator, try allocator.dupe(u8, ""));
+        } else {
+            while (paragraph_start < paragraph_end) {
+                const slice = text[paragraph_start..paragraph_end];
+                if (displayWidth(slice) <= width) {
+                    try lines.append(allocator, try allocator.dupe(u8, slice));
+                    paragraph_start = paragraph_end;
+                    break;
+                }
+                // Byte length of `width` codepoints (never splits a UTF-8 sequence).
+                var break_at = byteOffsetForCols(slice, width);
+                if (std.mem.lastIndexOfScalar(u8, slice[0..break_at], ' ')) |space| {
+                    if (space > 0) break_at = space;
+                }
+                try lines.append(allocator, try allocator.dupe(u8, std.mem.trim(u8, slice[0..break_at], &std.ascii.whitespace)));
+                paragraph_start += break_at;
+                while (paragraph_start < paragraph_end and text[paragraph_start] == ' ') paragraph_start += 1;
+            }
         }
-        // Byte length of `width` codepoints (never splits a UTF-8 sequence).
-        var break_at = byteOffsetForCols(slice, width);
-        if (std.mem.lastIndexOfScalar(u8, slice[0..break_at], ' ')) |space| {
-            if (space > 0) break_at = space;
-        }
-        try lines.append(allocator, try allocator.dupe(u8, std.mem.trim(u8, slice[0..break_at], &std.ascii.whitespace)));
-        start += break_at;
-        while (start < text.len and text[start] == ' ') start += 1;
+
+        if (paragraph_end == text.len) break;
+        start = paragraph_end + 1;
     }
     if (lines.items.len == 0) try lines.append(allocator, try allocator.dupe(u8, ""));
     return try lines.toOwnedSlice(allocator);
@@ -605,6 +655,17 @@ test "wrapLines splits long text" {
     const wrapped = try wrapLines(allocator, "hello world from forge", 10);
     defer freeLines(allocator, wrapped);
     try std.testing.expect(wrapped.len >= 2);
+}
+
+test "wrapLines preserves explicit newlines" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapLines(allocator, "one\ntwo\n\nthree", 20);
+    defer freeLines(allocator, wrapped);
+    try std.testing.expectEqual(@as(usize, 4), wrapped.len);
+    try std.testing.expectEqualStrings("one", wrapped[0]);
+    try std.testing.expectEqualStrings("two", wrapped[1]);
+    try std.testing.expectEqualStrings("", wrapped[2]);
+    try std.testing.expectEqualStrings("three", wrapped[3]);
 }
 
 test "displayWidth counts codepoints not bytes" {
