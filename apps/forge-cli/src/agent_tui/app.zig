@@ -1646,22 +1646,38 @@ pub const App = struct {
     /// /model — show or set the current model (Phase 24).
     fn showModel(self: *App) !void {
         var buf: [256]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "Current model: {s}", .{self.model_label}) catch "Current model: (unknown)";
-        try self.pushSystem(line);
-        try self.pushSystem("");
-        try self.pushSystem("Available models (use /model <provider>/<model> to switch):");
 
-        // List free-tier models from capability table
+        // Show current provider + model clearly
+        const cur_provider = self.parsed.flags.provider orelse "auto";
+        const cur_model = self.parsed.flags.model orelse "auto";
+        const cur_line = std.fmt.bufPrint(&buf, "Current: {s}/{s} (display: {s})", .{ cur_provider, cur_model, self.model_label }) catch "Current: (unknown)";
+        try self.pushSystem(cur_line);
+        try self.pushSystem("");
+
+        // Show available free-tier models grouped by provider
+        try self.pushSystem("Available models (/model <provider>/<model> to switch):");
+        try self.pushSystem("");
+
         const models = ai.provider_capability.builtin_models;
+        var last_provider: []const u8 = "";
         for (models) |m| {
             const is_free = m.capability.price_per_mtok_input == 0 and m.capability.price_per_mtok_output == 0;
             if (is_free) {
-                const model_line = std.fmt.bufPrint(&buf, "  {s}/{s} — {s}", .{ m.provider, m.model_id, m.capability.notes }) catch continue;
+                // Print provider header when it changes
+                if (!std.mem.eql(u8, m.provider, last_provider)) {
+                    last_provider = m.provider;
+                    const header = std.fmt.bufPrint(&buf, "  [{s}]", .{m.provider}) catch continue;
+                    try self.pushSystem(header);
+                }
+                const model_line = std.fmt.bufPrint(&buf, "    {s} — {s}", .{ m.model_id, m.capability.notes }) catch continue;
                 try self.pushSystem(model_line);
             }
         }
         try self.pushSystem("");
-        try self.pushSystem("Use /model <name> to switch model (takes effect on next agent run)");
+        try self.pushSystem("Examples:");
+        try self.pushSystem("  /model zai/glm-4-plus");
+        try self.pushSystem("  /model groq/llama-3.3-70b-versatile");
+        try self.pushSystem("  /model glm-4-flash  (keeps current provider)");
     }
 
     /// /model <name> — set the model (Phase 24).
@@ -1670,18 +1686,40 @@ pub const App = struct {
             try self.showModel();
             return;
         };
-        // Free old label and set new one.
-        self.mutex.lock();
-        self.allocator.free(self.model_label);
-        self.model_label = self.allocator.dupe(u8, model_name) catch {
-            self.model_label = "unknown";
-            self.mutex.unlock();
+
+        // Parse "provider/model" format (e.g. "zai/glm-4-plus")
+        // If no slash, keep current provider and just change model
+        var provider: []const u8 = self.parsed.flags.provider orelse "auto";
+        var model: []const u8 = model_name;
+
+        if (std.mem.indexOfScalar(u8, model_name, '/')) |slash_idx| {
+            provider = model_name[0..slash_idx];
+            model = model_name[slash_idx + 1 ..];
+        }
+
+        // Dupe the strings (they come from input which will be freed)
+        const owned_provider = self.allocator.dupe(u8, provider) catch {
             try self.pushSystem("Failed to set model (out of memory)");
             return;
         };
+        const owned_model = self.allocator.dupe(u8, model) catch {
+            self.allocator.free(owned_provider);
+            try self.pushSystem("Failed to set model (out of memory)");
+            return;
+        };
+
+        // Update app.parsed.flags so worker thread uses the new model
+        self.mutex.lock();
+        self.parsed.flags.provider = owned_provider;
+        self.parsed.flags.model = owned_model;
+
+        // Update display label
+        self.allocator.free(self.model_label);
+        self.model_label = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ provider, model }) catch "unknown";
         self.mutex.unlock();
+
         var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Model set to: {s}", .{model_name}) catch "Model updated";
+        const msg = std.fmt.bufPrint(&buf, "Model set to: {s}/{s}", .{ provider, model }) catch "Model updated";
         try self.pushSystem(msg);
         try self.pushSystem("Note: model change takes effect on next agent run");
     }
