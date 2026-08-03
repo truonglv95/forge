@@ -243,7 +243,39 @@ pub const App = struct {
         terminal: term.Terminal,
         cancel_scope: cancel_scope_mod.Scope,
     ) !App {
-        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, parsed.flags, "interactive", io, opened.root);
+        var effective_flags = parsed.flags;
+        // Auto-fallback: if provider is "ollama" but ollama is not reachable,
+        // and z.ai is available (pre-authenticated), switch to zai.
+        if (effective_flags.provider == null or std.mem.eql(u8, effective_flags.provider orelse "", "ollama")) {
+            const zai_available = blk: {
+                if (std.c.getenv("ZAI_TOKEN") != null) break :blk true;
+                var f = std.Io.Dir.openFileAbsolute(io, "/etc/.z-ai-config", .{}) catch break :blk false;
+                f.close(io);
+                break :blk true;
+            };
+            const ollama_reachable = blk: {
+                const host = std.c.getenv("OLLAMA_HOST") orelse "localhost:11434";
+                _ = host;
+                // Quick TCP probe — if ollama is not running, fallback to zai
+                const sock = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+                if (sock < 0) break :blk false;
+                defer _ = std.c.close(sock);
+                // Try connecting to localhost:11434
+                var addr: std.c.sockaddr.in = .{
+                    .family = std.c.AF.INET,
+                    .port = std.mem.nativeToBig(u16, 11434),
+                    .addr = 0x0100007f, // 127.0.0.1
+                    .zero = [_]u8{0} ** 8,
+                };
+                const connected = std.c.connect(sock, @ptrCast(&addr), @sizeOf(std.c.sockaddr.in));
+                break :blk connected == 0;
+            };
+            if (!ollama_reachable and zai_available) {
+                effective_flags.provider = "zai";
+                effective_flags.model = "glm-4-plus";
+            }
+        }
+        const provider_opts = ai_workflow.agentProviderOptionsFromFlags(allocator, effective_flags, "interactive", io, opened.root);
         const model = try std.fmt.allocPrint(allocator, "{s}/{s}", .{
             provider_opts.options.provider_name,
             provider_opts.options.model orelse "auto",
@@ -1558,7 +1590,20 @@ pub const App = struct {
         var buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Current model: {s}", .{self.model_label}) catch "Current model: (unknown)";
         try self.pushSystem(line);
-        try self.pushSystem("Use /model <name> to switch model (requires restart for some providers)");
+        try self.pushSystem("");
+        try self.pushSystem("Available models (use /model <provider>/<model> to switch):");
+
+        // List free-tier models from capability table
+        const models = ai.provider_capability.builtin_models;
+        for (models) |m| {
+            const is_free = m.capability.price_per_mtok_input == 0 and m.capability.price_per_mtok_output == 0;
+            if (is_free) {
+                const model_line = std.fmt.bufPrint(&buf, "  {s}/{s} — {s}", .{ m.provider, m.model_id, m.capability.notes }) catch continue;
+                try self.pushSystem(model_line);
+            }
+        }
+        try self.pushSystem("");
+        try self.pushSystem("Use /model <name> to switch model (takes effect on next agent run)");
     }
 
     /// /model <name> — set the model (Phase 24).
