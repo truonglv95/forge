@@ -261,7 +261,7 @@ pub const builtin_models = [_]ModelCapability{
             .price_per_mtok_output = 0,
             .notes = "Fastest GLM model — pre-auth, free in dev",
         },
-        .strengths = &.{ "completion" },
+        .strengths = &.{"completion"},
         .effective_context_tokens = 120_000,
     },
     .{
@@ -352,7 +352,7 @@ pub const builtin_models = [_]ModelCapability{
             .price_per_mtok_output = 0,
             .notes = "Free tier, ultra-fast (~800 tok/s), best for inline completion",
         },
-        .strengths = &.{ "completion" },
+        .strengths = &.{"completion"},
         .effective_context_tokens = 120_000,
     },
     .{
@@ -425,7 +425,7 @@ pub const builtin_models = [_]ModelCapability{
             .price_per_mtok_output = 0,
             .notes = "Free tier, ultra-fast (~1800 tok/s)",
         },
-        .strengths = &.{ "completion" },
+        .strengths = &.{"completion"},
         .effective_context_tokens = 120_000,
     },
     // Ollama (local)
@@ -703,14 +703,16 @@ test "route prefers local when prefer_local=true" {
 test "route respects max_price_per_mtok" {
     const decision = route(.{
         .intent = .code_edit,
-        .max_price_per_mtok = 10, // very low; only gemini-flash ($0.075) and ollama (free) qualify
+        .max_price_per_mtok = 10,
         .context_bytes = 1000,
     });
     try std.testing.expect(decision != null);
-    // Either gemini-2.5-flash or ollama
+    const is_free_provider = std.mem.eql(u8, decision.?.provider, "ollama") or
+        std.mem.eql(u8, decision.?.provider, "zai") or
+        std.mem.eql(u8, decision.?.provider, "groq") or
+        std.mem.eql(u8, decision.?.provider, "cerebras");
     const is_flash = std.mem.eql(u8, decision.?.model_id, "gemini-2.5-flash");
-    const is_ollama = std.mem.eql(u8, decision.?.provider, "ollama");
-    try std.testing.expect(is_flash or is_ollama);
+    try std.testing.expect(is_flash or is_free_provider);
 }
 
 test "findModel returns capability for known model" {
