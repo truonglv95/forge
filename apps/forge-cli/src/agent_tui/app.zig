@@ -4719,11 +4719,33 @@ pub const App = struct {
             .resume_session_id = if (resume_id) |id| self.allocator.dupe(u8, id) catch null else null,
         };
 
+        // Show immediate feedback BEFORE spawning the worker thread.
+        // The user sees this instantly when they press Enter:
+        // 1. "⏳ Sending request..." in the chat area
+        // 2. Spinner starts animating in the status bar
+        // 3. Input line is cleared (done in submitInput before calling us)
         self.mutex.lock();
         self.agent_busy = true;
         self.stream_line_index = null;
+        self.spinner_last_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        self.spinner_frame = 0;
         self.markDirty();
         self.mutex.unlock();
+
+        // Push immediate feedback line so user sees something is happening.
+        var feedback_buf: [256]u8 = undefined;
+        const preview_len = @min(intent.len, 80);
+        const feedback = std.fmt.bufPrint(&feedback_buf, "⏳ Sending request: {s}{s}", .{
+            intent[0..preview_len],
+            if (intent.len > 80) "..." else "",
+        }) catch "⏳ Sending request...";
+        try self.pushLine(.system, try self.allocator.dupe(u8, feedback));
+
+        // Force a render immediately so the user sees the feedback.
+        self.mutex.lock();
+        self.dirty = true;
+        self.mutex.unlock();
+
         var line_buf: [512]u8 = undefined;
         const line = std.fmt.bufPrint(&line_buf, "start · {s}", .{intent}) catch "start";
         try self.pushTimelineLine(.system, try self.allocator.dupe(u8, line));
