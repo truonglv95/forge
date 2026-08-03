@@ -300,6 +300,11 @@ pub const App = struct {
             .frame = term.FrameBuffer.init(allocator),
             .session_grants = ai.session_grant.SessionGrants.init(allocator, parsed.flags.auto_approve),
         };
+        // Update app.parsed with effective_flags so worker thread uses
+        // the auto-fallback provider (zai) instead of the original (ollama).
+        app.parsed.flags.provider = effective_flags.provider;
+        app.parsed.flags.model = effective_flags.model;
+
         if (parsed.flags.auto_approve or parsed.flags.trust_all) {
             app.tool_policy = .run_everything;
         }
