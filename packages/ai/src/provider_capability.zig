@@ -153,6 +153,115 @@ pub const builtin_models = [_]ModelCapability{
         .strengths = &.{ "code_edit", "completion" },
         .effective_context_tokens = 120_000,
     },
+    // OpenRouter free-tier models (28+ free models, all suffixed :free)
+    .{
+        .provider = "openrouter",
+        .model_id = "deepseek/deepseek-chat-v3-0324:free",
+        .display_name = "DeepSeek Chat V3 (Free)",
+        .capability = .{
+            .max_context_tokens = 64_000,
+            .supports_tools = true,
+            .supports_streaming = true,
+            .supports_structured_output = false,
+            .returns_usage = true,
+            .returns_finish_reason = true,
+            .price_per_mtok_input = 0,
+            .price_per_mtok_output = 0,
+            .notes = "Free: 20 req/day, strong general coding",
+        },
+        .strengths = &.{ "code_edit", "completion", "agentic" },
+        .effective_context_tokens = 60_000,
+    },
+    .{
+        .provider = "openrouter",
+        .model_id = "deepseek/deepseek-r1:free",
+        .display_name = "DeepSeek R1 (Free)",
+        .capability = .{
+            .max_context_tokens = 64_000,
+            .supports_tools = true,
+            .supports_streaming = true,
+            .supports_structured_output = false,
+            .returns_usage = true,
+            .returns_finish_reason = true,
+            .price_per_mtok_input = 0,
+            .price_per_mtok_output = 0,
+            .notes = "Free: 20 req/day, reasoning model",
+        },
+        .strengths = &.{ "planning", "code_review", "agentic" },
+        .effective_context_tokens = 60_000,
+    },
+    .{
+        .provider = "openrouter",
+        .model_id = "meta-llama/llama-4-scout:free",
+        .display_name = "Llama 4 Scout (Free)",
+        .capability = .{
+            .max_context_tokens = 128_000,
+            .supports_tools = true,
+            .supports_streaming = true,
+            .supports_structured_output = false,
+            .returns_usage = true,
+            .returns_finish_reason = true,
+            .price_per_mtok_input = 0,
+            .price_per_mtok_output = 0,
+            .notes = "Free: 20 req/day, long context",
+        },
+        .strengths = &.{ "code_edit", "completion" },
+        .effective_context_tokens = 120_000,
+    },
+    .{
+        .provider = "openrouter",
+        .model_id = "qwen/qwen3-coder:free",
+        .display_name = "Qwen3 Coder (Free)",
+        .capability = .{
+            .max_context_tokens = 262_000,
+            .supports_tools = true,
+            .supports_streaming = true,
+            .supports_structured_output = false,
+            .returns_usage = true,
+            .returns_finish_reason = true,
+            .price_per_mtok_input = 0,
+            .price_per_mtok_output = 0,
+            .notes = "Free: 20 req/day, 480B code-specialized, 262K context",
+        },
+        .strengths = &.{ "code_edit", "completion" },
+        .effective_context_tokens = 250_000,
+    },
+    .{
+        .provider = "openrouter",
+        .model_id = "google/gemini-flash-1.5:free",
+        .display_name = "Gemini Flash 1.5 (Free)",
+        .capability = .{
+            .max_context_tokens = 1_000_000,
+            .supports_tools = true,
+            .supports_streaming = true,
+            .supports_structured_output = true,
+            .returns_usage = true,
+            .returns_finish_reason = true,
+            .price_per_mtok_input = 0,
+            .price_per_mtok_output = 0,
+            .notes = "Free: 20 req/day, 1M context, multimodal",
+        },
+        .strengths = &.{ "completion", "code_edit" },
+        .effective_context_tokens = 900_000,
+    },
+    .{
+        .provider = "openrouter",
+        .model_id = "mistralai/mistral-small-3.1-24b-instruct:free",
+        .display_name = "Mistral Small 3.1 (Free)",
+        .capability = .{
+            .max_context_tokens = 32_000,
+            .supports_tools = true,
+            .supports_streaming = true,
+            .supports_structured_output = false,
+            .returns_usage = true,
+            .returns_finish_reason = true,
+            .price_per_mtok_input = 0,
+            .price_per_mtok_output = 0,
+            .notes = "Free: 20 req/day, lightweight coding",
+        },
+        .strengths = &.{ "completion", "code_edit" },
+        .effective_context_tokens = 30_000,
+    },
     // OpenAI-compatible
     .{
         .provider = "openai",
@@ -707,10 +816,9 @@ test "route respects max_price_per_mtok" {
         .context_bytes = 1000,
     });
     try std.testing.expect(decision != null);
-    const is_free_provider = std.mem.eql(u8, decision.?.provider, "ollama") or
-        std.mem.eql(u8, decision.?.provider, "zai") or
-        std.mem.eql(u8, decision.?.provider, "groq") or
-        std.mem.eql(u8, decision.?.provider, "cerebras");
+    // Any free-tier provider (price=0) or gemini-flash should qualify.
+    // We accept all free providers: ollama, zai, groq, cerebras, openrouter:free models.
+    const is_free_provider = decision.?.capability.price_per_mtok_input == 0;
     const is_flash = std.mem.eql(u8, decision.?.model_id, "gemini-2.5-flash");
     try std.testing.expect(is_flash or is_free_provider);
 }

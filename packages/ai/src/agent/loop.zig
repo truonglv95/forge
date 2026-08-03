@@ -212,6 +212,7 @@ pub fn run(
     var turn_i: u32 = 0;
     var malformed_repairs: u8 = 0;
     var context_recoveries: u8 = 0;
+    var rate_limit_retries: u8 = 0;
     var conversation_compactions: u8 = 0;
     while (turn_i < config.max_tool_steps) : (turn_i += 1) {
         if (config.cancel_token) |token| {
@@ -236,7 +237,30 @@ pub fn run(
             switch (err) {
                 error.Cancelled => return error.Cancelled,
                 error.AuthenticationFailed => return error.AuthenticationFailed,
-                error.RateLimitExceeded => return error.RateLimitExceeded,
+                error.RateLimitExceeded => {
+                    // Retry with exponential backoff: 10s, 20s, 40s
+                    if (rate_limit_retries >= 3) return error.RateLimitExceeded;
+                    rate_limit_retries += 1;
+                    const delay_ms: u32 = 10_000 * (@as(u32, 1) << @intCast(rate_limit_retries - 1));
+                    emitTelemetry(config, .{
+                        .phase = "rate_limit_retry",
+                        .duration_ms = delay_ms,
+                        .bytes = conversation.items.len,
+                        .items = rate_limit_retries,
+                        .detail = "waiting before retry",
+                    });
+                    // Sleep in 50ms slices for cancel checking
+                    var waited: u32 = 0;
+                    while (waited < delay_ms) {
+                        if (config.cancel_token) |token| {
+                            if (token.isCancelled()) return error.Cancelled;
+                        }
+                        const slice: u32 = @min(50, delay_ms - waited);
+                        std.Io.sleep(tool_ctx.io, std.Io.Duration.fromMilliseconds(@intCast(slice)), .real) catch {};
+                        waited += slice;
+                    }
+                    continue;
+                },
                 error.ContextLengthExceeded => {
                     if (context_recoveries >= config.max_context_recovery_attempts) return error.ContextLengthExceeded;
                     context_recoveries += 1;

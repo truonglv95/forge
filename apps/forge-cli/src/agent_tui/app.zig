@@ -166,6 +166,7 @@ pub const App = struct {
     last_tool_review: ?[]u8 = null,
     last_tool_review_kind: ?[]u8 = null,
     command_index: usize = 0,
+    model_suggestion_index: usize = 0,
     session_grants: ai.session_grant.SessionGrants,
     // Phase 24: TUI completeness
     show_help_overlay: bool = false,
@@ -459,11 +460,58 @@ pub const App = struct {
             const chosen = filtered[idx];
             self.input.clearRetainingCapacity();
             self.input.appendSlice(self.allocator, chosen) catch return;
-            if (std.mem.eql(u8, chosen, "/mode") or std.mem.eql(u8, chosen, "/resume")) {
+            if (std.mem.eql(u8, chosen, "/mode") or std.mem.eql(u8, chosen, "/resume") or std.mem.eql(u8, chosen, "/model")) {
                 self.input.append(self.allocator, ' ') catch return;
             }
             self.cursor = self.input.items.len;
             self.command_index = 0;
+        }
+    }
+
+    /// Tab-complete model names when user types /model <partial> + Tab.
+    /// Cycles through all models in the capability table that start with
+    /// the partial input. Uses Up/Down to navigate, Tab to cycle.
+    fn applyModelSuggestion(self: *App) void {
+        // Extract the partial model name after "/model "
+        const input = self.input.items;
+        const prefix = "/model ";
+        if (input.len <= prefix.len) return;
+        const partial = input[prefix.len..];
+
+        // Build list of all models that start with the partial
+        var matches: [128][]const u8 = undefined;
+        var match_count: usize = 0;
+        for (ai.provider_capability.builtin_models) |m| {
+            // Build "provider/model_id" string for matching
+            var id_buf: [256]u8 = undefined;
+            const id = std.fmt.bufPrint(&id_buf, "{s}/{s}", .{ m.provider, m.model_id }) catch continue;
+            if (std.mem.startsWith(u8, id, partial)) {
+                if (match_count < matches.len) {
+                    matches[match_count] = m.model_id;
+                    match_count += 1;
+                }
+            }
+        }
+
+        if (match_count == 0) {
+            // No matches — show all models
+            for (ai.provider_capability.builtin_models) |m| {
+                if (match_count < matches.len) {
+                    matches[match_count] = m.model_id;
+                    match_count += 1;
+                }
+            }
+        }
+
+        if (match_count > 0) {
+            const idx = if (self.model_suggestion_index < match_count) self.model_suggestion_index else 0;
+            const chosen = matches[idx];
+            // Rebuild input: /model <chosen>
+            self.input.clearRetainingCapacity();
+            self.input.appendSlice(self.allocator, prefix) catch return;
+            self.input.appendSlice(self.allocator, chosen) catch return;
+            self.cursor = self.input.items.len;
+            self.model_suggestion_index = (idx + 1) % match_count;
         }
     }
 
@@ -571,12 +619,17 @@ pub const App = struct {
                 self.mutex.lock();
                 if (self.input.items.len > 0 and self.input.items[0] == '/') {
                     // Check if we're in a file-path completion context (Phase 43).
-                    // Commands that take file paths: /complete, /save, /spec show
                     if (self.completeFilePath()) {
                         self.markDirty();
                     } else {
-                        self.applyCommandSuggestion();
-                        self.markDirty();
+                        // Check if we're in /model context — autocomplete model names
+                        if (self.input.items.len >= 7 and std.mem.startsWith(u8, self.input.items, "/model ")) {
+                            self.applyModelSuggestion();
+                            self.markDirty();
+                        } else {
+                            self.applyCommandSuggestion();
+                            self.markDirty();
+                        }
                     }
                 } else if (self.input.items.len == 0) {
                     self.focus_explorer = !self.focus_explorer;
