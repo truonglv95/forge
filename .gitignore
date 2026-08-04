@@ -25,3 +25,10 @@ cursor.png
 
 # Configuration
 .mcp.json
+
+# npm distribution — platform binaries are built per-platform and should
+# not be committed. The npm/ source (JS shim, package.json, scripts) IS
+# committed; only the built `forge` / `forge.exe` binaries are ignored.
+npm/**/forge
+npm/**/forge.exe
+npm/**/*.tgz

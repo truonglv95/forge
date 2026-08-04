@@ -58,12 +58,12 @@ pub fn runModels(
     parsed: args_mod.CliArgs,
     writer: *std.Io.Writer,
 ) !u8 {
-    _ = allocator;
-    _ = io;
-
     const subcommand = if (parsed.positional.len > 0) parsed.positional[0] else "list";
 
     if (std.mem.eql(u8, subcommand, "list")) {
+        if (parsed.flags.cloud) {
+            return listCloudModels(allocator, io, parsed, writer);
+        }
         return listModels(writer, parsed);
     }
     if (std.mem.eql(u8, subcommand, "capability")) {
@@ -75,6 +75,94 @@ pub fn runModels(
 
     try writer.print("Unknown subcommand '{s}'. Use: list | capability | route\n", .{subcommand});
     return 2;
+}
+
+/// `forge models list --cloud` — fetch models from forge-cloud-backend.
+fn listCloudModels(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    parsed: args_mod.CliArgs,
+    writer: *std.Io.Writer,
+) !u8 {
+    const config = ai.cloud.resolveConfig(null);
+    if (!ai.cloud.isConfigured(config)) {
+        try writer.writeAll("error: Forge Cloud is not configured.\n");
+        try writer.writeAll("Set FORGE_CLOUD_URL and FORGE_CLOUD_ANON_KEY env vars, or rebuild with\n");
+        try writer.writeAll("-Dforge-cloud-url=... -Dforge-cloud-anon-key=...\n");
+        try writer.writeAll("\nRun `forge models list` (without --cloud) for the builtin static table.\n");
+        return 1;
+    }
+
+    var manager = ai.auth_session.SessionManager.init(allocator, io, .{
+        .project_url = config.project_url,
+        .anon_key = config.anon_key,
+    });
+    defer manager.deinit();
+
+    manager.loadStored() catch {};
+    if (!manager.isLoggedIn()) {
+        try writer.writeAll("error: not logged in. Run `forge cloud login <email>` first.\n");
+        return 1;
+    }
+
+    const token = manager.getValidAccessToken() catch |err| {
+        try writer.print("error: cannot get valid token: {}\n", .{err});
+        try writer.writeAll("Try `forge cloud login` again.\n");
+        return 1;
+    };
+
+    var list = ai.cloud.fetchModels(allocator, io, config, token) catch |err| {
+        try writer.print("error: failed to fetch models: {}\n", .{err});
+        return 1;
+    };
+    defer list.deinit();
+
+    if (parsed.flags.json) {
+        try writer.writeAll("{\"type\":\"models\",\"source\":\"cloud\",\"models\":[");
+        for (list.models, 0..) |m, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print(
+                "{{\"provider\":\"{s}\",\"model\":\"{s}\",\"display\":\"{s}\",\"max_context_tokens\":{d},\"supports_tools\":{},\"supports_vision\":{},\"supports_thinking\":{},\"price_per_mtok_input\":{d:.4},\"price_per_mtok_output\":{d:.4}}}",
+                .{
+                    m.provider,
+                    m.id,
+                    m.label,
+                    m.context_window,
+                    m.supports_tools,
+                    m.supports_vision,
+                    m.supports_thinking,
+                    m.input_price_per_1m,
+                    m.output_price_per_1m,
+                },
+            );
+        }
+        try writer.writeAll("]}\n");
+    } else {
+        try writer.print("Cloud models ({d} available):\n\n", .{list.models.len});
+        try writer.writeAll("  Provider    Model ID                              Label                                Context   Tools  Vision  Think   Price (I/O)\n");
+        try writer.writeAll("  ----------  ------------------------------------  -----------------------------------  --------  -----  ------  ------  ------------\n");
+        for (list.models) |m| {
+            const tools = if (m.supports_tools) "Y" else "N";
+            const vision = if (m.supports_vision) "Y" else "N";
+            const think = if (m.supports_thinking) "Y" else "N";
+            var price_buf: [64]u8 = undefined;
+            const price = if (m.input_price_per_1m == 0 and m.output_price_per_1m == 0)
+                "free"
+            else
+                std.fmt.bufPrint(&price_buf, "${d:.2}/${d:.2}", .{ m.input_price_per_1m, m.output_price_per_1m }) catch "n/a";
+            try writer.print("  {s: <10}  {s: <36}  {s: <35}  {d: >7}  {s: <5}  {s: <6}  {s: <5}  {s}\n", .{
+                m.provider,
+                m.id,
+                m.label,
+                m.context_window,
+                tools,
+                vision,
+                think,
+                price,
+            });
+        }
+    }
+    return 0;
 }
 
 fn listModels(writer: *std.Io.Writer, parsed: args_mod.CliArgs) !u8 {

@@ -1,0 +1,101 @@
+name: Release NPM
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            with-glx: 'false'
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            with-glx: 'false'
+          - os: macos-13
+            target: darwin-x64
+            with-glx: 'true'
+          - os: macos-14
+            target: darwin-arm64
+            with-glx: 'true'
+          - os: windows-latest
+            target: win32-x64
+            with-glx: 'true'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Zig 0.16.0
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build forge binary
+        shell: bash
+        env:
+          WITH_GLX: ${{ matrix.with-glx }}
+        run: ./npm/scripts/build-npm.sh
+      - name: Verify binary
+        shell: bash
+        run: |
+          BIN="npm/forge-cli-${{ matrix.target }}/forge"
+          if [[ "${{ matrix.target }}" == win32-x64 ]]; then BIN="${BIN}.exe"; fi
+          test -f "$BIN" || { echo "Binary missing: $BIN"; exit 1; }
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-${{ matrix.target }}
+          path: |
+            npm/forge-cli-${{ matrix.target }}/forge
+            npm/forge-cli-${{ matrix.target }}/forge.exe
+            npm/forge-cli-${{ matrix.target }}/package.json
+            npm/forge-cli-${{ matrix.target }}/index.js
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: forge-*
+      - name: Merge artifacts into npm packages
+        run: |
+          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            src="artifacts/forge-${target}"
+            dest="npm/forge-cli-${target}"
+            mkdir -p "${dest}"
+            if [[ -f "${src}/forge" ]]; then cp "${src}/forge" "${dest}/forge"; chmod +x "${dest}/forge"; fi
+            if [[ -f "${src}/forge.exe" ]]; then cp "${src}/forge.exe" "${dest}/forge.exe"; fi
+            if [[ -f "${src}/package.json" ]]; then cp "${src}/package.json" "${dest}/package.json"; fi
+            if [[ -f "${src}/index.js" ]]; then cp "${src}/index.js" "${dest}/index.js"; fi
+          done
+      - name: Verify all binaries present
+        run: |
+          for pkg in forge-cli-linux-x64 forge-cli-linux-arm64 forge-cli-darwin-x64 forge-cli-darwin-arm64; do
+            test -f "npm/${pkg}/forge" || { echo "Missing: npm/${pkg}/forge"; exit 1; }
+          done
+          test -f "npm/forge-cli-win32-x64/forge.exe" || { echo "Missing: forge.exe"; exit 1; }
+      - name: Publish platform packages
+        run: ./npm/scripts/publish-npm.sh
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

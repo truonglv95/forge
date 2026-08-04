@@ -128,9 +128,13 @@ pub const SessionManager = struct {
                 => {},
                 else => return err,
             };
-            s.deinit();
         }
-        self.session = null;
+        // deinit on a local mutable copy, then clear the optional.
+        if (self.session) |*s| {
+            var mut = s.*;
+            self.session = null;
+            mut.deinit();
+        }
         token_store.clearStoredSession(self.allocator, self.io);
     }
 

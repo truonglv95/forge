@@ -1,0 +1,14 @@
+{
+  "name": "@forge-ai/cli-linux-x64",
+  "version": "0.1.0",
+  "description": "Forge CLI native binary for linux-x64",
+  "license": "UNLICENSED",
+  "author": "truonglv95",
+  "repository": { "type": "git", "url": "https://github.com/truonglv95/forge.git", "directory": "npm/forge-cli-linux-x64" },
+  "homepage": "https://github.com/truonglv95/forge",
+  "bugs": { "url": "https://github.com/truonglv95/forge/issues" },
+  "os": ["linux"], "cpu": ["x64"], "type": "commonjs",
+  "main": "./index.js",
+  "files": ["forge", "index.js"],
+  "publishConfig": { "access": "public" }
+}

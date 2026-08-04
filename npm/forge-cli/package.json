@@ -1,0 +1,28 @@
+{
+  "name": "@forge-ai/cli",
+  "version": "0.1.0",
+  "description": "AI-first native IDE, built in Zig — CLI distribution. Cursor/Kiro/Antigravity parity with transaction-safe edits, inspectable context, smart model router, and spec-driven agent workflow.",
+  "license": "UNLICENSED",
+  "author": "truonglv95",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/truonglv95/forge.git",
+    "directory": "npm/forge-cli"
+  },
+  "homepage": "https://github.com/truonglv95/forge",
+  "bugs": { "url": "https://github.com/truonglv95/forge/issues" },
+  "keywords": ["ai","cli","ide","code-editor","agent","zig","llm","gemini","claude","cursor","aider","kiro","antigravity","spec-driven","code-completion","multi-file-edit","codebase-search"],
+  "type": "commonjs",
+  "main": "./lib/index.js",
+  "bin": { "forge": "./bin/forge.js" },
+  "files": ["bin/","lib/","README.md"],
+  "engines": { "node": ">=16" },
+  "optionalDependencies": {
+    "@forge-ai/cli-linux-x64": "0.1.0",
+    "@forge-ai/cli-linux-arm64": "0.1.0",
+    "@forge-ai/cli-darwin-x64": "0.1.0",
+    "@forge-ai/cli-darwin-arm64": "0.1.0",
+    "@forge-ai/cli-win32-x64": "0.1.0"
+  },
+  "publishConfig": { "access": "public" }
+}

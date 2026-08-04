@@ -1,0 +1,14 @@
+{
+  "name": "@forge-ai/cli-darwin-x64",
+  "version": "0.1.0",
+  "description": "Forge CLI native binary for darwin-x64 (macOS Intel)",
+  "license": "UNLICENSED",
+  "author": "truonglv95",
+  "repository": { "type": "git", "url": "https://github.com/truonglv95/forge.git", "directory": "npm/forge-cli-darwin-x64" },
+  "homepage": "https://github.com/truonglv95/forge",
+  "bugs": { "url": "https://github.com/truonglv95/forge/issues" },
+  "os": ["darwin"], "cpu": ["x64"], "type": "commonjs",
+  "main": "./index.js",
+  "files": ["forge", "index.js"],
+  "publishConfig": { "access": "public" }
+}

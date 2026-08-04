@@ -32,6 +32,7 @@ const chat_cmd = @import("chat_cmd.zig");
 const edit_cmd = @import("edit_cmd.zig");
 const review_cmd = @import("review_cmd.zig");
 const test_gen_cmd = @import("test_gen_cmd.zig");
+const cloud_cmd = @import("cloud_cmd.zig");
 
 const Io = std.Io;
 
@@ -165,6 +166,9 @@ fn run(
         .test_gen => {
             return test_gen_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
         },
+        .cloud => {
+            return cloud_cmd.run(allocator, io, environ_map, parsed, writer) catch 2;
+        },
         .help => {
             try printHelp(writer);
             return 0;
@@ -213,6 +217,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  models     List AI models or query routing (list|capability|route) (RFC-0016)
         \\  chat       Interactive chat REPL with @mentions and slash commands (RFC-0017)
         \\  edit       Composer-style multi-file inline edit (RFC-0013 Composer)
+        \\  cloud      Forge Cloud login/logout/status/models (server-managed model catalog)
         \\  help       Show this help
         \\
         \\Options:
@@ -252,6 +257,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --require-streaming  Only route to providers that support streaming
         \\  --max-price-per-mtok <n> Max price per 1M tokens (cents) for routing
         \\  --strengths <s>      Comma-separated strengths for routing (code_edit,completion,planning)
+        \\  --cloud              Fetch models from Forge Cloud backend (forge models list --cloud)
         \\
     );
 }
@@ -330,6 +336,7 @@ fn isKnownCommandName(name: []const u8) bool {
         "edit",
         "review",
         "test-gen",
+        "cloud",
         "help",
     };
     for (commands) |command| {

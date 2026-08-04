@@ -137,7 +137,7 @@ pub const ForgeCloudProvider = struct {
         if (cancel_token.isCancelled()) return provider.ProviderError.Cancelled;
 
         // Build OpenAI-compatible request body:
-        // POST {proxy_url}/v1/chat/completions
+        // POST {proxy_url}
         // {
         //   "model": "<model_name>",
         //   "messages": [{ "role": "user", "content": "<prompt>" }],
@@ -156,10 +156,9 @@ pub const ForgeCloudProvider = struct {
         }) catch return provider.ProviderError.ProviderInternalError;
         defer allocator.free(payload);
 
-        // Build endpoint URL: {proxy_url}/v1/chat/completions
-        const endpoint = std.fmt.allocPrint(allocator, "{s}/v1/chat/completions", .{self.proxy_url}) catch
-            return provider.ProviderError.ProviderInternalError;
-        defer allocator.free(endpoint);
+        // Endpoint is the proxy_url itself (no /v1/chat/completions suffix).
+        // The backend Edge Function handles routing internally.
+        const endpoint = self.proxy_url;
 
         // Build auth header.
         const auth_header = std.fmt.allocPrint(allocator, "Bearer {s}", .{self.access_token}) catch
@@ -189,9 +188,9 @@ pub const ForgeCloudProvider = struct {
 
         return switch (result.status) {
             .ok => {
-                // Parse OpenAI-compatible response:
-                // { "choices": [{ "message": { "content": "..." } }], "usage": { ... } }
-                const text = parseOpenAIResponseText(allocator, body) catch return provider.ProviderError.MalformedResponse;
+                // Parse backend response:
+                // { "text": "...", "model": "...", "usage": { ... } }
+                const text = parseBackendResponseText(allocator, body) catch return provider.ProviderError.MalformedResponse;
                 defer allocator.free(text);
 
                 writer.writeAll(text) catch return provider.ProviderError.ProviderInternalError;
@@ -200,7 +199,7 @@ pub const ForgeCloudProvider = struct {
                     if (self.stream_context) |ctx| cb(ctx, text);
                 }
 
-                if (parseOpenAIResponseUsage(body)) |parsed_usage| {
+                if (parseBackendResponseUsage(body)) |parsed_usage| {
                     self.latest_usage = parsed_usage;
                 }
             },
@@ -318,26 +317,23 @@ pub const ForgeCloudProvider = struct {
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
-/// Parse the "choices[0].message.content" field from an OpenAI-compatible
-/// response JSON.
-fn parseOpenAIResponseText(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+/// Parse the "text" field from a backend LLM proxy response.
+/// Expected shape: { "text": "...", "model": "...", "usage": { ... } }
+fn parseBackendResponseText(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     const Parsed = struct {
-        choices: []struct {
-            message: struct {
-                content: []const u8,
-            },
-        },
+        text: []const u8,
+        model: []const u8 = "",
     };
     var parsed = std.json.parseFromSlice(Parsed, allocator, body, .{
         .ignore_unknown_fields = true,
     }) catch return error.MalformedResponse;
     defer parsed.deinit();
-    if (parsed.value.choices.len == 0) return error.MalformedResponse;
-    return allocator.dupe(u8, parsed.value.choices[0].message.content);
+    if (parsed.value.text.len == 0) return error.MalformedResponse;
+    return allocator.dupe(u8, parsed.value.text);
 }
 
-/// Parse the "usage" field from an OpenAI-compatible response JSON.
-fn parseOpenAIResponseUsage(body: []const u8) ?provider.TokenUsage {
+/// Parse the "usage" field from a backend LLM proxy response.
+fn parseBackendResponseUsage(body: []const u8) ?provider.TokenUsage {
     const Parsed = struct {
         usage: ?struct {
             prompt_tokens: usize = 0,

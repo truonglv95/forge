@@ -1387,64 +1387,33 @@ pub const Workbench = struct {
     }
 
     /// Fetch available models from the Forge Cloud backend proxy.
-    /// Calls GET {proxy_url}/v1/models with the user's JWT.
-    /// On success, populates agent_ui.models with the backend's model list.
+    /// Calls GET {project_url}/functions/v1/models with the user's JWT.
+    /// Uses the shared ai.cloud module so CLI and IDE parse the same
+    /// backend response format ({ "models": [...] }) consistently.
     pub fn fetchModelsFromBackend(self: *Workbench) !void {
         const token = self.auth_manager.getValidAccessToken() catch return;
-        const endpoint = try std.fmt.allocPrint(self.allocator, "{s}/v1/models", .{self.forge_cloud_proxy_url});
-        defer self.allocator.free(endpoint);
 
-        const auth_header = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{token});
-        defer self.allocator.free(auth_header);
-
-        const headers = [_]std.http.Header{
-            .{ .name = "Authorization", .value = auth_header },
+        const cloud_config = ai.cloud.CloudConfig{
+            .project_url = self.forge_cloud_url,
+            .anon_key = self.forge_cloud_anon_key,
         };
 
-        var response_alloc = std.Io.Writer.Allocating.init(self.allocator);
-        defer response_alloc.deinit();
+        var list = ai.cloud.fetchModels(self.allocator, self.io, cloud_config, token) catch return;
+        defer list.deinit();
 
-        var client = std.http.Client{ .allocator = self.allocator, .io = self.io };
-        defer client.deinit();
-
-        const result = client.fetch(.{
-            .location = .{ .url = endpoint },
-            .method = .GET,
-            .extra_headers = &headers,
-            .response_writer = &response_alloc.writer,
-        }) catch return;
-
-        if (result.status != .ok) return;
-
-        const body = response_alloc.writer.buffer[0..response_alloc.writer.end];
-        if (body.len == 0) return;
-
-        // Parse OpenAI-compatible response: { "data": [{ "id": "...", "label": "...", ... }] }
-        const Parsed = struct {
-            data: []struct {
-                id: []const u8,
-                label: ?[]const u8 = null,
-                provider: ?[]const u8 = null,
-            },
-        };
-        var parsed = std.json.parseFromSlice(Parsed, self.allocator, body, .{
-            .ignore_unknown_fields = true,
-        }) catch return;
-        defer parsed.deinit();
-
-        if (parsed.value.data.len == 0) return;
+        if (list.models.len == 0) return;
 
         // Free old model list.
         const composer = @import("ui/agent/agent_composer.zig");
         freeModelOptions(self.allocator, self.agent_ui.models);
 
         // Build new model list from backend response.
-        const models = try self.allocator.alloc(composer.ModelOption, parsed.value.data.len);
-        for (parsed.value.data, 0..) |m, i| {
+        const models = try self.allocator.alloc(composer.ModelOption, list.models.len);
+        for (list.models, 0..) |m, i| {
             models[i] = .{
                 .id = try self.allocator.dupe(u8, m.id),
-                .label = try self.allocator.dupe(u8, m.label orelse m.id),
-                .provider = try self.allocator.dupe(u8, m.provider orelse "forge_cloud"),
+                .label = try self.allocator.dupe(u8, m.label),
+                .provider = try self.allocator.dupe(u8, m.provider),
                 .base_url = null,
             };
         }

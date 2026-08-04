@@ -159,3 +159,6 @@ pub const model_capabilities = @import("model_capabilities.zig");
 pub const auth = @import("auth/supabase_auth.zig");
 pub const auth_token_store = @import("auth/token_store.zig");
 pub const auth_session = @import("auth/session.zig");
+
+// Cloud module — backend integration for model catalog and LLM proxy.
+pub const cloud = @import("cloud/root.zig");

@@ -1,0 +1,14 @@
+{
+  "name": "@forge-ai/cli-win32-x64",
+  "version": "0.1.0",
+  "description": "Forge CLI native binary for win32-x64",
+  "license": "UNLICENSED",
+  "author": "truonglv95",
+  "repository": { "type": "git", "url": "https://github.com/truonglv95/forge.git", "directory": "npm/forge-cli-win32-x64" },
+  "homepage": "https://github.com/truonglv95/forge",
+  "bugs": { "url": "https://github.com/truonglv95/forge/issues" },
+  "os": ["win32"], "cpu": ["x64"], "type": "commonjs",
+  "main": "./index.js",
+  "files": ["forge.exe", "index.js"],
+  "publishConfig": { "access": "public" }
+}
