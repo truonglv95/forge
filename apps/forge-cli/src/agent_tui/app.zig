@@ -432,14 +432,18 @@ pub const App = struct {
             const now = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
             self.mutex.lock();
             const busy = self.agent_busy;
-            // Keep busy rendering calm. Full transcript layout is expensive,
-            // so repainting too often makes streaming feel laggy.
-            if (busy and now - self.spinner_last_ms >= 200) {
+            // Keep busy rendering smooth. The diff-row renderer makes each
+            // frame cheap (only changed rows are emitted), so we can render
+            // at 20fps during streaming without CPU spike. Previous 200ms
+            // interval (5fps) made streaming output feel laggy.
+            if (busy and now - self.spinner_last_ms >= 120) {
                 self.spinner_frame +%= 1;
                 self.spinner_last_ms = now;
                 self.markDirty();
             }
-            const render_interval: i64 = if (busy) 200 else self.render_min_interval_ms;
+            // 50ms during busy (20fps) — smooth streaming without burning CPU.
+            // 16ms when idle (60fps cap) — responsive to keystrokes.
+            const render_interval: i64 = if (busy) 50 else self.render_min_interval_ms;
             const should_render = self.dirty and (now - self.last_render_ms >= render_interval or !busy);
             if (should_render) {
                 // Hide cursor before render to prevent flicker.
@@ -5660,7 +5664,17 @@ pub const App = struct {
         defer self.mutex.unlock();
         const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
         try self.lines.append(self.allocator, .{ .kind = kind, .text = text, .timestamp_ms = now_ms });
-        self.scroll = 0; // Phase 33: auto-scroll to bottom on new message
+        // Auto-scroll to bottom on new message ONLY if the user is already
+        // at the bottom (scroll == 0). If the user has scrolled up to read
+        // older output, don't yank them back down — just leave a marker.
+        // The render loop shows "^ N lines above" so they know new output
+        // arrived below. This matches the UX of every modern chat app.
+        if (self.scroll == 0) {
+            // Already following — stay at bottom.
+        } else {
+            // User is reading older output — keep their scroll position
+            // so they aren't disrupted by new streaming output.
+        }
         self.markDirty();
     }
 
