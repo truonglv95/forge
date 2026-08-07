@@ -48,19 +48,22 @@ pub fn inferPolicy(annotations_json: ?[]const u8) McpToolPolicy {
         .approval = .every_time,
     };
 
-    const Annotations = struct {
-        readOnly: ?bool = null,
-    };
-    var parsed = std.json.parseFromSlice(Annotations, std.heap.page_allocator, annotations_json.?, .{
-        .ignore_unknown_fields = true,
-    }) catch return .{
-        .capability = .unknown,
-        .risk = .high,
-        .approval = .every_time,
-    };
-    defer parsed.deinit();
+    // Fast path: scan for "readOnly":true without full JSON parse.
+    // The annotations object is small (1-3 fields) but called per-tool-call,
+    // so avoiding page_allocator here saves a 4KB page allocation each time.
+    // We look for the literal "readOnly" key followed by `:true`.
+    const ann = annotations_json.?;
+    var read_only = false;
+    if (std.mem.indexOf(u8, ann, "\"readOnly\"")) |idx| {
+        // Scan forward from the key to find the value.
+        var i = idx + "\"readOnly\"".len;
+        while (i < ann.len and (ann[i] == ' ' or ann[i] == ':' or ann[i] == '\t' or ann[i] == '\n' or ann[i] == '\r')) i += 1;
+        if (i + 4 <= ann.len and std.mem.eql(u8, ann[i .. i + 4], "true")) {
+            read_only = true;
+        }
+    }
 
-    if (parsed.value.readOnly orelse false) {
+    if (read_only) {
         return .{
             .capability = .read_only,
             .risk = .low,

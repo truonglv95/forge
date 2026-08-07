@@ -138,11 +138,13 @@ pub fn fromPrepareResponse(
 
 /// Build an OrchestratorPlan from native heuristic (no backend call).
 /// Used when forge_cloud is not configured or the backend is unreachable.
-pub fn fromHeuristic(intent_text: []const u8) !OrchestratorPlan {
+/// `allocator` is stored in the plan for later deinit — caller must keep
+/// it alive until plan.deinit().
+pub fn fromHeuristic(allocator: std.mem.Allocator, intent_text: []const u8) !OrchestratorPlan {
     const intent = intent_taxonomy.heuristicClassify(intent_text);
     const selected = tool_selector.selectForIntent(intent);
     return OrchestratorPlan{
-        .allocator = std.heap.page_allocator,
+        .allocator = allocator,
         .intent = intent,
         .confidence = 0.5, // heuristic confidence
         .profile = intent.defaultCapability(),
@@ -170,7 +172,7 @@ pub fn summarize(plan: OrchestratorPlan, buf: []u8) ![]const u8 {
 // ─── Tests ─────────────────────────────────────────────────────────────
 
 test "fromHeuristic produces a valid plan" {
-    var plan = try fromHeuristic("rename getUser to fetchUser");
+    var plan = try fromHeuristic(std.testing.allocator, "rename getUser to fetchUser");
     _ = &plan;
     defer plan.deinit();
     try std.testing.expectEqual(intent_taxonomy.Intent.refactor, plan.intent);
@@ -181,7 +183,7 @@ test "fromHeuristic produces a valid plan" {
 }
 
 test "fromHeuristic: answer question gets read-only profile" {
-    var plan = try fromHeuristic("explain what this function does");
+    var plan = try fromHeuristic(std.testing.allocator, "explain what this function does");
     _ = &plan;
     defer plan.deinit();
     try std.testing.expectEqual(intent_taxonomy.Intent.answer_question, plan.intent);
@@ -279,7 +281,7 @@ test "fromPrepareResponse: unknown intent falls back to edit_code" {
 }
 
 test "summarize produces readable string" {
-    var plan = try fromHeuristic("fix the bug");
+    var plan = try fromHeuristic(std.testing.allocator, "fix the bug");
     _ = &plan;
     defer plan.deinit();
     var buf: [256]u8 = undefined;

@@ -2,7 +2,11 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ZIG_BIN="${ZIG_BIN:-zig}"
-OPTIMIZE="${OPTIMIZE:-ReleaseSafe}"
+# ReleaseFast for distribution: smallest binary + best runtime performance.
+# Debug binaries are 100MB+ (unoptimized, full debug info); ReleaseFast
+# strips debug info + inlines + optimizes hot loops → ~10-15MB stripped.
+# This is what ships in the npm package.
+OPTIMIZE="${OPTIMIZE:-ReleaseFast}"
 WITH_GLX_FLAG=""
 if [[ "${WITH_GLX:-true}" == "false" ]]; then
   WITH_GLX_FLAG="-Dwith-glx=false"
@@ -40,5 +44,13 @@ fi
 DEST="${PKG_DIR}/${BIN_NAME}"
 cp "${SRC}" "${DEST}"
 chmod +x "${DEST}"
+# Strip debug symbols to minimize install size. On macOS, `strip -x`
+# removes local symbols but keeps the binary loadable. On Linux, `strip`
+# removes all debug info. This typically cuts binary size by 60-80%.
+if [[ "${OS_NORM}" == "darwin" ]]; then
+  strip -x "${DEST}" 2>/dev/null || true
+elif [[ "${OS_NORM}" == "linux" ]]; then
+  strip "${DEST}" 2>/dev/null || true
+fi
 echo "==> Copied binary to npm/forge-cli-${OS_NORM}-${ARCH_NORM}/${BIN_NAME}"
 ls -lh "${DEST}"
