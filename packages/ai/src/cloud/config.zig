@@ -25,6 +25,12 @@ pub const CloudConfig = struct {
     pub fn usageUrl(self: CloudConfig, allocator: std.mem.Allocator) ![]u8 {
         return std.fmt.allocPrint(allocator, "{s}/functions/v1/usage", .{self.project_url});
     }
+
+    /// Agent prepare endpoint: {project_url}/functions/v1/agent-prepare
+    /// Called BEFORE the main LLM call to get a multi-step plan + tool suggestions.
+    pub fn agentPrepareUrl(self: CloudConfig, allocator: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(allocator, "{s}/functions/v1/agent-prepare", .{self.project_url});
+    }
 };
 
 pub fn resolve(allocator: ?std.mem.Allocator) CloudConfig {

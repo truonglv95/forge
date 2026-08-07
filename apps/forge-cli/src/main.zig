@@ -217,7 +217,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  models     List AI models or query routing (list|capability|route) (RFC-0016)
         \\  chat       Interactive chat REPL with @mentions and slash commands (RFC-0017)
         \\  edit       Composer-style multi-file inline edit (RFC-0013 Composer)
-        \\  cloud      Forge Cloud login/logout/status/models (server-managed model catalog)
+        \\  cloud      Forge Cloud login/logout/status/models/prepare (server-managed model catalog + agent planning)
         \\  help       Show this help
         \\
         \\Options:

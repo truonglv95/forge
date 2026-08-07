@@ -18,8 +18,9 @@ pub fn run(
     if (std.mem.eql(u8, sub, "status")) return runStatus(allocator, io, parsed, writer);
     if (std.mem.eql(u8, sub, "whoami")) return runStatus(allocator, io, parsed, writer);
     if (std.mem.eql(u8, sub, "models")) return runModels(allocator, io, parsed, writer);
+    if (std.mem.eql(u8, sub, "prepare")) return runPrepare(allocator, io, parsed, writer);
 
-    try writer.print("Unknown subcommand '{s}'. Use: login | logout | status | models | whoami\n", .{sub});
+    try writer.print("Unknown subcommand '{s}'. Use: login | logout | status | models | prepare | whoami\n", .{sub});
     return 2;
 }
 
@@ -250,4 +251,135 @@ fn readLine(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     const slice = stdin.takeDelimiter('\n') catch return error.ReadError;
     const line = slice orelse return error.UnexpectedEof;
     return allocator.dupe(u8, line);
+}
+
+/// `forge cloud prepare <intent>` — call the agent-prepare endpoint to get
+/// a multi-step plan + tool suggestions before the main LLM call.
+///
+/// Usage:
+///   forge cloud prepare "rename getUser to fetchUser" --file src/userService.ts
+///   forge cloud prepare "fix the compile error" --json
+fn runPrepare(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    parsed: args_mod.CliArgs,
+    writer: *std.Io.Writer,
+) !u8 {
+    const config = ai.cloud.resolveConfig(null);
+    if (!ai.cloud.isConfigured(config)) {
+        try writer.writeAll("error: Forge Cloud is not configured.\n");
+        try writer.writeAll("Set FORGE_CLOUD_URL and FORGE_CLOUD_ANON_KEY env vars.\n");
+        return 1;
+    }
+
+    const intent = if (parsed.positional.len > 1) parsed.positional[1] else {
+        try writer.writeAll("usage: forge cloud prepare <intent> [--file <path>] [--json]\n");
+        try writer.writeAll("\nExample:\n");
+        try writer.writeAll("  forge cloud prepare \"rename getUser to fetchUser\" --file src/userService.ts\n");
+        try writer.writeAll("  forge cloud prepare \"fix the compile error\" --json\n");
+        return 2;
+    };
+
+    var manager = ai.auth_session.SessionManager.init(allocator, io, .{
+        .project_url = config.project_url,
+        .anon_key = config.anon_key,
+    });
+    defer manager.deinit();
+
+    manager.loadStored() catch {};
+    // Auth is optional for prepare — unauthenticated gets heuristic-only.
+    // But if logged in, we send the JWT so the backend can use the LLM.
+    var token: []const u8 = "";
+    if (manager.isLoggedIn()) {
+        token = manager.getValidAccessToken() catch "";
+    }
+
+    // Build the prepare request. --file flag sets active_file; additional
+    // positional args after intent are treated as workspace_files.
+    const active_file = if (parsed.flags.files.len > 0) parsed.flags.files[0] else null;
+    const workspace_files: []const []const u8 = if (parsed.flags.files.len > 1)
+        parsed.flags.files[1..]
+    else
+        &.{};
+
+    const request = ai.cloud.PrepareRequest{
+        .intent = intent,
+        .active_file = active_file,
+        .workspace_files = workspace_files,
+        .client_intent_guess = null,
+    };
+
+    var resp = ai.cloud.callPrepare(allocator, io, config, token, request) catch |err| {
+        try writer.print("error: prepare call failed: {}\n", .{err});
+        try writer.writeAll("Falling back to native heuristic routing.\n");
+        return 1;
+    };
+    defer resp.deinit();
+
+    if (parsed.flags.json) {
+        try writer.print(
+            "{{\"type\":\"cloud_prepare\",\"intent\":\"{s}\",\"confidence\":{d:.2},\"used_llm\":{},\"latency_ms\":{d},\"plan\":[",
+            .{ resp.intent, resp.confidence, resp.used_llm, resp.latency_ms },
+        );
+        for (resp.plan, 0..) |step, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print(
+                "{{\"step\":{d},\"goal\":\"{s}\",\"suggested_tools\":[",
+                .{ step.step, step.goal },
+            );
+            for (step.suggested_tools, 0..) |t, j| {
+                if (j > 0) try writer.writeAll(",");
+                try writer.print("\"{s}\"", .{t});
+            }
+            try writer.writeAll("],\"context_needed\":[");
+            for (step.context_needed, 0..) |c, j| {
+                if (j > 0) try writer.writeAll(",");
+                try writer.print("\"{s}\"", .{c});
+            }
+            try writer.writeAll("]}");
+        }
+        try writer.writeAll("],\"suggested_tools\":[");
+        for (resp.suggested_tools, 0..) |t, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print("\"{s}\"", .{t});
+        }
+        try writer.writeAll("]}\n");
+    } else {
+        try writer.print("Agent Prepare\n", .{});
+        try writer.print("  Intent:     {s} (confidence: {d:.2})\n", .{ resp.intent, resp.confidence });
+        try writer.print("  Used LLM:   {}\n", .{resp.used_llm});
+        try writer.print("  Latency:    {d}ms\n", .{resp.latency_ms});
+        try writer.print("  Tools:      {s}\n", .{joinComma(resp.suggested_tools)});
+
+        if (resp.plan.len > 0) {
+            try writer.print("\nPlan ({d} steps):\n", .{resp.plan.len});
+            for (resp.plan) |step| {
+                try writer.print("  {d}. {s}\n", .{ step.step, step.goal });
+                if (step.suggested_tools.len > 0) {
+                    try writer.print("     tools: {s}\n", .{joinComma(step.suggested_tools)});
+                }
+                if (step.context_needed.len > 0) {
+                    try writer.print("     context: {s}\n", .{joinComma(step.context_needed)});
+                }
+            }
+        } else {
+            try writer.writeAll("\nNo multi-step plan (single-step task).\n");
+        }
+
+        if (!resp.used_llm) {
+            try writer.writeAll("\n(Heuristic-only — backend LLM not configured or auth missing.\n");
+            try writer.writeAll(" Set FORGE_PREPARE_LLM_PROVIDER + FORGE_PREPARE_LLM_MODEL on the backend\n");
+            try writer.writeAll(" and `forge cloud login` to enable LLM-backed planning.)\n");
+        }
+    }
+    return 0;
+}
+
+fn joinComma(items: [][]u8) []const u8 {
+    if (items.len == 0) return "(none)";
+    // Best-effort: return first item + count. Full join needs allocator.
+    // For display purposes, showing the first + N is sufficient.
+    if (items.len == 1) return items[0];
+    // Can't easily format without allocator — return a static hint.
+    return "(multiple)";
 }

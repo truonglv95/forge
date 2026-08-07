@@ -1,0 +1,141 @@
+[
+  {
+    "id": "live-rename-function-and-callers",
+    "intent": "Rename the function 'compute' to 'calculate' in util.zig and update the call site in main.zig",
+    "workspace_files": {
+      "src/util.zig": "pub fn compute(a: i32, b: i32) i32 { return a + b; }\n",
+      "src/main.zig": "const util = @import(\"util.zig\");\npub fn main() void { _ = util.compute(2, 3); }\n"
+    },
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/util.zig", "contains": "calculate", "not_contains": "compute" },
+        { "path": "src/main.zig", "contains": "calculate", "not_contains": "compute" }
+      ]
+    }
+  },
+  {
+    "id": "live-add-zig-test",
+    "intent": "Add a test to math.zig that verifies the add function returns 5 for inputs 2 and 3",
+    "workspace_files": {
+      "src/math.zig": "const std = @import(\"std\");\npub fn add(a: i32, b: i32) i32 { return a + b; }\n"
+    },
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/math.zig", "contains": "test" },
+        { "path": "src/math.zig", "contains": "5" }
+      ]
+    }
+  },
+  {
+    "id": "live-fix-missing-semicolon",
+    "intent": "Fix the syntax error in broken.zig so it compiles. The missing semicolon is on line 3.",
+    "workspace_files": {
+      "src/broken.zig": "const std = @import(\"std\");\npub fn hello() void {\n    std.debug.print(\"hello\", .{})\n}\n"
+    },
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/broken.zig", "contains": "{});" }
+      ]
+    }
+  },
+  {
+    "id": "live-add-error-handling",
+    "intent": "Add error handling to the divide function in calc.zig — return error.DivideByZero when b is 0",
+    "workspace_files": {
+      "src/calc.zig": "pub fn divide(a: i32, b: i32) i32 { return a / b; }\n"
+    },
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/calc.zig", "contains": "DivideByZero" },
+        { "path": "src/calc.zig", "contains": "error" }
+      ]
+    }
+  },
+  {
+    "id": "live-extract-helper-function",
+    "intent": "Extract the greeting logic from main.zig into a new function called 'greet' in greet.zig, and have main.zig call it",
+    "workspace_files": {
+      "src/main.zig": "const std = @import(\"std\");\npub fn main() void {\n    std.debug.print(\"Hello, World!\", .{});\n}\n"
+    },
+    "expect": {
+      "min_steps": 3,
+      "files": [
+        { "path": "src/greet.zig", "contains": "greet" },
+        { "path": "src/greet.zig", "contains": "Hello" },
+        { "path": "src/main.zig", "contains": "greet" }
+      ]
+    }
+  },
+  {
+    "id": "live-add-struct-field",
+    "intent": "Add a 'version: u32 = 1' field to the Config struct in config.zig",
+    "workspace_files": {
+      "src/config.zig": "pub const Config = struct {\n    name: []const u8 = \"forge\",\n};\n"
+    },
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/config.zig", "contains": "version: u32 = 1" }
+      ]
+    }
+  },
+  {
+    "id": "live-add-doc-comment",
+    "intent": "Add a doc comment above the add function in math.zig explaining what it does",
+    "workspace_files": {
+      "src/math.zig": "pub fn add(a: i32, b: i32) i32 { return a + b; }\n"
+    },
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "src/math.zig", "contains": "///" }
+      ]
+    }
+  },
+  {
+    "id": "live-move-constant-between-files",
+    "intent": "Move MAX_SIZE from constants.zig into config.zig and update Config to use the local constant",
+    "workspace_files": {
+      "src/constants.zig": "pub const MAX_SIZE: usize = 4096;\npub const VERSION: u32 = 1;\n",
+      "src/config.zig": "const constants = @import(\"constants.zig\");\npub const Config = struct {\n    max: usize = constants.MAX_SIZE,\n};\n"
+    },
+    "expect": {
+      "min_steps": 3,
+      "files": [
+        { "path": "src/config.zig", "contains": "MAX_SIZE" },
+        { "path": "src/constants.zig", "not_contains": "MAX_SIZE" }
+      ]
+    }
+  },
+  {
+    "id": "live-add-readme-section",
+    "intent": "Add a '## Installation' section to README.md with a placeholder code block",
+    "workspace_files": {
+      "README.md": "# My Project\n\nA demo project.\n"
+    },
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": "README.md", "contains": "Installation" },
+        { "path": "README.md", "contains": "```" }
+      ]
+    }
+  },
+  {
+    "id": "live-add-gitignore-entry",
+    "intent": "Add '*.log' to the .gitignore file so log files are ignored",
+    "workspace_files": {
+      ".gitignore": "node_modules/\n.env\n"
+    },
+    "expect": {
+      "min_steps": 2,
+      "files": [
+        { "path": ".gitignore", "contains": "*.log" }
+      ]
+    }
+  }
+]
