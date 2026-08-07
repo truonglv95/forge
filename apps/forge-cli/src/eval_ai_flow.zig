@@ -1027,8 +1027,25 @@ fn avgU8(records: []const Record, comptime field: []const u8) f64 {
 
 fn percentile(values: []const f64, fraction: f64) f64 {
     if (values.len == 0) return 0;
-    const tmp = std.heap.page_allocator.alloc(f64, values.len) catch return values[0];
-    defer std.heap.page_allocator.free(tmp);
+    // Stack buffer for sort — eval datasets are small (5-30 values typical,
+    // 256 max). Avoids page_allocator (4KB page alloc per call) on the
+    // eval summary hot path.
+    var stack_buf: [256]f64 = undefined;
+    if (values.len > stack_buf.len) {
+        // Fallback for unusually large datasets.
+        const tmp = std.heap.page_allocator.alloc(f64, values.len) catch return values[0];
+        defer std.heap.page_allocator.free(tmp);
+        @memcpy(tmp, values);
+        std.mem.sort(f64, tmp, {}, comptime std.sort.asc(f64));
+        const n: f64 = @floatFromInt(values.len);
+        const raw_pos = @ceil(n * fraction) - 1.0;
+        var idx_i64: i64 = @intFromFloat(raw_pos);
+        if (idx_i64 < 0) idx_i64 = 0;
+        var idx: usize = @intCast(idx_i64);
+        if (idx >= values.len) idx = values.len - 1;
+        return tmp[idx];
+    }
+    const tmp = stack_buf[0..values.len];
     @memcpy(tmp, values);
     std.mem.sort(f64, tmp, {}, comptime std.sort.asc(f64));
     const n: f64 = @floatFromInt(values.len);
@@ -1042,8 +1059,22 @@ fn percentile(values: []const f64, fraction: f64) f64 {
 
 fn percentileUsize(values: []const usize, fraction: f64) f64 {
     if (values.len == 0) return 0;
-    const tmp = std.heap.page_allocator.alloc(usize, values.len) catch return @floatFromInt(values[0]);
-    defer std.heap.page_allocator.free(tmp);
+    // Stack buffer — same rationale as percentile().
+    var stack_buf: [256]usize = undefined;
+    if (values.len > stack_buf.len) {
+        const tmp = std.heap.page_allocator.alloc(usize, values.len) catch return @floatFromInt(values[0]);
+        defer std.heap.page_allocator.free(tmp);
+        @memcpy(tmp, values);
+        std.mem.sort(usize, tmp, {}, comptime std.sort.asc(usize));
+        const n: f64 = @floatFromInt(values.len);
+        const raw_pos = @ceil(n * fraction) - 1.0;
+        var idx_i64: i64 = @intFromFloat(raw_pos);
+        if (idx_i64 < 0) idx_i64 = 0;
+        var idx: usize = @intCast(idx_i64);
+        if (idx >= values.len) idx = values.len - 1;
+        return @floatFromInt(tmp[idx]);
+    }
+    const tmp = stack_buf[0..values.len];
     @memcpy(tmp, values);
     std.mem.sort(usize, tmp, {}, comptime std.sort.asc(usize));
     const n: f64 = @floatFromInt(values.len);

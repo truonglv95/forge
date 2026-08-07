@@ -107,23 +107,31 @@ fn maxNestingDepth(code: []const u8) usize {
 }
 
 fn detectRepeatedPatterns(code: []const u8) usize {
-    // Simple heuristic: count duplicate 3-line sequences
+    // Simple heuristic: count duplicate 3-line sequences.
+    // Use a fixed-size stack buffer instead of page_allocator — this function
+    // is called during code analysis and the input is bounded by file size.
+    // Stack alloc avoids 4KB page allocation per call.
     var lines = std.mem.splitScalar(u8, code, '\n');
-    var line_list: std.ArrayList([]const u8) = .empty;
-    defer line_list.deinit(std.heap.page_allocator);
+    // Cap at 4096 lines — files larger than this are rare and the heuristic
+    // only needs the first chunk to detect repetition.
+    var line_buf: [4096][]const u8 = undefined;
+    var line_count: usize = 0;
     while (lines.next()) |line| {
-        line_list.append(std.heap.page_allocator, std.mem.trim(u8, line, " \t")) catch {};
+        if (line_count >= line_buf.len) break;
+        line_buf[line_count] = std.mem.trim(u8, line, " \t");
+        line_count += 1;
     }
+    const line_list = line_buf[0..line_count];
 
-    if (line_list.items.len < 6) return 0;
+    if (line_list.len < 6) return 0;
 
     var repeated: usize = 0;
     var i: usize = 0;
-    while (i + 3 < line_list.items.len) : (i += 1) {
-        const seq = line_list.items[i .. i + 3];
+    while (i + 3 < line_list.len) : (i += 1) {
+        const seq = line_list[i .. i + 3];
         var j: usize = i + 3;
-        while (j + 3 < line_list.items.len) : (j += 1) {
-            const other = line_list.items[j .. j + 3];
+        while (j + 3 < line_list.len) : (j += 1) {
+            const other = line_list[j .. j + 3];
             if (seq.len == other.len and
                 std.mem.eql(u8, seq[0], other[0]) and
                 std.mem.eql(u8, seq[1], other[1]) and

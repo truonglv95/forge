@@ -377,11 +377,16 @@ fn readStatusAbs(io: std.Io, session_dir: []const u8, run_id: []const u8) SpecEr
 fn readStatusStringAbs(io: std.Io, session_dir: []const u8, run_id: []const u8) SpecError![]const u8 {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const status_abs = std.fmt.bufPrint(&path_buf, "{s}/{s}/{s}/status.json", .{ session_dir, specs_subdir, run_id }) catch return error.WorkspaceFailed;
-    const content = workspace.global_store.readAbsoluteFile(std.heap.page_allocator, io, status_abs) catch return error.WorkspaceFailed;
-    defer std.heap.page_allocator.free(content);
+    // Use an arena for both file content + JSON parse — single allocation
+    // instead of two page_allocator calls. Arena is faster (bump allocator)
+    // and freed in one defer.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+    const content = workspace.global_store.readAbsoluteFile(arena_alloc, io, status_abs) catch return error.WorkspaceFailed;
     const Json = struct { status: ?[]const u8 = null };
-    var parsed = std.json.parseFromSlice(Json, std.heap.page_allocator, content, .{ .ignore_unknown_fields = true }) catch return error.WorkspaceFailed;
-    defer parsed.deinit();
+    const parsed = std.json.parseFromSlice(Json, arena_alloc, content, .{ .ignore_unknown_fields = true }) catch return error.WorkspaceFailed;
+    // parsed.deinit() not needed — arena owns everything.
     const status = parsed.value.status orelse "pending";
     const Static = struct {
         var buf: [32]u8 = undefined;

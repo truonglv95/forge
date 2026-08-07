@@ -213,6 +213,10 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    // Strip debug symbols in Release builds to minimize binary size.
+    // Debug builds keep symbols for better stack traces during development.
+    // ReleaseFast+strip typically cuts binary size by 60-80% (100MB → 10-15MB).
+    cli.root_module.strip = optimize != .Debug;
     b.installArtifact(cli);
 
     const run_cmd = b.addRunArtifact(cli);
