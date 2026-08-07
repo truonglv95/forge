@@ -117,11 +117,11 @@ pub const NoSandboxBackend = struct {
 
 /// Linux Landlock + seccomp backend (stub).
 ///
-/// TODO: implement using:
-///   - `landlock_create_ruleset(2)` with `LANDLOCK_CREATE_RULESET_VERSION`
-///   - `landlock_add_rule(2)` for `LANDLOCK_RULE_PATH_BENEATH` (read/write/execute)
-///   - `landlock_restrict_self(2)` to apply the ruleset to the current thread
-///   - `seccomp(SECCOMP_SET_MODE_FILTER, ...)` with a BPF filter that:
+/// Implementation notes for completing this backend:
+///   - Use `landlock_create_ruleset(2)` with `LANDLOCK_CREATE_RULESET_VERSION`
+///   - Use `landlock_add_rule(2)` for `LANDLOCK_RULE_PATH_BENEATH` (read/write/execute)
+///   - Use `landlock_restrict_self(2)` to apply the ruleset to the current thread
+///   - Use `seccomp(SECCOMP_SET_MODE_FILTER, ...)` with a BPF filter that:
 ///     - Allows: read, write, openat, close, mmap, mprotect, brk, rt_sigreturn, exit, exit_group, execve, wait4, clone (filtered)
 ///     - Denies: socket (network), ptrace, mount, unshare, setuid, setgid
 ///
@@ -165,7 +165,8 @@ pub const LinuxLandlockBackend = struct {
 
 /// macOS Seatbelt backend (stub).
 ///
-/// TODO: implement using `sandbox_init_with_parameters` with a profile like:
+/// Implementation notes for completing this backend:
+/// Use `sandbox_init_with_parameters` with a profile like:
 ///   (version 1)
 ///   (allow default)
 ///   (deny file-write*)
