@@ -79,6 +79,15 @@ pub fn tickCaretBlink(now_ms: i64) bool {
 // overhead. Reset (not deinit) at frame start for O(1) cleanup.
 pub var frame_arena: ?std.heap.ArenaAllocator = null;
 pub var frame_arena_inited: bool = false;
+/// Peak frame arena usage in bytes (high-water mark across the session).
+/// Used to tune the arena's retained capacity so we don't over-allocate
+/// or trigger expensive grows mid-frame. Logged in the perf overlay.
+pub var frame_arena_peak_bytes: usize = 0;
+/// Frame arena usage at the end of the previous frame. Updated by
+/// onRenderFrame after all panels have drawn. When this grows slowly
+/// across frames (e.g. user scrolls a large file), the arena's backing
+/// buffer is already sized correctly — no realloc needed.
+pub var frame_arena_last_bytes: usize = 0;
 
 // Dirty region tracking — marks which panels need redraw.
 // When a panel is dirty, only that panel is redrawn; other panels

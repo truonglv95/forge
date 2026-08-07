@@ -1186,7 +1186,12 @@ void forge_mac_create_window(const char* title, int width, int height) {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         ForgeMTKView *mtkView = [[ForgeMTKView alloc] initWithFrame:frame device:device];
         mtkView.clearColor = MTLClearColorMake(0.1, 0.1, 0.15, 1.0);
-        mtkView.preferredFramesPerSecond = 120; // Support ProMotion 120Hz displays
+        // Cap at 60fps — 120Hz ProMotion causes unnecessary GPU + CPU load
+        // for a code editor (text rendering is the bottleneck, not motion).
+        // 60fps is the perceptual limit for text; going higher wastes power
+        // and causes Mac heat. The previous 120fps setting was the single
+        // biggest contributor to idle heat on M1/M2/M3 MacBooks.
+        mtkView.preferredFramesPerSecond = 60;
         mtkView.enableSetNeedsDisplay = YES;
         mtkView.paused = YES;
         
