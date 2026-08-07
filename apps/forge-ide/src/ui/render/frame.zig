@@ -36,17 +36,15 @@ fn needsContinuousRendering(wb: anytype) bool {
         wb.agent_ui.session.unlock();
         if (live) return true;
     }
-    // Caret blink — when the editor (or any text input) has focus, run
-    // continuously so the caret blinks at 1.06s period. Without this,
-    // the X11 event loop blocks on XNextEvent when idle and the caret
-    // freezes between keystrokes.
+    // NOTE: Caret blink previously forced continuous 60fps rendering whenever
+    // the editor had focus — this caused ~30-60% CPU usage + Mac heat issues
+    // even when idle. The caret now blinks via a low-frequency timer that
+    // only requests a redraw when the blink state actually flips (see
+    // state.caret_blink_tick in onRenderFrame). When the editor is focused
+    // but nothing is happening, the render loop sleeps in XNextEvent /
+    // NSApp.run and CPU drops to ~0%.
     //
-    // Cost analysis: 60fps × 5-12ms/frame = ~30-60% CPU on a single core
-    // at 1080p. This is the same tradeoff VSCode/Sublime make — modern
-    // IDEs run their compositor continuously while focused.
-    if (wb.focused_panel == .editor or wb.focused_panel == .agent or wb.focused_panel == .palette) {
-        return true;
-    }
+    // If you re-enable this, also restore the 60fps comment below.
     return false;
 }
 
@@ -253,9 +251,22 @@ pub fn onRenderFrame() void {
         renderer.Renderer.setContinuousRendering(continuous);
     }
 
-    // Update caret blink scheduler — `setEditorFocused` is a no-op when
-    // the state hasn't changed, so calling it every frame is cheap.
-    state.setEditorFocused(continuous);
+    // Caret blink — when the editor (or any text input) has focus, the
+    // caret should blink at ~1.06s period. Previously this forced continuous
+    // 60fps rendering (heat issue). Now we tick the blink scheduler from
+    // the render loop: if the blink state flipped, request another redraw
+    // to show the new state. When idle (no keystrokes, no streaming), the
+    // render loop sleeps and CPU drops to ~0%.
+    const editor_focused = wb.focused_panel == .editor or wb.focused_panel == .agent or wb.focused_panel == .palette;
+    state.setEditorFocused(editor_focused);
+    if (editor_focused) {
+        const now_ms = std.Io.Timestamp.now(wb.io, .real).toMilliseconds();
+        if (state.tickCaretBlink(now_ms)) {
+            // Blink flipped — request a redraw to show the new caret state.
+            // This re-arms the blink cycle without continuous 60fps.
+            renderer.Renderer.requestRedraw();
+        }
+    }
 
     // Frame timing — log slow frames (>16ms = dropped 60fps frame)
     const frame_duration = frame_end_ms - frame_start_ms;

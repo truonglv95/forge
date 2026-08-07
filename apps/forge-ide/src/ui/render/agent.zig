@@ -250,11 +250,11 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
                     wb,
                     wb.agent_ui.chat_history.items.len,
                 );
-                // Live streaming cursor indicator — blinking caret at the
-                // end of the streaming text to show the agent is still typing.
-                // Matches Cursor's live typing indicator.
-                const blink_phase = @mod(state.time, 1.0);
-                if (blink_phase < 0.5 and snap.phase == .streaming) {
+                // Live streaming cursor indicator — caret at the end of the
+                // streaming text to show the agent is still typing. Uses
+                // caret_blink_visible (ticked by render loop) — during streaming,
+                // the agent panel forces continuous rendering so this blinks.
+                if (state.caret_blink_visible and snap.phase == .streaming) {
                     const cursor_x = inner_x + 4;
                     const cursor_y = content_y - chat_bubble.bubble_gap - 4;
                     renderer.Renderer.drawRect(cursor_x, cursor_y, 2, 14, .{ .r = 0.4, .g = 0.7, .b = 1.0, .a = 0.8 });
@@ -396,7 +396,7 @@ pub fn drawAgentPanel(wb: *Workbench, agent_x: f32, agent_w: f32, h: f32) void {
         tokens.color.surface,
     );
 
-    const show_prompt_cursor = @mod(state.time, 1.0) < 0.5 and wb.focused_panel == .agent;
+    const show_prompt_cursor = state.caret_blink_visible and wb.focused_panel == .agent;
     agent_composer.draw(
         &wb.agent_ui.session,
         composer_layout,

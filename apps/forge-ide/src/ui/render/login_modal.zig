@@ -50,8 +50,7 @@ pub fn drawLoginModal(wb: *Workbench, w: f32, h: f32) void {
     // Cursor on email field if focused — use measureText for accurate position.
     if (wb.login_focused_field == 0) {
         const cursor_x = box_x + 34 + email_text_w;
-        const blink = @mod(state.time, 1.0) < 0.5;
-        if (blink) {
+        if (state.caret_blink_visible) {
             renderer.Renderer.drawRect(cursor_x, box_y + 114, 2, 20, .{ .r = 0.4, .g = 0.7, .b = 1.0, .a = 0.8 });
         }
     }
@@ -76,8 +75,7 @@ pub fn drawLoginModal(wb: *Workbench, w: f32, h: f32) void {
     }
     if (wb.login_focused_field == 1) {
         const cursor_x = box_x + 34 + pass_display_w;
-        const blink = @mod(state.time, 1.0) < 0.5;
-        if (blink) {
+        if (state.caret_blink_visible) {
             renderer.Renderer.drawRect(cursor_x, box_y + 182, 2, 20, .{ .r = 0.4, .g = 0.7, .b = 1.0, .a = 0.8 });
         }
     }

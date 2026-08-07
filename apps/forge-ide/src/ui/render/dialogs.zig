@@ -75,9 +75,8 @@ pub fn drawPalette(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f32
     renderer.Renderer.drawSvg(renderer.forge_icons.search, box_x + 18, box_y + 42, 16, 16, accent);
     renderer.Renderer.drawText(@ptrCast(&query_buf), box_x + 42, box_y + 43, 14.0, text_primary);
 
-    // Blinking cursor indicator (uses the same 1.06s blink cycle as the editor)
-    const blink_phase = @mod(@import("../core/state.zig").time, 1.06);
-    if (blink_phase < 0.53) {
+    // Blinking cursor indicator (uses caret_blink_visible from render loop)
+    if (@import("../core/state.zig").caret_blink_visible) {
         renderer.Renderer.drawRect(box_x + 42 + @as(f32, @floatFromInt(wb.palette.query_len)) * 8, box_y + 42, 1, 16, accent);
     }
 
@@ -321,8 +320,7 @@ pub fn drawQuickOpen(wb: *@import("../../workbench.zig").Workbench, w: f32, h: f
     renderer.Renderer.drawText(@ptrCast(&query_buf), box_x + 42, box_y + 43, 14.0, syntax.color(wb.theme.colors.text_primary));
 
     // Blinking cursor
-    const blink_phase = @mod(@import("../core/state.zig").time, 1.06);
-    if (blink_phase < 0.53) {
+    if (@import("../core/state.zig").caret_blink_visible) {
         renderer.Renderer.drawRect(box_x + 42 + @as(f32, @floatFromInt(wb.quick_open_query_len)) * 8, box_y + 42, 1, 16, accent);
     }
 

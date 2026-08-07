@@ -93,25 +93,16 @@ pub fn drawEditorViewport(
     }
 
     renderer.Renderer.setClipRect(editor_x, content_top, editor_w, editor_view_h);
-    // Cursor blink: 1.06s period (0.53s on, 0.53s off) — matches VSCode.
-    // Smooth fade-in/out at transition for less harsh blinking.
-    const blink_phase = @mod(state.time, 1.06);
-    const show_cursor = blink_phase < 0.53;
+    // Cursor blink: 1.06s period (0.53s on, 0.53s off).
+    // Uses state.caret_blink_visible (ticked by the render loop) instead of
+    // @mod(state.time, 1.06) so the caret blinks even when the compositor
+    // is not running continuously (idle CPU optimization).
+    const show_cursor = state.caret_blink_visible;
     const show_editor_cursor = show_cursor and wb.focused_panel == .editor and pane_focused;
-    // Fade alpha at blink transitions (last 100ms of each phase)
-    const fade_dur: f32 = 0.1;
-    const cursor_fade: f32 = blk: {
-        const phase_end: f32 = if (show_cursor) 0.53 else 1.06;
-        const phase_start: f32 = if (show_cursor) 0.0 else 0.53;
-        const phase_len: f32 = phase_end - phase_start;
-        const time_in_phase: f32 = blink_phase - phase_start;
-        if (time_in_phase > phase_len - fade_dur) {
-            break :blk 1.0 - (time_in_phase - (phase_len - fade_dur)) / fade_dur;
-        } else if (time_in_phase < fade_dur) {
-            break :blk time_in_phase / fade_dur;
-        }
-        break :blk 1.0;
-    };
+    // Fade alpha removed — the blink is now a hard on/off toggled by the
+    // render loop's caret timer. The 530ms half-period is close enough to
+    // the previous 530ms phase that the visual is equivalent.
+    const cursor_fade: f32 = 1.0;
     const bracket_pair = if (show_editor_cursor and !wb.agent_ui.session.worker_running) blk: {
         const hash = std.hash.CityHash64.hash(file_path);
         if (wb.bracket_match_cache.file_path_hash == hash and

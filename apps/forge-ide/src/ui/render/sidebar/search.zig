@@ -36,7 +36,7 @@ pub fn drawSearchPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void 
     const query_y = search_panel.query_top;
     renderer.Renderer.drawRoundedRect(panel_x + 12, query_y, panel_w - 24, search_panel.query_box_h, 5, input_border);
     renderer.Renderer.drawRoundedRect(panel_x + 13, query_y + 1, panel_w - 26, search_panel.query_box_h - 2, 5, input_bg);
-    const show_cursor = @mod(state.time, 1.0) < 0.5;
+    const show_cursor = @import("../../core/state.zig").caret_blink_visible;
     const query_str = wb.search_buffer.toDisplayString(show_cursor and wb.focused_panel == .search) catch return;
     defer state.gpa.free(query_str);
     renderer.Renderer.pushClipRect(panel_x + 20, query_y + 4, @max(0, panel_w - 126), search_panel.query_box_h - 8);

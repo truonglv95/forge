@@ -190,7 +190,7 @@ pub fn drawGitPanel(wb: *Workbench, panel_x: f32, panel_w: f32, h: f32) void {
 
     if (is_input_focused) {
         const cursor_x = panel_x + 16 + measureUiText(msg, 12.0);
-        if (@mod(state.time, 1.0) < 0.5) {
+        if (@import("../../core/state.zig").caret_blink_visible) {
             renderer.Renderer.drawRect(cursor_x, y + 8, 2, 14, .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 });
         }
     }

@@ -30,11 +30,18 @@ pub var continuous_rendering_enabled: bool = false;
 
 // --- Caret blink / focus tracking ---------------------------------------
 //
-// When the editor (or any text input panel) has focus, the renderer is
-// set to continuous mode (60fps) so the caret blinks at the configured
-// 1.06s period. `caret_blink_editor_focused` tracks this state so other
-// subsystems (e.g. power management, future optimizations) can react.
+// The caret blinks at ~1.06s period (0.53s on, 0.53s off). Instead of
+// running the compositor at 60fps continuously (which caused Mac heat
+// issues — ~30-60% CPU even when idle), we schedule a redraw only when
+// the blink state is about to flip. This drops idle CPU to ~0%.
+//
+// `caret_blink_last_flip_ms` tracks when the blink last toggled. The
+// render loop checks if 530ms have elapsed and, if so, requests a redraw
+// (which flips the blink state and re-schedules the next flip).
 pub var caret_blink_editor_focused: bool = false;
+pub var caret_blink_visible: bool = true;
+pub var caret_blink_last_flip_ms: i64 = 0;
+pub const caret_blink_half_period_ms: i64 = 530;
 
 /// Notify the blink scheduler that a text input has gained or lost focus.
 /// No-op when the state hasn't changed.
@@ -42,9 +49,30 @@ pub fn setEditorFocused(focused: bool) void {
     if (caret_blink_editor_focused == focused) return;
     caret_blink_editor_focused = focused;
     if (focused) {
-        // Force an immediate redraw so the caret appears on focus.
+        // Reset blink to visible + schedule immediate redraw so the caret
+        // appears on focus. The timestamp will be set on the first
+        // tickCaretBlink() call from the render loop.
+        caret_blink_visible = true;
+        caret_blink_last_flip_ms = 0; // will be set by first tick
         renderer.Renderer.requestRedraw();
     }
+}
+
+/// Called from the render loop each frame. Returns true if the blink
+/// state flipped (caller should request another redraw to continue the
+/// blink cycle). When the editor is not focused, this is a no-op.
+pub fn tickCaretBlink(now_ms: i64) bool {
+    if (!caret_blink_editor_focused) return false;
+    // First tick after focus — initialize the timestamp without flipping.
+    if (caret_blink_last_flip_ms == 0) {
+        caret_blink_last_flip_ms = now_ms;
+        return false;
+    }
+    if (now_ms - caret_blink_last_flip_ms < caret_blink_half_period_ms) return false;
+    // Flip the blink state + record the flip time.
+    caret_blink_visible = !caret_blink_visible;
+    caret_blink_last_flip_ms = now_ms;
+    return true; // signal that a redraw is needed to show the new state
 }
 
 // Persistent frame arena — reused across frames to avoid init/deinit

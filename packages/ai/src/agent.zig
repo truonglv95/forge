@@ -88,6 +88,11 @@ pub const Config = struct {
     resume_pending_tool_args: []const u8 = "",
     resume_session_id: ?[]const u8 = null,
     resume_steps: []const Step = &.{},
+    /// Phase B: optional orchestrator plan from the agent-prepare endpoint
+    /// or native heuristic. When set, the agent loop uses the plan's intent
+    /// + capability + max_steps instead of the legacy route.intent path.
+    /// When null, falls back to routing.zig's single-intent classification.
+    orchestrator_plan: ?*@import("agent/orchestrator.zig").OrchestratorPlan = null,
     approval_callback: ?agent_loop.ApprovalCallback = null,
     approval_context: ?*anyopaque = null,
     approve_every_time_tools: bool = false,
@@ -333,7 +338,7 @@ pub fn run(
     const context_end_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
     defer resolved_context.deinit();
     const resolved_route = resolved_context.route;
-    const route = resolved_route.route;
+    var route = resolved_route.route;
 
     // Let the classified intent pick the least-privilege capability unless the
     // caller pinned one explicitly. On resume we keep the persisted profile.
@@ -393,6 +398,35 @@ pub fn run(
             .items = budget.max_steps,
             .detail = budget.rationale,
         }) catch {};
+    }
+
+    // Phase B: if an orchestrator plan is provided (from agent-prepare backend
+    // or native heuristic), override the route's intent + capability + max_steps
+    // with the plan's values. This lets the agent run with a multi-step plan
+    // + minimal tool selection instead of the legacy single-intent path.
+    if (effective_config.orchestrator_plan) |plan| {
+        const orchestrator = @import("agent/orchestrator.zig");
+        const intent_taxonomy = @import("agent/intent_taxonomy.zig");
+        // Override the route intent with the plan's taxonomy intent.
+        route.intent = plan.intent.toTaskIntent();
+        // Override the capability profile if the plan's profile is more
+        // restrictive (never expand beyond what the caller allowed).
+        if (@intFromEnum(plan.profile) < @intFromEnum(effective_config.capability_profile)) {
+            effective_config.capability_profile = plan.profile;
+        }
+        // Override max_steps if the plan recommends more than the current
+        // budget (refactors/debugging need more steps).
+        if (plan.max_steps > effective_config.max_steps) {
+            effective_config.max_steps = plan.max_steps;
+        }
+        event_logger.telemetry(.{
+            .phase = "orchestrator_plan",
+            .duration_ms = 0,
+            .bytes = 0,
+            .items = plan.max_steps,
+            .detail = intent_taxonomy.Intent.label(plan.intent),
+        }) catch {};
+        _ = orchestrator;
     }
 
     var ctx_builder = &resolved_context.builder;

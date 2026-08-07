@@ -167,9 +167,10 @@ pub fn drawEditorOverlay(wb: *Workbench, editor_x: f32, editor_w: f32) void {
         renderer.Renderer.drawText("Find:", editor_x + 12, bar_y + 8, 11.0, .{ .r = 0.7, .g = 0.7, .b = 0.7, .a = 1.0 });
         renderer.Renderer.drawText(@ptrCast(&query_buf), input_x + 8, bar_y + 8, 11.0, .{ .r = 0.95, .g = 0.95, .b = 0.95, .a = 1.0 });
 
-        // Blinking caret (when overlay is focused)
-        const blink_phase = @mod(@import("../../core/state.zig").time, 1.06);
-        if (blink_phase < 0.53) {
+        // Blinking caret (when overlay is focused) — uses state.caret_blink_visible
+        // (ticked by render loop) instead of @mod(time, 1.06) for idle CPU savings.
+        const state = @import("../../core/state.zig");
+        if (state.caret_blink_visible) {
             const caret_x = input_x + 8 + @import("../../editor/editor_scroll.zig").cursorX(query, 0, 11.0);
             renderer.Renderer.drawRect(caret_x, bar_y + 8, 1.5, 16, .{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1.0 });
         }
