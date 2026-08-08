@@ -175,7 +175,8 @@ fn run(
         },
         .unknown => {
             try writer.print("error: unknown command '{s}'\n\n", .{if (args.len > 1) args[1] else ""});
-            try printHelp(writer);
+            try writer.writeAll("Type 'forge help' to see all commands.\n");
+            try writer.writeAll("Quick start: 'forge agent' for interactive TUI, 'forge ask \"...\"' for one-shot.\n");
             return 2;
         },
     }
@@ -183,81 +184,72 @@ fn run(
 
 fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.writeAll(
-        \\Forge — AI-first native IDE
+        \\Forge — AI-first native IDE, built in Zig
         \\
         \\Usage:
         \\  forge <command> [options]
-        \\  forge <path>
+        \\  forge <path>          Open a project in the IDE
         \\
-        \\Commands:
-        \\  version    Print the Forge version
-        \\  doctor     Check the foundation runtime
-        \\  inspect    Inspect the workspace root and config
-        \\  search     Search across workspace files
-        \\  watch      Watch for file changes
+        \\AI Commands:
+        \\  ask        Ask AI to propose a change (no auto-apply)
+        \\  agent      Interactive TUI agent (or: run|resume|list|events|timeline)
+        \\  chat       Chat REPL with @mentions and slash commands
+        \\  complete   Inline code completion at a file position
+        \\  edit       Composer-style multi-file inline edit
+        \\  plan       Plan a proposal using AI
+        \\  review     AI-powered code review (--staged, --base, --head)
+        \\  test-gen   Generate tests for a file or function
+        \\
+        \\Safe Change Workflow:
         \\  diff       Preview a proposal without mutating
-        \\  apply      Apply a proposal
+        \\  apply      Apply a proposal (--yes to skip prompt)
         \\  undo       Undo a specific transaction
         \\  history    Show transaction history
-        \\  task       Run a workspace task
-        \\  check      Run validation checks
-        \\  index      Build or inspect the semantic codebase index (status)
+        \\  check      Run validation checks (fmt, build, test)
+        \\
+        \\Spec-Driven (Kiro-style):
+        \\  spec       create|list|show|edit|approve|implement|trace
+        \\
+        \\Model & Provider:
+        \\  providers  List AI providers with capability metadata
+        \\  models     List models or query routing (list|capability|route)
+        \\  cloud      Forge Cloud: login|logout|status|models|prepare
+        \\
+        \\Workspace:
+        \\  inspect    Inspect workspace root and config
+        \\  search     Search across workspace files
+        \\  watch      Watch for file changes
+        \\  index      Build or inspect the semantic codebase index
         \\  context    Preview AI context preparation
-        \\  ask        Ask AI to propose a change (no auto-apply)
-        \\  run        List or show AI run records (list|show)
-        \\  agent      Multi-step agent (interactive, or run|resume|list|events|timeline|runs|wait|cancel|approve|reject|branch)
-        \\  plan       Plan a proposal using AI
-        \\  parsers    Sync Tree-sitter parser lock for the workspace (sync)
+        \\  task       Run a workspace task
+        \\  parsers    Sync Tree-sitter parser lock
+        \\
+        \\System:
+        \\  version    Print the Forge version
+        \\  doctor     Check the foundation runtime
         \\  eval       Run evaluation suites (ai-flow)
-        \\  ecosystem  Manage AI tools, context sources, skill packs, eval packs, providers
+        \\  ecosystem  Manage tools, context sources, skill packs
         \\  ext        Manage extensions (list|install|uninstall)
-        \\  spec       Spec-driven workflow (create|list|show|edit|approve|reject|implement|trace)
-        \\  complete   Inline code completion at a file position (RFC-0013)
-        \\  providers  List AI providers with capability (RFC-0016)
-        \\  models     List AI models or query routing (list|capability|route) (RFC-0016)
-        \\  chat       Interactive chat REPL with @mentions and slash commands (RFC-0017)
-        \\  edit       Composer-style multi-file inline edit (RFC-0013 Composer)
-        \\  cloud      Forge Cloud login/logout/status/models/prepare (server-managed model catalog + agent planning)
+        \\  run        List or show AI run records
         \\  help       Show this help
         \\
-        \\Options:
+        \\Common Options:
         \\  --workspace <path>   Set the workspace root path
         \\  --json               Output machine-readable JSON
-        \\  --events <format>    Stream agent events: ndjson
-        \\  --dry-run            Dry-run flag (used with apply)
-        \\  --yes                Approve apply without interactive prompt
-        \\  --trust-all          Trust all agent tools for this session; edit tools auto-apply via transactions
-        \\  --auto-approve       Alias for trusting all agent tool approvals in this session
+        \\  --provider <name>    AI provider: auto|fake|gemini|ollama|openrouter|zai|...
+        \\  --model <name>       Model id (default: provider default)
         \\  --file <path>        Include file in AI context (repeatable)
-        \\  --provider <name>    AI provider: auto|fake|gemini|ollama|openrouter (default: from forge.toml or auto)
-        \\  --model <name>       Model id (default: from forge.toml or provider default)
-        \\  --budget-bytes <n>   Context byte budget for forge context (default: 8MiB)
-        \\  --capability <name>  Agent capability: read_only|propose|propose_and_task
-        \\  --mode <name>        Routing mode for forge context: ask|plan|agent
-        \\  --once               Single watch poll (for tests)
-        \\  --max-polls <n>      Limit watch polling iterations
-        \\  --max-steps <n>      Optional safety cap for agent steps (default: unlimited)
-        \\  --fetch              Allow parser sync to resolve fetchable parser packs (stub)
-        \\  --repeat <n>         Repeat eval suite runs (default: 1)
-        \\  --output <path>      Write eval results JSONL (default: .forge/evals/latest.jsonl)
-        \\  --corpus <path>      Eval corpus JSON (default: fixtures/eval/agent_reliability.json)
-        \\  --min-success-rate <f> Fail if success rate below threshold
-        \\  --baseline <path>    Compare success rate to prior .summary.json
-        \\  --max-success-regression <f> Fail if success rate regresses beyond delta
-        \\  --file <path>        File path for inline completion (forge complete)
-        \\  --line <n>           1-indexed line for inline completion (default: 1)
-        \\  --char <n>           0-indexed character offset for inline completion (default: 0)
-        \\  --max-tokens <n>     Max tokens for inline completion (default: 64)
-        \\  --timeout-ms <n>     Timeout for inline completion in ms (default: 3000)
-        \\  --pipe               Read chat input from stdin (forge chat)
-        \\  --resume <id>        Resume a previous chat session (forge chat)
-        \\  --context-bytes <n>  Estimated context bytes for model routing (forge models route)
-        \\  --prefer-local       Prefer local providers (ollama) when routing
-        \\  --require-tools      Only route to providers that support tool calling
-        \\  --require-streaming  Only route to providers that support streaming
-        \\  --max-price-per-mtok <n> Max price per 1M tokens (cents) for routing
-        \\  --strengths <s>      Comma-separated strengths for routing (code_edit,completion,planning)
-        \\  --cloud              Fetch models from Forge Cloud backend (forge models list --cloud)
+        \\  --yes                Approve apply without prompt
+        \\  --trust-all          Trust all agent tools for this session
+        \\
+        \\Quick Start:
+        \\  forge agent                    # Launch interactive TUI
+        \\  forge ask "add error handling" # One-shot AI proposal
+        \\  forge chat                     # Chat REPL
+        \\  forge cloud login <email>      # Sign in to Forge Cloud
+        \\  forge models list              # Browse available models
+        \\
+        \\Docs: https://github.com/truonglv95/forge
         \\
     );
 }

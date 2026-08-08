@@ -6143,16 +6143,18 @@ pub const App = struct {
 
     fn promptPrefix(self: *const App, buf: []u8) ![]const u8 {
         const folder = self.folder_label;
-        // Show mode badge in prompt for clear UX feedback.
+        // Modern prompt: arrow + folder + branch + mode indicator.
+        // Inspired by starship/oh-my-zsh: concise, scannable, colorful.
+        // The render loop applies colors per-segment; here we just emit text.
         const mode_icon: []const u8 = switch (self.agent_mode) {
-            .ask => "?",
-            .plan => "+",
-            .agent => "*",
+            .ask => "?", // question mode
+            .plan => "+", // planning mode
+            .agent => ">", // agent mode (default)
         };
         if (std.mem.eql(u8, self.branch_label, "no branch")) {
-            return std.fmt.bufPrint(buf, "[{s}] {s} ", .{ mode_icon, folder });
+            return std.fmt.bufPrint(buf, "{s} {s} ", .{ mode_icon, folder });
         }
-        return std.fmt.bufPrint(buf, "[{s}] {s} ({s}) ", .{ mode_icon, folder, self.branch_label });
+        return std.fmt.bufPrint(buf, "{s} {s} ({s}) ", .{ mode_icon, folder, self.branch_label });
     }
 
     fn shouldAutoApprove(self: *App, policy: ai.tool_registry.Policy) bool {
