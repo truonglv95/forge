@@ -5979,7 +5979,13 @@ pub const App = struct {
     }
 
     fn pushSystem(self: *App, text: []const u8) !void {
-        try self.pushLine(.system, try self.allocator.dupe(u8, text));
+        // Split multi-line text into separate ChatLines so each line renders
+        // on its own row. Without this, a single ChatLine with embedded \n
+        // renders as one long line that wraps unpredictably.
+        var iter = std.mem.splitScalar(u8, text, '\n');
+        while (iter.next()) |line| {
+            try self.pushLine(.system, try self.allocator.dupe(u8, line));
+        }
     }
 
     fn sessionIdForResume(self: *App) ?[]u8 {

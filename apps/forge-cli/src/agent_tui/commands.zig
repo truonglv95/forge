@@ -528,8 +528,34 @@ pub fn nextMode(mode: ai.tools.Mode) ai.tools.Mode {
 
 pub fn helpText() []const u8 {
     return
-    \\Commands: /clear /policy /tools /mode /context /diff [file] /events /timeline /resume /sessions /spec /runs /complete /model /cost /capability /provider /save /review /inspect /search /edit /undo /redo /theme /config /export /bookmark /copy /copyall /branch /filter /stats /compact /pin /alias /macro /notify /wordwrap /vim /goto /snippet /time /resize /tag /summary /retry /newtab /tabs /close /rename /switch /priority /merge /cleartabs /tab /copytab /swap /exporttab /log /version /findreplace /translate /annotate /share /refactor /explain /fix /testgen /doc /help [cmd] /quit
-    \\Keys: Tab=autocomplete | Ctrl+M=mode | Ctrl+R=review | Ctrl+J=newline | Ctrl+Y=copy code | Ctrl+Tab=cycle tabs | ?=help | Esc=close | PgUp/PgDn=scroll | Ctrl+C=cancel/quit
+    \\Forge TUI — Commands & Keys
+    \\
+    \\Slash Commands (grouped):
+    \\  Agent:     /mode /policy /tools /undo /redo /complete /retry /summary
+    \\  Context:   /context /inspect /cost /capability /provider /priority
+    \\  Chat:      /clear /search /edit /save /export /copy /copyall /compact
+    \\  Session:   /sessions /resume /timeline /events /time /version
+    \\  Specs:     /spec /runs
+    \\  Git:       /diff /branch /review
+    \\  Config:    /model /theme /config /stats /wordwrap /vim /resize /log
+    \\  Auto:      /alias /macro /notify /snippet
+    \\  Tabs:      /newtab /tabs /close /rename /switch /merge /tab /copytab
+    \\
+    \\Keys:
+    \\  Enter       Submit message / command
+    \\  Tab         Autocomplete / file path
+    \\  Ctrl+M      Cycle mode (ask → plan → agent)
+    \\  Ctrl+J      Insert newline (multi-line input)
+    \\  Ctrl+Y      Copy last code block
+    \\  Ctrl+R      Review last tool output
+    \\  Ctrl+Tab    Cycle tabs
+    \\  Ctrl+C      Cancel agent / quit (×2)
+    \\  ↑↓          History navigation
+    \\  PgUp/PgDn   Scroll chat
+    \\  Esc         Close overlay / clear input
+    \\  ?           Full help overlay
+    \\
+    \\Type /help <command> for detailed help on a specific command.
     ;
 }
 
