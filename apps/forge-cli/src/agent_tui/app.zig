@@ -7785,17 +7785,22 @@ pub const App = struct {
                 const elapsed_s = if (self.spinner_last_ms > 0) @divFloor(now_ms - self.spinner_last_ms, 1000) else 0;
 
                 if (elapsed_s > 0) {
-                    return std.fmt.bufPrint(buf, "{s} {s} [{s}] {d}s", .{ spinner, bar, action, elapsed_s }) catch progress;
+                    return std.fmt.bufPrint(buf, "{s} {s} {s} · {d}s", .{ spinner, bar, action, elapsed_s }) catch progress;
                 }
-                return std.fmt.bufPrint(buf, "{s} {s} [{s}]", .{ spinner, bar, action }) catch progress;
+                return std.fmt.bufPrint(buf, "{s} {s} {s}", .{ spinner, bar, action }) catch progress;
             }
             return std.fmt.bufPrint(buf, "{s} {s}", .{ spinner, progress }) catch progress;
         }
 
-        // Default thinking indicator with spinner + animated dots.
+        // Default thinking indicator — show spinner + elapsed time for
+        // better UX feedback (user knows the agent is still working).
         const now_ms = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
+        const elapsed_s = if (self.spinner_last_ms > 0) @divFloor(now_ms - self.spinner_last_ms, 1000) else 0;
+        if (elapsed_s > 2) {
+            return std.fmt.bufPrint(buf, "{s} Working · {d}s", .{ spinner, elapsed_s }) catch "Working...";
+        }
         const dots: usize = @intCast(@mod(@divTrunc(now_ms, 320), 3) + 1);
-        return std.fmt.bufPrint(buf, "{s} Thinking{s}", .{ spinner, "..."[0..dots] }) catch "Thinking...";
+        return std.fmt.bufPrint(buf, "{s} Working{s}", .{ spinner, "..."[0..dots] }) catch "Working...";
     }
 
     /// Returns a progress bar string of the given width, animated based
