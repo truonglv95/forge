@@ -215,6 +215,16 @@ pub const App = struct {
     show_help_overlay: bool = false,
     spinner_frame: u8 = 0,
     spinner_last_ms: i64 = 0,
+    /// Mouse wheel scroll accumulator — coalesces rapid scroll events
+    /// into smooth multi-line jumps. Without this, each wheel tick scrolls
+    /// 3 lines instantly, causing visual jank on fast scrolls.
+    scroll_accumulator: i32 = 0,
+    /// Smooth scroll target — the scroll position animates towards this
+    /// value over a few frames, producing a gliding effect instead of
+    /// instant jumps.
+    scroll_target: usize = 0,
+    /// Timestamp of the last scroll animation step.
+    scroll_anim_ms: i64 = 0,
     total_input_tokens: u64 = 0,
     total_output_tokens: u64 = 0,
     total_cost_usd: f64 = 0.0,
@@ -441,18 +451,42 @@ pub const App = struct {
             const now = std.Io.Timestamp.now(self.io, .real).toMilliseconds();
             self.mutex.lock();
             const busy = self.agent_busy;
+
+            // Smooth scroll animation — animate scroll towards scroll_target.
+            // Moves 1-2 lines per frame (every 16ms = ~60-120 lines/sec),
+            // producing a gliding effect instead of instant jumps.
+            if (self.scroll != self.scroll_target) {
+                const diff: i64 = @as(i64, @intCast(self.scroll_target)) - @as(i64, @intCast(self.scroll));
+                const step: i64 = if (diff > 0) @max(1, @divFloor(diff, 4)) else @min(-1, @divFloor(diff, 4));
+                const new_scroll_i: i64 = @as(i64, @intCast(self.scroll)) + step;
+                if (new_scroll_i < 0) {
+                    self.scroll = 0;
+                    self.scroll_target = 0;
+                } else {
+                    self.scroll = @intCast(new_scroll_i);
+                }
+                // Snap to target when close enough (within 1 line).
+                if (@as(i64, @intCast(self.scroll)) - @as(i64, @intCast(self.scroll_target)) > -2 and
+                    @as(i64, @intCast(self.scroll)) - @as(i64, @intCast(self.scroll_target)) < 2)
+                {
+                    self.scroll = self.scroll_target;
+                }
+                self.markDirty();
+            }
+
             // Keep busy rendering smooth. The diff-row renderer makes each
             // frame cheap (only changed rows are emitted), so we can render
-            // at 20fps during streaming without CPU spike. Previous 200ms
-            // interval (5fps) made streaming output feel laggy.
+            // at 30fps during streaming without CPU spike. Previous 50ms
+            // interval (20fps) was OK but 33ms (30fps) feels noticeably
+            // smoother for streaming text — chunks appear to flow in.
             if (busy and now - self.spinner_last_ms >= 120) {
                 self.spinner_frame +%= 1;
                 self.spinner_last_ms = now;
                 self.markDirty();
             }
-            // 50ms during busy (20fps) — smooth streaming without burning CPU.
-            // 16ms when idle (60fps cap) — responsive to keystrokes.
-            const render_interval: i64 = if (busy) 50 else self.render_min_interval_ms;
+            // 33ms during busy (30fps) — smoother streaming, chunks appear
+            // to flow in. 16ms when idle (60fps cap) — responsive to keystrokes.
+            const render_interval: i64 = if (busy) 33 else self.render_min_interval_ms;
             const should_render = self.dirty and (now - self.last_render_ms >= render_interval or !busy);
             if (should_render) {
                 // Hide cursor before render to prevent flicker.
@@ -1037,6 +1071,7 @@ pub const App = struct {
                 self.mutex.lock();
                 self.freeLines();
                 self.scroll = 0;
+                self.scroll_target = 0;
                 self.markDirty();
                 self.mutex.unlock();
             },
@@ -1195,6 +1230,7 @@ pub const App = struct {
                 self.mutex.lock();
                 if (self.input.items.len == 0) {
                     self.scroll = 0;
+                    self.scroll_target = 0;
                 } else {
                     self.cursor = self.input.items.len;
                 }
@@ -1350,19 +1386,22 @@ pub const App = struct {
                 // Button 64 = scroll up, Button 65 = scroll down.
                 // Button 0 = left click (press), release detected via ev.release.
                 if (ev.button == 64) {
-                    // Scroll up — scroll chat up by 3 lines.
+                    // Scroll up — accumulate wheel events for smooth scrolling.
+                    // Instead of jumping 3 lines instantly, we set a target
+                    // and let the render loop animate towards it. This produces
+                    // a gliding effect similar to native macOS scroll.
                     self.mutex.lock();
-                    self.scroll +|= 3;
+                    self.scroll_target +|= 3;
                     self.markDirty();
                     self.mutex.unlock();
                 } else if (ev.button == 65) {
-                    // Scroll down — scroll chat down by 3 lines.
+                    // Scroll down — animate towards target.
                     self.mutex.lock();
                     const page: usize = 3;
-                    if (self.scroll > page) {
-                        self.scroll -= page;
+                    if (self.scroll_target > page) {
+                        self.scroll_target -= page;
                     } else {
-                        self.scroll = 0;
+                        self.scroll_target = 0;
                     }
                     self.markDirty();
                     self.mutex.unlock();
@@ -1438,17 +1477,18 @@ pub const App = struct {
         const chat_rows = self.chatRowCount();
         const page = @max(1, chat_rows);
         if (direction > 0) {
-            self.scroll +|= page;
-        } else if (self.scroll > page) {
-            self.scroll -= page;
+            self.scroll_target +|= page;
+        } else if (self.scroll_target > page) {
+            self.scroll_target -= page;
         } else {
             self.scroll = 0;
+            self.scroll_target = 0;
         }
         self.markDirty();
     }
 
     fn scrollChatToTop(self: *App) void {
-        self.scroll = std.math.maxInt(usize);
+        self.scroll_target = std.math.maxInt(usize);
         self.markDirty();
     }
 
@@ -1514,11 +1554,12 @@ pub const App = struct {
     fn scrollChatPageLocked(self: *App, direction: i32) void {
         const page = @max(1, self.chatRowCount());
         if (direction > 0) {
-            self.scroll +|= page;
-        } else if (self.scroll > page) {
-            self.scroll -= page;
+            self.scroll_target +|= page;
+        } else if (self.scroll_target > page) {
+            self.scroll_target -= page;
         } else {
             self.scroll = 0;
+            self.scroll_target = 0;
         }
         self.markDirty();
     }
@@ -1593,6 +1634,7 @@ pub const App = struct {
                 self.mutex.lock();
                 self.freeLines();
                 self.scroll = 0;
+                self.scroll_target = 0;
                 self.markDirty();
                 self.mutex.unlock();
             },
@@ -1781,6 +1823,7 @@ pub const App = struct {
         self.mutex.lock();
         self.freeLines();
         self.scroll = 0;
+        self.scroll_target = 0;
         self.markDirty();
         self.mutex.unlock();
 
@@ -2757,6 +2800,7 @@ pub const App = struct {
         }
 
         self.scroll = 0;
+        self.scroll_target = 0;
         self.markDirty();
 
         var msg_buf: [128]u8 = undefined;
@@ -2966,6 +3010,7 @@ pub const App = struct {
         self.mutex.lock();
         self.freeLines();
         self.scroll = 0;
+        self.scroll_target = 0;
         for (self.conversation.items) |turn| self.allocator.free(turn.content);
         self.conversation.clearRetainingCapacity();
         self.markDirty();
@@ -3485,6 +3530,7 @@ pub const App = struct {
         self.lines.deinit(self.allocator);
         self.lines = compacted;
         self.scroll = 0;
+        self.scroll_target = 0;
         self.markDirty();
         self.mutex.unlock();
 
@@ -4260,6 +4306,7 @@ pub const App = struct {
         // Clear current conversation for the new tab.
         self.freeLines();
         self.scroll = 0;
+        self.scroll_target = 0;
         for (self.conversation.items) |turn| self.allocator.free(turn.content);
         self.conversation.clearRetainingCapacity();
 
@@ -4320,6 +4367,7 @@ pub const App = struct {
         // Clear current conversation.
         self.freeLines();
         self.scroll = 0;
+        self.scroll_target = 0;
         for (self.conversation.items) |turn| self.allocator.free(turn.content);
         self.conversation.clearRetainingCapacity();
 
@@ -4423,6 +4471,7 @@ pub const App = struct {
         // Clear current and load the target tab.
         self.freeLines();
         self.scroll = 0;
+        self.scroll_target = 0;
         for (self.conversation.items) |turn| self.allocator.free(turn.content);
         self.conversation.clearRetainingCapacity();
 
@@ -4576,6 +4625,7 @@ pub const App = struct {
             };
         }
         self.scroll = 0;
+        self.scroll_target = 0;
         self.markDirty();
         self.mutex.unlock();
 
@@ -4746,6 +4796,7 @@ pub const App = struct {
         // Clear current conversation.
         self.freeLines();
         self.scroll = 0;
+        self.scroll_target = 0;
         for (self.conversation.items) |turn| self.allocator.free(turn.content);
         self.conversation.clearRetainingCapacity();
 
@@ -5474,6 +5525,7 @@ pub const App = struct {
         if (self.resume_session_id) |old| self.allocator.free(old);
         self.resume_session_id = self.allocator.dupe(u8, doc.session_id) catch null;
         self.scroll = 0;
+        self.scroll_target = 0;
         self.mutex.unlock();
 
         const intent_owned = try self.allocator.dupe(u8, doc.intent);
@@ -5720,12 +5772,14 @@ pub const App = struct {
                     last.text = owned;
                     last.kind = .agent;
                     self.scroll = 0;
+                    self.scroll_target = 0;
                     self.markDirty();
                     return;
                 }
             }
             try self.lines.append(self.allocator, .{ .kind = .agent, .text = owned });
             self.scroll = 0;
+            self.scroll_target = 0;
         }
         self.markDirty();
     }
@@ -5752,7 +5806,7 @@ pub const App = struct {
                 const grown = self.allocator.realloc(line.text, new_len) catch return;
                 @memcpy(grown[line.text.len..], chunk);
                 line.text = grown;
-                if (now - self.last_render_ms >= 120 or chunk.len >= 96) self.markDirty();
+                if (now - self.last_render_ms >= 60 or chunk.len >= 64) self.markDirty();
                 return;
             }
         }
@@ -5766,6 +5820,7 @@ pub const App = struct {
         };
         self.stream_line_index = self.lines.items.len - 1;
         self.scroll = 0;
+        self.scroll_target = 0;
         self.markDirty();
     }
 
