@@ -6589,24 +6589,24 @@ pub const App = struct {
     fn lineRoleLabel(kind: LineKind, text: []const u8) []const u8 {
         return switch (kind) {
             .user => "you",
-            .agent => if (std.mem.startsWith(u8, text, "agent  ")) "assistant" else "",
+            .agent => if (std.mem.startsWith(u8, text, "agent  ")) "ai" else "",
             .tool => "tool",
-            .system => "system",
-            .failure => "error",
+            .system => "info",
+            .failure => "err",
         };
     }
 
     fn lineAccent(kind: LineKind, text: []const u8) []const u8 {
         return switch (kind) {
-            .user => term.Style.green,
-            .agent => term.Style.blue,
+            .user => term.Style.bright_green,
+            .agent => term.Style.lime,
             .tool => if (std.mem.startsWith(u8, text, "* tool  ✓"))
                 term.Style.green
             else if (std.mem.startsWith(u8, text, "* tool  ×") or std.mem.indexOf(u8, text, " failed") != null)
                 term.Style.bright_red
             else
                 term.Style.cyan,
-            .system => term.Style.dark_gray,
+            .system => term.Style.gray,
             .failure => term.Style.bright_red,
         };
     }
@@ -6899,7 +6899,7 @@ pub const App = struct {
 
         var buf: [512]u8 = undefined;
         const mode_label = commands.modeLabel(self.agent_mode);
-        const spinner = if (self.agent_busy) self.spinnerChar() else "*";
+        const spinner = if (self.agent_busy) self.spinnerChar() else "◆";
         const tab_name = if (self.current_tab_name) |n| n else "main";
         const total_tokens = self.total_input_tokens + self.total_output_tokens;
 
