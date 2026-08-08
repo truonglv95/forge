@@ -6078,17 +6078,18 @@ pub const App = struct {
     };
 
     fn pushStartupIntro(self: *App) !void {
-        try self.pushSystem("FORGE Coding Assistant initialized.");
+        // Modern welcome — concise, actionable, shows key shortcuts.
+        try self.pushSystem("✨ Forge AI — type your request, or /help for commands");
 
         var line_buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(
             &line_buf,
-            "Workspace ready: {s} · {s} · prompt context builds after you ask",
+            "{s} · {s} · /mode to switch · /model to pick LLM",
             .{
                 commands.modeLabel(self.agent_mode),
                 self.model_label,
             },
-        ) catch "Workspace ready";
+        ) catch "Ready";
         try self.pushSystem(line);
     }
 
@@ -6549,6 +6550,7 @@ pub const App = struct {
     fn colorForLine(kind: LineKind, text: []const u8) []const u8 {
         if (text.len > 0 and text[0] == '+') return term.Style.bright_green;
         if (text.len > 0 and text[0] == '-') return term.Style.bright_red;
+        if (std.mem.startsWith(u8, text, "✨ Forge AI")) return term.Style.bright_green;
         if (std.mem.startsWith(u8, text, "FORGE Coding Assistant initialized.")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "Context: ")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "Edited ")) return term.Style.bright_yellow;
@@ -7736,6 +7738,23 @@ pub const App = struct {
                 self.frame.appendSlice(term.Style.cyan) catch {};
             }
             self.frame.appendSlice("  Press any key to close this overlay") catch {};
+            if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        }
+
+        // Shortcut hint bar — dim text at the very bottom showing key bindings.
+        // Only shown when not busy + no overlays + no pickers active.
+        if (!self.agent_busy and !self.show_help_overlay and !self.model_picker_active and !pending) {
+            self.frame.moveTo(size.rows, 1);
+            if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+            var hint_buf: [256]u8 = undefined;
+            const hint = std.fmt.bufPrint(&hint_buf, " ⏎ send  ⋮ /help  @ mention  ⌃J newline  ⌃Y copy  ⌃R retry  ↑↓ history  Esc clear ", .{}) catch "";
+            self.frame.appendSlice(hint) catch {};
+            // Pad to end of line + clear rest.
+            const hint_cols = term.displayWidth(hint);
+            if (size.cols > hint_cols + 1) {
+                self.frame.data.appendNTimes(self.allocator, ' ', size.cols - hint_cols - 1) catch {};
+            }
+            self.frame.appendSlice("\x1b[K") catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         }
 
