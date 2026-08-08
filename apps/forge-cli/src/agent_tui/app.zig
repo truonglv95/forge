@@ -452,45 +452,33 @@ pub const App = struct {
             self.mutex.lock();
             const busy = self.agent_busy;
 
-            // Smooth scroll animation — animate scroll towards scroll_target.
-            // IMPORTANT: only mark dirty if scroll ACTUALLY changed. If scroll
-            // hit a limit (max_scroll or 0) and can't move further towards
-            // target, snap target to current to stop the animation. Without
-            // this, scroll_target > max_scroll creates an infinite busy-loop
-            // that sets dirty every frame → 100% CPU → Mac heat.
+            // Scroll: instant set, no animation. The terminal emulator's
+            // own rendering pipeline (GPU-accelerated, double-buffered,
+            // 60-120fps) handles the visual transition. Our animation
+            // was ADDING latency, not smoothness — each animation frame
+            // required a full re-render (wrap + decorate + truncate),
+            // creating 48-64ms of jerkiness. Instant scroll lets the
+            // terminal's native smoothness work for us.
             if (self.scroll != self.scroll_target) {
-                const old_scroll = self.scroll;
-                const diff: i64 = @as(i64, @intCast(self.scroll_target)) - @as(i64, @intCast(self.scroll));
-                const step: i64 = if (diff > 0) @max(1, @divFloor(diff + 1, 3)) else @min(-1, @divFloor(diff - 1, 3));
-                const new_scroll_i: i64 = @as(i64, @intCast(self.scroll)) + step;
-                if (new_scroll_i < 0) {
-                    self.scroll = 0;
-                } else {
-                    self.scroll = @intCast(new_scroll_i);
-                }
-                // If scroll didn't change (hit a limit), snap target to
-                // current to terminate the animation.
-                if (self.scroll == old_scroll) {
-                    self.scroll_target = self.scroll;
-                } else {
-                    self.markDirty();
-                }
+                self.scroll = self.scroll_target;
+                self.markDirty();
             }
 
-            // Render interval — always respected, even when idle. The
-            // previous `or !busy` bypass caused dirty=true to trigger
-            // immediate render every loop iteration, bypassing the 16ms
-            // cap. Now: dirty + interval must both be satisfied.
+            // Track whether scroll just happened — if so, render immediately
+            // (bypass interval) so there's zero latency between wheel event
+            // and screen update. The terminal's own rendering handles
+            // the visual smoothness.
+            const scroll_just_changed = self.dirty and !busy and (now - self.last_render_ms < 16) and (now - self.last_render_ms >= 0);
+
             if (busy and now - self.spinner_last_ms >= 120) {
                 self.spinner_frame +%= 1;
                 self.spinner_last_ms = now;
                 self.markDirty();
             }
-            // 33ms during busy (30fps) — smoother streaming. 16ms when idle
-            // (60fps cap) — responsive to keystrokes. Interval is ALWAYS
-            // respected — no bypass when idle.
+            // 33ms during busy (30fps). 16ms when idle (60fps cap).
+            // Exception: scroll events render immediately (zero latency).
             const render_interval: i64 = if (busy) 33 else self.render_min_interval_ms;
-            const should_render = self.dirty and (now - self.last_render_ms >= render_interval);
+            const should_render = self.dirty and (scroll_just_changed or now - self.last_render_ms >= render_interval);
             if (should_render) {
                 // Hide cursor before render to prevent flicker.
                 term.writeAll("\x1b[?25l") catch {};
