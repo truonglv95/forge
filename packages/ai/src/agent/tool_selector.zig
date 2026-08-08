@@ -32,8 +32,8 @@ pub fn selectForIntent(intent: intent_taxonomy.Intent) ToolSelection {
         // Exploration: read + search + LSP + tree.
         .explore_codebase => .{
             .tools = &.{
-                .read_file, .read_many_files, .search, .codebase_search,
-                .list_tree, .find_files, .lsp_workspace_symbol, .lsp_document_symbols,
+                .read_file,          .read_many_files, .search,               .codebase_search,
+                .list_tree,          .find_files,      .lsp_workspace_symbol, .lsp_document_symbols,
                 .get_editor_context,
             },
             .profile = .read_only,
@@ -41,8 +41,8 @@ pub fn selectForIntent(intent: intent_taxonomy.Intent) ToolSelection {
         // Code review: read + search + git diff + LSP diagnostics.
         .code_review => .{
             .tools = &.{
-                .read_file, .read_many_files, .search, .codebase_search,
-                .git_diff, .lsp_diagnostics, .lsp_find_references, .show_context,
+                .read_file, .read_many_files, .search,              .codebase_search,
+                .git_diff,  .lsp_diagnostics, .lsp_find_references, .show_context,
             },
             .profile = .read_only,
         },
@@ -56,7 +56,7 @@ pub fn selectForIntent(intent: intent_taxonomy.Intent) ToolSelection {
         // Edit code: read + search + edit + run command for validation.
         .edit_code => .{
             .tools = &.{
-                .read_file, .search, .codebase_search, .propose_edit, .multi_edit,
+                .read_file,   .search,          .codebase_search, .propose_edit, .multi_edit,
                 .run_command, .lsp_diagnostics,
             },
             .profile = .propose_and_task,
@@ -64,8 +64,8 @@ pub fn selectForIntent(intent: intent_taxonomy.Intent) ToolSelection {
         // Refactor: read + search + LSP refs + multi-edit (span multiple files).
         .refactor => .{
             .tools = &.{
-                .read_file, .read_many_files, .search, .codebase_search,
-                .lsp_find_references, .lsp_definition, .multi_edit, .run_command,
+                .read_file,           .read_many_files, .search,     .codebase_search,
+                .lsp_find_references, .lsp_definition,  .multi_edit, .run_command,
             },
             .profile = .propose_and_task,
         },
@@ -79,7 +79,7 @@ pub fn selectForIntent(intent: intent_taxonomy.Intent) ToolSelection {
         // Add feature: read + search + edit + maybe multi-file.
         .add_feature => .{
             .tools = &.{
-                .read_file, .search, .codebase_search, .propose_edit, .multi_edit,
+                .read_file,   .search,          .codebase_search, .propose_edit, .multi_edit,
                 .run_command, .lsp_diagnostics,
             },
             .profile = .propose_and_task,
@@ -94,7 +94,7 @@ pub fn selectForIntent(intent: intent_taxonomy.Intent) ToolSelection {
         // Debug: read + search + run command + edit + LSP diagnostics.
         .debug_failure => .{
             .tools = &.{
-                .read_file, .read_many_files, .search, .codebase_search,
+                .read_file,   .read_many_files, .search,       .codebase_search,
                 .run_command, .lsp_diagnostics, .propose_edit, .multi_edit,
                 .git_diff,
             },
@@ -160,9 +160,9 @@ test "code_review gets git_diff but no edit tools" {
 
 test "all selected tools are allowed by the capability profile" {
     const all = [_]intent_taxonomy.Intent{
-        .answer_question, .explore_codebase, .code_review, .edit_code,
-        .refactor, .add_test, .add_feature, .add_doc,
-        .debug_failure, .fix_compile_error, .plan_change,
+        .answer_question, .explore_codebase,  .code_review, .edit_code,
+        .refactor,        .add_test,          .add_feature, .add_doc,
+        .debug_failure,   .fix_compile_error, .plan_change,
     };
     for (all) |intent| {
         const sel = selectForIntent(intent);
@@ -176,9 +176,9 @@ test "all selected tools are allowed by the capability profile" {
 
 test "tool selection is non-empty for all intents" {
     const all = [_]intent_taxonomy.Intent{
-        .answer_question, .explore_codebase, .code_review, .edit_code,
-        .refactor, .add_test, .add_feature, .add_doc,
-        .debug_failure, .fix_compile_error, .plan_change,
+        .answer_question, .explore_codebase,  .code_review, .edit_code,
+        .refactor,        .add_test,          .add_feature, .add_doc,
+        .debug_failure,   .fix_compile_error, .plan_change,
     };
     for (all) |intent| {
         const sel = selectForIntent(intent);

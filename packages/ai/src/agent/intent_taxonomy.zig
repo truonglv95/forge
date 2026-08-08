@@ -211,9 +211,9 @@ test "heuristicClassify: defaults to edit_code" {
 
 test "label round-trips through parseIntent" {
     const all = [_]Intent{
-        .answer_question, .explore_codebase, .code_review, .edit_code,
-        .refactor, .add_test, .add_feature, .add_doc,
-        .debug_failure, .fix_compile_error, .plan_change,
+        .answer_question, .explore_codebase,  .code_review, .edit_code,
+        .refactor,        .add_test,          .add_feature, .add_doc,
+        .debug_failure,   .fix_compile_error, .plan_change,
     };
     for (all) |intent| {
         try std.testing.expectEqual(@as(?Intent, intent), parseIntent(intent.label()));
