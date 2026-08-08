@@ -101,6 +101,13 @@ fn envTruthy(name: [:0]const u8) bool {
         std.ascii.eqlIgnoreCase(std.mem.span(value), "yes");
 }
 
+fn envFalsey(name: [:0]const u8) bool {
+    const value = std.c.getenv(name) orelse return false;
+    return std.mem.eql(u8, std.mem.span(value), "0") or
+        std.ascii.eqlIgnoreCase(std.mem.span(value), "false") or
+        std.ascii.eqlIgnoreCase(std.mem.span(value), "no");
+}
+
 const ChatLine = struct {
     kind: LineKind,
     text: []u8,
@@ -165,6 +172,7 @@ pub const App = struct {
 
     approval: ApprovalGate = .{},
     worker: ?std.Thread = null,
+    worker_done: bool = false,
     worker_err: ?[]const u8 = null,
     frame: term.FrameBuffer = undefined,
     dirty: bool = true,
@@ -359,10 +367,10 @@ pub const App = struct {
         // P2.11: init mention picker.
         app.mention_picker = @import("mention_picker.zig").PickerState.init(allocator);
         app.mention_picker_init = true;
-        if (envTruthy("FORGE_TUI_MOUSE")) {
-            app.term.enableMouse();
-        } else {
+        if (envFalsey("FORGE_TUI_MOUSE")) {
             app.term.disableMouse();
+        } else {
+            app.term.enableMouse();
         }
         // Render cache: init HashMap.
         app.render_cache = std.AutoHashMap(u64, CachedDisplayLines).init(app.allocator);
@@ -372,6 +380,7 @@ pub const App = struct {
 
     pub fn deinit(self: *App) void {
         if (self.worker) |thread| thread.join();
+        self.cancel_scope.deinit();
         self.freeLines();
         self.freeEventsLines();
         self.freeTimelineLines();
@@ -5558,6 +5567,16 @@ pub const App = struct {
     }
 
     fn startAgent(self: *App, intent: []const u8, resume_id: ?[]const u8) !void {
+        var completed_worker: ?std.Thread = null;
+        self.mutex.lock();
+        if (self.worker_done) {
+            completed_worker = self.worker;
+            self.worker = null;
+            self.worker_done = false;
+        }
+        self.mutex.unlock();
+        if (completed_worker) |thread| thread.join();
+
         const ctx = try self.allocator.create(WorkerCtx);
         ctx.* = .{
             .app = self,
@@ -5600,15 +5619,11 @@ pub const App = struct {
     }
 
     fn workerDone(self: *App, ctx: *WorkerCtx, result: WorkerResult) void {
-        self.allocator.free(ctx.intent);
-        self.allocator.destroy(ctx);
-
-        self.mutex.lock();
-        self.agent_busy = false;
-        self.active_progress_len = 0;
-        self.worker = null;
-        self.markDirty();
-        self.mutex.unlock();
+        const input_token_estimate = ctx.intent.len / 4;
+        defer {
+            self.allocator.free(ctx.intent);
+            self.allocator.destroy(ctx);
+        }
 
         switch (result) {
             .ok => |payload| {
@@ -5626,11 +5641,9 @@ pub const App = struct {
                     // requiring provider-specific token counting APIs.
                     const estimated_output_tokens = text.len / 4;
                     self.total_output_tokens += estimated_output_tokens;
-                    // Estimate input tokens from the intent length.
-                    const estimated_input_tokens = ctx.intent.len / 4;
-                    self.total_input_tokens += estimated_input_tokens;
+                    self.total_input_tokens += input_token_estimate;
                     // Estimate cost: $0.01 per 1K tokens (rough average).
-                    self.total_cost_usd += @as(f64, @floatFromInt(estimated_input_tokens + estimated_output_tokens)) * 0.00001;
+                    self.total_cost_usd += @as(f64, @floatFromInt(input_token_estimate + estimated_output_tokens)) * 0.00001;
 
                     self.finalizeStreamedResponse(text) catch {};
                     self.appendConversation(.agent, text) catch {};
@@ -5650,6 +5663,13 @@ pub const App = struct {
             },
         }
         self.refreshStatus() catch {};
+
+        self.mutex.lock();
+        self.agent_busy = false;
+        self.active_progress_len = 0;
+        self.worker_done = true;
+        self.markDirty();
+        self.mutex.unlock();
     }
 
     fn appendConversation(self: *App, role: ai.conversation.Role, content: []const u8) !void {
@@ -6555,10 +6575,19 @@ pub const App = struct {
         return buf[0..out_len];
     }
 
+    fn isDiffAdditionLine(text: []const u8) bool {
+        return text.len > 0 and text[0] == '+' and (text.len == 1 or text[1] != ' ');
+    }
+
+    fn isDiffDeletionLine(text: []const u8) bool {
+        if (std.mem.startsWith(u8, text, "---") and (text.len == 3 or std.ascii.isWhitespace(text[3]))) return false;
+        return text.len > 0 and text[0] == '-' and (text.len == 1 or text[1] != ' ');
+    }
+
     fn colorForLine(kind: LineKind, text: []const u8) []const u8 {
-        if (text.len > 0 and text[0] == '+') return term.Style.bright_green;
-        if (text.len > 0 and text[0] == '-') return term.Style.bright_red;
         if (std.mem.startsWith(u8, text, "✨ Forge AI")) return term.Style.bright_green;
+        if (isDiffAdditionLine(text)) return term.Style.bright_green;
+        if (isDiffDeletionLine(text)) return term.Style.bright_red;
         if (std.mem.startsWith(u8, text, "FORGE Coding Assistant initialized.")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "Context: ")) return term.Style.gray;
         if (std.mem.startsWith(u8, text, "Edited ")) return term.Style.bright_yellow;
@@ -6575,9 +6604,10 @@ pub const App = struct {
         };
     }
 
-    fn bgForLine(text: []const u8) ?[]const u8 {
-        if (text.len > 0 and text[0] == '+') return term.Style.bg_green;
-        if (text.len > 0 and text[0] == '-') return term.Style.bg_red;
+    fn bgForLine(text: []const u8, block_state: u8) ?[]const u8 {
+        if (block_state != 2) return null;
+        if (isDiffAdditionLine(text)) return term.Style.bg_green;
+        if (isDiffDeletionLine(text)) return term.Style.bg_red;
         return null;
     }
 
@@ -6893,6 +6923,13 @@ pub const App = struct {
         return frames[self.spinner_frame % frames.len];
     }
 
+    fn appendFrameSpaces(self: *App, count: usize) void {
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            self.frame.appendSlice(" ") catch {};
+        }
+    }
+
     /// Draw the top status bar with color-coded segments (Phase 100).
     fn drawStatusBar(self: *App, cols: u16) void {
         self.frame.moveTo(1, 1);
@@ -6993,7 +7030,7 @@ pub const App = struct {
         if (col + seg8_cols + 2 < cols) {
             // Pad to right-align
             if (cols > col + seg8_cols + 1) {
-                self.frame.data.appendNTimes(self.allocator, ' ', cols - col - seg8_cols - 1) catch {};
+                self.appendFrameSpaces(cols - col - seg8_cols - 1);
             }
             if (self.term.use_color) self.frame.appendSlice(term.Style.bright_green) catch {};
             self.frame.appendSlice(seg8) catch {};
@@ -7008,7 +7045,7 @@ pub const App = struct {
 
         // Pad remaining space
         if (col < cols) {
-            self.frame.data.appendNTimes(self.allocator, ' ', cols - col) catch {};
+            self.appendFrameSpaces(cols - col);
         }
         self.frame.appendSlice("\x1b[K") catch {};
     }
@@ -7059,10 +7096,11 @@ pub const App = struct {
 
         const busy_rows: u16 = if (self.agent_busy) 1 else 0;
         const approval_rows: u16 = if (pending) 1 else 0;
-        const footer_rows: u16 = busy_rows + filtered_len + model_picker_rows + approval_rows;
+        const footer_rows: u16 = busy_rows + model_picker_rows + approval_rows;
         const status_bar_rows: u16 = 1; // Top status bar (Phase 24)
-        if (size.rows <= footer_rows + status_bar_rows + 1) return;
-        const chat_rows = size.rows - footer_rows - status_bar_rows;
+        const separator_rows: u16 = 1;
+        if (size.rows <= footer_rows + status_bar_rows + separator_rows + 1) return;
+        const chat_rows = size.rows - footer_rows - status_bar_rows - separator_rows;
 
         self.frame.begin();
 
@@ -7261,8 +7299,9 @@ pub const App = struct {
         // Draw top status bar (Phase 24) — shows model, mode, context, tokens.
         self.drawStatusBar(size.cols);
 
-        // Chat content starts at row 2 (after status bar at row 1).
-        var row: u16 = 2;
+        const first_chat_row: u16 = 2;
+        const last_chat_row: u16 = chat_rows + 1;
+        var row: u16 = first_chat_row;
         var scratch: [512]u8 = undefined;
         var live_prompt_row: ?u16 = null;
         for (display_lines.items[start..end], start..) |line, i| {
@@ -7331,7 +7370,7 @@ pub const App = struct {
             // Left padding
             if (padding > 0) {
                 if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
-                self.frame.data.appendNTimes(self.allocator, ' ', padding) catch {};
+                self.appendFrameSpaces(padding);
             }
 
             if (line.kind == .user) {
@@ -7375,7 +7414,7 @@ pub const App = struct {
             } else {
                 if (self.term.use_color) self.frame.appendSlice(color) catch {};
                 if (self.term.use_color) {
-                    if (bgForLine(line.text)) |bg| {
+                    if (bgForLine(line.text, block)) |bg| {
                         self.frame.appendSlice(bg) catch {};
                     } else if (padding > 0) {
                         self.frame.appendSlice(term.Style.bg_block) catch {};
@@ -7387,22 +7426,22 @@ pub const App = struct {
             // Right padding and fill
             if (clipped.len < text_cols) {
                 if (self.term.use_color) {
-                    if (bgForLine(line.text)) |bg| {
+                    if (bgForLine(line.text, block)) |bg| {
                         self.frame.appendSlice(bg) catch {};
                     } else if (padding > 0) {
                         self.frame.appendSlice(term.Style.bg_block) catch {};
                     }
                 }
-                self.frame.data.appendNTimes(self.allocator, ' ', text_cols - clipped.len + padding) catch {};
+                self.appendFrameSpaces(text_cols - clipped.len + padding);
             } else if (padding > 0) {
                 if (self.term.use_color) {
-                    if (bgForLine(line.text)) |bg| {
+                    if (bgForLine(line.text, block)) |bg| {
                         self.frame.appendSlice(bg) catch {};
                     } else {
                         self.frame.appendSlice(term.Style.bg_block) catch {};
                     }
                 }
-                self.frame.data.appendNTimes(self.allocator, ' ', padding) catch {};
+                self.appendFrameSpaces(padding);
             }
             if (panel_right) {
                 if (self.term.use_color) self.frame.appendSlice(term.Style.border) catch {};
@@ -7413,7 +7452,7 @@ pub const App = struct {
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             row += 1;
         }
-        while (row <= chat_rows + 1) : (row += 1) {
+        while (row <= last_chat_row) : (row += 1) {
             self.frame.moveTo(row, 1);
             self.frame.appendSlice("\x1b[2K") catch {};
         }
@@ -7434,9 +7473,32 @@ pub const App = struct {
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         }
 
+        if (show_commands and live_prompt_row != null) {
+            var command_row = live_prompt_row.? + 1;
+            for (filtered[0..filtered_len], 0..) |cmd, i| {
+                if (command_row > last_chat_row) break;
+                self.frame.moveTo(command_row, 1);
+
+                if (i == self.command_index) {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
+                    self.frame.appendSlice(" > ") catch {};
+                    self.frame.appendSlice(cmd) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                } else {
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
+                    self.frame.appendSlice("   ") catch {};
+                    self.frame.appendSlice(cmd) catch {};
+                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+                }
+                self.frame.appendSlice("\x1b[K") catch {};
+                command_row += 1;
+            }
+        }
+
         // Draw a subtle separator line between chat area and input/footer.
         // This gives a clear visual boundary for "where do I type?".
-        const separator_row = chat_rows + 1;
+        const separator_row = chat_rows + 2;
         self.frame.moveTo(separator_row, 1);
         if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
         // Draw a thin horizontal line across the full width.
@@ -7447,7 +7509,7 @@ pub const App = struct {
         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
         self.frame.appendSlice("\x1b[K") catch {};
 
-        var footer_row = chat_rows + 2;
+        var footer_row = separator_row + 1;
 
         if (self.agent_busy) {
             var thinking_buf: [128]u8 = undefined;
@@ -7538,28 +7600,6 @@ pub const App = struct {
             }
         }
 
-        if (show_commands) {
-            for (filtered[0..filtered_len], 0..) |cmd, i| {
-                const cmd_row = footer_row + @as(u16, @intCast(i));
-                self.frame.moveTo(cmd_row, 1);
-
-                if (i == self.command_index) {
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.cyan) catch {};
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.invert) catch {};
-                    self.frame.appendSlice(" > ") catch {};
-                    self.frame.appendSlice(cmd) catch {};
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-                } else {
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.dim) catch {};
-                    self.frame.appendSlice("   ") catch {};
-                    self.frame.appendSlice(cmd) catch {};
-                    if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-                }
-                self.frame.appendSlice("\x1b[K") catch {};
-            }
-            footer_row += filtered_len;
-        }
-
         if (pending) {
             var folder_scratch: [256]u8 = undefined;
             if (self.term.use_color) self.frame.appendSlice(term.Style.magenta) catch {};
@@ -7568,9 +7608,13 @@ pub const App = struct {
             footer_row += 1;
         }
 
-        // Place the real terminal cursor at the input caret, then reveal it.
-        // Fixed: properly handle multi-line input (Ctrl+J) and wrapped input.
-        if (!self.agent_busy and !pending and live_prompt_row != null) {
+        var caret_row: ?u16 = null;
+        var caret_col: u16 = 1;
+
+        // Compute the real terminal cursor position. We append the cursor move
+        // at the very end of render so later UI such as the shortcut hint bar
+        // cannot steal the terminal cursor.
+        if (!self.agent_busy and !pending and !self.show_help_overlay and live_prompt_row != null) {
             var prompt_buf: [512]u8 = undefined;
             const prompt_prefix = self.promptPrefix(&prompt_buf) catch "> project ";
             const prefix_cols = term.displayWidth(prompt_prefix);
@@ -7595,22 +7639,17 @@ pub const App = struct {
 
             // If on the first line (no newline before cursor), add prefix_cols.
             // On subsequent lines, cursor is at chat_x + indentation.
-            const caret_row: u16 = if (newline_count == 0)
+            caret_row = if (newline_count == 0)
                 live_prompt_row.?
             else
                 live_prompt_row.? + @as(u16, @intCast(newline_count));
 
             const input_gutter_cols: usize = if (chat_cols >= 64) 12 else 2;
             const input_start_col = @as(usize, chat_x) + input_gutter_cols;
-            const caret_col: u16 = if (newline_count == 0)
+            caret_col = if (newline_count == 0)
                 @intCast(@min(@as(usize, size.cols), input_start_col + prefix_cols + cursor_text_cols))
             else
                 @intCast(@min(@as(usize, size.cols), input_start_col + cursor_text_cols));
-
-            self.frame.moveTo(caret_row, caret_col);
-            self.frame.appendSlice("\x1b[?25h") catch {};
-        } else {
-            self.frame.appendSlice("\x1b[?25l") catch {};
         }
 
         if (self.show_editor) {
@@ -7693,7 +7732,7 @@ pub const App = struct {
                     }
                     self.frame.appendSlice(clipped) catch {};
                     if (clipped.len < explorer_width) {
-                        self.frame.data.appendNTimes(self.allocator, ' ', explorer_width - clipped.len) catch {};
+                        self.appendFrameSpaces(explorer_width - clipped.len);
                     }
                     if (is_selected) {
                         if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
@@ -7722,7 +7761,7 @@ pub const App = struct {
                 const overlay_row = start_row + @as(u16, @intCast(i));
                 self.frame.moveTo(overlay_row, 1);
                 if (self.term.use_color) self.frame.appendSlice(term.Style.bg_block) catch {};
-                self.frame.data.appendNTimes(self.allocator, ' ', @intCast(size.cols)) catch {};
+                self.appendFrameSpaces(@intCast(size.cols));
                 self.frame.appendSlice("\x1b[K") catch {};
                 if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             }
@@ -7760,10 +7799,17 @@ pub const App = struct {
             // Pad to end of line + clear rest.
             const hint_cols = term.displayWidth(hint);
             if (size.cols > hint_cols + 1) {
-                self.frame.data.appendNTimes(self.allocator, ' ', size.cols - hint_cols - 1) catch {};
+                self.appendFrameSpaces(size.cols - hint_cols - 1);
             }
             self.frame.appendSlice("\x1b[K") catch {};
             if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
+        }
+
+        if (caret_row) |row_pos| {
+            self.frame.moveTo(row_pos, caret_col);
+            self.frame.appendSlice("\x1b[?25h") catch {};
+        } else {
+            self.frame.appendSlice("\x1b[?25l") catch {};
         }
 
         self.frame.flush();
@@ -8258,7 +8304,7 @@ pub fn run(
     workspace_cmd.scheduleSemanticIndex(allocator, io, environ_map, opened);
 
     var scope = try cancel_scope_mod.Scope.init(allocator);
-    defer scope.deinit();
+    errdefer scope.deinit();
 
     var terminal = try term.Terminal.init(!parsed.flags.no_color);
 

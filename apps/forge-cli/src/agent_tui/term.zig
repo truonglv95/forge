@@ -105,12 +105,11 @@ pub const Terminal = struct {
         if (!self.active) return;
         // Disable: bracketed paste, mouse, show cursor.
         // We don't exit alt screen (we never entered it) — just restore cursor.
-        var restore_seq: []const u8 = "\x1b[?1007l\x1b[?2004l\x1b[?25h";
-        if (self.mouse_enabled) restore_seq = "\x1b[?1006l\x1b[?1000l\x1b[?1007l\x1b[?2004l\x1b[?25h";
-        writeAll(restore_seq) catch {};
+        writeAll("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1007l\x1b[?2004l\x1b[?25h") catch {};
         // Move cursor to bottom of screen so new shell prompt appears below.
         writeAll("\r\n") catch {};
         std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, self.saved) catch {};
+        self.mouse_enabled = false;
         self.active = false;
     }
 
@@ -455,40 +454,18 @@ pub const FrameBuffer = struct {
         self.cur_row = -1;
     }
 
-    /// Finalize the frame: flush the last row, then emit only rows that
-    /// differ from the previous frame. This is the diff-rendering hot path.
+    /// Finalize the frame: flush the last row, then emit the current rows.
+    /// The TUI can draw the same row more than once in one frame (for example
+    /// clear row, then draw at an inset column). A row-level diff cache loses
+    /// that ordering information and can skip text that should be repainted, so
+    /// we favor correctness and redraw current rows every frame.
     pub fn flush(self: *FrameBuffer) void {
         // Flush any pending row.
         self.flushCurrentRow();
 
-        // Emit home cursor once (already in data from begin()).
-        // Then for each cur_row, compare against prev_rows and emit only changed.
-        var prev_map: std.AutoHashMap(u32, []const u8) = .init(self.allocator);
-        defer prev_map.deinit();
-        if (self.prev_rows_valid) {
-            for (self.prev_rows.items) |entry| {
-                if (entry.len < 4) continue;
-                const row_num_bytes: [4]u8 = entry[0..4].*;
-                const row_num: u32 = std.mem.readInt(u32, &row_num_bytes, .little);
-                prev_map.put(row_num, entry[4..]) catch {};
-            }
-        }
-
         for (self.cur_rows.items) |entry| {
             if (entry.len < 4) continue;
-            const row_num_bytes: [4]u8 = entry[0..4].*;
-            const row_num: u32 = std.mem.readInt(u32, &row_num_bytes, .little);
-            const content = entry[4..];
-
-            const prev_content = prev_map.get(row_num);
-            if (prev_content) |pc| {
-                if (std.mem.eql(u8, pc, content)) {
-                    // Row unchanged — skip emission entirely.
-                    continue;
-                }
-            }
-            // Row changed (or new) — emit it.
-            self.data.appendSlice(self.allocator, content) catch {};
+            self.data.appendSlice(self.allocator, entry[4..]) catch {};
         }
 
         // If the number of rows shrank this frame, clear the trailing rows
