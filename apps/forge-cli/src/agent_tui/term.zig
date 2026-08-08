@@ -90,10 +90,18 @@ pub const Terminal = struct {
         // visible at the top of the scrollback. We accept this — it's
         // better than losing all history.
         //
-        // We still: hide cursor (?25l), enable bracketed paste (?2004h),
-        // and enable alternate-scroll mode (?1007h) so wheel scrolling
-        // can drive the TUI when the mouse is over the terminal.
-        try writeAll("\x1b[?25l\x1b[?2004h\x1b[?1007h");
+        // We still: hide cursor (?25l), enable bracketed paste (?2004h).
+        // Mouse tracking (?1006h = SGR format) is enabled so wheel scroll
+        // events arrive as \x1b[<{btn};{col};{row}M sequences. Without
+        // ?1006h, some terminals send mouse events in older formats that
+        // are harder to parse and cause the "5;<64;71;20M" leak (raw
+        // mouse bytes appearing as text when the parser doesn't recognize
+        // them).
+        // ?1007h = alternate-scroll mode: when mouse is over the terminal,
+        // wheel events are sent as escape sequences (for our scroll handler).
+        // Without it, wheel events go to the terminal's own scrollback
+        // and the TUI never sees them.
+        try writeAll("\x1b[?25l\x1b[?2004h\x1b[?1006h\x1b[?1007h");
         // Clear screen once at startup so we start from a clean slate.
         // After this, diff-rendering overwrites cells in place without
         // clearing the whole screen each frame.

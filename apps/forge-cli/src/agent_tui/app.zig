@@ -461,7 +461,7 @@ pub const App = struct {
             if (self.scroll != self.scroll_target) {
                 const old_scroll = self.scroll;
                 const diff: i64 = @as(i64, @intCast(self.scroll_target)) - @as(i64, @intCast(self.scroll));
-                const step: i64 = if (diff > 0) @max(1, @divFloor(diff, 4)) else @min(-1, @divFloor(diff, 4));
+                const step: i64 = if (diff > 0) @max(1, @divFloor(diff + 1, 3)) else @min(-1, @divFloor(diff - 1, 3));
                 const new_scroll_i: i64 = @as(i64, @intCast(self.scroll)) + step;
                 if (new_scroll_i < 0) {
                     self.scroll = 0;
@@ -7394,7 +7394,11 @@ pub const App = struct {
             const label = lineRoleLabel(line.kind, line.text);
             const accent = lineAccent(line.kind, line.text);
             const gutter_cols: usize = if (chat_cols >= 64) 12 else 2;
-            const panel_right: bool = line.kind == .agent and chat_cols >= 48;
+            // Disable right panel border — it wastes ~20% of screen width
+            // (the │ border + padding on each side). The chat content now
+            // extends to the full available width. This matches modern TUI
+            // tools (lazygit, gh, etc.) which don't draw right borders.
+            const panel_right = false;
             const available_cols = @as(usize, chat_cols);
             const chrome_cols: usize = gutter_cols + if (panel_right) @as(usize, 2) else @as(usize, 0);
             const content_cols: usize = if (available_cols > chrome_cols + 1) available_cols - chrome_cols - 1 else 1;
