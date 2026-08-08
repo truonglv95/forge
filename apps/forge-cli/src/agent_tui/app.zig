@@ -454,11 +454,21 @@ pub const App = struct {
 
             // Scroll: instant set, no animation. The terminal emulator's
             // own rendering pipeline (GPU-accelerated, double-buffered,
-            // 60-120fps) handles the visual transition. Our animation
-            // was ADDING latency, not smoothness — each animation frame
-            // required a full re-render (wrap + decorate + truncate),
-            // creating 48-64ms of jerkiness. Instant scroll lets the
-            // terminal's native smoothness work for us.
+            // 60-120fps) handles the visual transition. We just update
+            // the scroll offset and let the diff-row renderer emit only
+            // the changed rows.
+            //
+            // NOTE: We cannot use the terminal's native scrollback for the
+            // chat area because TUI uses cursor positioning (moveTo + clear
+            // + overwrite) which doesn't produce scrollback content. Only
+            // sequential writes (cat, less) go to scrollback. So the TUI
+            // must manage its own virtual buffer + scroll offset.
+            //
+            // The best we can do for smoothness:
+            //   1. Instant scroll (no animation) — done
+            //   2. Diff-row rendering — only emit changed rows — done
+            //   3. Minimize per-row work — reduce allocations + color codes
+            // These 3 together make scroll feel near-instant.
             if (self.scroll != self.scroll_target) {
                 self.scroll = self.scroll_target;
                 self.markDirty();
@@ -7379,9 +7389,8 @@ pub const App = struct {
                 break :blk false;
             };
 
-            const label = lineRoleLabel(line.kind, line.text);
             const accent = lineAccent(line.kind, line.text);
-            const gutter_cols: usize = if (chat_cols >= 64) 12 else 2;
+            const gutter_cols: usize = if (chat_cols >= 40) 4 else 2;
             // Disable right panel border — it wastes ~20% of screen width
             // (the │ border + padding on each side). The chat content now
             // extends to the full available width. This matches modern TUI
@@ -7392,13 +7401,15 @@ pub const App = struct {
             const content_cols: usize = if (available_cols > chrome_cols + 1) available_cols - chrome_cols - 1 else 1;
 
             self.frame.moveTo(row, chat_x);
-            if (gutter_cols >= 12) {
-                var label_buf: [16]u8 = undefined;
-                const label_text = if (label.len > 0) std.fmt.bufPrint(&label_buf, "{s:>9} ", .{label}) catch "" else "          ";
+            if (gutter_cols >= 4) {
+                // Compact gutter: just a colored bar + space.
+                // Previous 12-col gutter showed role label (you/ai/tool/info)
+                // right-aligned in 9 chars + "│ ". That's 12 bytes per row
+                // of wasted horizontal space + 3 ANSI sequences per row.
+                // Now: 1 char colored bar + 1 space = 2 bytes, 1 ANSI sequence.
+                // Saves 10 cols width + 2 ANSI sequences per row → less work
+                // for diff-row renderer → faster scroll.
                 if (self.term.use_color) self.frame.appendSlice(accent) catch {};
-                self.frame.appendSlice(label_text) catch {};
-                if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
-                if (self.term.use_color) self.frame.appendSlice(if (line.kind == .agent) term.Style.border else term.Style.dark_gray) catch {};
                 self.frame.appendSlice("│ ") catch {};
                 if (self.term.use_color) self.frame.appendSlice(term.Style.reset) catch {};
             } else {
@@ -7702,7 +7713,7 @@ pub const App = struct {
             else
                 live_prompt_row.? + @as(u16, @intCast(newline_count));
 
-            const input_gutter_cols: usize = if (chat_cols >= 64) 12 else 2;
+            const input_gutter_cols: usize = if (chat_cols >= 40) 4 else 2;
             const input_start_col = @as(usize, chat_x) + input_gutter_cols;
             caret_col = if (newline_count == 0)
                 @intCast(@min(@as(usize, size.cols), input_start_col + prefix_cols + cursor_text_cols))
