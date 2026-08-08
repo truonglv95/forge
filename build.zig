@@ -195,6 +195,19 @@ pub fn build(b: *std.Build) void {
         });
         break :blk p;
     };
+    
+    // Forge TUI module - Modern Terminal UI for CLI
+    const tui = b.addModule("forge-tui", .{
+        .root_source_file = b.path("packages/tui/src/root.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "forge-core", .module = core },
+            .{ .name = "forge-util", .module = util },
+            .{ .name = "forge-ai", .module = ai },
+            .{ .name = "forge-workspace", .module = workspace },
+        },
+    });
+    tui.linkSystemLibrary("c", .{});
 
     const cli = b.addExecutable(.{
         .name = "forge",
