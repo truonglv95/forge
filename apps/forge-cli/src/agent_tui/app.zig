@@ -453,41 +453,44 @@ pub const App = struct {
             const busy = self.agent_busy;
 
             // Smooth scroll animation — animate scroll towards scroll_target.
-            // Moves 1-2 lines per frame (every 16ms = ~60-120 lines/sec),
-            // producing a gliding effect instead of instant jumps.
+            // IMPORTANT: only mark dirty if scroll ACTUALLY changed. If scroll
+            // hit a limit (max_scroll or 0) and can't move further towards
+            // target, snap target to current to stop the animation. Without
+            // this, scroll_target > max_scroll creates an infinite busy-loop
+            // that sets dirty every frame → 100% CPU → Mac heat.
             if (self.scroll != self.scroll_target) {
+                const old_scroll = self.scroll;
                 const diff: i64 = @as(i64, @intCast(self.scroll_target)) - @as(i64, @intCast(self.scroll));
                 const step: i64 = if (diff > 0) @max(1, @divFloor(diff, 4)) else @min(-1, @divFloor(diff, 4));
                 const new_scroll_i: i64 = @as(i64, @intCast(self.scroll)) + step;
                 if (new_scroll_i < 0) {
                     self.scroll = 0;
-                    self.scroll_target = 0;
                 } else {
                     self.scroll = @intCast(new_scroll_i);
                 }
-                // Snap to target when close enough (within 1 line).
-                if (@as(i64, @intCast(self.scroll)) - @as(i64, @intCast(self.scroll_target)) > -2 and
-                    @as(i64, @intCast(self.scroll)) - @as(i64, @intCast(self.scroll_target)) < 2)
-                {
-                    self.scroll = self.scroll_target;
+                // If scroll didn't change (hit a limit), snap target to
+                // current to terminate the animation.
+                if (self.scroll == old_scroll) {
+                    self.scroll_target = self.scroll;
+                } else {
+                    self.markDirty();
                 }
-                self.markDirty();
             }
 
-            // Keep busy rendering smooth. The diff-row renderer makes each
-            // frame cheap (only changed rows are emitted), so we can render
-            // at 30fps during streaming without CPU spike. Previous 50ms
-            // interval (20fps) was OK but 33ms (30fps) feels noticeably
-            // smoother for streaming text — chunks appear to flow in.
+            // Render interval — always respected, even when idle. The
+            // previous `or !busy` bypass caused dirty=true to trigger
+            // immediate render every loop iteration, bypassing the 16ms
+            // cap. Now: dirty + interval must both be satisfied.
             if (busy and now - self.spinner_last_ms >= 120) {
                 self.spinner_frame +%= 1;
                 self.spinner_last_ms = now;
                 self.markDirty();
             }
-            // 33ms during busy (30fps) — smoother streaming, chunks appear
-            // to flow in. 16ms when idle (60fps cap) — responsive to keystrokes.
+            // 33ms during busy (30fps) — smoother streaming. 16ms when idle
+            // (60fps cap) — responsive to keystrokes. Interval is ALWAYS
+            // respected — no bypass when idle.
             const render_interval: i64 = if (busy) 33 else self.render_min_interval_ms;
-            const should_render = self.dirty and (now - self.last_render_ms >= render_interval or !busy);
+            const should_render = self.dirty and (now - self.last_render_ms >= render_interval);
             if (should_render) {
                 // Hide cursor before render to prevent flicker.
                 term.writeAll("\x1b[?25l") catch {};
@@ -509,7 +512,15 @@ pub const App = struct {
             }
 
             const key = self.term.readKey() catch break;
-            if (key == .none) continue;
+            if (key == .none) {
+                // No input available — sleep briefly to prevent busy-wait.
+                // V.TIME=1 blocks read() for up to 100ms, but some terminals
+                // or multiplexers (tmux, screen) may override termios settings,
+                // causing read() to return immediately. This sleep ensures
+                // we never spin at 100% CPU even if V.TIME doesn't work.
+                term.sleepMs(1);
+                continue;
+            }
             try self.handleKey(key);
         }
         // Ensure cursor is visible on exit.
