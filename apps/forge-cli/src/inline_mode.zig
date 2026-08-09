@@ -79,8 +79,6 @@ pub fn run(
     var quit = false;
     var first_render = true;
     _ = &first_render;
-    var show_cmd_suggestions = false;
-    var cmd_suggestion_index: usize = 0;
     var in_model_picker = false;
     var model_picker_index: usize = 0;
 
@@ -136,11 +134,6 @@ pub fn run(
 
         switch (k) {
             .enter => {
-                // Clear suggestion popup if showing
-                if (show_cmd_suggestions) {
-                    clearCmdSuggestions();
-                    show_cmd_suggestions = false;
-                }
                 _ = writeAll("\r\n");
                 if (input_buf.items.len == 0) continue;
 
@@ -217,7 +210,6 @@ pub fn run(
                 if (input_buf.items.len > 0) {
                     input_buf.clearRetainingCapacity();
                     cursor = 0;
-                    show_cmd_suggestions = false;
                     _ = writeAll("^C\r\n");
                 } else {
                     quit = true;
@@ -230,56 +222,35 @@ pub fn run(
                     // Move cursor left 1, then redraw from cursor to end.
                     _ = writeAll("\x1b[D");
                     redrawInputLine(&input_buf, cursor);
-                    // Update suggestions
-                    if (input_buf.items.len > 0 and input_buf.items[0] == '/') {
-                        show_cmd_suggestions = true;
-                        cmd_suggestion_index = 0;
-                        printCmdSuggestions(input_buf.items, cmd_suggestion_index);
-                    } else {
-                        if (show_cmd_suggestions) clearCmdSuggestions();
-                        show_cmd_suggestions = false;
-                    }
                 }
             },
             .up => {
-                if (show_cmd_suggestions) {
-                    // Navigate suggestions
-                    if (cmd_suggestion_index > 0) cmd_suggestion_index -= 1;
-                    clearCmdSuggestions();
-                    printCmdSuggestions(input_buf.items, cmd_suggestion_index);
-                } else {
-                    // History navigation
-                    if (history.items.len > 0) {
-                        var pos = history_pos orelse history.items.len;
-                        if (pos > 0) pos -= 1;
-                        history_pos = pos;
-                        // Clear current line + reprint prompt + history item.
-                        _ = writeAll("\r\x1b[K");
-                        redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
-                        _ = writeAll(input_buf.items);
-                    }
+                // History navigation only (no suggestion navigation in inline mode)
+                if (history.items.len > 0) {
+                    var pos = history_pos orelse history.items.len;
+                    if (pos > 0) pos -= 1;
+                    history_pos = pos;
+                    // Clear current line + reprint prompt + history item.
+                    _ = writeAll("\r\x1b[K");
+                    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+                    _ = writeAll(input_buf.items);
                 }
             },
             .down => {
-                if (show_cmd_suggestions) {
-                    cmd_suggestion_index += 1;
-                    clearCmdSuggestions();
-                    printCmdSuggestions(input_buf.items, cmd_suggestion_index);
-                } else {
-                    if (history.items.len > 0) {
-                        var pos = history_pos orelse history.items.len;
-                        if (pos < history.items.len) pos += 1;
-                        history_pos = if (pos >= history.items.len) null else pos;
-                        input_buf.clearRetainingCapacity();
-                        if (history_pos) |p| {
-                            input_buf.appendSlice(allocator, history.items[p]) catch {};
-                        }
-                        cursor = input_buf.items.len;
-                        // Clear current line + reprint prompt + history item.
-                        _ = writeAll("\r\x1b[K");
-                        redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
-                        _ = writeAll(input_buf.items);
+                // History navigation only
+                if (history.items.len > 0) {
+                    var pos = history_pos orelse history.items.len;
+                    if (pos < history.items.len) pos += 1;
+                    history_pos = if (pos >= history.items.len) null else pos;
+                    input_buf.clearRetainingCapacity();
+                    if (history_pos) |p| {
+                        input_buf.appendSlice(allocator, history.items[p]) catch {};
                     }
+                    cursor = input_buf.items.len;
+                    // Clear current line + reprint prompt + history item.
+                    _ = writeAll("\r\x1b[K");
+                    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+                    _ = writeAll(input_buf.items);
                 }
             },
             .left => {
@@ -299,7 +270,7 @@ pub fn run(
                     if (input_buf.items.len > 0) {
                         input_buf.clearRetainingCapacity();
                         cursor = 0;
-                        show_cmd_suggestions = false;
+
                         _ = writeAll("^C\r\n");
                         redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
                     } else {
@@ -310,7 +281,7 @@ pub fn run(
                 } else if (ch == 21) { // Ctrl+U — clear line
                     input_buf.clearRetainingCapacity();
                     cursor = 0;
-                    show_cmd_suggestions = false;
+
                     // Redraw: \r + clear + prompt
                     _ = writeAll("\r\x1b[K");
                     redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
@@ -324,9 +295,6 @@ pub fn run(
                     cursor += 1;
                     // SIMPLE ECHO: just write the character directly.
                     // This is how bash/zsh work — no line clear, no redraw.
-                    // The terminal handles cursor movement natively.
-                    // Only redraw the full line if cursor is in the middle
-                    // (need to shift characters right).
                     if (cursor == input_buf.items.len) {
                         // Cursor at end — just echo the character.
                         var ch_buf: [1]u8 = .{ch};
@@ -335,17 +303,8 @@ pub fn run(
                         // Cursor in middle — redraw line from cursor onward.
                         redrawInputLine(&input_buf, cursor);
                     }
-                    // Show/update suggestions when typing /
-                    if (input_buf.items.len > 0 and input_buf.items[0] == '/') {
-                        if (!show_cmd_suggestions) {
-                            show_cmd_suggestions = true;
-                            cmd_suggestion_index = 0;
-                        }
-                        printCmdSuggestions(input_buf.items, cmd_suggestion_index);
-                    } else {
-                        if (show_cmd_suggestions) clearCmdSuggestions();
-                        show_cmd_suggestions = false;
-                    }
+                    // No suggestion popup in inline mode — keeps it simple
+                    // and fast. Use --tui for autocomplete popups.
                 }
             },
             .escape, .none => {},
