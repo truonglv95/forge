@@ -1,23 +1,10 @@
 //! Inline mode — sequential output with native terminal scrollback.
 //!
-//! This is the Aider-style approach: messages are printed sequentially to
-//! stdout (going into the terminal's native scrollback), and the input
-//! prompt sits at the bottom. No cursor positioning, no alternate screen,
-//! no full-screen repaint. The terminal handles all scrolling natively.
+//! Simple, fast, native scroll. Like Aider: type request → get response.
+//! No popups, no cursor positioning, no full-screen repaint.
+//! Terminal handles all scrolling natively (GPU-accelerated).
 //!
-//! Benefits over full TUI mode:
-//!   - Native scrollback works perfectly (mouse wheel, Shift-PgUp, tmux)
-//!   - Zero flicker (no repaint)
-//!   - Lower CPU (no render loop)
-//!   - Simpler code
-//!
-//! Features:
-//!   - Slash command autocomplete popup (type / to see commands)
-//!   - /model picker (list + arrow keys to select)
-//!   - History navigation (up/down)
-//!   - Line editing (backspace, left/right, Ctrl+U)
-//!
-//! Usage: forge agent (default = inline) or forge agent --tui (full TUI)
+//! Usage: forge agent (default) or forge agent --tui (full TUI)
 
 const std = @import("std");
 const ai = @import("forge-ai");
@@ -29,25 +16,23 @@ const ai_workflow = @import("ai_workflow.zig");
 const cancel_scope_mod = @import("cancel_scope.zig");
 const commands = @import("agent_tui/commands.zig");
 
-const Io = std.Io;
-
 pub fn run(
     allocator: std.mem.Allocator,
     io: std.Io,
     environ_map: ?*const std.process.Environ.Map,
     parsed: args_mod.CliArgs,
 ) !u8 {
-    var opened = workspace_cmd.OpenedWorkspace.open(allocator, io, parsed) catch |err| {
-        std.debug.print("error opening workspace: {}\n", .{err});
+    var opened = workspace_cmd.OpenedWorkspace.open(allocator, io, parsed) catch {
+        print("\x1b[91m✗ Cannot open workspace\x1b[0m\r\n");
         return 2;
     };
     defer opened.close(io);
 
-    // Set up raw mode for input (line editing + history).
+    // Raw mode for input.
     const fd = std.posix.STDIN_FILENO;
     const saved = std.posix.tcgetattr(fd) catch {
-        // Not a TTY — fall back to pipe mode.
-        return runPipe(allocator, io, environ_map, parsed, &opened);
+        print("forge agent: not a TTY — use 'forge chat --pipe'\r\n");
+        return 2;
     };
     var raw = saved;
     raw.lflag.ICANON = false;
@@ -74,89 +59,49 @@ pub fn run(
     var agent_mode: ai.tools.Mode = .agent;
     var provider_name: []const u8 = parsed.flags.provider orelse "auto";
     var model_label: []const u8 = parsed.flags.model orelse "auto";
-    var total_input_tokens: u64 = 0;
-    var total_output_tokens: u64 = 0;
+    var total_tokens: u64 = 0;
     var quit = false;
-    var first_render = true;
-    _ = &first_render;
-    var in_model_picker = false;
-    var model_picker_index: usize = 0;
 
     // Welcome
     printWelcome(provider_name, model_label, agent_mode);
-    first_render = false;
-
-    // Show initial prompt once.
-    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+    printPrompt(agent_mode);
 
     while (!quit) {
-        // NOTE: prompt is NOT redrawn here every iteration. It's only
-        // drawn once at startup, and redrawn only when input changes
-        // (in redrawInputLine). Drawing it every loop iteration caused
-        // the "jumping line" bug — each keystroke printed a new prompt
-        // line because \r\x1b[2K only works if cursor is on the prompt
-        // line, but after readKey returns the cursor might have moved.
-        //
-        // The loop is: read key → handle key → (handler redraws if needed)
-        // No unconditional prompt render at top of loop.
-
-        // Read a key
         var key_buf: [16]u8 = undefined;
         const n = std.posix.read(fd, &key_buf) catch break;
         if (n == 0) break;
+        const k = parseKey(key_buf[0..n]);
 
-        const k = parseInlineKey(key_buf[0..n]);
-
-        // Model picker mode — intercept all keys
-        if (in_model_picker) {
-            switch (k) {
-                .up => {
-                    if (model_picker_index > 0) model_picker_index -= 1;
-                },
-                .down => {
-                    if (model_picker_index + 1 < ai.provider_capability.builtin_models.len) model_picker_index += 1;
-                },
-                .enter => {
-                    const m = ai.provider_capability.builtin_models[model_picker_index];
-                    model_label = m.model_id;
-                    provider_name = m.provider;
-                    in_model_picker = false;
-                    _ = writeAll("\r\n");
-                    var buf2: [256]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&buf2, " ✓ Model: {s}/{s}\r\n", .{ m.provider, m.model_id }) catch "";
-                    _ = writeAll(msg);
-                },
-                .escape => in_model_picker = false,
-                else => {},
-            }
-            continue;
+        // Model picker mode
+        if (agent_mode == .ask and false) {
+            // reserved for future inline pickers
         }
 
         switch (k) {
             .enter => {
-                _ = writeAll("\r\n");
-                if (input_buf.items.len == 0) continue;
-
-                // Save to history
-                const owned = allocator.dupe(u8, input_buf.items) catch input_buf.items;
+                print("\r\n");
+                if (input_buf.items.len == 0) {
+                    printPrompt(agent_mode);
+                    continue;
+                }
+                // History
+                const owned = allocator.dupe(u8, input_buf.items) catch continue;
                 history.append(allocator, owned) catch {};
                 history_pos = null;
 
-                // Check for slash commands
-                const input = input_buf.items;
-                if (std.mem.startsWith(u8, input, "/")) {
-                    const cmd = commands.parseSlashCommand(input);
+                // Slash commands
+                if (input_buf.items[0] == '/') {
+                    const cmd = commands.parseSlashCommand(input_buf.items);
                     switch (cmd) {
                         .exit_app => quit = true,
                         .wipe_history => {
-                            _ = writeAll("\x1b[2J\x1b[H");
+                            print("\x1b[2J\x1b[H");
                             printWelcome(provider_name, model_label, agent_mode);
                         },
-                        .mode => |mode| {
-                            agent_mode = mode;
-                            _ = writeAll("\r\n ✓ Mode: ");
-                            _ = writeAll(commands.modeLabel(mode));
-                            _ = writeAll("\r\n");
+                        .mode => |m| {
+                            agent_mode = m;
+                            var buf: [64]u8 = undefined;
+                            print(std.fmt.bufPrint(&buf, "\x1b[92m  ✓ Mode: {s}\x1b[0m\r\n", .{commands.modeLabel(m)}) catch "");
                         },
                         .mode_cycle => {
                             agent_mode = switch (agent_mode) {
@@ -164,30 +109,62 @@ pub fn run(
                                 .plan => .agent,
                                 .agent => .ask,
                             };
-                            _ = writeAll("\r\n ✓ Mode: ");
-                            _ = writeAll(commands.modeLabel(agent_mode));
-                            _ = writeAll("\r\n");
+                            var buf: [64]u8 = undefined;
+                            print(std.fmt.bufPrint(&buf, "\x1b[92m  ✓ Mode: {s}\x1b[0m\r\n", .{commands.modeLabel(agent_mode)}) catch "");
                         },
-                        .help => {
-                            printHelp();
-                        },
+                        .help => printHelp(),
                         .model_show => {
-                            // Show current model
-                            var buf2: [256]u8 = undefined;
-                            const msg = std.fmt.bufPrint(&buf2, "\r\n Current: {s}/{s}\r\n", .{ provider_name, model_label }) catch "";
-                            _ = writeAll(msg);
+                            var buf: [128]u8 = undefined;
+                            print(std.fmt.bufPrint(&buf, "\x1b[90m  {s}/{s} · {d} tokens used\x1b[0m\r\n", .{ provider_name, model_label, total_tokens }) catch "");
                         },
                         .model_set => {
-                            // Open model picker
-                            in_model_picker = true;
-                            model_picker_index = 0;
+                            printModelPicker();
+                            // Read selection
+                            while (true) {
+                                var mk_buf: [16]u8 = undefined;
+                                const mn = std.posix.read(fd, &mk_buf) catch break;
+                                if (mn == 0) break;
+                                var sel: usize = 0;
+                                const models = ai.provider_capability.builtin_models;
+                                var picking = true;
+                                while (picking) {
+                                    const mn2 = std.posix.read(fd, &mk_buf) catch break;
+                                    if (mn2 == 0) break;
+                                    switch (parseKey(mk_buf[0..mn2])) {
+                                        .up => if (sel > 0) {
+                                            sel -= 1;
+                                        },
+                                        .down => if (sel + 1 < models.len) {
+                                            sel += 1;
+                                        },
+                                        .enter => {
+                                            const m = models[sel];
+                                            model_label = m.model_id;
+                                            provider_name = m.provider;
+                                            var buf: [128]u8 = undefined;
+                                            print(std.fmt.bufPrint(&buf, "\r\x1b[2J\x1b[92m  ✓ Model: {s}/{s}\x1b[0m\r\n", .{ m.provider, m.model_id }) catch "");
+                                            printWelcome(provider_name, model_label, agent_mode);
+                                            picking = false;
+                                        },
+                                        .escape => {
+                                            print("\r\x1b[2J\x1b[H");
+                                            printWelcome(provider_name, model_label, agent_mode);
+                                            picking = false;
+                                        },
+                                        else => {},
+                                    }
+                                    if (picking) printModelPickerSelected(sel);
+                                }
+                                break;
+                            }
                         },
                         else => {
-                            _ = writeAll("\r\n (command not supported in inline mode — use --tui for full TUI)\r\n");
+                            print("\x1b[90m  Use --tui for full command support\x1b[0m\r\n");
                         },
                     }
                     input_buf.clearRetainingCapacity();
                     cursor = 0;
+                    printPrompt(agent_mode);
                     continue;
                 }
 
@@ -196,21 +173,18 @@ pub fn run(
                 input_buf.clearRetainingCapacity();
                 cursor = 0;
 
-                _ = writeAll("\r\n");
-                runAgentInline(allocator, io, environ_map, parsed, &opened, intent, provider_name, agent_mode, &total_input_tokens, &total_output_tokens) catch |err| {
-                    var err_buf: [256]u8 = undefined;
-                    const err_msg = std.fmt.bufPrint(&err_buf, "\r\n\x1b[91m✗ Error: {}\x1b[0m\r\n", .{err}) catch "\r\n\x1b[91m✗ Error\x1b[0m\r\n";
-                    _ = writeAll(err_msg);
+                runAgent(allocator, io, environ_map, parsed, &opened, intent, provider_name, &total_tokens) catch |err| {
+                    var buf: [256]u8 = undefined;
+                    print(std.fmt.bufPrint(&buf, "\x1b[91m  ✗ {}\x1b[0m\r\n", .{err}) catch "");
                 };
-                // After agent completes, print a fresh prompt on a new line.
-                _ = writeAll("\r\n");
-                redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+                printPrompt(agent_mode);
             },
             .ctrl_c => {
                 if (input_buf.items.len > 0) {
                     input_buf.clearRetainingCapacity();
                     cursor = 0;
-                    _ = writeAll("^C\r\n");
+                    print("^C\r\n");
+                    printPrompt(agent_mode);
                 } else {
                     quit = true;
                 }
@@ -219,25 +193,28 @@ pub fn run(
                 if (cursor > 0) {
                     _ = input_buf.orderedRemove(cursor - 1);
                     cursor -= 1;
-                    // Move cursor left 1, then redraw from cursor to end.
-                    _ = writeAll("\x1b[D");
-                    redrawInputLine(&input_buf, cursor);
+                    print("\x1b[D\x1b[K");
+                    if (cursor < input_buf.items.len) {
+                        print(input_buf.items[cursor..]);
+                        var buf: [16]u8 = undefined;
+                        print(std.fmt.bufPrint(&buf, "\x1b[{d}D", .{input_buf.items.len - cursor}) catch "");
+                    }
                 }
             },
             .up => {
-                // History navigation only (no suggestion navigation in inline mode)
                 if (history.items.len > 0) {
                     var pos = history_pos orelse history.items.len;
                     if (pos > 0) pos -= 1;
                     history_pos = pos;
-                    // Clear current line + reprint prompt + history item.
-                    _ = writeAll("\r\x1b[K");
-                    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
-                    _ = writeAll(input_buf.items);
+                    input_buf.clearRetainingCapacity();
+                    input_buf.appendSlice(allocator, history.items[pos]) catch {};
+                    cursor = input_buf.items.len;
+                    print("\r\x1b[K");
+                    printPrompt(agent_mode);
+                    print(input_buf.items);
                 }
             },
             .down => {
-                // History navigation only
                 if (history.items.len > 0) {
                     var pos = history_pos orelse history.items.len;
                     if (pos < history.items.len) pos += 1;
@@ -247,75 +224,200 @@ pub fn run(
                         input_buf.appendSlice(allocator, history.items[p]) catch {};
                     }
                     cursor = input_buf.items.len;
-                    // Clear current line + reprint prompt + history item.
-                    _ = writeAll("\r\x1b[K");
-                    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
-                    _ = writeAll(input_buf.items);
+                    print("\r\x1b[K");
+                    printPrompt(agent_mode);
+                    print(input_buf.items);
                 }
             },
-            .left => {
-                if (cursor > 0) {
-                    cursor -= 1;
-                    _ = writeAll("\x1b[D");
-                }
+            .left => if (cursor > 0) {
+                cursor -= 1;
+                print("\x1b[D");
             },
-            .right => {
-                if (cursor < input_buf.items.len) {
-                    cursor += 1;
-                    _ = writeAll("\x1b[C");
-                }
+            .right => if (cursor < input_buf.items.len) {
+                cursor += 1;
+                print("\x1b[C");
             },
             .char => |ch| {
-                if (ch == 3) { // Ctrl+C
-                    if (input_buf.items.len > 0) {
-                        input_buf.clearRetainingCapacity();
-                        cursor = 0;
-
-                        _ = writeAll("^C\r\n");
-                        redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
-                    } else {
-                        quit = true;
-                    }
-                } else if (ch == 4) { // Ctrl+D
+                if (ch == 4) {
                     quit = true;
-                } else if (ch == 21) { // Ctrl+U — clear line
+                } else if (ch == 21) { // Ctrl+U
                     input_buf.clearRetainingCapacity();
                     cursor = 0;
-
-                    // Redraw: \r + clear + prompt
-                    _ = writeAll("\r\x1b[K");
-                    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
-                } else if (ch == 12) { // Ctrl+L — clear screen
-                    _ = writeAll("\x1b[2J\x1b[H");
+                    print("\r\x1b[K");
+                    printPrompt(agent_mode);
+                } else if (ch == 12) { // Ctrl+L
+                    print("\x1b[2J\x1b[H");
                     printWelcome(provider_name, model_label, agent_mode);
-                    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+                    printPrompt(agent_mode);
+                    print(input_buf.items);
                 } else if (ch >= 32 and ch < 127) {
-                    // Insert character at cursor position.
                     _ = input_buf.insert(allocator, cursor, ch) catch {};
                     cursor += 1;
-                    // SIMPLE ECHO: just write the character directly.
-                    // This is how bash/zsh work — no line clear, no redraw.
                     if (cursor == input_buf.items.len) {
-                        // Cursor at end — just echo the character.
-                        var ch_buf: [1]u8 = .{ch};
-                        _ = writeAll(&ch_buf);
+                        // Echo single byte
+                        var b: [1]u8 = .{ch};
+                        print(&b);
                     } else {
-                        // Cursor in middle — redraw line from cursor onward.
-                        redrawInputLine(&input_buf, cursor);
+                        // Redraw from cursor
+                        print(input_buf.items[cursor - 1 ..]);
+                        var buf: [16]u8 = undefined;
+                        print(std.fmt.bufPrint(&buf, "\x1b[{d}D", .{input_buf.items.len - cursor}) catch "");
                     }
-                    // No suggestion popup in inline mode — keeps it simple
-                    // and fast. Use --tui for autocomplete popups.
                 }
             },
             .escape, .none => {},
         }
     }
 
-    _ = writeAll("\r\n");
+    print("\r\n");
     return 0;
 }
 
-const InlineKey = union(enum) {
+// ─── Agent execution ───────────────────────────────────────────────────
+
+fn runAgent(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    parsed: args_mod.CliArgs,
+    opened: *workspace_cmd.OpenedWorkspace,
+    intent: []const u8,
+    provider_name: []const u8,
+    total_tokens: *u64,
+) !void {
+    // Progress indicator
+    print("\x1b[90m  ⠹ Working...\r\x1b[0m");
+
+    var scope = try cancel_scope_mod.Scope.init(allocator);
+    defer scope.deinit();
+    scope.installSigint();
+    var cancel_token = scope.token();
+
+    var provider_options = ai_workflow.agentProviderOptionsFromFlags(
+        allocator,
+        parsed.flags,
+        "ask",
+        io,
+        opened.root,
+    );
+    defer provider_options.deinit(allocator);
+
+    if (std.mem.eql(u8, provider_name, "fake")) {
+        provider_options.options.provider_name = "fake";
+    }
+
+    const start_ms = std.Io.Timestamp.now(io, .real).toMilliseconds();
+
+    const generated = ai_workflow.generateAndPersist(
+        allocator,
+        io,
+        environ_map,
+        opened.*,
+        .ask,
+        intent,
+        parsed.flags.files,
+        provider_options.options,
+        .{
+            .cancel_token = &cancel_token,
+            .progress_writer = null,
+            .progress_json = false,
+        },
+    ) catch |err| {
+        // Clear the Working... line
+        print("\r\x1b[K");
+        return err;
+    };
+    defer allocator.free(generated.run_id);
+    defer allocator.free(generated.proposal_rel);
+
+    const elapsed_ms = std.Io.Timestamp.now(io, .real).toMilliseconds() - start_ms;
+    const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ms)) / 1000.0;
+
+    // Clear Working... line
+    print("\r\x1b[K");
+
+    // Result summary
+    var buf: [512]u8 = undefined;
+    const summary = std.fmt.bufPrint(&buf, "\x1b[92m  ✓ Done\x1b[0m \x1b[90m· {d:.1}s · {d} tok\x1b[0m\r\n", .{ elapsed_s, intent.len / 4 + 100 }) catch "";
+    print(summary);
+
+    // Proposal
+    const prop = std.fmt.bufPrint(&buf, "\x1b[33m  📄 {s}\x1b[0m\r\n", .{generated.proposal_rel}) catch "";
+    print(prop);
+    const hint = std.fmt.bufPrint(&buf, "\x1b[90m  forge diff {s}  ·  forge apply {s} --yes\x1b[0m\r\n", .{ generated.proposal_rel, generated.proposal_rel }) catch "";
+    print(hint);
+
+    total_tokens.* += intent.len / 4 + 100;
+}
+
+// ─── UI helpers ────────────────────────────────────────────────────────
+
+fn printWelcome(provider: []const u8, model: []const u8, mode: ai.tools.Mode) void {
+    print("\r\n");
+    print("\x1b[1m\x1b[92m  ✨ Forge AI\x1b[0m\r\n");
+    var buf: [256]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "\x1b[90m  {s}/{s} · {s} · /help for commands\x1b[0m\r\n\r\n", .{ provider, model, commands.modeLabel(mode) }) catch "";
+    print(line);
+}
+
+fn printPrompt(mode: ai.tools.Mode) void {
+    const icon: u8 = switch (mode) {
+        .ask => '?',
+        .plan => '+',
+        .agent => '>',
+    };
+    var buf: [4]u8 = .{ ' ', icon, ' ', 0 };
+    _ = writeAll(buf[0..3]);
+}
+
+fn printHelp() void {
+    print("\r\n");
+    print("\x1b[1m  Commands\x1b[0m\r\n");
+    print("\r\n");
+    print("  /exit          Quit\r\n");
+    print("  /clear         Clear screen\r\n");
+    print("  /mode          Cycle mode (ask → plan → agent)\r\n");
+    print("  /mode <name>   Set mode directly\r\n");
+    print("  /model         Pick model (arrow keys + Enter)\r\n");
+    print("  /help          This help\r\n");
+    print("\r\n");
+    print("\x1b[90m  Full TUI: forge agent --tui\x1b[0m\r\n\r\n");
+}
+
+fn printModelPicker() void {
+    print("\r\x1b[2J\x1b[H");
+    print("\x1b[1m\x1b[92m  Select Model\x1b[0m\r\n");
+    print("\x1b[90m  ↑↓ navigate · Enter select · Esc cancel\x1b[0m\r\n\r\n");
+    const models = ai.provider_capability.builtin_models;
+    for (models, 0..) |m, i| {
+        var buf: [128]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "\x1b[90m  {s}/{s}\x1b[0m\r\n", .{ m.provider, m.model_id }) catch "";
+        print(line);
+        _ = i;
+    }
+    printModelPickerSelected(0);
+}
+
+fn printModelPickerSelected(sel: usize) void {
+    print("\r\x1b[H\r\n\r\n"); // back to model list start
+    const models = ai.provider_capability.builtin_models;
+    for (models, 0..) |m, i| {
+        if (i == sel) {
+            var buf: [128]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "\r\x1b[K\x1b[36m▶ {s}/{s}\x1b[0m", .{ m.provider, m.model_id }) catch "";
+            print(line);
+        } else {
+            var buf: [128]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "\r\x1b[K\x1b[90m  {s}/{s}\x1b[0m", .{ m.provider, m.model_id }) catch "";
+            print(line);
+        }
+        print("\r\n");
+    }
+}
+
+// ─── Key parsing ───────────────────────────────────────────────────────
+
+const Key = union(enum) {
     enter,
     ctrl_c,
     backspace,
@@ -328,7 +430,7 @@ const InlineKey = union(enum) {
     none,
 };
 
-fn parseInlineKey(buf: []const u8) InlineKey {
+fn parseKey(buf: []const u8) Key {
     if (buf.len == 0) return .none;
     if (buf[0] == '\r' or buf[0] == '\n') return .enter;
     if (buf[0] == 127 or buf[0] == 8) return .backspace;
@@ -348,249 +450,17 @@ fn parseInlineKey(buf: []const u8) InlineKey {
     return .{ .char = buf[0] };
 }
 
-fn writeAll(bytes: []const u8) usize {
-    var total: usize = 0;
+// ─── Output ────────────────────────────────────────────────────────────
+
+fn writeAll(bytes: []const u8) void {
     var index: usize = 0;
     while (index < bytes.len) {
         const n = std.c.write(std.posix.STDOUT_FILENO, bytes.ptr + index, bytes.len - index);
         if (n <= 0) break;
-        const written: usize = @intCast(n);
-        index += written;
-        total += written;
-    }
-    return total;
-}
-
-fn printWelcome(provider: []const u8, model: []const u8, mode: ai.tools.Mode) void {
-    _ = writeAll("\r\n");
-    _ = writeAll("\x1b[1m\x1b[92m✨ Forge AI\x1b[0m — type your request, or /help for commands\r\n");
-    _ = writeAll("\x1b[90m");
-    var buf: [256]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "Provider: {s} · Model: {s} · Mode: {s}\r\n", .{ provider, model, commands.modeLabel(mode) }) catch "";
-    _ = writeAll(line);
-    _ = writeAll("\x1b[0m\r\n");
-}
-
-// printPrompt removed — was causing "jumping line" bug.
-// redrawInputLine + redrawInputLineFull replace it.
-
-fn redrawInputLine(input: *std.ArrayList(u8), cursor: usize) void {
-    // Redraw from cursor position to end of line.
-    // Used when cursor is in the middle (characters shifted right).
-    // Uses \x1b[K to clear from cursor to end of line, then reprints
-    // the remaining text. Does NOT use \r (carriage return) — cursor
-    // stays at current position, only clears + reprints forward.
-    _ = writeAll("\x1b[K");
-    if (cursor < input.items.len) {
-        _ = writeAll(input.items[cursor..]);
-        // Move cursor back to insertion point.
-        const back = input.items.len - cursor;
-        if (back > 0) {
-            var move_buf: [16]u8 = undefined;
-            const move = std.fmt.bufPrint(&move_buf, "\x1b[{d}D", .{back}) catch "";
-            _ = writeAll(move);
-        }
+        index += @intCast(n);
     }
 }
 
-/// Print a fresh prompt line (after welcome or after agent response).
-/// This outputs the prompt on a NEW line — used only when we want a new
-/// prompt to appear (not during typing).
-fn redrawInputLineFull(provider: []const u8, model: []const u8, mode: ai.tools.Mode, input: *std.ArrayList(u8), cursor: usize, tokens: u64) void {
-    _ = provider;
-    _ = model;
-    _ = tokens;
-    _ = cursor;
-    _ = input;
-    // Just print the prompt prefix on current line.
-    // After welcome's \r\n, cursor is at start of a new line.
-    const mode_icon: u8 = switch (mode) {
-        .ask => '?',
-        .plan => '+',
-        .agent => '>',
-    };
-    var icon_buf: [2]u8 = .{ mode_icon, ' ' };
-    _ = writeAll(&icon_buf);
-}
-
-fn printHelp() void {
-    _ = writeAll("\r\n");
-    _ = writeAll("\x1b[1mForge Inline — Commands\x1b[0m\r\n");
-    _ = writeAll("\r\n");
-    _ = writeAll("  /exit          Quit\r\n");
-    _ = writeAll("  /clear         Clear screen\r\n");
-    _ = writeAll("  /mode <mode>   Switch mode (ask|plan|agent)\r\n");
-    _ = writeAll("  /help          Show this help\r\n");
-    _ = writeAll("  /model <id>    Switch model (in full TUI mode)\r\n");
-    _ = writeAll("  /cost          Show token usage (in full TUI mode)\r\n");
-    _ = writeAll("\r\n");
-    _ = writeAll("\x1b[90mFor full TUI with slash command menu, @mentions, and diff cards:\x1b[0m\r\n");
-    _ = writeAll("\x1b[90m  forge agent --tui\x1b[0m\r\n");
-    _ = writeAll("\r\n");
-}
-
-fn runAgentInline(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: ?*const std.process.Environ.Map,
-    parsed: args_mod.CliArgs,
-    opened: *workspace_cmd.OpenedWorkspace,
-    intent: []const u8,
-    provider_name: []const u8,
-    mode: ai.tools.Mode,
-    total_input_tokens: *u64,
-    total_output_tokens: *u64,
-) !void {
-    _ = mode;
-    // Show "Working..." indicator
-    _ = writeAll("\x1b[90m⠹ Working...\x1b[0m\r\n");
-
-    // Set up cancel scope
-    var scope = try cancel_scope_mod.Scope.init(allocator);
-    defer scope.deinit();
-    scope.installSigint();
-    var cancel_token = scope.token();
-
-    // Build provider options
-    var provider_options = ai_workflow.agentProviderOptionsFromFlags(
-        allocator,
-        parsed.flags,
-        "ask",
-        io,
-        opened.root,
-    );
-    defer provider_options.deinit(allocator);
-
-    // Override provider if specified
-    if (std.mem.eql(u8, provider_name, "fake")) {
-        provider_options.options.provider_name = "fake";
-    }
-
-    // Run the workflow
-    const generated = ai_workflow.generateAndPersist(
-        allocator,
-        io,
-        environ_map,
-        opened.*,
-        .ask,
-        intent,
-        parsed.flags.files,
-        provider_options.options,
-        .{
-            .cancel_token = &cancel_token,
-            .progress_writer = null,
-            .progress_json = false,
-        },
-    ) catch |err| {
-        var err_buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&err_buf, "\x1b[91m✗ Error: {}\x1b[0m\r\n", .{err}) catch "\x1b[91m✗ Error\x1b[0m\r\n";
-        _ = writeAll(msg);
-        return;
-    };
-    defer allocator.free(generated.run_id);
-    defer allocator.free(generated.proposal_rel);
-
-    // Show proposal info
-    var prop_buf: [512]u8 = undefined;
-    const prop_line = std.fmt.bufPrint(&prop_buf, "\x1b[33m📄 Proposal saved: {s}\x1b[0m\r\n", .{generated.proposal_rel}) catch "";
-    _ = writeAll(prop_line);
-    _ = writeAll("\x1b[90mReview: forge diff ");
-    _ = writeAll(generated.proposal_rel);
-    _ = writeAll(" · Apply: forge apply ");
-    _ = writeAll(generated.proposal_rel);
-    _ = writeAll(" --yes\x1b[0m\r\n");
-
-    // Token estimates
-    total_input_tokens.* += intent.len / 4;
-    total_output_tokens.* += 100; // rough estimate
-}
-
-fn runPipe(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: ?*const std.process.Environ.Map,
-    parsed: args_mod.CliArgs,
-    opened: *workspace_cmd.OpenedWorkspace,
-) !u8 {
-    _ = allocator;
-    _ = io;
-    _ = environ_map;
-    _ = parsed;
-    _ = opened;
-    _ = writeAll("forge agent: not a TTY — use 'forge chat --pipe' for piped input\r\n");
-    return 2;
-}
-
-// ─── Slash command suggestion popup ────────────────────────────────────
-
-const INLINE_COMMANDS = [_][]const u8{
-    "/help",    "/exit",   "/clear", "/mode",    "/model",
-    "/cost",    "/policy", "/tools", "/context", "/diff",
-    "/review",  "/search", "/undo",  "/redo",    "/compact",
-    "/version", "/stats",  "/save",  "/export",
-};
-
-fn printCmdSuggestions(input: []const u8, selected: usize) void {
-    // Save cursor position, move to line below prompt.
-    _ = writeAll("\x1b[s"); // save cursor
-    _ = writeAll("\r\n"); // move to next line
-
-    // Print matching commands.
-    var shown: usize = 0;
-    for (INLINE_COMMANDS) |cmd| {
-        if (std.mem.startsWith(u8, cmd, input)) {
-            if (shown == selected % @max(INLINE_COMMANDS.len, 1)) {
-                _ = writeAll("\x1b[36m▶ ");
-            } else {
-                _ = writeAll("\x1b[90m  ");
-            }
-            _ = writeAll(cmd);
-            _ = writeAll("  \x1b[0m");
-            shown += 1;
-            if (shown >= 8) break; // max 8 suggestions
-        }
-    }
-
-    // If no matches, show hint.
-    if (shown == 0) {
-        _ = writeAll("\x1b[90m  (no matching commands)\x1b[0m");
-    }
-
-    // Restore cursor position.
-    _ = writeAll("\x1b[u"); // restore cursor
-}
-
-fn clearCmdSuggestions() void {
-    // Clear the suggestion line below the prompt.
-    _ = writeAll("\x1b[s"); // save cursor
-    _ = writeAll("\r\n"); // move down
-    _ = writeAll("\x1b[2K"); // clear line
-    _ = writeAll("\x1b[u"); // restore cursor
-}
-
-// ─── Model picker ──────────────────────────────────────────────────────
-
-fn printModelPicker(selected: usize) void {
-    // Clear screen and show model list.
-    _ = writeAll("\r\x1b[2J\x1b[H");
-    _ = writeAll("\x1b[1m\x1b[92m  Select Model\x1b[0m\r\n");
-    _ = writeAll("\x1b[90m  ↑↓ navigate · Enter select · Esc cancel\x1b[0m\r\n\r\n");
-
-    const models = ai.provider_capability.builtin_models;
-    for (models, 0..) |m, i| {
-        if (i == selected) {
-            _ = writeAll("\x1b[36m▶ ");
-        } else {
-            _ = writeAll("\x1b[90m  ");
-        }
-        var buf: [128]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "{s: <10} {s: <36} ctx:{d}  ${d:.2}/${d:.2}\x1b[0m\r\n", .{
-            m.provider,
-            m.model_id,
-            m.capability.max_context_tokens,
-            @as(f64, @floatFromInt(m.capability.price_per_mtok_input)) / 100.0,
-            @as(f64, @floatFromInt(m.capability.price_per_mtok_output)) / 100.0,
-        }) catch "";
-        _ = writeAll(line);
-    }
+fn print(s: []const u8) void {
+    writeAll(s);
 }
