@@ -88,17 +88,19 @@ pub fn run(
     printWelcome(provider_name, model_label, agent_mode);
     first_render = false;
 
+    // Show initial prompt once.
+    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+
     while (!quit) {
-        // Show prompt
-        if (in_model_picker) {
-            printModelPicker(model_picker_index);
-        } else {
-            printPrompt(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
-            // Show slash command suggestions if input starts with /
-            if (show_cmd_suggestions and input_buf.items.len > 0 and input_buf.items[0] == '/') {
-                printCmdSuggestions(input_buf.items, cmd_suggestion_index);
-            }
-        }
+        // NOTE: prompt is NOT redrawn here every iteration. It's only
+        // drawn once at startup, and redrawn only when input changes
+        // (in redrawInputLine). Drawing it every loop iteration caused
+        // the "jumping line" bug — each keystroke printed a new prompt
+        // line because \r\x1b[2K only works if cursor is on the prompt
+        // line, but after readKey returns the cursor might have moved.
+        //
+        // The loop is: read key → handle key → (handler redraws if needed)
+        // No unconditional prompt render at top of loop.
 
         // Read a key
         var key_buf: [16]u8 = undefined;
@@ -203,9 +205,13 @@ pub fn run(
 
                 _ = writeAll("\r\n");
                 runAgentInline(allocator, io, environ_map, parsed, &opened, intent, provider_name, agent_mode, &total_input_tokens, &total_output_tokens) catch |err| {
-                    std.debug.print("\r\n✗ Error: {}\r\n", .{err});
+                    var err_buf: [256]u8 = undefined;
+                    const err_msg = std.fmt.bufPrint(&err_buf, "\r\n\x1b[91m✗ Error: {}\x1b[0m\r\n", .{err}) catch "\r\n✗ Error\r\n";
+                    _ = writeAll(err_msg);
                 };
+                // After agent completes, print a fresh prompt on a new line.
                 _ = writeAll("\r\n");
+                redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
             },
             .ctrl_c => {
                 if (input_buf.items.len > 0) {
@@ -384,26 +390,19 @@ fn printWelcome(provider: []const u8, model: []const u8, mode: ai.tools.Mode) vo
     _ = writeAll("\x1b[0m\r\n");
 }
 
-fn printPrompt(provider: []const u8, model: []const u8, mode: ai.tools.Mode, input: *std.ArrayList(u8), cursor: usize, tokens: u64) void {
-    _ = provider;
-    _ = model;
-    _ = tokens;
-    // Clear current line + show prompt
-    _ = writeAll("\r\x1b[2K");
-    const mode_icon: u8 = switch (mode) {
-        .ask => '?',
-        .plan => '+',
-        .agent => '>',
-    };
-    var buf: [8]u8 = undefined;
-    _ = writeAll(buf[0..1]);
-    buf[0] = mode_icon;
-    _ = writeAll(buf[0..1]);
-    _ = writeAll(" ");
+// printPrompt removed — was causing "jumping line" bug.
+// redrawInputLine + redrawInputLineFull replace it.
+
+fn redrawInputLine(input: *std.ArrayList(u8), cursor: usize) void {
+    // Clear current line + redraw prompt + input.
+    // \r = carriage return (col 0), \x1b[2K = erase entire line.
+    // Then print prompt + input. Cursor goes to end naturally.
+    // Do NOT emit \r\n — that would create a new line (the jumping bug).
+    _ = writeAll("\r\x1b[2K> ");
     if (input.items.len > 0) {
         _ = writeAll(input.items);
     }
-    // Position cursor
+    // Position cursor left if not at end.
     if (cursor < input.items.len) {
         var move_buf: [16]u8 = undefined;
         const back = input.items.len - cursor;
@@ -412,19 +411,24 @@ fn printPrompt(provider: []const u8, model: []const u8, mode: ai.tools.Mode, inp
     }
 }
 
-fn redrawInputLine(input: *std.ArrayList(u8), cursor: usize) void {
-    // Clear line + redraw
-    _ = writeAll("\r\x1b[2K> ");
-    if (input.items.len > 0) {
-        _ = writeAll(input.items);
-    }
-    // Position cursor
-    if (cursor < input.items.len) {
-        var move_buf: [16]u8 = undefined;
-        const back = input.items.len - cursor;
-        const move = std.fmt.bufPrint(&move_buf, "\x1b[{d}D", .{back}) catch "";
-        _ = writeAll(move);
-    }
+/// Print a fresh prompt line (after welcome or after agent response).
+/// This outputs the prompt on a NEW line — used only when we want a new
+/// prompt to appear (not during typing).
+fn redrawInputLineFull(provider: []const u8, model: []const u8, mode: ai.tools.Mode, input: *std.ArrayList(u8), cursor: usize, tokens: u64) void {
+    _ = provider;
+    _ = model;
+    _ = tokens;
+    _ = cursor;
+    _ = input;
+    // Just print the prompt prefix on current line.
+    // After welcome's \r\n, cursor is at start of a new line.
+    const mode_icon: u8 = switch (mode) {
+        .ask => '?',
+        .plan => '+',
+        .agent => '>',
+    };
+    var icon_buf: [2]u8 = .{ mode_icon, ' ' };
+    _ = writeAll(&icon_buf);
 }
 
 fn printHelp() void {
