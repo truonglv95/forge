@@ -9,13 +9,13 @@
 //!   - Native scrollback works perfectly (mouse wheel, Shift-PgUp, tmux)
 //!   - Zero flicker (no repaint)
 //!   - Lower CPU (no render loop)
-//!   - Simpler code (~300 LOC vs 8000+ LOC TUI)
+//!   - Simpler code
 //!
-//! Trade-offs:
-//!   - No status bar (model/mode/tokens shown before each prompt)
-//!   - No inline diff highlighting (diffs printed as plain text)
-//!   - No slash command autocomplete menu (commands still work, just no popup)
-//!   - Tool steps printed inline (not in cards)
+//! Features:
+//!   - Slash command autocomplete popup (type / to see commands)
+//!   - /model picker (list + arrow keys to select)
+//!   - History navigation (up/down)
+//!   - Line editing (backspace, left/right, Ctrl+U)
 //!
 //! Usage: forge agent (default = inline) or forge agent --tui (full TUI)
 
@@ -72,13 +72,17 @@ pub fn run(
     }
     var history_pos: ?usize = null;
     var agent_mode: ai.tools.Mode = .agent;
-    const provider_name: []const u8 = parsed.flags.provider orelse "auto";
-    const model_label: []const u8 = parsed.flags.model orelse "auto";
+    var provider_name: []const u8 = parsed.flags.provider orelse "auto";
+    var model_label: []const u8 = parsed.flags.model orelse "auto";
     var total_input_tokens: u64 = 0;
     var total_output_tokens: u64 = 0;
     var quit = false;
     var first_render = true;
     _ = &first_render;
+    var show_cmd_suggestions = false;
+    var cmd_suggestion_index: usize = 0;
+    var in_model_picker = false;
+    var model_picker_index: usize = 0;
 
     // Welcome
     printWelcome(provider_name, model_label, agent_mode);
@@ -86,7 +90,15 @@ pub fn run(
 
     while (!quit) {
         // Show prompt
-        printPrompt(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+        if (in_model_picker) {
+            printModelPicker(model_picker_index);
+        } else {
+            printPrompt(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+            // Show slash command suggestions if input starts with /
+            if (show_cmd_suggestions and input_buf.items.len > 0 and input_buf.items[0] == '/') {
+                printCmdSuggestions(input_buf.items, cmd_suggestion_index);
+            }
+        }
 
         // Read a key
         var key_buf: [16]u8 = undefined;
@@ -95,8 +107,38 @@ pub fn run(
 
         const k = parseInlineKey(key_buf[0..n]);
 
+        // Model picker mode — intercept all keys
+        if (in_model_picker) {
+            switch (k) {
+                .up => {
+                    if (model_picker_index > 0) model_picker_index -= 1;
+                },
+                .down => {
+                    if (model_picker_index + 1 < ai.provider_capability.builtin_models.len) model_picker_index += 1;
+                },
+                .enter => {
+                    const m = ai.provider_capability.builtin_models[model_picker_index];
+                    model_label = m.model_id;
+                    provider_name = m.provider;
+                    in_model_picker = false;
+                    _ = writeAll("\r\n");
+                    var buf2: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf2, " ✓ Model: {s}/{s}\r\n", .{ m.provider, m.model_id }) catch "";
+                    _ = writeAll(msg);
+                },
+                .escape => in_model_picker = false,
+                else => {},
+            }
+            continue;
+        }
+
         switch (k) {
             .enter => {
+                // Clear suggestion popup if showing
+                if (show_cmd_suggestions) {
+                    clearCmdSuggestions();
+                    show_cmd_suggestions = false;
+                }
                 _ = writeAll("\r\n");
                 if (input_buf.items.len == 0) continue;
 
@@ -134,6 +176,17 @@ pub fn run(
                         .help => {
                             printHelp();
                         },
+                        .model_show => {
+                            // Show current model
+                            var buf2: [256]u8 = undefined;
+                            const msg = std.fmt.bufPrint(&buf2, "\r\n Current: {s}/{s}\r\n", .{ provider_name, model_label }) catch "";
+                            _ = writeAll(msg);
+                        },
+                        .model_set => {
+                            // Open model picker
+                            in_model_picker = true;
+                            model_picker_index = 0;
+                        },
                         else => {
                             _ = writeAll("\r\n (command not supported in inline mode — use --tui for full TUI)\r\n");
                         },
@@ -158,6 +211,7 @@ pub fn run(
                 if (input_buf.items.len > 0) {
                     input_buf.clearRetainingCapacity();
                     cursor = 0;
+                    show_cmd_suggestions = false;
                     _ = writeAll("^C\r\n");
                 } else {
                     quit = true;
@@ -168,31 +222,53 @@ pub fn run(
                     _ = input_buf.orderedRemove(cursor - 1);
                     cursor -= 1;
                     redrawInputLine(&input_buf, cursor);
+                    // Update suggestions
+                    if (input_buf.items.len > 0 and input_buf.items[0] == '/') {
+                        show_cmd_suggestions = true;
+                        cmd_suggestion_index = 0;
+                        printCmdSuggestions(input_buf.items, cmd_suggestion_index);
+                    } else {
+                        if (show_cmd_suggestions) clearCmdSuggestions();
+                        show_cmd_suggestions = false;
+                    }
                 }
             },
             .up => {
-                // History navigation
-                if (history.items.len > 0) {
-                    var pos = history_pos orelse history.items.len;
-                    if (pos > 0) pos -= 1;
-                    history_pos = pos;
-                    input_buf.clearRetainingCapacity();
-                    input_buf.appendSlice(allocator, history.items[pos]) catch {};
-                    cursor = input_buf.items.len;
-                    redrawInputLine(&input_buf, cursor);
+                if (show_cmd_suggestions) {
+                    // Navigate suggestions
+                    if (cmd_suggestion_index > 0) cmd_suggestion_index -= 1;
+                    clearCmdSuggestions();
+                    printCmdSuggestions(input_buf.items, cmd_suggestion_index);
+                } else {
+                    // History navigation
+                    if (history.items.len > 0) {
+                        var pos = history_pos orelse history.items.len;
+                        if (pos > 0) pos -= 1;
+                        history_pos = pos;
+                        input_buf.clearRetainingCapacity();
+                        input_buf.appendSlice(allocator, history.items[pos]) catch {};
+                        cursor = input_buf.items.len;
+                        redrawInputLine(&input_buf, cursor);
+                    }
                 }
             },
             .down => {
-                if (history.items.len > 0) {
-                    var pos = history_pos orelse history.items.len;
-                    if (pos < history.items.len) pos += 1;
-                    history_pos = if (pos >= history.items.len) null else pos;
-                    input_buf.clearRetainingCapacity();
-                    if (history_pos) |p| {
-                        input_buf.appendSlice(allocator, history.items[p]) catch {};
+                if (show_cmd_suggestions) {
+                    cmd_suggestion_index += 1;
+                    clearCmdSuggestions();
+                    printCmdSuggestions(input_buf.items, cmd_suggestion_index);
+                } else {
+                    if (history.items.len > 0) {
+                        var pos = history_pos orelse history.items.len;
+                        if (pos < history.items.len) pos += 1;
+                        history_pos = if (pos >= history.items.len) null else pos;
+                        input_buf.clearRetainingCapacity();
+                        if (history_pos) |p| {
+                            input_buf.appendSlice(allocator, history.items[p]) catch {};
+                        }
+                        cursor = input_buf.items.len;
+                        redrawInputLine(&input_buf, cursor);
                     }
-                    cursor = input_buf.items.len;
-                    redrawInputLine(&input_buf, cursor);
                 }
             },
             .left => {
@@ -212,16 +288,36 @@ pub fn run(
                     if (input_buf.items.len > 0) {
                         input_buf.clearRetainingCapacity();
                         cursor = 0;
+                        show_cmd_suggestions = false;
                         _ = writeAll("^C\r\n");
                     } else {
                         quit = true;
                     }
                 } else if (ch == 4) { // Ctrl+D
                     quit = true;
+                } else if (ch == 21) { // Ctrl+U — clear line
+                    input_buf.clearRetainingCapacity();
+                    cursor = 0;
+                    show_cmd_suggestions = false;
+                    redrawInputLine(&input_buf, cursor);
+                } else if (ch == 12) { // Ctrl+L — clear screen
+                    _ = writeAll("\x1b[2J\x1b[H");
+                    printWelcome(provider_name, model_label, agent_mode);
                 } else if (ch >= 32 and ch < 127) {
                     _ = input_buf.insert(allocator, cursor, ch) catch {};
                     cursor += 1;
                     redrawInputLine(&input_buf, cursor);
+                    // Show/update suggestions when typing /
+                    if (input_buf.items.len > 0 and input_buf.items[0] == '/') {
+                        if (!show_cmd_suggestions) {
+                            show_cmd_suggestions = true;
+                            cmd_suggestion_index = 0;
+                        }
+                        printCmdSuggestions(input_buf.items, cmd_suggestion_index);
+                    } else {
+                        if (show_cmd_suggestions) clearCmdSuggestions();
+                        show_cmd_suggestions = false;
+                    }
                 }
             },
             .escape, .none => {},
@@ -437,4 +533,78 @@ fn runPipe(
     _ = opened;
     _ = writeAll("forge agent: not a TTY — use 'forge chat --pipe' for piped input\r\n");
     return 2;
+}
+
+// ─── Slash command suggestion popup ────────────────────────────────────
+
+const INLINE_COMMANDS = [_][]const u8{
+    "/help",    "/exit",   "/clear", "/mode",    "/model",
+    "/cost",    "/policy", "/tools", "/context", "/diff",
+    "/review",  "/search", "/undo",  "/redo",    "/compact",
+    "/version", "/stats",  "/save",  "/export",
+};
+
+fn printCmdSuggestions(input: []const u8, selected: usize) void {
+    // Save cursor position, move to line below prompt.
+    _ = writeAll("\x1b[s"); // save cursor
+    _ = writeAll("\r\n"); // move to next line
+
+    // Print matching commands.
+    var shown: usize = 0;
+    for (INLINE_COMMANDS) |cmd| {
+        if (std.mem.startsWith(u8, cmd, input)) {
+            if (shown == selected % @max(INLINE_COMMANDS.len, 1)) {
+                _ = writeAll("\x1b[36m▶ ");
+            } else {
+                _ = writeAll("\x1b[90m  ");
+            }
+            _ = writeAll(cmd);
+            _ = writeAll("  \x1b[0m");
+            shown += 1;
+            if (shown >= 8) break; // max 8 suggestions
+        }
+    }
+
+    // If no matches, show hint.
+    if (shown == 0) {
+        _ = writeAll("\x1b[90m  (no matching commands)\x1b[0m");
+    }
+
+    // Restore cursor position.
+    _ = writeAll("\x1b[u"); // restore cursor
+}
+
+fn clearCmdSuggestions() void {
+    // Clear the suggestion line below the prompt.
+    _ = writeAll("\x1b[s"); // save cursor
+    _ = writeAll("\r\n"); // move down
+    _ = writeAll("\x1b[2K"); // clear line
+    _ = writeAll("\x1b[u"); // restore cursor
+}
+
+// ─── Model picker ──────────────────────────────────────────────────────
+
+fn printModelPicker(selected: usize) void {
+    // Clear screen and show model list.
+    _ = writeAll("\r\x1b[2J\x1b[H");
+    _ = writeAll("\x1b[1m\x1b[92m  Select Model\x1b[0m\r\n");
+    _ = writeAll("\x1b[90m  ↑↓ navigate · Enter select · Esc cancel\x1b[0m\r\n\r\n");
+
+    const models = ai.provider_capability.builtin_models;
+    for (models, 0..) |m, i| {
+        if (i == selected) {
+            _ = writeAll("\x1b[36m▶ ");
+        } else {
+            _ = writeAll("\x1b[90m  ");
+        }
+        var buf: [128]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "{s: <10} {s: <36} ctx:{d}  ${d:.2}/${d:.2}\x1b[0m\r\n", .{
+            m.provider,
+            m.model_id,
+            m.capability.max_context_tokens,
+            @as(f64, @floatFromInt(m.capability.price_per_mtok_input)) / 100.0,
+            @as(f64, @floatFromInt(m.capability.price_per_mtok_output)) / 100.0,
+        }) catch "";
+        _ = writeAll(line);
+    }
 }
