@@ -227,6 +227,8 @@ pub fn run(
                 if (cursor > 0) {
                     _ = input_buf.orderedRemove(cursor - 1);
                     cursor -= 1;
+                    // Move cursor left 1, then redraw from cursor to end.
+                    _ = writeAll("\x1b[D");
                     redrawInputLine(&input_buf, cursor);
                     // Update suggestions
                     if (input_buf.items.len > 0 and input_buf.items[0] == '/') {
@@ -251,10 +253,10 @@ pub fn run(
                         var pos = history_pos orelse history.items.len;
                         if (pos > 0) pos -= 1;
                         history_pos = pos;
-                        input_buf.clearRetainingCapacity();
-                        input_buf.appendSlice(allocator, history.items[pos]) catch {};
-                        cursor = input_buf.items.len;
-                        redrawInputLine(&input_buf, cursor);
+                        // Clear current line + reprint prompt + history item.
+                        _ = writeAll("\r\x1b[K");
+                        redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+                        _ = writeAll(input_buf.items);
                     }
                 }
             },
@@ -273,7 +275,10 @@ pub fn run(
                             input_buf.appendSlice(allocator, history.items[p]) catch {};
                         }
                         cursor = input_buf.items.len;
-                        redrawInputLine(&input_buf, cursor);
+                        // Clear current line + reprint prompt + history item.
+                        _ = writeAll("\r\x1b[K");
+                        redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
+                        _ = writeAll(input_buf.items);
                     }
                 }
             },
@@ -296,6 +301,7 @@ pub fn run(
                         cursor = 0;
                         show_cmd_suggestions = false;
                         _ = writeAll("^C\r\n");
+                        redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
                     } else {
                         quit = true;
                     }
@@ -305,14 +311,30 @@ pub fn run(
                     input_buf.clearRetainingCapacity();
                     cursor = 0;
                     show_cmd_suggestions = false;
-                    redrawInputLine(&input_buf, cursor);
+                    // Redraw: \r + clear + prompt
+                    _ = writeAll("\r\x1b[K");
+                    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
                 } else if (ch == 12) { // Ctrl+L — clear screen
                     _ = writeAll("\x1b[2J\x1b[H");
                     printWelcome(provider_name, model_label, agent_mode);
+                    redrawInputLineFull(provider_name, model_label, agent_mode, &input_buf, cursor, total_input_tokens + total_output_tokens);
                 } else if (ch >= 32 and ch < 127) {
+                    // Insert character at cursor position.
                     _ = input_buf.insert(allocator, cursor, ch) catch {};
                     cursor += 1;
-                    redrawInputLine(&input_buf, cursor);
+                    // SIMPLE ECHO: just write the character directly.
+                    // This is how bash/zsh work — no line clear, no redraw.
+                    // The terminal handles cursor movement natively.
+                    // Only redraw the full line if cursor is in the middle
+                    // (need to shift characters right).
+                    if (cursor == input_buf.items.len) {
+                        // Cursor at end — just echo the character.
+                        var ch_buf: [1]u8 = .{ch};
+                        _ = writeAll(&ch_buf);
+                    } else {
+                        // Cursor in middle — redraw line from cursor onward.
+                        redrawInputLine(&input_buf, cursor);
+                    }
                     // Show/update suggestions when typing /
                     if (input_buf.items.len > 0 and input_buf.items[0] == '/') {
                         if (!show_cmd_suggestions) {
@@ -394,20 +416,21 @@ fn printWelcome(provider: []const u8, model: []const u8, mode: ai.tools.Mode) vo
 // redrawInputLine + redrawInputLineFull replace it.
 
 fn redrawInputLine(input: *std.ArrayList(u8), cursor: usize) void {
-    // Clear current line + redraw prompt + input.
-    // \r = carriage return (col 0), \x1b[2K = erase entire line.
-    // Then print prompt + input. Cursor goes to end naturally.
-    // Do NOT emit \r\n — that would create a new line (the jumping bug).
-    _ = writeAll("\r\x1b[2K> ");
-    if (input.items.len > 0) {
-        _ = writeAll(input.items);
-    }
-    // Position cursor left if not at end.
+    // Redraw from cursor position to end of line.
+    // Used when cursor is in the middle (characters shifted right).
+    // Uses \x1b[K to clear from cursor to end of line, then reprints
+    // the remaining text. Does NOT use \r (carriage return) — cursor
+    // stays at current position, only clears + reprints forward.
+    _ = writeAll("\x1b[K");
     if (cursor < input.items.len) {
-        var move_buf: [16]u8 = undefined;
+        _ = writeAll(input.items[cursor..]);
+        // Move cursor back to insertion point.
         const back = input.items.len - cursor;
-        const move = std.fmt.bufPrint(&move_buf, "\x1b[{d}D", .{back}) catch "";
-        _ = writeAll(move);
+        if (back > 0) {
+            var move_buf: [16]u8 = undefined;
+            const move = std.fmt.bufPrint(&move_buf, "\x1b[{d}D", .{back}) catch "";
+            _ = writeAll(move);
+        }
     }
 }
 
