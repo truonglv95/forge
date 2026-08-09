@@ -22,8 +22,14 @@ pub fn run(
             try writer.writeAll("error: agent requires a subcommand (run|resume|list|events|timeline) in non-interactive mode\n");
             return 2;
         }
-        const agent_tui = @import("agent_tui.zig");
-        return agent_tui.run(allocator, io, environ_map, parsed);
+        // Default: inline mode (sequential output, native terminal scrollback).
+        // Use --tui for full-screen TUI with cursor positioning.
+        if (parsed.flags.tui) {
+            const agent_tui = @import("agent_tui.zig");
+            return agent_tui.run(allocator, io, environ_map, parsed);
+        }
+        const inline_mode = @import("inline_mode.zig");
+        return inline_mode.run(allocator, io, environ_map, parsed);
     }
 
     const subcommand = parsed.positional[0];

@@ -192,7 +192,7 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\
         \\AI Commands:
         \\  ask        Ask AI to propose a change (no auto-apply)
-        \\  agent      Interactive TUI agent (or: run|resume|list|events|timeline)
+        \\  agent      Interactive AI agent (inline mode default, --tui for full screen)
         \\  chat       Chat REPL with @mentions and slash commands
         \\  complete   Inline code completion at a file position
         \\  edit       Composer-style multi-file inline edit
@@ -243,7 +243,8 @@ fn printHelp(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --trust-all          Trust all agent tools for this session
         \\
         \\Quick Start:
-        \\  forge agent                    # Launch interactive TUI
+        \\  forge agent                    # Launch inline AI agent (native scroll)
+        \\  forge agent --tui              # Full-screen TUI mode
         \\  forge ask "add error handling" # One-shot AI proposal
         \\  forge chat                     # Chat REPL
         \\  forge cloud login <email>      # Sign in to Forge Cloud
