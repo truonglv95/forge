@@ -206,7 +206,7 @@ pub fn run(
                 _ = writeAll("\r\n");
                 runAgentInline(allocator, io, environ_map, parsed, &opened, intent, provider_name, agent_mode, &total_input_tokens, &total_output_tokens) catch |err| {
                     var err_buf: [256]u8 = undefined;
-                    const err_msg = std.fmt.bufPrint(&err_buf, "\r\n\x1b[91m✗ Error: {}\x1b[0m\r\n", .{err}) catch "\r\n✗ Error\r\n";
+                    const err_msg = std.fmt.bufPrint(&err_buf, "\r\n\x1b[91m✗ Error: {}\x1b[0m\r\n", .{err}) catch "\r\n\x1b[91m✗ Error\x1b[0m\r\n";
                     _ = writeAll(err_msg);
                 };
                 // After agent completes, print a fresh prompt on a new line.
